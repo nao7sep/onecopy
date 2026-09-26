@@ -62,9 +62,15 @@ function ReleaseNotice() {
 function Toast({
   record,
   durationMs,
+  ownsTimedDismissal,
 }: {
   record: NotificationRecord;
   durationMs: number;
+  // Only one open window may run the auto-dismiss timer: every NotificationHost
+  // shows the same records from the same backend list, so two windows each
+  // running their own timer meant hovering the notice in one window never
+  // paused the other's countdown (failures-and-recovery.md L29, Finding C).
+  ownsTimedDismissal: boolean;
 }) {
   const { t, text } = useI18n();
   const dismiss = useNotificationsStore((state) => state.dismiss);
@@ -72,6 +78,12 @@ function Toast({
   const remaining = useRef(durationMs);
   const started = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Hovering AND focusing both pause the timer; it may resume only once
+  // NEITHER holds it, so leaving with the mouse while focus is still inside
+  // (or losing focus while the pointer is still over the card) does not
+  // restart a countdown the user is still attending to.
+  const hovering = useRef(false);
+  const focused = useRef(false);
 
   const stopTimer = () => {
     if (timer.current === null) return;
@@ -81,9 +93,12 @@ function Toast({
   };
   const startTimer = () => {
     if (
+      !ownsTimedDismissal ||
       record.presentation !== "timed" ||
       timer.current !== null ||
-      remaining.current <= 0
+      remaining.current <= 0 ||
+      hovering.current ||
+      focused.current
     ) {
       return;
     }
@@ -100,7 +115,7 @@ function Toast({
     startTimer();
     return stopTimer;
     // A repeated coalesced notice resets its one visible timer.
-  }, [durationMs, record.id, record.lastSeenUtc]);
+  }, [durationMs, record.id, record.lastSeenUtc, ownsTimedDismissal]);
 
   const tone =
     record.level === "error"
@@ -114,11 +129,13 @@ function Toast({
       data-notification
       role={record.level === "error" ? "alert" : "status"}
       className={`pointer-events-auto w-full rounded-lg border p-3 ${tone}`}
-      onMouseEnter={stopTimer}
-      onMouseLeave={startTimer}
-      onFocusCapture={stopTimer}
+      onMouseEnter={() => { hovering.current = true; stopTimer(); }}
+      onMouseLeave={() => { hovering.current = false; startTimer(); }}
+      onFocusCapture={() => { focused.current = true; stopTimer(); }}
       onBlurCapture={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) startTimer();
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+        focused.current = false;
+        startTimer();
       }}
     >
       <div className="flex items-start gap-3">
@@ -161,7 +178,14 @@ function noticeWords(
   return raised === undefined ? conditionText(record.kind, record.message, t) : text(raised);
 }
 
-export default function NotificationHost() {
+export default function NotificationHost({
+  ownsTimedDismissal = true,
+}: {
+  // False in the fullscreen viewer: Main, always open, is the one timer
+  // owner (Finding C). The viewer still shows and lets the user dismiss
+  // every notice; it just never races Main's own countdown.
+  ownsTimedDismissal?: boolean;
+} = {}) {
   const { t } = useI18n();
   const active = useNotificationsStore((state) => state.active);
   const releaseVersion = useReleaseCheckStore((state) => state.noticeVersion);
@@ -200,7 +224,12 @@ export default function NotificationHost() {
         >
           <div className="flex flex-col items-stretch gap-2 pr-1">
             {active.map((record) => (
-              <Toast key={record.id} record={record} durationMs={durationMs} />
+              <Toast
+                key={record.id}
+                record={record}
+                durationMs={durationMs}
+                ownsTimedDismissal={ownsTimedDismissal}
+              />
             ))}
           </div>
         </div>

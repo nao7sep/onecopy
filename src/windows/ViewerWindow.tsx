@@ -88,7 +88,10 @@ export default function ViewerWindow() {
   const failure = commandFailure ?? state.failure;
   return (
     <div ref={surface} tabIndex={-1} aria-label={t("viewer.window")} className="relative flex h-screen w-screen flex-col overflow-hidden bg-black text-white outline-none">
-      <NotificationHost />
+      {/* Main, always open, is the one window that owns timed-notice
+          auto-dismiss (Finding C) — this copy still shows and dismisses
+          notices, it just never runs a second, unpausable countdown. */}
+      <NotificationHost ownsTimedDismissal={false} />
       {/* Always visible, not hover-only: viewing-sessions.md's lightweight
           chrome shows filename, position, and prev/next as a standing
           contract, not a mouse-discoverable extra a keyboard-only or

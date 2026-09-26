@@ -102,6 +102,45 @@ describe("the app-frame notification host", () => {
     expect(invokeCalls.some((call) => call.command === "dismiss_notification")).toBe(true);
   });
 
+  it("does not resume while the mouse leaves but focus is still inside, or focus leaves but the mouse is still over it (Finding C)", async () => {
+    vi.useFakeTimers();
+    render(<NotificationHost />);
+    act(() =>
+      useNotificationsStore.setState({
+        active: [notice({ presentation: "timed", level: "info", message: "Done." })],
+      }),
+    );
+    const noticeSurface = document.querySelector("[data-notification]") as HTMLElement;
+    const dismiss = document.querySelector('[aria-label="Dismiss notification"]') as HTMLElement;
+
+    // Mouse enters, then keyboard focus lands inside while the mouse is still
+    // over it, then the mouse leaves — the still-held focus must keep it paused.
+    fireEvent.mouseEnter(noticeSurface);
+    fireEvent.focus(dismiss);
+    fireEvent.mouseLeave(noticeSurface);
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(document.body.textContent).toContain("Done.");
+
+    // Now focus leaves too, with nothing left holding it: it resumes and
+    // eventually dismisses.
+    fireEvent.blur(dismiss);
+    await act(async () => vi.advanceTimersByTimeAsync(6_000));
+    expect(invokeCalls.some((call) => call.command === "dismiss_notification")).toBe(true);
+  });
+
+  it("never starts a timer for a window that does not own timed dismissal (Finding C)", async () => {
+    vi.useFakeTimers();
+    render(<NotificationHost ownsTimedDismissal={false} />);
+    act(() =>
+      useNotificationsStore.setState({
+        active: [notice({ presentation: "timed", level: "info", message: "Done." })],
+      }),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+    expect(document.body.textContent).toContain("Done.");
+    expect(invokeCalls.some((call) => call.command === "dismiss_notification")).toBe(false);
+  });
+
   it("shows the coalesced occurrence count", () => {
     render(<NotificationHost />);
     act(() => useNotificationsStore.setState({ active: [notice({ occurrenceCount: 4 })] }));
