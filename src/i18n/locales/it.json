@@ -932,7 +932,6 @@
   "mutation.liveStatusUnavailableReload": "Lo stato in tempo reale delle operazioni sui file non è disponibile. Ricarica OneCopy prima di modificare altri file.",
   "notice.dismissFailed": "Impossibile chiudere la notifica.",
   "notice.notSaved": "{failure} OneCopy non è riuscito a salvare questa notifica. Ricarica la finestra prima di continuare.",
-  "playback.notPlayable": "Questo elemento non è riproducibile in OneCopy in questo momento.",
   "preview.closeWindowFailed": "Impossibile chiudere la finestra dell’Anteprima.",
   "preview.commandFailed": "Impossibile inviare questo comando dell’Anteprima.",
   "preview.dismissFailed": "Impossibile chiudere questo risultato dell’Anteprima.",

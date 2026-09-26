@@ -7,6 +7,7 @@ import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import { useComparisonStore } from "../../src/state/comparison-store";
 import { useAppStore } from "../../src/state/app-store";
 import { useItemsStore } from "../../src/state/items-store";
+import { currentMainFeedback, useMainFeedbackStore } from "../../src/state/main-feedback-store";
 import { useQuickViewStore } from "../../src/state/quick-view-store";
 import {
   mockCommand,
@@ -41,6 +42,7 @@ function Harness() {
     <>
       <div id="main-item-area" tabIndex={0} />
       <div aria-label="Preview pane" tabIndex={0} />
+      <div role="tree" aria-label="Sections" tabIndex={0} />
       <output aria-label="Trash confirmation">
         {commands.confirmTrash ?? "none"}
       </output>
@@ -112,6 +114,19 @@ describe("global viewer commands", () => {
     expect(useQuickViewStore.getState().session?.presentation).toBe(
       "fullscreen",
     );
+  });
+
+  it("does not open the viewer for F while the sidebar owns focus (R5.1 D4)", async () => {
+    const view = render(<Harness />);
+    const tree = view.getByRole("tree");
+    tree.focus();
+
+    fireEvent.keyDown(tree, { key: "f" });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(useQuickViewStore.getState().session).toBeNull();
   });
 });
 
@@ -211,5 +226,17 @@ describe("global destructive commands", () => {
       ],
       permanent: false,
     });
+  });
+});
+
+describe("Enter playback toggle (R5.1 D3)", () => {
+  it("does nothing, without an untrue notice, when no player is visible for a video anchor", () => {
+    useItemsStore.setState({ selected: { kind: "video", month: "2026-01" } });
+    const view = render(<Harness />);
+    const area = view.container.querySelector("#main-item-area")!;
+
+    fireEvent.keyDown(area, { key: "Enter" });
+
+    expect(currentMainFeedback(useMainFeedbackStore.getState())).toBeNull();
   });
 });

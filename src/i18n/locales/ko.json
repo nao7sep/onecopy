@@ -932,7 +932,6 @@
   "mutation.liveStatusUnavailableReload": "실시간 파일 작업 상태를 사용할 수 없습니다. 파일을 더 변경하기 전에 OneCopy를 다시 불러오십시오.",
   "notice.dismissFailed": "알림을 닫을 수 없습니다.",
   "notice.notSaved": "{failure} OneCopy가 이 알림을 저장할 수 없습니다. 계속하기 전에 창을 다시 불러오십시오.",
-  "playback.notPlayable": "이 항목은 지금 OneCopy에서 재생할 수 없습니다.",
   "preview.closeWindowFailed": "미리보기 창을 닫을 수 없습니다.",
   "preview.commandFailed": "이 미리보기 명령을 보낼 수 없습니다.",
   "preview.dismissFailed": "이 미리보기 결과를 닫을 수 없습니다.",

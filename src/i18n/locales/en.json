@@ -932,7 +932,6 @@
   "mutation.liveStatusUnavailableReload": "Live file-operation status is unavailable. Reload OneCopy before changing more files.",
   "notice.dismissFailed": "Couldn’t dismiss the notification.",
   "notice.notSaved": "{failure} OneCopy could not save this notice. Reload the window before continuing.",
-  "playback.notPlayable": "This item is not playable in OneCopy right now.",
   "preview.closeWindowFailed": "Couldn’t close the Preview window.",
   "preview.commandFailed": "Couldn’t send this Preview command.",
   "preview.dismissFailed": "Couldn’t dismiss this Preview result.",

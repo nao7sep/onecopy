@@ -932,7 +932,6 @@
   "mutation.liveStatusUnavailableReload": "Der laufende Status der Dateivorgänge ist nicht verfügbar. Laden Sie OneCopy neu, bevor Sie weitere Dateien ändern.",
   "notice.dismissFailed": "Die Mitteilung konnte nicht geschlossen werden.",
   "notice.notSaved": "{failure} OneCopy konnte diese Mitteilung nicht speichern. Laden Sie das Fenster neu, bevor Sie fortfahren.",
-  "playback.notPlayable": "Dieses Element kann derzeit nicht in OneCopy abgespielt werden.",
   "preview.closeWindowFailed": "Das Vorschaufenster konnte nicht geschlossen werden.",
   "preview.commandFailed": "Dieser Befehl für die Vorschau konnte nicht gesendet werden.",
   "preview.dismissFailed": "Dieses Ergebnis der Vorschau konnte nicht geschlossen werden.",

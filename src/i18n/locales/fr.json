@@ -932,7 +932,6 @@
   "mutation.liveStatusUnavailableReload": "L’état en direct des opérations sur les fichiers est indisponible. Rechargez OneCopy avant de modifier d’autres fichiers.",
   "notice.dismissFailed": "Impossible de fermer la notification.",
   "notice.notSaved": "{failure} OneCopy n’a pas pu enregistrer cette notification. Rechargez la fenêtre avant de continuer.",
-  "playback.notPlayable": "Cet élément n’est pas lisible dans OneCopy pour le moment.",
   "preview.closeWindowFailed": "Impossible de fermer la fenêtre d’aperçu.",
   "preview.commandFailed": "Impossible d’envoyer cette commande à l’aperçu.",
   "preview.dismissFailed": "Impossible de fermer ce résultat de l’aperçu.",

@@ -2,10 +2,8 @@
 // dialogs stay in App, while their command semantics have one owner here.
 
 import { useCallback, useEffect, useState } from "react";
-import { message } from "../i18n/translate";
 import { useAppStore } from "../state/app-store";
 import { useItemsStore } from "../state/items-store";
-import { beginMainFeedback } from "../state/main-feedback-store";
 import { useComparisonStore } from "../state/comparison-store";
 import { useSettingsStore } from "../state/settings-store";
 import { useAppShellStore } from "../state/app-shell-store";
@@ -116,6 +114,13 @@ export function useGlobalCommands() {
         !event.ctrlKey &&
         !event.altKey
       ) {
+        // Unlike Delete/Enter/Space, F is not exclusive to the main item
+        // area: the in-pane Preview also owns an F path to true fullscreen
+        // (viewing-sessions.md). Only the sidebar tree opts out, matching
+        // "item commands do not act while the sidebar owns focus."
+        if (event.target instanceof Element && event.target.closest('[role="tree"]') !== null) {
+          return;
+        }
         handleFViewer(event);
       } else if (event.key === "Enter") {
         if (
@@ -139,16 +144,10 @@ export function useGlobalCommands() {
           items.selected?.kind === "video" ||
           (anchor !== undefined && isAudioFile(anchor.fileName))
         ) {
-          const feedback = beginMainFeedback("playback");
-          if (
-            items.selectedItem !== null &&
-            !toggleMainPlayback(items.selectedItem)
-          ) {
-            feedback.finish({
-              tone: "normal",
-              text: message("playback.notPlayable"),
-            });
-          }
+          // Enter does nothing when no player is visible for the anchor
+          // (Preview closed, showing a different item, or not yet ready);
+          // there is no failure to report in that case.
+          if (items.selectedItem !== null) toggleMainPlayback(items.selectedItem);
         }
       }
     };

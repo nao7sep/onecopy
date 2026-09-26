@@ -932,7 +932,6 @@
   "mutation.liveStatusUnavailableReload": "Состояние файловых операций в реальном времени недоступно. Перезагрузите OneCopy, прежде чем менять другие файлы.",
   "notice.dismissFailed": "Не удалось закрыть уведомление.",
   "notice.notSaved": "{failure} OneCopy не удалось сохранить это уведомление. Перезагрузите окно, прежде чем продолжать.",
-  "playback.notPlayable": "Этот объект сейчас нельзя воспроизвести в OneCopy.",
   "preview.closeWindowFailed": "Не удалось закрыть окно «Просмотра».",
   "preview.commandFailed": "Не удалось отправить эту команду «Просмотру».",
   "preview.dismissFailed": "Не удалось закрыть этот результат «Просмотра».",

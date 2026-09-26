@@ -932,7 +932,6 @@
   "mutation.liveStatusUnavailableReload": "ファイル操作の状態をその場で取得できません。これ以上ファイルを変更する前に、OneCopy を再読み込みしてください。",
   "notice.dismissFailed": "通知を閉じられませんでした。",
   "notice.notSaved": "{failure} OneCopy はこの通知を保存できませんでした。続ける前にウインドウを再読み込みしてください。",
-  "playback.notPlayable": "この項目は、いま OneCopy では再生できません。",
   "preview.closeWindowFailed": "プレビューウインドウを閉じられませんでした。",
   "preview.commandFailed": "このプレビューの操作を送信できませんでした。",
   "preview.dismissFailed": "このプレビューの結果を閉じられませんでした。",

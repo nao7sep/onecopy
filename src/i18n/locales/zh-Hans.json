@@ -932,7 +932,6 @@
   "mutation.liveStatusUnavailableReload": "无法获取文件操作的实时状态。在更改更多文件之前，请重新载入 OneCopy。",
   "notice.dismissFailed": "无法关闭该通知。",
   "notice.notSaved": "{failure} OneCopy 无法保存此通知。请先重新载入窗口，然后继续。",
-  "playback.notPlayable": "此项目目前无法在 OneCopy 中播放。",
   "preview.closeWindowFailed": "无法关闭“预览”窗口。",
   "preview.commandFailed": "无法发送此“预览”命令。",
   "preview.dismissFailed": "无法关闭此“预览”结果。",

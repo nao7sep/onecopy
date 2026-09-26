@@ -932,7 +932,6 @@
   "mutation.liveStatusUnavailableReload": "El estado en directo de las operaciones de archivos no está disponible. Vuelve a cargar OneCopy antes de cambiar más archivos.",
   "notice.dismissFailed": "No se pudo descartar la notificación.",
   "notice.notSaved": "{failure} OneCopy no pudo guardar esta notificación. Vuelve a cargar la ventana antes de continuar.",
-  "playback.notPlayable": "Este elemento no se puede reproducir en OneCopy ahora mismo.",
   "preview.closeWindowFailed": "No se pudo cerrar la ventana de Vista previa.",
   "preview.commandFailed": "No se pudo enviar este comando de Vista previa.",
   "preview.dismissFailed": "No se pudo descartar este resultado de Vista previa.",
