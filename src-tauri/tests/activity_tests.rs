@@ -2,6 +2,7 @@ use onecopy_lib::activity::{
     ActivityDraft, ActivityKind, ActivityOwner, ActivityReason, ActivityRecorder, ActivityState,
     ActivitySubject,
 };
+use onecopy_lib::{activity_history, index_store, visibility::Policy, visibility_index};
 
 fn draft(operation_id: Option<&str>) -> ActivityDraft {
     ActivityDraft {
@@ -353,4 +354,46 @@ fn operation_projection_upgrade_keeps_old_events_and_separates_sessions() {
         3,
         "internal raw history is retained without ordinary rows"
     );
+}
+
+// R4.4 E5: a target hidden entirely by review-visibility policy resolves to
+// "unavailable" (no Target, even though the event still carries the hash it
+// happened to), and the target reappears once the policy lifts.
+#[test]
+fn a_hidden_only_activity_target_resolves_to_unavailable() {
+    let (_temp, recorder) = recorder("session-one");
+    let mut with_target = draft(Some("op"));
+    with_target.target_hash = Some("h".to_string());
+    recorder
+        .record_at(with_target, "2026-09-07T00:00:00.000Z".to_string(), 0)
+        .unwrap();
+
+    let index_dir = tempfile::tempdir().unwrap();
+    let index = index_store::open(&index_dir.path().join("index.sqlite3")).unwrap();
+    index
+        .execute_batch(
+            "INSERT INTO contents(hash, kind, byte_size) VALUES ('h', 'image', 1);
+            INSERT INTO paths(abs_path, dir_path, file_name, kind, content_hash)
+              VALUES ('/root/photo.jpg', '/root', 'photo.jpg', 'image', 'h');",
+        )
+        .unwrap();
+    visibility_index::apply_policy(
+        &index,
+        &Policy::from_config(&serde_json::json!({"ignoredFileNames": ["photo.jpg"]})).unwrap(),
+    )
+    .unwrap();
+
+    let mut page = recorder.operations(None, None, 100).unwrap();
+    activity_history::resolve_targets(&index, &mut page.operations).unwrap();
+    assert_eq!(page.operations[0].target_hash.as_deref(), Some("h"));
+    assert!(
+        page.operations[0].target.is_none(),
+        "a hidden-only target must resolve as unavailable, not disappear"
+    );
+
+    visibility_index::apply_policy(&index, &Policy::from_config(&serde_json::json!({})).unwrap())
+        .unwrap();
+    let mut page = recorder.operations(None, None, 100).unwrap();
+    activity_history::resolve_targets(&index, &mut page.operations).unwrap();
+    assert_eq!(page.operations[0].target.as_ref().unwrap().name, "photo.jpg");
 }
