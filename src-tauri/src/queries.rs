@@ -478,7 +478,6 @@ pub fn section_window(
 
 #[derive(Clone)]
 struct SectionOrderCache {
-    db_file: String,
     kind: String,
     month: String,
     sort: SectionSort,
@@ -486,14 +485,15 @@ struct SectionOrderCache {
     identities: Arc<Vec<SectionIdentity>>,
 }
 
-static SECTION_ORDER_CACHE: Mutex<Option<SectionOrderCache>> = Mutex::new(None);
+/// One cached section order per index file, keyed by its path.
+static SECTION_ORDER_CACHE: std::sync::LazyLock<Mutex<HashMap<String, SectionOrderCache>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
-struct IndexRevisionObserver {
-    db_file: String,
-    conn: Connection,
-}
-
-static INDEX_REVISION_OBSERVER: Mutex<Option<IndexRevisionObserver>> = Mutex::new(None);
+/// One long-lived observer connection per index file, keyed by its path. An
+/// observer is never replaced: a replacement's `data_version` would not be
+/// comparable with its predecessor's.
+static INDEX_REVISION_OBSERVERS: std::sync::LazyLock<Mutex<HashMap<String, Connection>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// The committed index revision, comparable across every connection to
 /// `db_file`. `PRAGMA data_version` is only comparable between two reads on
@@ -503,18 +503,14 @@ static INDEX_REVISION_OBSERVER: Mutex<Option<IndexRevisionObserver>> = Mutex::ne
 /// A fresh per-command connection's own value never changes and must not be
 /// used as a revision.
 fn observed_index_revision(db_file: &str) -> Result<i64, String> {
-    let mut slot = INDEX_REVISION_OBSERVER
+    let mut observers = INDEX_REVISION_OBSERVERS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if slot.as_ref().is_none_or(|observer| observer.db_file != db_file) {
-        *slot = Some(IndexRevisionObserver {
-            db_file: db_file.to_string(),
-            conn: crate::index_store::open(Path::new(db_file))?,
-        });
+    if !observers.contains_key(db_file) {
+        let conn = crate::index_store::open(Path::new(db_file))?;
+        observers.insert(db_file.to_string(), conn);
     }
-    let observer = slot.as_ref().expect("observer was just installed");
-    observer
-        .conn
+    observers[db_file]
         .pragma_query_value(None, "data_version", |row| row.get::<_, i64>(0))
         .map_err(|error| error.to_string())
 }
@@ -596,9 +592,8 @@ fn ordered_section_identities(
         let cache = SECTION_ORDER_CACHE
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(existing) = cache.as_ref() {
-            if existing.db_file == db_file
-                && existing.kind == kind
+        if let Some(existing) = cache.get(&db_file) {
+            if existing.kind == kind
                 && existing.month == month
                 && existing.sort == sort
                 && existing.revision == revision
@@ -632,8 +627,7 @@ fn ordered_section_identities(
         let mut cache = SECTION_ORDER_CACHE
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *cache = Some(SectionOrderCache {
-            db_file,
+        cache.insert(db_file, SectionOrderCache {
             kind: kind.to_string(),
             month: month.to_string(),
             sort,
