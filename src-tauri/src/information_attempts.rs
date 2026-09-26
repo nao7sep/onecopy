@@ -23,10 +23,13 @@ impl Stage {
         }
     }
 
-    fn presentation(self) -> &'static str {
+    /// The catalogue key naming this stage's sentence, so it follows the
+    /// interface language; the raw read/parse error stays in `message`, as
+    /// recorded, after it (R5.5 D-L12, D-L13).
+    fn message_key(self) -> &'static str {
         match self {
-            Self::Identity => "OneCopy could not read this file to identify its content. Check that it is accessible, then recheck its section.",
-            Self::Metadata => "OneCopy could not read this file's metadata. Check that it is accessible, then recheck its section.",
+            Self::Identity => "notice.fileReadFailed",
+            Self::Metadata => "notice.metadataReadFailed",
         }
     }
 }
@@ -53,11 +56,13 @@ pub fn failed(
             [id],
         )
         .map_err(|error| error.to_string())?;
-    crate::index_store::upsert_issue(
+    crate::index_store::upsert_issue_with_descriptor(
         &transaction,
         Some(path),
         stage.issue_kind(),
-        stage.presentation(),
+        Some(stage.message_key()),
+        None,
+        error,
     )?;
     transaction.commit().map_err(|error| error.to_string())
 }

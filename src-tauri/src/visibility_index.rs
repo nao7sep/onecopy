@@ -220,7 +220,14 @@ pub fn source_root_spellings(conn: &Connection, roots: &[String]) -> Result<Vec<
         match crate::scanner::settled_root(conn, Path::new(root)) {
             Ok(path) => spellings.push(path.to_string_lossy().into_owned()),
             Err(error) => {
-                crate::index_store::upsert_issue(conn, Some(root), crate::scanner::WALK_ERROR, &error)?;
+                crate::index_store::upsert_issue_with_descriptor(
+                    conn,
+                    Some(root),
+                    crate::scanner::WALK_ERROR,
+                    Some(crate::scanner::scan_issue_message_key(crate::scanner::WALK_ERROR)),
+                    None,
+                    &error,
+                )?;
             }
         }
     }
@@ -285,10 +292,12 @@ pub fn complete_missing_facts(conn: &Connection, roots: &[String]) -> Result<(),
                 Ok::<(), String>(())
             })();
             if let Err(error) = result {
-                crate::index_store::upsert_issue(
+                crate::index_store::upsert_issue_with_descriptor(
                     conn,
                     Some(&abs),
                     crate::scanner::STAT_ERROR,
+                    Some(crate::scanner::scan_issue_message_key(crate::scanner::STAT_ERROR)),
+                    None,
                     &error,
                 )?;
                 // A failed fact read settles this run. Restart/recheck admit

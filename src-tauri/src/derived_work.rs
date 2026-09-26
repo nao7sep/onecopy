@@ -1605,10 +1605,12 @@ pub(crate) fn pause_for_resource_safety(
     error: &str,
 ) -> Result<(), String> {
     crate::derived_runtime::pause_for_safety(app, class)?;
-    crate::index_store::upsert_issue(
+    crate::index_store::upsert_issue_with_descriptor(
         conn,
         None,
         &format!("resource-limit-{}", class.id()),
+        Some("notice.resourceLimitPaused"),
+        None,
         crate::resource_limits::safety_message(error),
     )?;
     notify_issues(app);
@@ -1627,10 +1629,12 @@ pub(crate) fn pause_for_storage_safety(
     error: &str,
 ) -> Result<(), String> {
     crate::derived_runtime::pause_for_safety(app, class)?;
-    crate::index_store::upsert_issue(
+    crate::index_store::upsert_issue_with_descriptor(
         conn,
         None,
         &format!("cache-storage-unavailable-{}", class.id()),
+        Some("notice.cacheStorageUnavailable"),
+        None,
         crate::resource_limits::storage_message(error),
     )?;
     notify_issues(app);

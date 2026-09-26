@@ -406,12 +406,12 @@ fn transcript_reads_distinguish_pending_failed_empty_and_missing_output() {
 
     let failed = derived_state::transcript_result(&conn, &cache, "speech").unwrap();
     assert_eq!(failed.status, "failed");
-    assert_eq!(
-        failed.message.as_deref(),
-        Some(
-            "OneCopy could not transcribe this media file. The original file was not changed. Recheck its section to try again."
-        )
-    );
+    // The Issue's `message` is now the raw recorded diagnostic; OneCopy's own
+    // sentence lives behind the Issue's `message_key` instead, so this field
+    // carries whatever `record_transcript_failure` was given (R5.5 D-L12,
+    // D-L13). The frontend transcript surface does not read this field for
+    // display — it shows its own translated `transcript.couldNotFinish`.
+    assert_eq!(failed.message.as_deref(), Some("decoder failed"));
 
     let pending = derived_state::transcript_result(&conn, &cache, "poster").unwrap();
     assert_eq!(pending.status, "pending");
@@ -445,7 +445,12 @@ fn transcript_reads_distinguish_pending_failed_empty_and_missing_output() {
 }
 
 #[test]
-fn derived_failure_issues_keep_hostile_diagnostics_out_of_user_copy() {
+fn derived_failure_issues_keep_hostile_diagnostics_out_of_onecopys_own_sentence() {
+    // OneCopy's own sentence is a static catalogue entry, named by a key the
+    // diagnostic can never influence; the diagnostic itself is kept, but only
+    // as recorded detail shown after that sentence, never blended into it
+    // (R5.5 D-L12, D-L13; interface-language.md's "text that stays as
+    // recorded").
     let (_dir, conn) = seeded();
     let hostile =
         "DecoderError EACCES /private/tmp/HOSTILE-SENTINEL [52, 49, 46, 46]";
@@ -457,26 +462,28 @@ fn derived_failure_issues_keep_hostile_diagnostics_out_of_user_copy() {
     derived_state::record_transcript_failure(&conn, "speech", "/speech.mov", hostile).unwrap();
 
     let (_, issues) = queries::issues(&conn, 20, None).unwrap();
-    for kind in [
-        derived_state::PREVIEW_ERROR,
-        derived_state::VIDEO_POSTER_ERROR,
-        derived_state::VIDEO_STRIP_ERROR,
-        derived_state::FACE_ERROR,
-        derived_state::TRANSCRIPT_ERROR,
-    ] {
-        let message = issues
-            .iter()
-            .find(|row| row.kind == kind)
-            .unwrap()
-            .message
-            .as_deref()
-            .unwrap();
-        assert!(message.starts_with("OneCopy could not"));
-        assert!(message.contains("original file was not changed"));
-        assert!(!message.contains("HOSTILE-SENTINEL"));
-        assert!(!message.contains("EACCES"));
-        assert!(!message.contains("/private/tmp"));
-        assert!(!message.contains("DecoderError"));
+    let expected_keys = [
+        (derived_state::PREVIEW_ERROR, "notice.previewFailed"),
+        (derived_state::VIDEO_POSTER_ERROR, "notice.videoPosterFailed"),
+        (derived_state::VIDEO_STRIP_ERROR, "notice.videoStripFailed"),
+        (derived_state::FACE_ERROR, "notice.faceScoreFailed"),
+        (derived_state::TRANSCRIPT_ERROR, "notice.transcriptFailed"),
+    ];
+    let english = onecopy_lib::i18n::catalogue("en");
+    for (kind, expected_key) in expected_keys {
+        let row = issues.iter().find(|row| row.kind == kind).unwrap();
+        let key = row.message_key.as_deref().unwrap();
+        assert_eq!(key, expected_key);
+        let sentence = english.text(key, "OneCopy");
+        assert!(sentence.starts_with("OneCopy could not"));
+        assert!(sentence.contains("original file was not changed"));
+        assert!(!sentence.contains("HOSTILE-SENTINEL"));
+        assert!(!sentence.contains("EACCES"));
+        assert!(!sentence.contains("/private/tmp"));
+        assert!(!sentence.contains("DecoderError"));
+        // The diagnostic is kept, exactly, as recorded detail alongside the
+        // translated sentence — never discarded, never merged into it.
+        assert_eq!(row.message.as_deref(), Some(hostile));
     }
 }
 

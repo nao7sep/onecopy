@@ -1096,26 +1096,18 @@ fn record_content_failure(
     Ok(issues_changed)
 }
 
-fn derived_issue_presentation(issue_kind: &str) -> &'static str {
+/// The catalogue key naming a derived-work Issue's sentence for `issue_kind`,
+/// so it follows the interface language; the raw diagnostic (an ffmpeg or
+/// decode error) stays in `message`, as recorded, after it (R5.5 D-L12,
+/// D-L13).
+fn derived_issue_message_key(issue_kind: &str) -> &'static str {
     match issue_kind {
-        PREVIEW_ERROR => {
-            "OneCopy could not prepare a preview for this file. The original file was not changed. Repair or replace the file, then recheck its section."
-        }
-        VIDEO_POSTER_ERROR => {
-            "OneCopy could not prepare this video for playback. The original file was not changed. Repair or replace the file, then recheck its section."
-        }
-        VIDEO_STRIP_ERROR => {
-            "OneCopy could not generate scene snapshots for this video. The original file was not changed. Repair or replace the file, then recheck its section."
-        }
-        FACE_ERROR => {
-            "OneCopy could not score faces in this photo. The original file was not changed. Recheck its section to try again."
-        }
-        TRANSCRIPT_ERROR => {
-            "OneCopy could not transcribe this media file. The original file was not changed. Recheck its section to try again."
-        }
-        _ => {
-            "OneCopy could not finish preparing this file. The original file was not changed. Recheck its section to try again."
-        }
+        PREVIEW_ERROR => "notice.previewFailed",
+        VIDEO_POSTER_ERROR => "notice.videoPosterFailed",
+        VIDEO_STRIP_ERROR => "notice.videoStripFailed",
+        FACE_ERROR => "notice.faceScoreFailed",
+        TRANSCRIPT_ERROR => "notice.transcriptFailed",
+        _ => "notice.derivedPrepFailed",
     }
 }
 
@@ -1134,11 +1126,13 @@ fn record_derived_issue(
             "error": { "message": diagnostic },
         }),
     );
-    crate::index_store::upsert_issue(
+    crate::index_store::upsert_issue_with_descriptor(
         conn,
         Some(path),
         issue_kind,
-        derived_issue_presentation(issue_kind),
+        Some(derived_issue_message_key(issue_kind)),
+        None,
+        diagnostic,
     )
 }
 
@@ -1363,7 +1357,7 @@ pub fn record_transcript_replacement_failure(
 // transition without widening the production storage surface for a test.
 #[cfg(test)]
 // EXCEPTION to tests-folder conventions: exercises the private
-// `derived_issue_presentation`; promoting it would widen the crate's API
+// `derived_issue_message_key`; promoting it would widen the crate's API
 // only for this test.
 #[path = "../tests/unit/derived_state/transcript_replacement_tests.rs"]
 mod transcript_replacement_tests;

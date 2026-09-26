@@ -1,4 +1,22 @@
-use super::{live_photo_pair_candidates_sql, raw_pair_candidates_sql};
+use super::{
+    live_photo_pair_candidates_sql, raw_pair_candidates_sql, scan_issue_message_key,
+    COPIES_DISAGREE, METADATA_READ_ERROR, READ_ERROR, STAT_ERROR, WALK_ERROR,
+};
+
+#[test]
+fn every_scan_issue_message_key_exists_in_every_embedded_catalogue() {
+    // A typo here would fall back to `t()`'s key-echo behavior in every
+    // language at once, for every scan-time Issue OneCopy raises (R5.5
+    // D-L12, D-L13).
+    let kinds = [WALK_ERROR, STAT_ERROR, READ_ERROR, METADATA_READ_ERROR, COPIES_DISAGREE, "unmapped-kind"];
+    for language in crate::i18n::LANGUAGES {
+        let text = crate::i18n::catalogue(language);
+        for kind in kinds {
+            let key = scan_issue_message_key(kind);
+            assert!(text.has(key), "{language} lacks {key} (from kind {kind})");
+        }
+    }
+}
 
 fn plan(conn: &rusqlite::Connection, sql: String) -> Vec<String> {
     let mut statement = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();

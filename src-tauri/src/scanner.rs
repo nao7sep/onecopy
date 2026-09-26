@@ -44,6 +44,19 @@ pub const METADATA_READ_ERROR: &str = "metadata-read-error";
 pub const COPIES_DISAGREE: &str = "copies-disagree";
 const PATH_SCAN_ISSUES: &[&str] = &[WALK_ERROR, STAT_ERROR, READ_ERROR, METADATA_READ_ERROR, COPIES_DISAGREE];
 
+/// The catalogue key for a scan-time Issue's kind: OneCopy's own sentence
+/// follows the interface language, while whatever WalkDir or the OS reported
+/// stays in `message`, as recorded, after it (R5.5 D-L12, D-L13). The one
+/// place that resolves this rule for every scanner- and watcher-raised path
+/// Issue.
+pub(crate) fn scan_issue_message_key(kind: &str) -> &'static str {
+    match kind {
+        STAT_ERROR => "notice.sourceFileFailed",
+        COPIES_DISAGREE => "notice.copiesDisagree",
+        _ => "notice.sourceEntryFailed",
+    }
+}
+
 pub(crate) fn mark_path_missing(conn: &Connection, path: &str) -> Result<(), String> {
     conn.execute("UPDATE paths SET missing = 1 WHERE abs_path = ?1", [path])
         .map_err(|error| error.to_string())?;
@@ -1800,7 +1813,7 @@ fn hash_pending_with_progress(
                         Some(row.abs.clone()),
                         "copies-disagree",
                         &format!(
-                            "{group_len} same-size same-prehash files split into {} distinct contents (size {size}) — bit rot or a divergent sync among supposed copies",
+                            "{group_len} same-size same-prehash files split into {} distinct contents (size {size})",
                             hashes_in_group.len()
                         ),
                     )?;
@@ -2712,7 +2725,15 @@ fn record_issue(
         "scan issue",
         serde_json::json!({ "kind": kind, "path": path, "detail": message }),
     );
-    crate::index_store::upsert_issue(conn, path.as_deref(), kind, message).map(|_| ())
+    crate::index_store::upsert_issue_with_descriptor(
+        conn,
+        path.as_deref(),
+        kind,
+        Some(scan_issue_message_key(kind)),
+        None,
+        message,
+    )
+    .map(|_| ())
 }
 
 fn collect_rows_4(

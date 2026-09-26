@@ -97,10 +97,12 @@ pub fn restat_dir(
             return Ok(changed);
         }
         Err(error) => {
-            crate::index_store::upsert_issue(
+            crate::index_store::upsert_issue_with_descriptor(
                 conn,
                 Some(dir.to_string_lossy().as_ref()),
                 scanner::WALK_ERROR,
+                Some(scanner::scan_issue_message_key(scanner::WALK_ERROR)),
+                None,
                 &error.to_string(),
             )?;
             return Err(error.to_string());
@@ -110,10 +112,12 @@ pub fn restat_dir(
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
-                crate::index_store::upsert_issue(
+                crate::index_store::upsert_issue_with_descriptor(
                     conn,
                     Some(dir.to_string_lossy().as_ref()),
                     scanner::WALK_ERROR,
+                    Some(scanner::scan_issue_message_key(scanner::WALK_ERROR)),
+                    None,
                     &error.to_string(),
                 )?;
                 return Err(error.to_string());
@@ -123,10 +127,12 @@ pub fn restat_dir(
         let file_type = match entry.file_type() {
             Ok(file_type) => file_type,
             Err(error) => {
-                crate::index_store::upsert_issue(
+                crate::index_store::upsert_issue_with_descriptor(
                     conn,
                     Some(path.to_string_lossy().as_ref()),
                     scanner::STAT_ERROR,
+                    Some(scanner::scan_issue_message_key(scanner::STAT_ERROR)),
+                    None,
                     &error.to_string(),
                 )?;
                 return Err(error.to_string());
@@ -147,10 +153,12 @@ pub fn restat_dir(
             Ok(scanner::Upsert::Unchanged) => {}
             Ok(_) => changed += 1,
             Err(error) => {
-                crate::index_store::upsert_issue(
+                crate::index_store::upsert_issue_with_descriptor(
                     conn,
                     Some(&abs),
                     scanner::STAT_ERROR,
+                    Some(scanner::scan_issue_message_key(scanner::STAT_ERROR)),
+                    None,
                     &error,
                 )?;
                 return Err(error);

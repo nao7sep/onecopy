@@ -440,6 +440,20 @@ fn diverged_copies_surface_as_a_copies_disagree_issue() {
     // Both files keep their own distinct contents rows.
     assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM contents"), 2);
 
+    // OneCopy's own sentence carries a catalogue key so it follows the
+    // interface language; only the quantitative detail stays recorded
+    // (R5.5 D-L12, D-L13).
+    let (message_key, message): (String, String) = f
+        .conn
+        .query_row(
+            "SELECT message_key, message FROM issues WHERE kind = 'copies-disagree' LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(message_key, "notice.copiesDisagree");
+    assert!(!message.contains("bit rot"), "the recorded detail stays quantitative, not OneCopy's own prose");
+
     // Current-state: a second pass re-detects the same divergence and must
     // UPDATE the same two rows, never pile up more.
     let stats2 = hash_pending(&f.conn, &test_cache(&f)).unwrap();

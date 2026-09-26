@@ -22,19 +22,23 @@ fn replacement_failure_preserves_completed_receipt_and_records_the_attempt() {
             |row| row.get(0),
         )
         .unwrap();
-    let issue: (String, String) = conn
+    let issue: (String, String, String) = conn
         .query_row(
-            "SELECT kind, message FROM issues WHERE path = '/media.mov'",
+            "SELECT kind, message, message_key FROM issues WHERE path = '/media.mov'",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
     assert_eq!(receipt, READY_TEXT);
+    // The raw diagnostic stays as recorded detail; OneCopy's own sentence
+    // follows the interface language through its catalogue key instead of
+    // freezing as English at record time (R5.5 D-L12, D-L13).
     assert_eq!(
         issue,
         (
             TRANSCRIPT_ERROR.to_string(),
-            derived_issue_presentation(TRANSCRIPT_ERROR).to_string()
+            "replacement failed".to_string(),
+            derived_issue_message_key(TRANSCRIPT_ERROR).to_string()
         )
     );
 }

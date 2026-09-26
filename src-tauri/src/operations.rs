@@ -354,10 +354,12 @@ fn delete_targets(
                     "delete failed for one copy",
                     json!({ "path": target.abs_path, "error": { "message": err } }),
                 );
-                crate::index_store::upsert_issue(
+                crate::index_store::upsert_issue_with_descriptor(
                     conn,
                     Some(&target.abs_path),
                     "delete-error",
+                    Some("notice.deleteFailed"),
+                    None,
                     &err,
                 )?;
                 on_attempt(target.bytes, true);
@@ -1848,13 +1850,13 @@ fn execute_move_unit(
                             && !replacement_prepared
                             && !delivery.replacement_family.is_empty() =>
                     {
-                        let message = "the existing destination was kept because the complete \
-                                       replacement for this item could not be prepared";
-                        crate::index_store::upsert_issue(
+                        crate::index_store::upsert_issue_with_descriptor(
                             conn,
                             Some(output.target.to_string_lossy().as_ref()),
                             "copy-error",
-                            message,
+                            Some("notice.copyReplacementUnavailable"),
+                            None,
+                            "",
                         )?;
                         outcome
                             .undelivered
@@ -1905,10 +1907,12 @@ fn execute_move_unit(
                     "copy-out publication failed",
                     json!({ "target": output.target.to_string_lossy(), "error": { "message": error.to_string() } }),
                 );
-                crate::index_store::upsert_issue(
+                crate::index_store::upsert_issue_with_descriptor(
                     conn,
                     Some(output.target.to_string_lossy().as_ref()),
                     "copy-error",
+                    Some("notice.copyPublishFailed"),
+                    None,
                     &error.to_string(),
                 )?;
                 outcome
@@ -1984,11 +1988,13 @@ fn sync_published(conn: &Connection, target: &Path) -> Result<bool, String> {
     match crate::fs_publish::sync_directory(parent) {
         Ok(()) => Ok(true),
         Err(error) => {
-            crate::index_store::upsert_issue(
+            crate::index_store::upsert_issue_with_descriptor(
                 conn,
                 Some(target.to_string_lossy().as_ref()),
                 "copy-error",
-                &format!("output was published but its directory could not be synced: {error}"),
+                Some("notice.copyDirectorySyncFailed"),
+                None,
+                &error.to_string(),
             )?;
             Ok(false)
         }
@@ -2021,11 +2027,13 @@ fn preserve_reviewed_destination_family(
                 "could not preserve the existing destination {} in Deleted files: {error}",
                 member.path.display()
             );
-            let _ = crate::index_store::upsert_issue(
+            let _ = crate::index_store::upsert_issue_with_descriptor(
                 conn,
                 Some(member.path.to_string_lossy().as_ref()),
                 "copy-error",
-                &message,
+                Some("notice.copyPreserveDestinationFailed"),
+                None,
+                &error.to_string(),
             );
             message
         })?;
@@ -2052,14 +2060,18 @@ fn stage_delivery(
         match copied {
             Ok((hash, _, private)) if recorded_hash.is_some_and(|recorded| recorded != hash) => {
                 drop(private);
-                let message = "this copy no longer matches the content OneCopy indexed, so it was \
-                               neither delivered nor removed; another matching copy was used if one \
-                               remained";
                 logging::warn(
                     "move skipped a changed source copy",
                     json!({ "path": source.abs_path, "target": delivery.target.to_string_lossy() }),
                 );
-                crate::index_store::upsert_issue(conn, Some(&source.abs_path), "copy-error", message)?;
+                crate::index_store::upsert_issue_with_descriptor(
+                    conn,
+                    Some(&source.abs_path),
+                    "copy-error",
+                    Some("notice.copySourceChanged"),
+                    None,
+                    "",
+                )?;
                 changed_sources.push(source.path_id);
             }
             Ok((hash, bytes, private)) => {
@@ -2080,10 +2092,12 @@ fn stage_delivery(
                     "copy-out staging failed for one source",
                     json!({ "path": source.abs_path, "target": delivery.target.to_string_lossy(), "error": { "message": error.to_string() } }),
                 );
-                crate::index_store::upsert_issue(
+                crate::index_store::upsert_issue_with_descriptor(
                     conn,
                     Some(&source.abs_path),
                     "copy-error",
+                    Some("notice.copySourceReadFailed"),
+                    None,
                     &error.to_string(),
                 )?;
             }
@@ -2099,11 +2113,13 @@ fn stage_delivery(
                     "copy-out destination failed",
                     json!({ "target": delivery.target.to_string_lossy(), "error": { "message": error.to_string() } }),
                 );
-                crate::index_store::upsert_issue(
+                crate::index_store::upsert_issue_with_descriptor(
                     conn,
                     Some(delivery.target.to_string_lossy().as_ref()),
                     "copy-error",
-                    &message,
+                    Some("notice.copyDestinationRefused"),
+                    None,
+                    &error.to_string(),
                 )?;
                 return Err(message);
             }
