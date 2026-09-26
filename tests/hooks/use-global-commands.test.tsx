@@ -11,6 +11,7 @@ import { currentMainFeedback, useMainFeedbackStore } from "../../src/state/main-
 import { useQuickViewStore } from "../../src/state/quick-view-store";
 import { useAppShellStore } from "../../src/state/app-shell-store";
 import { pushModal, resetModalStack } from "../../src/utils/modalStack";
+import { installPreviewCommandWiring } from "../../src/workflows/preview";
 import {
   fireEvent as fireBackendEvent,
   mockCommand,
@@ -164,6 +165,37 @@ describe("global destructive commands", () => {
     expect(invokeCalls.some((call) => call.command === "delete_items")).toBe(
       true,
     );
+  });
+
+  // R5.2 T4: a Delete forwarded from the SEPARATE Preview window
+  // (`preview.ts`'s "preview://key" listener, which dispatches a real
+  // keydown on `#main-item-area`) must run Main's own full-selection,
+  // count-reviewed Delete -- not a single-item delete of whatever Preview
+  // happens to be showing. Earlier coverage only asserted the emit side, in
+  // the Preview window itself.
+  it("reviews Main's full multi-item selection for a Delete forwarded from the separate Preview window", async () => {
+    const second = { ...ITEM, hash: "image-hash-2", pathId: 2 };
+    useItemsStore.setState({
+      items: [ITEM, second],
+      selectedKeys: new Set(["image-hash", "image-hash-2"]),
+    });
+    await installPreviewCommandWiring();
+    const view = render(<Harness />);
+
+    await act(async () => {
+      fireBackendEvent("preview://key", {
+        key: "Delete",
+        code: "",
+        repeat: false,
+        shiftKey: false,
+        metaKey: false,
+        ctrlKey: false,
+        altKey: false,
+      });
+    });
+
+    expect(view.getByLabelText("Trash confirmation").textContent).toBe("2");
+    expect(invokeCalls.some((call) => call.command === "delete_items")).toBe(false);
   });
 
   // main-review.md: the configured single-item confirm preference applies to
