@@ -83,6 +83,8 @@ export interface SectionWindow {
   total: number;
   start: number;
   items: SectionItem[];
+  /** Identifies the whole section order this window was sliced from. */
+  order: string;
 }
 
 export interface SectionRecoveryContextPayload {

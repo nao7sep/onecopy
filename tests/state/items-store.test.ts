@@ -412,8 +412,8 @@ describe("request ownership", () => {
   });
 });
 
-describe("refreshWindowOnly", () => {
-  it("reloads only the current window and never round-trips the selection through reconcile_section", async () => {
+describe("refreshWindow", () => {
+  it("reloads only the window while the section order is unchanged", async () => {
     const rows = Array.from({ length: 8 }, (_, index) => item(index + 1));
     mockSection(rows);
     await useItemsStore.getState().select(SECTION);
@@ -422,22 +422,80 @@ describe("refreshWindowOnly", () => {
     const before = useItemsStore.getState();
 
     invokeCalls.length = 0;
-    await useItemsStore.getState().refreshWindowOnly();
+    await useItemsStore.getState().refreshWindow();
 
     expect(invokeCalls.map((call) => call.command)).toEqual(["get_section_window"]);
-    const call = invokeCalls.find((candidate) => candidate.command === "get_section_window");
-    expect(call?.args).not.toHaveProperty("selected");
-    expect(call?.args).not.toHaveProperty("rangeBase");
-    // Selection, anchor, and range state are untouched by a window-only refresh.
     expect(useItemsStore.getState().selectedItem).toBe(before.selectedItem);
-    expect([...useItemsStore.getState().selectedKeys].sort()).toEqual(
-      [...before.selectedKeys].sort(),
-    );
+    expect(useItemsStore.getState().selectedPositions).toEqual(before.selectedPositions);
+  });
+
+  it("re-derives selection positions when items enter above the range origin", async () => {
+    let rows = Array.from({ length: 8 }, (_, index) => item(index + 1));
+    mockSection(() => rows);
+    await useItemsStore.getState().select(SECTION);
+    useItemsStore.getState().selectItem("h5", "nearest", 4);
+
+    // A source check inserts twenty earlier files, so h5 now sits at 24.
+    rows = [...Array.from({ length: 20 }, (_, index) => item(100 + index, { resolvedUtcMs: index })), ...rows];
+    await useItemsStore.getState().refreshWindow();
+    expect(invokeCalls.some((call) => call.command === "reconcile_section")).toBe(true);
+    expect(useItemsStore.getState().selectedPositions.get("h5")).toBe(24);
+
+    await useItemsStore.getState().rangeSelect("h6", 25);
+    expect([...useItemsStore.getState().selectedKeys].sort()).toEqual(["h5", "h6"]);
+  });
+
+  it("drops a selected item that left the section instead of counting it", async () => {
+    let rows = Array.from({ length: 4 }, (_, index) => item(index + 1));
+    mockSection(() => rows);
+    await useItemsStore.getState().select(SECTION);
+    useItemsStore.getState().selectItem("h3", "nearest", 2);
+    useItemsStore.getState().toggleItem("h2", 1);
+
+    // File information dates h3 into another month.
+    rows = rows.filter((row) => row.hash !== "h3");
+    await useItemsStore.getState().refreshWindow();
+    expect([...useItemsStore.getState().selectedKeys]).toEqual(["h2"]);
+  });
+
+  it("loads a section that refilled after it emptied", async () => {
+    let rows: SectionItem[] = [];
+    mockSection(() => rows);
+    await useItemsStore.getState().select(SECTION);
+    expect(useItemsStore.getState().totalItems).toBe(0);
+
+    rows = [item(1), item(2)];
+    await useItemsStore.getState().refreshWindow();
+    expect(useItemsStore.getState().items.map((row) => row.hash)).toEqual(["h1", "h2"]);
+  });
+
+  it("serves a pending scroll load instead of reloading the region the user left", async () => {
+    const rows = Array.from({ length: 1200 }, (_, index) => item(index + 1));
+    let gate: Promise<void> = Promise.resolve();
+    mockSection(async () => {
+      await gate;
+      return rows;
+    });
+    await useItemsStore.getState().select(SECTION);
+    expect(useItemsStore.getState().windowStart).toBe(0);
+
+    let open!: () => void;
+    gate = new Promise((resolve) => {
+      open = resolve;
+    });
+    const scroll = useItemsStore.getState().loadWindow(900);
+    const refresh = useItemsStore.getState().refreshWindow();
+    open();
+    await Promise.all([scroll, refresh]);
+
+    const state = useItemsStore.getState();
+    expect(state.windowStart).toBe(688);
+    expect(state.items[0]?.hash).toBe("h689");
   });
 
   it("does nothing when no section is selected", async () => {
     invokeCalls.length = 0;
-    await useItemsStore.getState().refreshWindowOnly();
+    await useItemsStore.getState().refreshWindow();
     expect(invokeCalls).toEqual([]);
   });
 });

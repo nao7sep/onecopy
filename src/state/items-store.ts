@@ -54,6 +54,10 @@ interface ItemsState {
   totalItems: number;
   windowStart: number;
   itemPositions: Map<string, number>;
+  /** The section order token (`SectionWindow.order`) under which the
+   * positional selection state below was derived. A window read under another
+   * token means those positions no longer hold. */
+  orderToken: string | null;
   reconciliationId: number;
   loading: boolean;
   loadError: Message | null;
@@ -80,7 +84,7 @@ interface ItemsState {
     section: SelectedSection,
     restore?: ExplicitRestore,
   ) => Promise<void>;
-  loadWindow: (start: number, force?: boolean) => Promise<void>;
+  loadWindow: (start: number) => Promise<void>;
   selectPosition: (index: number, extend: boolean) => Promise<void>;
   selectIdentity: (key: string) => Promise<void>;
   revealPath: (path: string, isCurrent: () => boolean, expectedHash?: string) => Promise<"revealed" | "unavailable" | "superseded" | "failed">;
@@ -89,13 +93,18 @@ interface ItemsState {
   toggleItem: (key: string, position?: number) => void;
   rangeSelect: (key: string, position?: number) => Promise<void>;
   refresh: () => Promise<void>;
-  refreshWindowOnly: () => Promise<void>;
+  refreshWindow: () => Promise<void>;
   applyDerivedItem: (previousHash: string, item: SectionItem) => void;
   selectAfterFamily: (recovery: AnchorContext | null) => Promise<void>;
 }
 
 const sectionLoad = requestSeq();
 const windowLoad = requestSeq();
+/** The window start Main most recently asked for: the last requested scroll
+ * load or published reconcile. A refresh reloads this intent, never an older
+ * committed `windowStart`, so it serves a pending scroll load rather than
+ * replacing it with the region the user left. */
+let windowIntent = 0;
 const rangeLoad = requestSeq();
 const detailLoad = requestSeq();
 let scrollRequestId = 0;
@@ -138,6 +147,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   totalItems: 0,
   windowStart: 0,
   itemPositions: new Map(),
+  orderToken: null,
   reconciliationId: 0,
   loading: false,
   loadError: null,
@@ -245,6 +255,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       };
     }
     const remembered = restore ?? memory[sectionId(section)] ?? null;
+    if (!sameSection) windowIntent = 0;
     set({
       selected: section,
       sectionMemory: memory,
@@ -256,6 +267,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
             totalItems: 0,
             windowStart: 0,
             itemPositions: new Map<string, number>(),
+            orderToken: null,
             selectedItem: null,
             selectedKeys: new Set<string>(),
             selectedPositions: new Map<string, number>(),
@@ -280,48 +292,19 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     );
   },
 
-  loadWindow: async (requestedStart, force = false) => {
+  loadWindow: async (requestedStart) => {
     const state = get();
     const section = state.selected;
     if (section === null || state.totalItems === 0) return;
-    const sort = state.currentSort();
     const maxStart = Math.max(0, state.totalItems - SECTION_WINDOW_LIMIT);
     const start = Math.min(Math.max(Math.floor(requestedStart), 0), maxStart);
     const requestedEnd = Math.min(state.totalItems, start + SECTION_WINDOW_LIMIT);
-    if (!force && start >= state.windowStart && requestedEnd <= state.windowStart + state.items.length) {
+    if (start >= state.windowStart && requestedEnd <= state.windowStart + state.items.length) {
       return;
     }
-    const fresh = windowLoad.begin();
-    try {
-      const window = await invoke<SectionWindow>("get_section_window", {
-        kind: section.kind,
-        month: section.month,
-        sort,
-        start,
-        limit: SECTION_WINDOW_LIMIT,
-      });
-      const current = get();
-      if (
-        fresh() &&
-        current.selected?.kind === section.kind &&
-        current.selected.month === section.month &&
-        sameSort(current.currentSort(), sort)
-      ) {
-        set({
-          items: window.items,
-          totalItems: window.total,
-          windowStart: window.start,
-          itemPositions: positionMap(window.start, window.items),
-          loadError: null,
-        });
-      }
-    } catch (error) {
-      if (!fresh()) return;
-      log.error("section window load failed", toErrorFields(error));
-      const failure = message("section.windowLoadFailed");
-      set({ loadError: failure });
-      recordActionFailure("section-window-load-failed", failure, error);
-    }
+    windowIntent = start;
+    const loaded = await readWindow(get, section, start);
+    if (loaded !== null) publishWindow(set, loaded);
   },
 
   selectPosition: async (requestedIndex, extend) => {
@@ -563,17 +546,23 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     if (get().selected !== null) await reconcileCurrent(set, get, false, "center");
   },
 
-  // A tick that cannot remove members (source-check/file-information
-  // progress, similarity relabeling) only needs fresher item data at the
-  // window Main already shows; it must not round-trip the whole selection
-  // and range-base through `reconcile_section`, which for a 100k+ selection
-  // serialized ~200k identities each way on every scan-progress tick. This
-  // reloads exactly the currently displayed window, already anchored from
-  // the last reconcile, and leaves selection, anchor, and range state alone.
-  refreshWindowOnly: async () => {
-    const state = get();
-    if (state.selected === null) return;
-    await state.loadWindow(state.windowStart, true);
+  // The light refresh round. Selection positions stay valid while the section
+  // order is unchanged, so an unchanged order needs only fresher rows for the
+  // window Main wants, without round-tripping a possibly huge selection
+  // through `reconcile_section` (C-M2). Any change to the order -- an item
+  // entering, leaving or being reclassified, which source checks and
+  // file-information runs do -- makes those positions stale, so the round
+  // becomes a full reconcile, which re-derives them by identity.
+  refreshWindow: async () => {
+    const section = get().selected;
+    if (section === null) return;
+    const loaded = await readWindow(get, section, windowIntent);
+    if (loaded === null) return;
+    if (loaded.order !== get().orderToken) {
+      await reconcileCurrent(set, get, false, "center");
+      return;
+    }
+    publishWindow(set, loaded);
   },
 
   applyDerivedItem: (previousHash, item) => {
@@ -630,6 +619,51 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     );
   },
 }));
+
+/** Reads one window of the current section and order, or null when the read
+ * failed or a newer window request or section/sort change superseded it. */
+async function readWindow(
+  get: () => ItemsState,
+  section: SelectedSection,
+  start: number,
+): Promise<SectionWindow | null> {
+  const sort = get().currentSort();
+  const fresh = windowLoad.begin();
+  try {
+    const window = await invoke<SectionWindow>("get_section_window", {
+      kind: section.kind,
+      month: section.month,
+      sort,
+      start,
+      limit: SECTION_WINDOW_LIMIT,
+    });
+    const current = get();
+    if (
+      !fresh() ||
+      current.selected?.kind !== section.kind ||
+      current.selected.month !== section.month ||
+      !sameSort(current.currentSort(), sort)
+    ) return null;
+    return window;
+  } catch (error) {
+    if (!fresh()) return null;
+    log.error("section window load failed", toErrorFields(error));
+    const failure = message("section.windowLoadFailed");
+    useItemsStore.setState({ loadError: failure });
+    recordActionFailure("section-window-load-failed", failure, error);
+    return null;
+  }
+}
+
+function publishWindow(set: (patch: Partial<ItemsState>) => void, window: SectionWindow): void {
+  set({
+    items: window.items,
+    totalItems: window.total,
+    windowStart: window.start,
+    itemPositions: positionMap(window.start, window.items),
+    loadError: null,
+  });
+}
 
 async function reconcileCurrent(
   set: (partial: Partial<ItemsState>) => void,
@@ -757,12 +791,14 @@ function publishReconciliation(
   }
   const rangeOrigin = result.rangeOrigin === null ? anchor : identityKey(result.rangeOrigin);
   const rangeOriginPosition = result.rangeOrigin?.index ?? result.anchor?.index ?? null;
+  windowIntent = result.window.start;
   set({
     ...patch,
     items: result.window.items,
     totalItems: result.window.total,
     windowStart: result.window.start,
     itemPositions: positionMap(result.window.start, result.window.items),
+    orderToken: result.window.order,
     reconciliationId: current.reconciliationId + 1,
     loading: false,
     loadError: null,

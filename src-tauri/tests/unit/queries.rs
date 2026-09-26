@@ -576,3 +576,40 @@ fn section_order_follows_a_write_committed_by_another_connection() {
     seed_month_image(&writer, "h3", "c.jpg", utc_ms(2016, 3, 3, 0));
     assert_eq!(read().total, 2, "a committed discovery must enter the order");
 }
+
+#[test]
+fn section_window_order_token_changes_exactly_when_the_order_does() {
+    // Main keeps selection positions from its last reconcile and refreshes
+    // only the displayed window while the order token is unchanged; any
+    // insertion, removal or unrelated write must be told apart by the token.
+    let (dir, writer) = seeded();
+    let db_file = dir.path().join("index.sqlite3");
+    seed_month_image(&writer, "h1", "a.jpg", utc_ms(2016, 3, 1, 2));
+    seed_month_image(&writer, "h2", "b.jpg", utc_ms(2016, 3, 2, 0));
+    let time_asc = SectionSort {
+        order: SectionSortOrder::Time,
+        desc: false,
+    };
+    let read = |start: u64| {
+        let reader = index_store::open(&db_file).unwrap();
+        section_window(&reader, "image", "2016-03", chrono_tz::UTC, time_asc, start, 1, projection())
+            .unwrap()
+    };
+
+    let first = read(0);
+    assert_eq!(read(1).order, first.order, "every window of one order shares its token");
+
+    writer
+        .execute("UPDATE contents SET width = 640 WHERE hash = 'h2'", [])
+        .unwrap();
+    assert_eq!(read(0).order, first.order, "a write that keeps the order keeps its token");
+
+    seed_month_image(&writer, "h0", "z.jpg", utc_ms(2016, 3, 1, 1));
+    let inserted = read(0);
+    assert_ne!(inserted.order, first.order, "an item entering above must change the token");
+
+    writer
+        .execute("UPDATE paths SET missing = 1 WHERE file_name = 'z.jpg'", [])
+        .unwrap();
+    assert_ne!(read(0).order, inserted.order, "an item leaving must change the token");
+}

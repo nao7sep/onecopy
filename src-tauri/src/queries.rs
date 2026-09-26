@@ -389,6 +389,10 @@ pub struct SectionWindow {
     pub total: u64,
     pub start: u64,
     pub items: Vec<SectionItem>,
+    /// Identifies the complete section order this window was sliced from.
+    /// Positions learned under one order token are valid only while a later
+    /// window reports the same token.
+    pub order: String,
 }
 
 pub const MAX_SECTION_WINDOW_ITEMS: u32 = 512;
@@ -482,7 +486,38 @@ struct SectionOrderCache {
     month: String,
     sort: SectionSort,
     revision: i64,
-    identities: Arc<Vec<SectionIdentity>>,
+    identities: Arc<SectionOrder>,
+}
+
+/// One section's complete ordered identity sequence and a token that changes
+/// exactly when that sequence does (membership, order, or an identity), so a
+/// caller holding positions from an earlier read can tell whether they still
+/// hold without resending them.
+pub(crate) struct SectionOrder {
+    identities: Vec<SectionIdentity>,
+    token: String,
+}
+
+impl SectionOrder {
+    fn new(identities: Vec<SectionIdentity>) -> Self {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        identities.hash(&mut hasher);
+        let token = format!("{:016x}", hasher.finish());
+        Self { identities, token }
+    }
+
+    pub(crate) fn token(&self) -> &str {
+        &self.token
+    }
+}
+
+impl std::ops::Deref for SectionOrder {
+    type Target = [SectionIdentity];
+
+    fn deref(&self) -> &[SectionIdentity] {
+        &self.identities
+    }
 }
 
 /// One cached section order per index file, keyed by its path.
@@ -586,7 +621,7 @@ fn ordered_section_identities(
     month: &str,
     bounds: Option<(i64, i64)>,
     sort: SectionSort,
-) -> Result<Arc<Vec<SectionIdentity>>, String> {
+) -> Result<Arc<SectionOrder>, String> {
     let db_file = snapshot.path().unwrap_or_default().to_string();
     if let Some(revision) = snapshot.revision {
         let cache = SECTION_ORDER_CACHE
@@ -621,7 +656,7 @@ fn ordered_section_identities(
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|error| error.to_string())?;
     drop(statement);
-    let identities = Arc::new(identities);
+    let identities = Arc::new(SectionOrder::new(identities));
 
     if let Some(revision) = snapshot.revision {
         let mut cache = SECTION_ORDER_CACHE
@@ -689,6 +724,7 @@ fn section_window_snapshot(
             total,
             start,
             items: Vec::new(),
+            order: ordered.token().to_string(),
         });
     }
     let end = start.saturating_add(u64::from(limit));
@@ -697,6 +733,7 @@ fn section_window_snapshot(
         total,
         start,
         items: section_items_by_identity(snapshot, identities, projection)?,
+        order: ordered.token().to_string(),
     })
 }
 
@@ -794,6 +831,7 @@ pub fn reconcile_section(
             ordered_section_slice(&ordered, start, end),
             projection,
         )?,
+        order: ordered.token().to_string(),
     };
     snapshot.finish()?;
     let context = anchor

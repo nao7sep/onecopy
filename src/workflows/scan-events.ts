@@ -54,16 +54,15 @@ interface SequencedProgress {
 // (C-H1). At most one round runs at a time, and at most one more is queued to
 // run immediately after it finishes.
 //
-// A round is either "light" (counts plus the currently displayed window only,
-// keyed by the anchor Main already resolved) or "full" (counts plus a whole
-// `reconcile_section` selection/anchor round-trip). A tick that cannot remove
-// section members -- source-check/file-information progress, similarity
-// relabeling -- only ever needs the light round: round-tripping a 100k+
-// selection through `reconcile_section` on every such tick serialized ~200k
-// identities each way for no reason (C-M2). Watcher updates and completion
-// events can remove members, so they request (and, once requested, keep) a
-// full round; if a full round is requested while a light one is pending or
-// running, the eventual round escalates to full rather than downgrading.
+// A round is either "light" or "full". A full round round-trips the whole
+// selection through `reconcile_section`. A light round reloads only the window
+// Main wants and reconciles only when the section order changed since the last
+// reconcile (the items store owns that check), so high-frequency progress
+// ticks do not serialize a 100k+ selection each way when nothing moved
+// (C-M2). Watcher updates and completion events request (and, once requested,
+// keep) a full round; if a full round is requested while a light one is
+// pending or running, the eventual round escalates to full rather than
+// downgrading.
 let libraryRefreshState: CoalescerState = "idle";
 let libraryRefreshFull = false;
 
@@ -72,7 +71,7 @@ function runLibraryRefreshRound(): void {
   libraryRefreshFull = false;
   void Promise.allSettled([
     useSectionsStore.getState().loadCounts(),
-    full ? useItemsStore.getState().refresh() : useItemsStore.getState().refreshWindowOnly(),
+    full ? useItemsStore.getState().refresh() : useItemsStore.getState().refreshWindow(),
     useIssuesStore.getState().load(),
   ]).then(() => {
     driveLibraryRefresh({ kind: "roundCompleted" });
@@ -104,10 +103,9 @@ function driveLibraryRefresh(event: Parameters<typeof transitionCoalescer>[1]): 
   }
 }
 
-/** Debounced, single-flight, window-only refresh for high-frequency progress
- * signals that cannot remove section members (source-check/file-information
- * progress, similarity relabeling): coalesces bursts and never starts a round
- * on top of one already in flight. */
+/** Debounced, single-flight, light refresh for high-frequency progress
+ * signals (source-check/file-information progress, similarity relabeling):
+ * coalesces bursts and never starts a round on top of one already in flight. */
 function refreshLibrarySoon(): void {
   driveLibraryRefresh({ kind: "trigger" });
 }
@@ -330,8 +328,8 @@ const install = createEventInstaller(
     });
 
     await listeners.listen("watch://updated", () => {
-      // The watcher can remove section members (an external delete/move), so
-      // this needs the full reconcile, not the window-only refresh.
+      // The watcher can remove section members (an external delete/move),
+      // so it requests a full round.
       refreshLibrarySoonFull();
       void reconcileComparisonMembership();
     });

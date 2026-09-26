@@ -211,6 +211,10 @@ export function mockCommand(command: string, handler: InvokeHandler): void {
 }
 
 /** Project a complete ordered fixture through the bounded section protocol. */
+function orderToken(all: ReadonlyArray<{ hash: string | null; pathId: number }>): string {
+  return all.map((item) => item.hash ?? `path-${item.pathId}`).join(",");
+}
+
 export function mockSectionItems(handler: InvokeHandler): void {
   const rows = async (args: Record<string, unknown>) =>
     (await handler(args)) as Array<{ hash: string | null; pathId: number }>;
@@ -264,7 +268,7 @@ export function mockSectionItems(handler: InvokeHandler): void {
     const all = await ordered(args);
     const start = Number(args.start ?? 0);
     const limit = Number(args.limit ?? 512);
-    return { total: all.length, start, items: all.slice(start, start + limit) };
+    return { total: all.length, start, items: all.slice(start, start + limit), order: orderToken(all) };
   });
   handlers.set("get_section_range", async (args) => {
     const all = await ordered(args);
@@ -340,7 +344,7 @@ export function mockSectionItems(handler: InvokeHandler): void {
       rangeOrigin: null,
       rangeBase: selected,
       context,
-      window: { total: all.length, start, items: all.slice(start, start + 512) },
+      window: { total: all.length, start, items: all.slice(start, start + 512), order: orderToken(all) },
     };
   });
   handlers.set("viewer_sequence_start", async (args) => {
