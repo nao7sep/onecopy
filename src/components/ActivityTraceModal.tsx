@@ -148,6 +148,7 @@ function ActivityHistory({ onClose }: { onClose: () => void }) {
   const position = useRef<ReadingPosition | null>(null);
   const alive = useRef(false);
   const olderPending = useRef(false);
+  const revealed = useRef(false);
   const capture = () => { position.current = captureReadingPosition(viewport.current); };
   const restore = () => { restoreReadingPosition(viewport.current, position.current); position.current = null; };
   useLayoutEffect(restore, [rows, expanded]);
@@ -206,7 +207,9 @@ function ActivityHistory({ onClose }: { onClose: () => void }) {
   const problems = [error, olderError, revealError]
     .filter((key): key is MessageKey => key !== null);
 
-  return <ModalShell title={t("activity.title")} onClose={onClose} widthClass="w-[min(920px,calc(100vw-3rem))]"
+  return <ModalShell title={t("activity.title")} onClose={onClose}
+    returnFocus={() => revealed.current ? document.getElementById("main-item-area") : null}
+    widthClass="w-[min(920px,calc(100vw-3rem))]"
     footerResult={problems.length > 0 ? <OperationResult level="error">{problems.map((key) => t(key)).join(" ")}</OperationResult> : undefined}
     footerStart={<span className="text-xs text-ink-muted">{[
       t("activity.operationsLoaded", { count: rows.length }),
@@ -241,7 +244,10 @@ function ActivityHistory({ onClose }: { onClose: () => void }) {
               {row.targetHash && <div className="px-3 pb-2 text-xs">
                 {row.target ? <button type="button" className="break-all text-primary hover:underline" onClick={() => {
                   setRevealError(null);
-                  void revealInMain(row.target!.path, () => alive.current, onClose, row.targetHash!).then((result) => {
+                  void revealInMain(row.target!.path, () => alive.current, () => {
+                    revealed.current = true;
+                    onClose();
+                  }, row.targetHash!).then((result) => {
                     if (alive.current && result !== "revealed" && result !== "superseded") setRevealError(result === "blocked"
                       ? "reveal.inMainBlocked"
                       : "reveal.inMainUnavailable");

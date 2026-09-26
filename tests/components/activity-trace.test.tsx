@@ -1,10 +1,13 @@
 // @vitest-environment happy-dom
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import ActivityTraceModal from "../../src/components/ActivityTraceModal";
 import { formatActivityTime } from "../../src/models/activity-history";
 import type { ActivityEvent, ActivityOperation, ActivityPage } from "../../src/repositories/activity";
-import { mockCommands, resetTauriMocks, invokeCalls } from "../mocks/tauri";
+import { mockCommands, mockSectionItems, resetTauriMocks, invokeCalls } from "../mocks/tauri";
+import { useItemsStore } from "../../src/state/items-store";
+import { EMPTY_ITEM_WORK } from "../../src/models/items";
 
 const event: ActivityEvent = {
   eventId: 12, sessionId: "session-one", sequence: 7,
@@ -23,12 +26,40 @@ const page = (operations = [operation()], extra: Partial<ActivityPage> = {}): Ac
 });
 beforeEach(() => {
   resetTauriMocks();
+  useItemsStore.setState(useItemsStore.getInitialState());
   mockCommands({
     activity_page: ({ after }) => page(after === null ? [operation()] : []),
     activity_events: () => ({ events: [event], nextCursor: null }),
   });
 });
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
+
+it("reveals a target through Main and closes to item-area focus (R5.1 D8)", async () => {
+  mockCommands({
+    activity_page: ({ after }) => page(after === null
+      ? [{ ...operation(), targetHash: "target", target: { name: "target.jpg", path: "/vol/photos/target.jpg" } }]
+      : []),
+    resolve_library_path: () => ({ identity: { hash: "target", pathId: 1 }, section: { kind: "image", month: "undated" } }),
+    get_item_detail: () => ({ fileName: "target.jpg", kind: "image" }),
+  });
+  mockSectionItems(() => [{
+    hash: "target", pathId: 1, fileName: "target.jpg", resolvedUtcMs: null, copyCount: 1,
+    width: 100, height: 100, hasThumb: true, similarGroupId: null, sharpness: null,
+    faceScore: null, byteSize: 100, hasCompanions: false, durationMs: null,
+    dirPaths: ["/fixture"], derivedWork: EMPTY_ITEM_WORK,
+  }]);
+  function Host() {
+    const [open, setOpen] = useState(true);
+    return <><div id="main-item-area" tabIndex={0} />
+      <ActivityTraceModal open={open} onClose={() => setOpen(false)} /></>;
+  }
+  render(<Host />);
+  fireEvent.click(await screen.findByRole("button", { name: "target.jpg" }));
+  await act(async () => {});
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(document.activeElement?.id).toBe("main-item-area");
+  expect([...useItemsStore.getState().selectedKeys]).toEqual(["target"]);
+});
 
 it("shows ordinary work with local time, no JSONL export, and shared technical identifiers once", async () => {
   render(<ActivityTraceModal open onClose={() => {}} />);
