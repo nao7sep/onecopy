@@ -227,6 +227,39 @@ describe("bounded section state", () => {
     expect(useItemsStore.getState().selectedItem).toBe("h3");
     expect(useItemsStore.getState().scrollRequest).toMatchObject({ key: "h3", index: 1 });
   });
+
+  it("does not re-centre the view when a routine refresh finds no anchor issue (R5.1 D2)", async () => {
+    const rows = [item(1), item(2), item(3)];
+    mockSection(rows);
+    await useItemsStore.getState().select(SECTION);
+    useItemsStore.getState().selectItem("h2", "nearest", 1);
+    // The user has since scrolled elsewhere; only the store's own scroll
+    // request field distinguishes "leave the view alone" from "recentre".
+    useItemsStore.setState({ scrollRequest: null });
+
+    mockSection(rows);
+    await useItemsStore.getState().refresh();
+
+    expect(useItemsStore.getState().selectedItem).toBe("h2");
+    expect(useItemsStore.getState().scrollRequest).toBeNull();
+  });
+
+  it("recovers a vanished similar-strip target near the current position, not section index 0 (R5.1 D7)", async () => {
+    const rows = Array.from({ length: 10 }, (_, i) => item(i + 1));
+    mockSection(rows);
+    await useItemsStore.getState().select(SECTION);
+    useItemsStore.getState().selectItem("h5", "nearest", 4);
+    expect(useItemsStore.getState().currentContext).not.toBeNull();
+
+    // "h20" never existed in this section -- a stale similar-strip member.
+    await useItemsStore.getState().selectIdentity("h20");
+
+    // Recovery lands on a neighbor from the anchor's own recorded
+    // neighborhood (h6, right after h5) rather than an empty result -- a
+    // `context: null` recovery finds no neighbors and no fallback index
+    // (selectFirst is false here), leaving the selection empty instead.
+    expect(useItemsStore.getState().selectedItem).toBe("h6");
+  });
 });
 
 describe("explicit selection", () => {

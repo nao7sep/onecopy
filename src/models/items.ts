@@ -123,6 +123,18 @@ export function identityFromKey(key: string): SectionIdentity {
   return { hash: null, pathId };
 }
 
+/** The identity plus the position it last held in Main's own window, when
+ * known. Anchor recovery compares a selected survivor's *former* position
+ * against the vanished anchor's former position, both in the same
+ * before-the-refresh coordinate space; the backend's own current-window
+ * indices shift under removal and cannot substitute for it (R5.1 D5). */
+export function positionedIdentityFromKey(
+  key: string,
+  positions: ReadonlyMap<string, number>,
+): PositionedSectionIdentity {
+  return { ...identityFromKey(key), index: positions.get(key) ?? 0 };
+}
+
 /** Mirrors queries::ItemDetail on the Rust side. */
 export interface ItemDetail {
   fileName: string;

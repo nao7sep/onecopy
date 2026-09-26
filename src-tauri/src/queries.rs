@@ -751,7 +751,7 @@ pub fn reconcile_section(
     month: &str,
     display_tz: Tz,
     sort: SectionSort,
-    selected: &[SectionIdentity],
+    selected: &[PositionedSectionIdentity],
     anchor: Option<&SectionIdentity>,
     range_origin: Option<&SectionIdentity>,
     range_base: &[SectionIdentity],
@@ -773,9 +773,8 @@ pub fn reconcile_section(
     let ordered = ordered_section_identities(&snapshot, kind, month, bounds, sort)?;
     let total = ordered.len() as u64;
 
-    let wanted: HashSet<String> = selected
-        .iter()
-        .chain(anchor)
+    let mut wanted: HashSet<String> = anchor
+        .into_iter()
         .chain(range_origin)
         .chain(range_base)
         .chain(
@@ -785,6 +784,7 @@ pub fn reconcile_section(
         )
         .map(SectionIdentity::key)
         .collect();
+    wanted.extend(selected.iter().map(PositionedSectionIdentity::key));
     let mut matches = HashMap::<String, PositionedSectionIdentity>::with_capacity(wanted.len());
     for (index, identity) in ordered.iter().enumerate() {
         let key = identity.key();
@@ -796,6 +796,15 @@ pub fn reconcile_section(
         }
     }
 
+    // The caller's own former window position for each selected identity,
+    // in the same before-the-refresh coordinate space as a recovery
+    // context's `index`. `matches` only carries *current* positions, which
+    // shift under removal and cannot be compared against a former position
+    // (R5.1 D5).
+    let selected_former_index: HashMap<String, u64> = selected
+        .iter()
+        .map(|identity| (identity.key(), identity.index))
+        .collect();
     let mut live_selected = matched_identities(selected, &matches);
     live_selected.sort_by_key(|member| member.index);
     let mut live_range_base = matched_identities(range_base, &matches);
@@ -806,6 +815,7 @@ pub fn reconcile_section(
         recovery,
         &matches,
         &live_selected,
+        &selected_former_index,
         select_first,
         total,
     );
@@ -848,8 +858,27 @@ pub fn reconcile_section(
     })
 }
 
-fn matched_identities(
-    requested: &[SectionIdentity],
+/// Shared by `SectionIdentity` and `PositionedSectionIdentity` so
+/// `matched_identities` can resolve either kind of request against the
+/// current ordered section.
+trait Keyed {
+    fn key(&self) -> String;
+}
+
+impl Keyed for SectionIdentity {
+    fn key(&self) -> String {
+        SectionIdentity::key(self)
+    }
+}
+
+impl Keyed for PositionedSectionIdentity {
+    fn key(&self) -> String {
+        PositionedSectionIdentity::key(self)
+    }
+}
+
+fn matched_identities<T: Keyed>(
+    requested: &[T],
     matches: &HashMap<String, PositionedSectionIdentity>,
 ) -> Vec<PositionedSectionIdentity> {
     requested
@@ -868,6 +897,7 @@ fn choose_reconciled_anchor(
     recovery: Option<&SectionRecoveryContext>,
     matches: &HashMap<String, PositionedSectionIdentity>,
     live_selected: &[PositionedSectionIdentity],
+    selected_former_index: &HashMap<String, u64>,
     select_first: bool,
     total: u64,
 ) -> Option<AnchorChoice> {
@@ -895,9 +925,17 @@ fn choose_reconciled_anchor(
         if let Some(member) = selected_neighbor {
             return Some(AnchorChoice::Known(member));
         }
+        // Compare former positions on both sides -- the anchor's own former
+        // index (`context.index`) and each survivor's former index -- rather
+        // than a survivor's current index, which shifts under removal and is
+        // not comparable to `context.index` (R5.1 D5).
         if let Some(member) = live_selected
             .iter()
-            .find(|member| member.index >= context.index)
+            .find(|member| {
+                selected_former_index
+                    .get(&member.key())
+                    .is_some_and(|&former| former >= context.index)
+            })
             .or_else(|| live_selected.last())
         {
             return Some(AnchorChoice::Known(member.clone()));

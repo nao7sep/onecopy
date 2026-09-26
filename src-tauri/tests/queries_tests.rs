@@ -267,9 +267,14 @@ fn section_reconciliation_preserves_selection_and_recovers_forward() {
             &format!("{index}.jpg"),
         );
     }
-    let identity = |index| queries::SectionIdentity {
+    let identity = |index: u64| queries::SectionIdentity {
         hash: Some(format!("h{index}")),
         path_id: 0,
+    };
+    let selected = |index: u64| queries::PositionedSectionIdentity {
+        hash: Some(format!("h{index}")),
+        path_id: 0,
+        index: index - 1,
     };
     let recovery = queries::SectionRecoveryContext {
         index: 2,
@@ -285,7 +290,7 @@ fn section_reconciliation_preserves_selection_and_recovers_forward() {
         "2026-01",
         Tz::UTC,
         sort(queries::SectionSortOrder::Name, false),
-        &[identity(2), identity(4)],
+        &[selected(2), selected(4)],
         Some(&identity(3)),
         Some(&identity(3)),
         &[identity(2), identity(4)],
@@ -319,9 +324,14 @@ fn section_reconciliation_chooses_the_nearest_surviving_selection_outside_contex
             &format!("{index:03}.jpg"),
         );
     }
-    let identity = |index| queries::SectionIdentity {
+    let identity = |index: u64| queries::SectionIdentity {
         hash: Some(format!("h{index:03}")),
         path_id: 0,
+    };
+    let selected = |index: u64| queries::PositionedSectionIdentity {
+        hash: Some(format!("h{index:03}")),
+        path_id: 0,
+        index: index - 1,
     };
     conn.execute("DELETE FROM paths WHERE content_hash = 'h100'", [])
         .unwrap();
@@ -332,7 +342,7 @@ fn section_reconciliation_chooses_the_nearest_surviving_selection_outside_contex
         "2026-01",
         Tz::UTC,
         sort(queries::SectionSortOrder::Name, false),
-        &[identity(150), identity(170)],
+        &[selected(150), selected(170)],
         Some(&identity(100)),
         None,
         &[],
@@ -348,6 +358,121 @@ fn section_reconciliation_chooses_the_nearest_surviving_selection_outside_contex
     .unwrap();
 
     assert_eq!(result.anchor.unwrap().hash.as_deref(), Some("h150"));
+}
+
+/// R5.1 D5: a bulk removal well before both the vanished anchor and its
+/// selected survivors shifts every subsequent current index down by the same
+/// amount. Comparing a survivor's *current* index against the anchor's
+/// *former* index (as opposed to comparing former-to-former) can then place
+/// a survivor that is truly after the anchor below the threshold, picking
+/// the wrong ("later") one out of the two live candidates instead of the
+/// true next survivor.
+#[test]
+fn section_reconciliation_recovers_the_next_survivor_after_a_large_prior_removal() {
+    let conn = db();
+    for index in 1..=300 {
+        seed_image(
+            &conn,
+            &format!("h{index:03}"),
+            Some("ready"),
+            &format!("{index:03}.jpg"),
+        );
+    }
+    let selected = |index: u64| queries::PositionedSectionIdentity {
+        hash: Some(format!("h{index:03}")),
+        path_id: 0,
+        index: index - 1,
+    };
+    // Remove 150 items strictly before the vanished anchor (h200, former
+    // index 199) and the anchor itself. Both selected survivors (h221,
+    // h251) sit well outside the (deliberately empty, as if also swept up
+    // in the same removal) 64-neighbor context, and their *current* index
+    // (70, 100) is now far below the anchor's *former* index (199).
+    for index in 1..=150 {
+        conn.execute(
+            "DELETE FROM paths WHERE content_hash = ?1",
+            params![format!("h{index:03}")],
+        )
+        .unwrap();
+    }
+    conn.execute("DELETE FROM paths WHERE content_hash = 'h200'", [])
+        .unwrap();
+
+    let result = queries::reconcile_section(
+        &conn,
+        "image",
+        "2026-01",
+        Tz::UTC,
+        sort(queries::SectionSortOrder::Name, false),
+        &[selected(221), selected(251)],
+        Some(&queries::SectionIdentity {
+            hash: Some("h200".to_string()),
+            path_id: 0,
+        }),
+        None,
+        &[],
+        Some(&queries::SectionRecoveryContext {
+            index: 199,
+            before: vec![],
+            after: vec![],
+        }),
+        false,
+        3,
+        projection(),
+    )
+    .unwrap();
+
+    // h221 is the true next survivor (former index 220 >= 199); h251 comes
+    // later still. Picking by current index alone would return h251.
+    assert_eq!(result.anchor.unwrap().hash.as_deref(), Some("h221"));
+}
+
+/// R5.1 D6: a selected previous survivor beats an unselected next neighbour
+/// inside the recovery context. The spec orders anchor recovery as "next
+/// selected, then previous selected, then an unselected neighbor" -- a
+/// selected member never loses to a closer unselected one.
+#[test]
+fn section_reconciliation_prefers_a_selected_previous_survivor_over_an_unselected_next_neighbor() {
+    let conn = db();
+    for name in ["a", "b", "c", "d", "e"] {
+        seed_image(&conn, name, Some("ready"), &format!("{name}.jpg"));
+    }
+    let identity = |name: &str| queries::SectionIdentity {
+        hash: Some(name.to_string()),
+        path_id: 0,
+    };
+    let selected = |name: &str, index: u64| queries::PositionedSectionIdentity {
+        hash: Some(name.to_string()),
+        path_id: 0,
+        index,
+    };
+    // "c" vanishes; "b" (previous, selected) and "d" (next, unselected) both
+    // survive.
+    conn.execute("DELETE FROM paths WHERE content_hash = 'c'", [])
+        .unwrap();
+
+    let result = queries::reconcile_section(
+        &conn,
+        "image",
+        "2026-01",
+        Tz::UTC,
+        sort(queries::SectionSortOrder::Name, false),
+        &[selected("b", 1)],
+        Some(&identity("c")),
+        None,
+        &[],
+        Some(&queries::SectionRecoveryContext {
+            index: 2,
+            before: vec![identity("b"), identity("a")],
+            after: vec![identity("d"), identity("e")],
+        }),
+        false,
+        3,
+        projection(),
+    )
+    .unwrap();
+
+    assert_eq!(result.anchor.unwrap().hash.as_deref(), Some("b"));
 }
 
 #[test]

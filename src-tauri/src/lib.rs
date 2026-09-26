@@ -602,7 +602,7 @@ async fn reconcile_section(
     kind: String,
     month: String,
     sort: queries::SectionSort,
-    selected: Vec<queries::SectionIdentity>,
+    selected: Vec<queries::PositionedSectionIdentity>,
     anchor: Option<queries::SectionIdentity>,
     range_origin: Option<queries::SectionIdentity>,
     range_base: Vec<queries::SectionIdentity>,

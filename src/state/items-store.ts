@@ -13,6 +13,7 @@ import {
   identityFromKey,
   identityKey,
   itemKey,
+  positionedIdentityFromKey,
   replaceDerivedItem,
   type ItemDetail,
   type LibraryTarget,
@@ -195,7 +196,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       const result = await invoke<SectionReconciliation>("reconcile_section", {
         ...target.section,
         sort: target.section.kind === "other" ? sorts.other : sorts.media,
-        selected: [target.identity], anchor: target.identity,
+        selected: [{ ...target.identity, index: 0 }], anchor: target.identity,
         rangeOrigin: target.identity, rangeBase: [target.identity],
         recovery: null, selectFirst: false, limit: SECTION_WINDOW_LIMIT,
       });
@@ -210,7 +211,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       sectionLoad.begin();
       windowLoad.begin();
       invalidateMainFeedback("section");
-      publishReconciliation(set, get, result, "center", { selected: target.section, sectionMemory });
+      publishReconciliation(set, get, result, "center", { selected: target.section, sectionMemory }, true);
       return "revealed";
     } catch (error) {
       if (!fresh()) return "superseded";
@@ -332,12 +333,14 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   selectIdentity: async (key) => {
     invalidateMainFeedback("selection");
     const ownsIntent = rangeLoad.begin();
+    // A vanished target still recovers near the strip's own section position
+    // rather than falling back to the top of a potentially large section.
     await reconcileCurrent(
       set,
       get,
       false,
       "center",
-      { anchor: key, context: null },
+      { anchor: key, context: get().currentContext },
       true,
       ownsIntent,
     );
@@ -680,8 +683,10 @@ async function reconcileCurrent(
   const sort = before.currentSort();
   const fresh = sectionLoad.begin();
   const selected = remembered?.selectedKeys !== undefined
-    ? remembered.selectedKeys.map(identityFromKey)
-    : replaceSelection ? [] : [...before.selectedKeys].map(identityFromKey);
+    ? remembered.selectedKeys.map((key) => positionedIdentityFromKey(key, before.selectedPositions))
+    : replaceSelection
+      ? []
+      : [...before.selectedKeys].map((key) => positionedIdentityFromKey(key, before.selectedPositions));
   const rangeBase = replaceSelection ? [] : [...before.rangeBase].map(identityFromKey);
   const requestedAnchor = remembered === undefined ? before.selectedItem : (remembered?.anchor ?? null);
   const inferredContext =
@@ -719,7 +724,13 @@ async function reconcileCurrent(
       !sameSort(current.currentSort(), sort)
     )
       return;
-    publishReconciliation(set, get, result, align);
+    // A restoration (remembered !== undefined) deliberately re-anchors the
+    // view and must scroll even when the recovered anchor happens to match
+    // the current one. A routine reconcile (refresh, sort, derived-item
+    // catch-up) must not yank the view back to the anchor when nothing about
+    // it needed recovering -- publishReconciliation already scrolls whenever
+    // the resulting anchor differs from the one Main currently shows.
+    publishReconciliation(set, get, result, align, {}, remembered !== undefined);
   } catch (error) {
     if (!fresh()) return;
     if (ownsIntent !== undefined && !ownsIntent()) {
@@ -776,6 +787,7 @@ function publishReconciliation(
   result: SectionReconciliation,
   align: "nearest" | "center",
   patch: Partial<ItemsState> = {},
+  forceScroll = false,
 ): void {
   const current = get();
   const selectedPositions = membersMap(result.selected);
@@ -811,7 +823,9 @@ function publishReconciliation(
     rangeBasePositions,
     currentContext: anchorContextFromPayload(result.context),
     scrollRequest:
-      anchor === null || result.anchor === null ? null : requestScroll(anchor, result.anchor.index, align),
+      anchor === null || result.anchor === null || !(forceScroll || anchor !== current.selectedItem)
+        ? null
+        : requestScroll(anchor, result.anchor.index, align),
     ...(anchor !== current.selectedItem ? { detail: null } : {}),
   });
   if (anchor !== current.selectedItem) loadAnchorDetail(anchor);

@@ -304,12 +304,20 @@ export function mockSectionItems(handler: InvokeHandler): void {
     const recoverKeys = (
       values: Array<{ hash: string | null; pathId: number }> = [],
     ) => values.map((value) => value.hash ?? `path-${value.pathId}`);
+    const requestedSelected = new Set(
+      (
+        (args.selected as Array<{ hash: string | null; pathId: number }>) ?? []
+      ).map((item) => item.hash ?? `path-${item.pathId}`),
+    );
     let anchor = keyed.find((item) => item.key === requestedKey) ?? null;
     if (anchor === null && requestedKey !== null && recovery !== null) {
-      const key = [
-        ...recoverKeys(recovery.after),
-        ...recoverKeys(recovery.before),
-      ].find((candidate) => keyed.some((item) => item.key === candidate));
+      // Mirrors queries::choose_reconciled_anchor: a selected survivor in
+      // either direction outranks an unselected one, however near (R5.1 D6).
+      const neighborKeys = [...recoverKeys(recovery.after), ...recoverKeys(recovery.before)];
+      const key =
+        neighborKeys.find(
+          (candidate) => requestedSelected.has(candidate) && keyed.some((item) => item.key === candidate),
+        ) ?? neighborKeys.find((candidate) => keyed.some((item) => item.key === candidate));
       anchor =
         keyed.find((item) => item.key === key) ??
         keyed[
@@ -318,11 +326,6 @@ export function mockSectionItems(handler: InvokeHandler): void {
         null;
     }
     if (anchor === null && args.selectFirst === true) anchor = keyed[0] ?? null;
-    const requestedSelected = new Set(
-      (
-        (args.selected as Array<{ hash: string | null; pathId: number }>) ?? []
-      ).map((item) => item.hash ?? `path-${item.pathId}`),
-    );
     const selected = keyed.filter((item) => requestedSelected.has(item.key));
     const start = Math.max(
       0,
