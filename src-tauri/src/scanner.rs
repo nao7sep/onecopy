@@ -50,6 +50,27 @@ pub(crate) fn mark_path_missing(conn: &Connection, path: &str) -> Result<(), Str
     crate::index_store::clear_issues(conn, path, PATH_SCAN_ISSUES).map(|_| ())
 }
 
+/// Marks every known row under `dir` (recursive prefix match) missing — used
+/// when a watcher directory has vanished as a whole, so a per-file `read_dir`
+/// diff is impossible. Returns the number of rows newly marked.
+pub(crate) fn mark_missing_under(conn: &Connection, dir: &str) -> Result<u64, String> {
+    let prefix = like_prefix(dir);
+    let changed = conn
+        .execute(
+            "UPDATE paths SET missing = 1 WHERE abs_path LIKE ?1 ESCAPE '!' AND missing = 0",
+            [&prefix],
+        )
+        .map_err(|error| error.to_string())? as u64;
+    conn.execute(
+        "UPDATE issues SET closure = 'resolved', closed_at_utc = ?2 \
+         WHERE closed_at_utc IS NULL AND kind IN ('walk-error', 'stat-error', 'read-error', 'metadata-read-error', 'copies-disagree') \
+         AND path LIKE ?1 ESCAPE '!'",
+        params![prefix, crate::logging::now_iso_millis()],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(changed)
+}
+
 /// The sentinel a cancelled stage propagates in place of a real error.
 pub const CANCELLED: &str = "scan cancelled";
 

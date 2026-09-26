@@ -12,11 +12,18 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
+
+/// The bounded queue's capacity between the `notify` callback and the drain
+/// loop. Large enough for an ordinary import burst; a queue this deep filling
+/// up while ingestion is blocked on `INDEXING` (W-B1) means the run is
+/// already going to need a full recheck, so overflow is treated the same as
+/// `notify`'s own `need_rescan()` rather than growing without bound (W-L4).
+const EVENT_QUEUE_CAPACITY: usize = 4096;
 
 use notify::Watcher;
 use serde_json::json;
@@ -63,6 +70,17 @@ pub fn restat_dir(
     let dir = dir.as_ref();
     let roots = crate::visibility_index::source_root_spellings(conn, source_roots)?;
     let root = crate::visibility_index::root_for(&roots, dir).ok_or("Changed directory is outside configured sources")?;
+    // Checked up front, before `DirectoryFacts::refresh` (which itself
+    // `stat`s every ancestor down to `dir` and would surface the same
+    // vanished condition as an `Err` there instead): a directory deleted
+    // after its events arrived is normal (Shift+Del, `rm -r`), not a walk
+    // failure. Every row under it is marked missing instead, contained to
+    // this one dirty entry rather than aborting the whole watcher batch.
+    if matches!(std::fs::symlink_metadata(dir), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+    {
+        let dir_str = dir.to_string_lossy().to_string();
+        return scanner::mark_missing_under(conn, &dir_str);
+    }
     let mut visibility_directories = crate::visibility_index::DirectoryFacts::default();
     let inherited = visibility_directories.refresh(conn, &root, dir)?;
     let mut changed = visibility_directories.changed_files as u64;
@@ -70,6 +88,13 @@ pub fn restat_dir(
 
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // A race after the check above (deleted between the two calls):
+            // same treatment.
+            let dir_str = dir.to_string_lossy().to_string();
+            let changed = scanner::mark_missing_under(conn, &dir_str)?;
+            return Ok(changed);
+        }
         Err(error) => {
             crate::index_store::upsert_issue(
                 conn,
@@ -212,8 +237,19 @@ pub fn start(app: tauri::AppHandle, source_dirs: Vec<String>) -> Result<bool, St
 }
 
 fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Result<(), String> {
-    let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
-    let mut watcher = notify::recommended_watcher(tx).map_err(|error| error.to_string())?;
+    let (tx, rx) = mpsc::sync_channel::<notify::Result<notify::Event>>(EVENT_QUEUE_CAPACITY);
+    // A full queue means ingestion cannot keep up (typically an `INDEXING`
+    // holder running for a long time, W-B1). `try_send` never blocks the
+    // `notify` callback thread; a full queue instead flags the same overflow
+    // path the drain loop already uses for `need_rescan()`, so the affected
+    // roots are rechecked instead of the process either stalling or growing
+    // an unbounded backlog.
+    let overflowed_while_blocked = Arc::new(AtomicBool::new(false));
+    let handler_overflow = overflowed_while_blocked.clone();
+    let handler = move |event: notify::Result<notify::Event>| {
+        forward_or_flag_overflow(&tx, &handler_overflow, event);
+    };
+    let mut watcher = notify::recommended_watcher(handler).map_err(|error| error.to_string())?;
     let mut watched = 0usize;
     for root in &source_dirs {
         if !owns_generation(generation) {
@@ -268,6 +304,9 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
             return Ok(());
         }
 
+        if overflowed_while_blocked.swap(false, Ordering::SeqCst) {
+            overflowed = true;
+        }
         if overflowed {
             overflowed = false;
             dirty.clear();
@@ -427,6 +466,21 @@ fn record_root_condition(
     }
 }
 
+/// The `notify` callback: forwards into the bounded channel, or flags
+/// overflow instead of blocking the callback thread when it is full (W-L4).
+///
+/// `pub` for the tests: a real full-queue scenario needs `INDEXING` held for
+/// the channel's whole capacity, which a unit test has no reason to spin up.
+pub fn forward_or_flag_overflow(
+    tx: &mpsc::SyncSender<notify::Result<notify::Event>>,
+    overflowed: &AtomicBool,
+    event: notify::Result<notify::Event>,
+) {
+    if tx.try_send(event).is_err() {
+        overflowed.store(true, Ordering::SeqCst);
+    }
+}
+
 /// Folds one watcher event into the dirty-directory set.
 ///
 /// `pub` for the tests: a file event must map to its PARENT directory, since
@@ -508,7 +562,15 @@ fn process_dirty_claimed(
         }
         // A pending foreground action takes the index between directories.
         crate::scan_runtime::yield_to_foreground()?;
-        changed += restat_dir(&conn, dir, &settings.lists, &settings.source_dirs)?;
+        // File-local containment: one unreadable or vanished directory fails
+        // only its own entry in this batch, not the directories after it.
+        match restat_dir(&conn, dir, &settings.lists, &settings.source_dirs) {
+            Ok(count) => changed += count,
+            Err(error) => logging::warn(
+                "watcher directory failed; continuing with the rest of the batch",
+                json!({ "dir": dir.to_string_lossy(), "error": { "message": &error } }),
+            ),
+        }
     }
     if !owns_generation(generation) {
         return Err(scanner::CANCELLED.to_string());

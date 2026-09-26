@@ -48,8 +48,63 @@ fn restat_upserts_new_files_and_marks_vanished_missing() {
     assert_eq!(missing, 1);
 }
 
+// (W-M2) A vanished directory PROVES absence — `read_dir` failing with
+// `NotFound` is the normal shape of "this folder was deleted after its
+// events arrived" (Shift+Del, `rm -r`), not an unreadable directory. Every
+// row known to live under it is marked missing instead of raising a
+// walk-error Issue for an expected condition.
 #[test]
-fn a_failed_directory_read_never_turns_known_files_into_missing_rows() {
+fn a_vanished_directory_marks_every_row_under_it_missing() {
+    // A SUBDIRECTORY vanishing, not the configured source root itself: the
+    // root staying put keeps `source_root_spellings`'s own "root unreachable"
+    // signal out of this scenario, isolating the one this test targets.
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-watch-vanished-")
+        .tempdir()
+        .unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    let root = dir.path().join("watched");
+    let sub = root.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(sub.join("known.jpg"), b"known").unwrap();
+    let stored_root = onecopy_lib::winpath::for_fs(&root).into_owned();
+    let roots = [stored_root.to_string_lossy().into_owned()];
+    restat_dir(&conn, &sub, &lists(), &roots).unwrap();
+
+    std::fs::remove_dir_all(&sub).unwrap();
+    let changed = restat_dir(&conn, &sub, &lists(), &roots)
+        .expect("a vanished directory is not a walk failure");
+    assert_eq!(changed, 1, "the one known row under it is marked missing");
+    let missing: i64 = conn
+        .query_row("SELECT missing FROM paths", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(missing, 1);
+    let issues: i64 = conn
+        .query_row("SELECT COUNT(*) FROM active_issues", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(issues, 0, "an expected condition raises no walk-error Issue");
+
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(sub.join("known.jpg"), b"known").unwrap();
+    assert_eq!(restat_dir(&conn, &sub, &lists(), &roots).unwrap(), 1);
+    let state: (i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT missing FROM paths), (SELECT COUNT(*) FROM active_issues)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(state, (0, 0), "the file's return is seen on the next pass");
+}
+
+// A genuinely unreadable-but-present directory (permission denied) cannot
+// prove absence the way a vanished one can, so it keeps the original
+// contract: an `Err`, no missing rows, and a recheckable walk-error Issue.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_directory_never_turns_known_files_into_missing_rows() {
+    use std::os::unix::fs::PermissionsExt;
+
     let dir = tempfile::Builder::new()
         .prefix("onecopy-watch-unreadable-")
         .tempdir()
@@ -61,8 +116,16 @@ fn a_failed_directory_read_never_turns_known_files_into_missing_rows() {
     let stored_root = onecopy_lib::winpath::for_fs(&root).into_owned();
     restat_dir(&conn, &root, &lists(), &[stored_root.to_string_lossy().into_owned()]).unwrap();
 
-    std::fs::remove_dir_all(&root).unwrap();
-    assert!(restat_dir(&conn, &root, &lists(), &[stored_root.to_string_lossy().into_owned()]).is_err());
+    let original = std::fs::metadata(&root).unwrap().permissions();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let result = restat_dir(&conn, &root, &lists(), &[stored_root.to_string_lossy().into_owned()]);
+    // Root test runners can read past the mode bits; skip rather than assert
+    // a false failure in that environment.
+    if result.is_ok() {
+        std::fs::set_permissions(&root, original).unwrap();
+        return;
+    }
+
     let missing: i64 = conn
         .query_row("SELECT missing FROM paths", [], |row| row.get(0))
         .unwrap();
@@ -76,8 +139,8 @@ fn a_failed_directory_read_never_turns_known_files_into_missing_rows() {
         .unwrap();
     assert_eq!(issues, 1, "the failure must remain visible and recheckable");
 
-    std::fs::create_dir_all(&root).unwrap();
-    assert_eq!(restat_dir(&conn, &root, &lists(), &[stored_root.to_string_lossy().into_owned()]).unwrap(), 1);
+    std::fs::set_permissions(&root, original).unwrap();
+    assert_eq!(restat_dir(&conn, &root, &lists(), &[stored_root.to_string_lossy().into_owned()]).unwrap(), 0);
     let state: (i64, i64) = conn
         .query_row(
             "SELECT (SELECT missing FROM paths), (SELECT COUNT(*) FROM active_issues)",
@@ -85,7 +148,7 @@ fn a_failed_directory_read_never_turns_known_files_into_missing_rows() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!(state, (1, 0), "success retires the current condition");
+    assert_eq!(state, (0, 0), "success retires the current condition");
 }
 
 #[cfg(windows)]
@@ -218,3 +281,35 @@ fn a_lost_event_batch_flags_an_overflow() {
     assert!(overflowed, "a watcher error must raise the rescan flag");
     assert!(dirty.is_empty());
 }
+
+// (W-L4) The channel between `notify`'s callback and the drain loop is
+// bounded: a full queue flags overflow instead of growing without bound
+// while ingestion is blocked (e.g. a long `INDEXING` hold).
+#[test]
+fn a_full_event_queue_flags_overflow_instead_of_blocking_the_callback() {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<notify::Result<notify::Event>>(1);
+    let overflowed = std::sync::atomic::AtomicBool::new(false);
+    let event = || {
+        Ok(notify::Event {
+            kind: notify::EventKind::Modify(notify::event::ModifyKind::Any),
+            paths: vec![],
+            attrs: Default::default(),
+        })
+    };
+
+    forward_or_flag_overflow(&tx, &overflowed, event());
+    assert!(
+        !overflowed.load(std::sync::atomic::Ordering::SeqCst),
+        "the first event fits inside capacity"
+    );
+
+    // The queue is now full (nothing has drained it): the next send cannot
+    // block the notify callback thread, so it must flag overflow instead.
+    forward_or_flag_overflow(&tx, &overflowed, event());
+    assert!(
+        overflowed.load(std::sync::atomic::Ordering::SeqCst),
+        "a full queue must flag overflow rather than block or silently drop"
+    );
+    drop(rx);
+}
+
