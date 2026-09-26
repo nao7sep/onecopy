@@ -37,7 +37,7 @@ export default function DestinationConflictModal({
             {copying ? t("conflict.renameAndCopy") : t("conflict.renameAndMove")}
           </Button>
           <Button
-            variant="danger"
+            variant="danger-solid"
             disabled={!pending.overwriteAllowed}
             title={
               pending.overwriteAllowed

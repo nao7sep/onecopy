@@ -360,7 +360,7 @@ function ActionBar() {
         )}
         {!isRoot && emptiness[activePath] === true && parent !== null ? (
           <Button
-            variant="danger"
+            variant="danger-solid"
             className={button}
             title={t("destinations.deleteEmptyHint")}
             onClick={() => void deleteFolder(activePath, parent)}

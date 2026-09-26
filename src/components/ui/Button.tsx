@@ -12,7 +12,7 @@
 
 import type { ButtonHTMLAttributes } from "react";
 
-type Variant = "primary" | "secondary" | "ghost" | "danger";
+type Variant = "primary" | "secondary" | "ghost" | "danger" | "danger-solid";
 type Size = "sm" | "md";
 
 // Every variant carries a PRESSED state distinct from its hover state. With a
@@ -37,6 +37,12 @@ const VARIANTS: Record<Variant, string> = {
     "text-ink-muted hover:bg-surface-muted hover:text-ink active:bg-border active:text-ink disabled:opacity-40",
   danger:
     "border border-danger/50 bg-danger-surface text-danger hover:border-danger hover:brightness-95 active:brightness-90 disabled:opacity-40",
+  // The filled "commit" style (interface-styling-conventions): reserved for a
+  // single click that IS the irreversible action itself, never a trigger that
+  // merely opens a confirming step — `danger` above stays the trigger style
+  // (R8-03).
+  "danger-solid":
+    "bg-danger-solid text-ink-inverted shadow-sm hover:bg-danger-solid-hover active:brightness-90 disabled:opacity-40",
 };
 
 const SIZES: Record<Size, string> = {
