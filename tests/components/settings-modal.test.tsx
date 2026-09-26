@@ -199,6 +199,29 @@ describe("Settings categories", () => {
     expect((screenWrite?.args.patch as Record<string, unknown>)).toHaveProperty("screenPriority");
   });
 
+  // R5.5 C7: each screen row renders POSITION before name, in the DOM, not
+  // only in the sentence template -- position is what tells a matched pair
+  // (same name, same resolution) apart, so it must lead visually.
+  it("renders each screen row with position before name", async () => {
+    setMonitors([0, 1].map((index) => ({
+      name: "Studio Display", position: { x: index * 1920, y: 0 },
+      size: { width: 1920, height: 1080 }, scaleFactor: 1,
+    })));
+    render(<SettingsModal open onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("tab", { name: "Appearance" }));
+    await waitFor(() => expect(screen.queryAllByRole("button", { name: "Move down" }).length).toBeGreaterThan(0));
+
+    const row = screen.getByText(/^1\. /).closest("span")!.parentElement!;
+    const [primary, detail] = [...row.querySelectorAll("span")].filter(
+      (el) => el.children.length === 0,
+    );
+    expect(primary.textContent).toMatch(/^1\. /);
+    expect(detail!.textContent).toContain("Studio Display");
+    expect(row.textContent!.indexOf(primary.textContent!)).toBeLessThan(
+      row.textContent!.indexOf("Studio Display"),
+    );
+  });
+
   // screen-priority.md: the configured display order is meaningful only with
   // two or more monitors, so a single-display machine must render no order
   // section at all (not merely a one-row, unreorderable one).
