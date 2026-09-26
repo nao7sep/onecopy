@@ -180,6 +180,7 @@ describe("opening Comparison across displays", () => {
       },
     ];
     setMonitors(mixedScreens);
+    setCurrentMonitor(mixedScreens[0]);
     mockCommands({ get_similar_group: () => members(7) });
     await useComparisonStore.getState().openGroup("m0");
     expect(useComparisonStore.getState().capacities).toEqual([4, 3]);
@@ -285,6 +286,7 @@ describe("opening Comparison across displays", () => {
 
   it("sizes a new display window in logical coordinates", async () => {
     setMonitors(THREE_SCREENS.slice(0, 2));
+    setCurrentMonitor(THREE_SCREENS[0]);
     mockCommands({ get_similar_group: () => members(6) });
 
     await useComparisonStore.getState().openGroup("m0");
@@ -320,6 +322,7 @@ describe("opening Comparison across displays", () => {
 
   it("repaginates on the other surviving displays after one fails", async () => {
     setMonitors(THREE_SCREENS);
+    setCurrentMonitor(THREE_SCREENS[0]);
     mockCommands({ get_similar_group: () => members(10) });
     await useComparisonStore.getState().openGroup("m0");
 
