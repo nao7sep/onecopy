@@ -11,6 +11,7 @@ import { captureDeleteSelection, deleteItems } from "../../src/workflows/items";
 import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import {
   invokeCalls,
+  mockCommand,
   mockCommands,
   mockSectionItems,
   resetTauriMocks,
@@ -471,6 +472,39 @@ describe("request ownership", () => {
 
     expect(useItemsStore.getState().selected?.month).toBe("2026-02");
     expect(useItemsStore.getState().items.map((row) => row.hash)).toEqual(["h9"]);
+  });
+});
+
+// R5.1 D13: a slow detail request for a since-abandoned anchor must never
+// overwrite Details once the anchor has moved on -- `loadAnchorDetail`'s
+// freshness guard (items-store.ts) checks the CURRENT anchor identity when
+// its response arrives, not just request order.
+describe("stale detail ordering", () => {
+  it("discards a detail response for an anchor Main has already left", async () => {
+    mockSection([item(1), item(2)]);
+    await useItemsStore.getState().select(SECTION);
+
+    const pending = new Map<string, (detail: unknown) => void>();
+    mockCommand("get_item_detail", (args) => new Promise((resolve) => {
+      const hash = (args as { hash: string }).hash;
+      pending.set(hash, resolve);
+    }));
+
+    useItemsStore.getState().selectItem("h1", "nearest", 0);
+    useItemsStore.getState().selectItem("h2", "nearest", 1);
+    expect(useItemsStore.getState().detail).toBeNull();
+
+    // h1's request resolves last, after the anchor has already moved to h2.
+    pending.get("h1")!({ fileName: "IMG_0001.jpg", kind: "image" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(useItemsStore.getState().detail).toBeNull();
+    expect(useItemsStore.getState().selectedItem).toBe("h2");
+
+    pending.get("h2")!({ fileName: "IMG_0002.jpg", kind: "image" });
+    await vi.waitFor(() =>
+      expect(useItemsStore.getState().detail?.fileName).toBe("IMG_0002.jpg"),
+    );
   });
 });
 
