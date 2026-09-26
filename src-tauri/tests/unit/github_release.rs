@@ -33,6 +33,19 @@ fn endpoint_is_fixed_repository_metadata() {
 }
 
 #[test]
+fn the_response_cap_admits_an_ordinary_release_with_assets_and_notes() {
+    // Measured shapes (R6-06): a 14-asset release with real release notes runs
+    // to ~36 KiB; OneCopy's own 4-asset shape with a normal changelog section
+    // leaves only ~7 KiB under the old 16 KiB cap. The cap must clear a
+    // generously padded release body without rejecting it.
+    assert!(MAX_RESPONSE_BYTES >= 128 * 1024);
+    let padded_body = "x".repeat(64 * 1024);
+    let payload = format!(r#"{{"tag_name":"v9.9.9","body":"{padded_body}"}}"#);
+    assert!((payload.len() as u64) < MAX_RESPONSE_BYTES);
+    assert_eq!(parse_latest_tag(payload.as_bytes()), Ok("v9.9.9".into()));
+}
+
+#[test]
 fn response_validation_requires_one_string_tag_name() {
     assert_eq!(
         parse_latest_tag(br#"{"tag_name":"v1.2.3","body":"ignored"}"#),

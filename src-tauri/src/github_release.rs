@@ -10,7 +10,12 @@ const GITHUB_API_VERSION: &str = "2022-11-28";
 const GITHUB_ACCEPT: &str = "application/vnd.github+json";
 const USER_AGENT: &str = "OneCopy";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-const MAX_RESPONSE_BYTES: u64 = 16 * 1024;
+// Sized to the endpoint's real payload: an ordinary release with a handful of
+// assets and Keep-a-Changelog release notes runs well past 16 KiB (measured up
+// to ~36 KiB for 14 assets), and the parser only ever reads `tag_name` out of
+// whatever arrives. 1 MiB still bounds memory against a hostile or broken
+// response while never rejecting a normal release (R6-06).
+const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
 #[serde(tag = "status", rename_all = "camelCase")]
