@@ -16,6 +16,20 @@ describe("screen priority ordering", () => {
     expect(ordered.map((x) => x.name)).toEqual(["B", "A", "C"]);
   });
 
+  // R5.5 C9: an entry for a display that is not currently connected is
+  // simply skipped -- it neither crashes the sort nor produces a phantom
+  // row, and the remaining, connected entries still rank correctly.
+  it("ignores a priority entry for a display that is not connected", () => {
+    const monitors = [m("C", 2), m("A", 0), m("B", 1)];
+    const ordered = orderMonitors(monitors, [
+      monitorKey(m("Absent", 99)),
+      monitorKey(m("B", 1)),
+      monitorKey(m("A", 0)),
+    ]);
+    expect(ordered.map((x) => x.name)).toEqual(["B", "A", "C"]);
+    expect(ordered).toHaveLength(3);
+  });
+
   it("keeps native order entirely when no priority is set", () => {
     const monitors = [m("C", 2), m("A", 0)];
     expect(orderMonitors(monitors, []).map((x) => x.name)).toEqual(["C", "A"]);
