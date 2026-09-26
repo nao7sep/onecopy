@@ -166,6 +166,30 @@ describe("global destructive commands", () => {
     );
   });
 
+  // main-review.md: the configured single-item confirm preference applies to
+  // exactly one selected item; a multi-item Delete always reviews regardless
+  // of it (R5.1 D9's sibling contract, D11's single-item half).
+  it("reviews a single-item Delete when the confirm-single-item preference is on", () => {
+    useAppStore.setState({
+      appData: {
+        config: effectiveConfig({ confirmTrashDelete: true }),
+        state: {},
+        dataRoot: "/app",
+        debugEnabled: false,
+        quarantines: [],
+      },
+    });
+    const view = render(<Harness />);
+    const area = view.container.querySelector("#main-item-area")!;
+
+    fireEvent.keyDown(area, { key: "Delete" });
+
+    expect(view.getByLabelText("Trash confirmation").textContent).toBe("1");
+    expect(invokeCalls.some((call) => call.command === "delete_items")).toBe(
+      false,
+    );
+  });
+
   it("consumes repeated Enter and deletion without reopening or deleting", () => {
     const view = render(<Harness />);
     const area = view.container.querySelector("#main-item-area")!;
