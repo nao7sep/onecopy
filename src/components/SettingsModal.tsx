@@ -17,7 +17,7 @@ import {
   priorityFromState,
 } from "../utils/screens";
 import ModalShell from "./ModalShell";
-import ConfirmDialog from "./ConfirmDialog";
+import ConfirmModal from "./ConfirmModal";
 import DirectoryRow from "./DirectoryRow";
 import Button from "./ui/Button";
 import { Row, Select, TextInput, Toggle } from "./ui/Field";
@@ -407,7 +407,7 @@ export default function SettingsModal({
       }
     >
       {confirmDiscard ? (
-        <ConfirmDialog
+        <ConfirmModal
           title={t("settings.discardTitle")}
           message={t("settings.discardMessage")}
           confirmLabel={t("settings.discard")}
@@ -421,7 +421,7 @@ export default function SettingsModal({
         />
       ) : null}
       {confirmRebuild ? (
-        <ConfirmDialog
+        <ConfirmModal
           title={t("settings.rebuildTitle")}
           message={t("settings.rebuildMessage")}
           confirmLabel={t("settings.rebuildConfirm")}

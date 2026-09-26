@@ -2,7 +2,7 @@
 
 import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import RevealCopiesDialog from "../../src/components/RevealCopiesDialog";
+import RevealCopiesModal from "../../src/components/RevealCopiesModal";
 import {
   mockCommands,
   resetTauriMocks,
@@ -35,7 +35,7 @@ afterEach(cleanup);
 describe("Comparison physical-copy reveal", () => {
   it("loads every copy and lets the user choose one", async () => {
     const view = render(
-      <RevealCopiesDialog
+      <RevealCopiesModal
         hash="hash-a"
         fileName="photo.jpg"
         onClose={() => undefined}

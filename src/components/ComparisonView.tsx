@@ -19,8 +19,8 @@ import {
   retryComparisonFailure,
 } from "../workflows/comparison";
 import ComparisonSlot from "./ComparisonSlot";
-import ConfirmDialog from "./ConfirmDialog";
-import RevealCopiesDialog from "./RevealCopiesDialog";
+import ConfirmModal from "./ConfirmModal";
+import RevealCopiesModal from "./RevealCopiesModal";
 import OperationResult from "./ui/OperationResult";
 import MutationResultActions from "./MutationResultActions";
 
@@ -127,7 +127,7 @@ export default function ComparisonView({
   return (
     <div className="fixed inset-0 z-20 flex flex-col bg-background">
       {pendingAction !== null ? (
-        <ConfirmDialog
+        <ConfirmModal
           title={confirmTitle}
           message={confirmMessage}
           confirmLabel={t(
@@ -140,7 +140,7 @@ export default function ComparisonView({
         />
       ) : null}
       {revealMember !== null ? (
-        <RevealCopiesDialog
+        <RevealCopiesModal
           hash={revealMember.hash}
           fileName={revealMember.fileName}
           onClose={() => setRevealMember(null)}

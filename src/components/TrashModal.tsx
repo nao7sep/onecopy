@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { formatBytes } from "../models/items";
 import { log, toErrorFields } from "../repositories";
 import ModalShell from "./ModalShell";
-import ConfirmDialog from "./ConfirmDialog";
+import ConfirmModal from "./ConfirmModal";
 import Button from "./ui/Button";
 import { recordActionFailure } from "../state/notifications-store";
 import OperationResult from "./ui/OperationResult";
@@ -187,7 +187,7 @@ export default function TrashModal({
       }
     >
       {confirm !== null ? (
-        <ConfirmDialog
+        <ConfirmModal
           title={t("trash.confirmTitle")}
           message={t("trash.confirmMessage", {
             count: confirm.files,

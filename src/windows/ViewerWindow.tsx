@@ -4,7 +4,7 @@ import { emit } from "@tauri-apps/api/event";
 import { ChevronLeft, ChevronRight, Minimize2, X } from "lucide-react";
 import { listenThenAnnounce } from "../utils/handshake";
 import type { ViewerBroadcast } from "../workflows/quick-view";
-import ConfirmDialog from "../components/ConfirmDialog";
+import ConfirmModal from "../components/ConfirmModal";
 import PreviewSurface from "../components/PreviewSurface";
 import { message, type Message } from "../i18n/translate";
 import { log, reportWindowCall, toErrorFields } from "../repositories";
@@ -157,7 +157,7 @@ export default function ViewerWindow() {
         </OperationResult>
       ) : null}
       {state.pendingDelete !== null ? (
-        <ConfirmDialog
+        <ConfirmModal
           title={
             state.pendingDelete.kind === "permanent"
               ? t("common.deletePermanentlyTitle")

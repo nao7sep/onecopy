@@ -4,13 +4,13 @@ import { useState } from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import ConfirmDialog from "../../src/components/ConfirmDialog";
+import ConfirmModal from "../../src/components/ConfirmModal";
 import ModalShell from "../../src/components/ModalShell";
 
 afterEach(cleanup);
 
 function confirm(onConfirm = vi.fn(), onCancel = vi.fn()) {
-  render(<ConfirmDialog title="Delete item?" message="Delete every copy?"
+  render(<ConfirmModal title="Delete item?" message="Delete every copy?"
     confirmLabel="Delete" onConfirm={onConfirm} onCancel={onCancel} />);
   return { onConfirm, onCancel };
 }
@@ -63,7 +63,7 @@ describe("confirmation command boundary", () => {
       const [open, setOpen] = useState(true);
       return open && <ModalShell title="Parent" onClose={() => { closeParent(); setOpen(false); }} initialFocus="surface">
         <button>Parent action</button>
-        {pending && <ConfirmDialog title="Delete item?" message="Delete every copy?" confirmLabel="Delete"
+        {pending && <ConfirmModal title="Delete item?" message="Delete every copy?" confirmLabel="Delete"
           onConfirm={vi.fn()} onCancel={() => setPending(false)} />}
       </ModalShell>;
     }

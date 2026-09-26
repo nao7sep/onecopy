@@ -2,7 +2,7 @@
 //
 // Where a modal puts focus on open is a destructive-safety property, not a
 // convenience one. ModalShell marks the header ✕ and the footer dismiss with
-// data-modal-close, so in a ConfirmDialog — whose body is a plain <p> — the
+// data-modal-close, so in a ConfirmModal — whose body is a plain <p> — the
 // only remaining focusable was the danger-styled primary. "Delete
 // permanently?" opened with "Delete permanently" focused, one press of the
 // key already being held.
@@ -21,7 +21,7 @@ function surfaceFrom(html: string): HTMLElement {
   return host;
 }
 
-/** A ConfirmDialog as ModalShell renders it. */
+/** A ConfirmModal as ModalShell renders it. */
 const CONFIRM = `
   <button data-modal-close aria-label="Close">✕</button>
   <p>Permanently delete 3 items and every copy?</p>

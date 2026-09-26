@@ -10,7 +10,7 @@ import {
   moveViewer,
   setViewerPresentation,
 } from "../workflows/quick-view";
-import ConfirmDialog from "./ConfirmDialog";
+import ConfirmModal from "./ConfirmModal";
 import PreviewSurface from "./PreviewSurface";
 import { isTopmostModal } from "../utils/modalStack";
 import { viewerOwnsKey } from "../utils/viewerKeys";
@@ -117,7 +117,7 @@ export default function QuickView() {
         {t("quickView.hint")}
       </footer>
       {pendingDelete !== null ? (
-        <ConfirmDialog
+        <ConfirmModal
           title={t(
             pendingDelete.kind === "permanent"
               ? "common.deletePermanentlyTitle"

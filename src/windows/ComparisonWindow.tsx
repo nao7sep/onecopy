@@ -10,7 +10,7 @@ import ComparisonSlot from "../components/ComparisonSlot";
 import { type ComparisonBroadcast } from "../state/comparison-store";
 import { gridFor } from "../models/comparisonSession";
 import { hasOpenModal } from "../utils/modalStack";
-import RevealCopiesDialog from "../components/RevealCopiesDialog";
+import RevealCopiesModal from "../components/RevealCopiesModal";
 import { comparisonKeyIsRoutable } from "../workflows/comparison";
 
 // Secondary displays render one contiguous part of the current page. The main
@@ -99,7 +99,7 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
   return (
     <div className="flex h-screen flex-col bg-background">
       {revealMember !== null ? (
-        <RevealCopiesDialog
+        <RevealCopiesModal
           hash={revealMember.hash}
           fileName={revealMember.fileName}
           onClose={() => setRevealMember(null)}

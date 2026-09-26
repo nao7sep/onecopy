@@ -10,7 +10,7 @@ import { message, type Message } from "../i18n/translate";
 import ModalShell from "./ModalShell";
 import OperationResult from "./ui/OperationResult";
 
-export default function RevealCopiesDialog({
+export default function RevealCopiesModal({
   hash,
   fileName,
   onClose,

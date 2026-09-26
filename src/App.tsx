@@ -34,7 +34,7 @@ import AboutModal from "./components/AboutModal";
 import QuickView from "./components/QuickView";
 import TrashModal from "./components/TrashModal";
 import MutationResultActions from "./components/MutationResultActions";
-import ConfirmDialog from "./components/ConfirmDialog";
+import ConfirmModal from "./components/ConfirmModal";
 import { Menu as MenuIcon, Minus, Plus, X } from "lucide-react";
 import { useWizardStore } from "./state/wizard-store";
 import { useIssuesStore } from "./state/issues-store";
@@ -257,7 +257,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
       <AboutModal open={utilitySurface === "about"} onClose={closeUtility} />
       {quickViewOpen ? <QuickView /> : null}
       {confirmPermanent !== null ? (
-        <ConfirmDialog
+        <ConfirmModal
           title={t("common.deletePermanentlyTitle")}
           message={t("app.deletePermanentlyBody", { count: confirmPermanent })}
           confirmLabel={t("common.deletePermanently")}
@@ -266,7 +266,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
         />
       ) : null}
       {confirmTrash !== null ? (
-        <ConfirmDialog
+        <ConfirmModal
           title={t("app.deleteTitle")}
           message={t("app.deleteBody", { count: confirmTrash })}
           confirmLabel={t("common.delete")}

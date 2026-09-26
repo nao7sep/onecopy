@@ -4,7 +4,7 @@ import {
   type DirEntry,
 } from "../state/destinations-store";
 import { useComposing, isComposingKeyboardEvent, isComposingEvent } from "../hooks/useComposing";
-import ConfirmDialog from "./ConfirmDialog";
+import ConfirmModal from "./ConfirmModal";
 import ModalShell from "./ModalShell";
 import { ChevronDown, ChevronRight, X } from "lucide-react";
 import {
@@ -503,7 +503,7 @@ export default function DestinationsTab() {
         <DestinationConflictModal pending={pendingConflicts} />
       ) : null}
       {pendingMove !== null ? (
-        <ConfirmDialog
+        <ConfirmModal
           title={
             pendingMove.mode === "move-delete-rest"
               ? t("destinations.movePermanentlyTitle")
