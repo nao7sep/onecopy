@@ -210,28 +210,36 @@ fn canonical_label(label: &str) -> Result<&'static str, String> {
     }
 }
 
+/// Decodes under an EXPLICIT choice — a manual selection or the configured
+/// fallback, never the automatic detector's own guess (that acceptance stays
+/// strict in `decode_automatic`). content-presentation.md: "Invalid byte
+/// sequences under a selected fallback render replacement characters rather
+/// than crashing or silently discarding bytes" — so an explicit choice always
+/// succeeds, substituting U+FFFD for whatever bytes do not fit, rather than
+/// turning the whole file into a `DecodeError` over one bad byte.
 fn decode_named(bytes: &[u8], label: &str) -> Result<String, String> {
     match canonical_label(label)? {
-        "utf-32le" => decode_utf32(bytes, true),
-        "utf-32be" => decode_utf32(bytes, false),
+        "utf-32le" => Ok(decode_utf32(bytes, true)?),
+        "utf-32be" => Ok(decode_utf32(bytes, false)?),
         canonical => {
             let encoding = Encoding::for_label(canonical.as_bytes())
                 .ok_or_else(|| format!("unsupported text encoding: {label}"))?;
-            let (text, _, had_errors) = encoding.decode(bytes);
-            if had_errors {
-                Err(format!("the file is not valid {canonical} text"))
-            } else {
-                Ok(text.into_owned())
-            }
+            let (text, _, _had_errors) = encoding.decode(bytes);
+            Ok(text.into_owned())
         }
     }
 }
 
+/// UTF-32 has no single-byte replacement convention of its own; each
+/// four-byte unit that is not a valid code point becomes U+FFFD, matching
+/// every other encoding's lossy decode. Only a byte count that is not a
+/// multiple of four is a genuine structural failure (there is no unit left to
+/// substitute for).
 fn decode_utf32(bytes: &[u8], little_endian: bool) -> Result<String, String> {
     if bytes.len() % 4 != 0 {
         return Err("the file length is not valid UTF-32".to_string());
     }
-    bytes
+    Ok(bytes
         .chunks_exact(4)
         .map(|chunk| {
             let code = if little_endian {
@@ -239,9 +247,9 @@ fn decode_utf32(bytes: &[u8], little_endian: bool) -> Result<String, String> {
             } else {
                 u32::from_be_bytes(chunk.try_into().expect("four-byte chunk"))
             };
-            char::from_u32(code).ok_or_else(|| "the file contains invalid UTF-32".to_string())
+            char::from_u32(code).unwrap_or('\u{FFFD}')
         })
-        .collect()
+        .collect())
 }
 
 fn unicode_marker(bytes: &[u8]) -> Option<(&'static str, usize)> {

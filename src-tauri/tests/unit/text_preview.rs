@@ -71,6 +71,29 @@ fn an_unbounded_setting_is_clamped_instead_of_overflowing_the_read_bound() {
     ));
 }
 
+// content-presentation.md D7: invalid bytes under a selected/fallback
+// encoding render replacement characters instead of failing the whole file.
+// `decode_named` is the exact function `decode_automatic`'s configured-
+// fallback step calls, so this covers both the manual-pick and fallback
+// routes at once; only the automatic detector's OWN guess stays strict
+// (unchanged, and covered by `binary_bytes_do_not_fall_through_...`).
+#[test]
+fn an_explicit_or_fallback_choice_replaces_invalid_bytes_instead_of_failing() {
+    // 0xFF is not valid UTF-8 on its own.
+    let text = decode_named(b"before\xFFafter", "utf-8").unwrap();
+    assert_eq!(text, "before\u{FFFD}after");
+}
+
+#[test]
+fn invalid_utf32_code_points_become_replacement_characters() {
+    // 0x00110000 exceeds the Unicode range and is not a valid `char`.
+    let out_of_range = [0x00, 0x11, 0x00, 0x00];
+    assert_eq!(decode_utf32(&out_of_range, false).unwrap(), "\u{FFFD}");
+    // A byte count that is not a multiple of four remains a genuine
+    // structural failure — there is no four-byte unit to substitute for.
+    assert!(decode_utf32(&out_of_range[..3], false).is_err());
+}
+
 #[test]
 fn every_presented_encoding_is_a_working_canonical_decoder() {
     for label in encodings() {

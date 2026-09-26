@@ -14,6 +14,7 @@ import { useAppStore } from "../../src/state/app-store";
 import { useBinariesStore } from "../../src/state/binaries-store";
 import { useTranscriptStore } from "../../src/state/transcript-store";
 import { useContentSessionStore } from "../../src/state/content-session-store";
+import { useWindowPreferencesStore } from "../../src/state/window-preferences-store";
 import {
   emitCalls,
   emit,
@@ -387,6 +388,41 @@ describe("shared video presentation", () => {
     );
   });
 
+  // viewing-sessions.md D6: text scroll is shared session state, like
+  // encoding and wrap, so a placement switch (pane <-> separate window,
+  // modeled here as an unmount/remount of the same live session) keeps the
+  // reading position instead of restarting at the top.
+  it("keeps the text scroll position across a placement switch", async () => {
+    const view = render(
+      <PreviewSurface surface="quick" hash={null} pathId={8} detail={OTHER_DETAIL} />,
+    );
+    const pre = await screen.findByText(/first line/);
+    Object.defineProperty(pre, "scrollTop", { configurable: true, writable: true, value: 0 });
+    pre.scrollTop = 240;
+    fireEvent.scroll(pre);
+    await waitFor(() =>
+      expect(emitCalls).toContainEqual({
+        event: "content-session://set-transcript-view",
+        payload: { key: "text:text-content-hash", view: { scrollTop: 240, selection: null } },
+      }),
+    );
+    await act(async () => {
+      fireTauriEvent("content-session://state", {
+        textWrap: true,
+        textEncodings: {},
+        transcriptOpen: { video: false, audio: true },
+        transcriptViews: { "text:text-content-hash": { scrollTop: 240, selection: null } },
+      });
+    });
+    view.unmount();
+
+    render(
+      <PreviewSurface surface="preview-window" hash={null} pathId={8} detail={OTHER_DETAIL} />,
+    );
+    const restored = await screen.findByText(/first line/);
+    expect(restored.scrollTop).toBe(240);
+  });
+
   it("keeps a rejected session choice on the affected text preview and out of the copy", async () => {
     mockCommands({ record_recent_notification: () => ({}) });
     render(
@@ -561,6 +597,53 @@ describe("shared video presentation", () => {
       await screen.findByText("The bytes are not valid UTF-8 text."),
     ).toBeTruthy();
     expect(screen.getByRole("option", { name: /shift_jis/ })).toBeTruthy();
+  });
+
+  // content-presentation.md D3: fullscreen is an auxiliary webview with no
+  // app-config projection of its own, and must fall back to Quick View's
+  // enlarge setting (they are one session), never Preview's.
+  it("routes fullscreen's fallback enlarge setting through Quick View's, not Preview's", () => {
+    useAppStore.setState({ appData: null });
+    useWindowPreferencesStore.setState({
+      enlargeSmallImagesInPreview: true,
+      enlargeSmallImagesInQuickView: false,
+    });
+
+    render(
+      <PreviewSurface surface="viewer" hash="image-hash" detail={IMAGE_DETAIL} keyboardActive />,
+    );
+
+    // Enlarge OFF with known original dimensions caps the image at its real
+    // size through an explicit inline style, rather than the enlarge-on
+    // behavior of filling the available space.
+    const img = screen.getByAltText("family.jpg");
+    expect(img.getAttribute("style")).toContain(`max-width: ${IMAGE_DETAIL.width}px`);
+  });
+
+  // content-presentation.md D6: a failed video's poster is a PLAIN poster,
+  // not an inspectable original — holding it must never raise a bogus
+  // "original pixels failed" notice, since the "original" would be the video
+  // file itself, and decoding that as an image always fails.
+  it("shows a plain, non-inspectable poster after playback fails, with no hold failure notice", () => {
+    render(
+      <PreviewSurface surface="quick" hash="video-hash" detail={DETAIL} keyboardActive />,
+    );
+
+    const video = document.querySelector("video")!;
+    fireEvent.error(video);
+    const alertsAfterPlaybackFailure = screen.getAllByRole("alert").length;
+    const notificationsAfterPlaybackFailure = invokeCalls.filter(
+      (call) => call.command === "record_recent_notification",
+    ).length;
+
+    const poster = screen.getByAltText(DETAIL.fileName);
+    fireEvent.pointerDown(poster, { pointerId: 1 });
+    // Holding the poster raises no SECOND (hold-inspection) failure — only
+    // the one already-truthful playback-failure notice remains.
+    expect(screen.getAllByRole("alert")).toHaveLength(alertsAfterPlaybackFailure);
+    expect(
+      invokeCalls.filter((call) => call.command === "record_recent_notification"),
+    ).toHaveLength(notificationsAfterPlaybackFailure);
   });
 
   it("falls back truthfully after specialized image decoding fails", async () => {

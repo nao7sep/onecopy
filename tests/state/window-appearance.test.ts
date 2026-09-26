@@ -50,6 +50,7 @@ it("projects auxiliary Preview preferences without running Main bootstrap", asyn
     appearance_preferences: () => ({
       uiFontFamily: null,
       enlargeSmallImagesInPreview: false,
+      enlargeSmallImagesInQuickView: true,
       videoTranscriptionEnabled: false,
       audioTranscriptionEnabled: true,
     }),
@@ -59,6 +60,9 @@ it("projects auxiliary Preview preferences without running Main bootstrap", asyn
   await installWindowAppearance();
   expect(useWindowPreferencesStore.getState()).toMatchObject({
     enlargeSmallImagesInPreview: false,
+    // Fullscreen (an auxiliary webview) shares Quick View's own setting, not
+    // Preview's — the two are one session (content-presentation.md D3).
+    enlargeSmallImagesInQuickView: true,
     videoTranscriptionEnabled: false,
     audioTranscriptionEnabled: true,
   });

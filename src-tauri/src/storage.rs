@@ -264,6 +264,7 @@ pub fn read_appearance_preferences(root: &Path) -> Result<JsonValue, String> {
     Ok(serde_json::json!({
         "uiFontFamily": config.get("uiFontFamily"),
         "enlargeSmallImagesInPreview": config.get("enlargeSmallImagesInPreview"),
+        "enlargeSmallImagesInQuickView": config.get("enlargeSmallImagesInQuickView"),
         "videoTranscriptionEnabled": config.get("videoTranscriptionEnabled"),
         "audioTranscriptionEnabled": config.get("audioTranscriptionEnabled"),
     }))

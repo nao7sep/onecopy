@@ -23,13 +23,14 @@ fn appearance_reads_only_preferences_without_repairing_or_loading_other_stores()
         serde_json::json!({
             "uiFontFamily": null,
             "enlargeSmallImagesInPreview": null,
+            "enlargeSmallImagesInQuickView": null,
             "videoTranscriptionEnabled": null,
             "audioTranscriptionEnabled": null,
         })
     );
     assert!(!root.path().join(CONFIG_FILE_NAME).exists());
     let config = root.path().join(CONFIG_FILE_NAME);
-    let bytes = br#"{"theme":"dark","uiFontFamily":"Iosevka","enlargeSmallImagesInPreview":false,"videoTranscriptionEnabled":false,"audioTranscriptionEnabled":true,"sourceDirs":["/private"],"verifyAfterCopy":false}"#;
+    let bytes = br#"{"theme":"dark","uiFontFamily":"Iosevka","enlargeSmallImagesInPreview":false,"enlargeSmallImagesInQuickView":false,"videoTranscriptionEnabled":false,"audioTranscriptionEnabled":true,"sourceDirs":["/private"],"verifyAfterCopy":false}"#;
     std::fs::write(&config, bytes).unwrap();
     std::fs::write(root.path().join(STATE_FILE_NAME), b"{ invalid state").unwrap();
     assert_eq!(
@@ -37,6 +38,7 @@ fn appearance_reads_only_preferences_without_repairing_or_loading_other_stores()
         serde_json::json!({
             "uiFontFamily": "Iosevka",
             "enlargeSmallImagesInPreview": false,
+            "enlargeSmallImagesInQuickView": false,
             "videoTranscriptionEnabled": false,
             "audioTranscriptionEnabled": true,
         })

@@ -13,6 +13,7 @@ interface AppearancePreferences {
   systemLanguage?: unknown;
   systemLocale?: unknown;
   enlargeSmallImagesInPreview?: unknown;
+  enlargeSmallImagesInQuickView?: unknown;
   videoTranscriptionEnabled?: unknown;
   audioTranscriptionEnabled?: unknown;
 }

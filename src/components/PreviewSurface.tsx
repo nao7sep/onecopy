@@ -141,10 +141,15 @@ function VideoSurface({
         onClickCapture={playbackFailed ? undefined : hold.onClickCapture}
       >
         {playbackFailed ? (
-          <InspectableImage
-            hash={hash}
-            fileName={detail.fileName}
-            enlargeSmall
+          // A plain poster, not an inspectable one: `InspectableImage`'s hold
+          // loads the ORIGINAL file at full size for 1:1 inspection, which
+          // here is the video itself — that decode always fails and raised a
+          // bogus "original pixels failed" notice for a poster that was
+          // already showing correctly (content-presentation.md D6).
+          <img
+            src={previewUrl(hash)}
+            alt={detail.fileName}
+            className="h-full w-full object-contain"
           />
         ) : (
           <video
@@ -574,15 +579,24 @@ export default function PreviewSurface({
   keyboardActive?: boolean;
 }) {
   const { t } = useI18n();
+  const isQuickViewSetting = surface === "quick" || surface === "viewer";
   const configuredEnlargeSmall = useAppStore((state) => {
     const config = state.appData?.config;
     if (config === null || config === undefined) return null;
-    return surface === "quick" || surface === "viewer"
+    return isQuickViewSetting
       ? config.enlargeSmallImagesInQuickView !== false
       : config.enlargeSmallImagesInPreview !== false;
   });
-  const auxiliaryEnlargeSmall = useWindowPreferencesStore(
-    (state) => state.enlargeSmallImagesInPreview,
+  // Main's own webview has this directly through `appData.config` above.
+  // Auxiliary webviews (the separate Preview window, true fullscreen) have no
+  // app-config projection of their own and fall back to this read-only
+  // mirror — routed by the SAME surface split, so fullscreen shares Quick
+  // View's setting rather than Preview's (content-presentation.md D3: "Quick
+  // View and true fullscreen are one session").
+  const auxiliaryEnlargeSmall = useWindowPreferencesStore((state) =>
+    isQuickViewSetting
+      ? state.enlargeSmallImagesInQuickView
+      : state.enlargeSmallImagesInPreview,
   );
   const enlargeSmall = configuredEnlargeSmall ?? auxiliaryEnlargeSmall;
   if (detail !== null && isAudioFile(detail.fileName)) {
