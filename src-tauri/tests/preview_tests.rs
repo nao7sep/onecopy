@@ -682,3 +682,60 @@ fn ensure_fullres_short_circuits_and_reports_missing_ffmpeg_honestly() {
     let err = ensure_fullres(&conn, &cache, None, "def456").unwrap_err();
     assert!(err.contains("Managed tools"), "{err}");
 }
+
+// Unix-only, gated at the ITEM so Windows is honestly MISSING this coverage
+// rather than running it vacuously green: the failure is staged with a chmod
+// 0o000 that Windows has no equivalent for.
+//
+// (R6-05) A full disk or unwritable cache is a lifecycle condition, not a
+// bad file: the pass must stop and report one reason, not record a permanent
+// per-item failure for every remaining item.
+#[cfg(unix)]
+#[test]
+fn an_unwritable_cache_pauses_the_pass_instead_of_failing_every_item() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-derive-storage-")
+        .tempdir()
+        .unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    let cache_root = dir.path().join("cache");
+    std::fs::create_dir_all(&cache_root).unwrap();
+    let cache = CachePaths::new(cache_root.clone());
+
+    let good = gradient_jpeg(dir.path(), "good.jpg", 800, 600);
+    conn.execute_batch(&format!(
+        "INSERT INTO contents (hash, byte_size, kind) VALUES ('good01', 1, 'image');
+         INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash)
+           VALUES ('{}', '{}', 'good.jpg', 'image', 'good01');",
+        good.display(),
+        dir.path().display(),
+    ))
+    .unwrap();
+
+    std::fs::set_permissions(&cache_root, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let result = derive_images_pending(&conn, &cache, 320, 1600, None, None);
+    std::fs::set_permissions(&cache_root, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let err = result.expect_err("an unwritable cache must fail the pass, not silently succeed");
+    assert!(
+        err.contains("cache storage unavailable"),
+        "the pass must report the lifecycle condition, not a plain I/O message: {err}"
+    );
+
+    let failed_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM contents WHERE derived_at_utc = 'failed'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(failed_rows, 0, "the item must not be recorded as permanently broken");
+    let issues: i64 = conn.query_row("SELECT COUNT(*) FROM issues", [], |r| r.get(0)).unwrap();
+    assert_eq!(issues, 0, "the derive pass itself records no per-item Issue for this condition");
+
+    // Space returns: the same pending row derives normally on the next pass.
+    let recovered = derive_images_pending(&conn, &cache, 320, 1600, None, None).unwrap();
+    assert_eq!((recovered.derived, recovered.failed), (1, 0));
+}

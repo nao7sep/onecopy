@@ -1003,20 +1003,24 @@ fn derive_priority_previews(
     }
     let mut did_work = false;
     let generation = ATTENTION_GENERATION.load(Ordering::SeqCst);
-    let image = with_active(app, WorkClass::Previews, || {
-        crate::derived_runtime::active_item(app, WorkClass::Previews, &turn[0]);
-        crate::preview::derive_image_hashes(
-            conn,
-            cache,
-            settings.thumb_edge,
-            settings.preview_long_edge,
-            settings.ffmpeg.as_deref(),
-            &turn,
-            is_idle(),
-            &|| ATTENTION_GENERATION.load(Ordering::SeqCst) != generation,
-        )
-    })?
-    .unwrap_or_default();
+    let image = active_or_pause_for_storage(
+        app,
+        conn,
+        WorkClass::Previews,
+        with_active(app, WorkClass::Previews, || {
+            crate::derived_runtime::active_item(app, WorkClass::Previews, &turn[0]);
+            crate::preview::derive_image_hashes(
+                conn,
+                cache,
+                settings.thumb_edge,
+                settings.preview_long_edge,
+                settings.ffmpeg.as_deref(),
+                &turn,
+                is_idle(),
+                &|| ATTENTION_GENERATION.load(Ordering::SeqCst) != generation,
+            )
+        }),
+    )?;
     if image.derived + image.failed + image.blocked_no_ffmpeg > 0 {
         emit_progress(app, WorkClass::Previews, None);
         notify_image_changes(app, conn, projection, &image.changes);
@@ -1034,19 +1038,23 @@ fn derive_priority_previews(
         if !available() || ATTENTION_GENERATION.load(Ordering::SeqCst) != generation {
             break;
         }
-        let video = with_active(app, WorkClass::Previews, || {
-            crate::derived_runtime::active_item(app, WorkClass::Previews, hash);
-            crate::video::derive_video_hash(
-                conn,
-                cache,
-                settings.ffmpeg.as_deref(),
-                &settings.temp_dir,
-                settings.thumb_edge,
-                settings.preview_long_edge,
-                hash,
-            )
-        })?
-        .unwrap_or_default();
+        let video = active_or_pause_for_storage(
+            app,
+            conn,
+            WorkClass::Previews,
+            with_active(app, WorkClass::Previews, || {
+                crate::derived_runtime::active_item(app, WorkClass::Previews, hash);
+                crate::video::derive_video_hash(
+                    conn,
+                    cache,
+                    settings.ffmpeg.as_deref(),
+                    &settings.temp_dir,
+                    settings.thumb_edge,
+                    settings.preview_long_edge,
+                    hash,
+                )
+            }),
+        )?;
         if video.derived + video.failed > 0 {
             emit_progress(app, WorkClass::Previews, None);
             notify_video_changes(app, conn, projection, &video.changed_hashes);
@@ -1070,18 +1078,22 @@ fn derive_global_required(
         return Ok(false);
     }
     let generation = ATTENTION_GENERATION.load(Ordering::SeqCst);
-    let image = with_active(app, WorkClass::Previews, || {
-        crate::preview::derive_next_images(
-            conn,
-            cache,
-            settings.thumb_edge,
-            settings.preview_long_edge,
-            settings.ffmpeg.as_deref(),
-            is_idle(),
-            &|hash| crate::derived_runtime::active_item(app, WorkClass::Previews, hash),
-        )
-    })?
-    .unwrap_or_default();
+    let image = active_or_pause_for_storage(
+        app,
+        conn,
+        WorkClass::Previews,
+        with_active(app, WorkClass::Previews, || {
+            crate::preview::derive_next_images(
+                conn,
+                cache,
+                settings.thumb_edge,
+                settings.preview_long_edge,
+                settings.ffmpeg.as_deref(),
+                is_idle(),
+                &|hash| crate::derived_runtime::active_item(app, WorkClass::Previews, hash),
+            )
+        }),
+    )?;
     let mut did_work = image.derived + image.failed + image.blocked_no_ffmpeg > 0;
     if did_work {
         emit_progress(app, WorkClass::Previews, None);
@@ -1093,18 +1105,22 @@ fn derive_global_required(
     if !available() || ATTENTION_GENERATION.load(Ordering::SeqCst) != generation {
         return Ok(did_work);
     }
-    let video = with_active(app, WorkClass::Previews, || {
-        crate::video::derive_next_video(
-            conn,
-            cache,
-            settings.ffmpeg.as_deref(),
-            &settings.temp_dir,
-            settings.thumb_edge,
-            settings.preview_long_edge,
-            &|hash| crate::derived_runtime::active_item(app, WorkClass::Previews, hash),
-        )
-    })?
-    .unwrap_or_default();
+    let video = active_or_pause_for_storage(
+        app,
+        conn,
+        WorkClass::Previews,
+        with_active(app, WorkClass::Previews, || {
+            crate::video::derive_next_video(
+                conn,
+                cache,
+                settings.ffmpeg.as_deref(),
+                &settings.temp_dir,
+                settings.thumb_edge,
+                settings.preview_long_edge,
+                &|hash| crate::derived_runtime::active_item(app, WorkClass::Previews, hash),
+            )
+        }),
+    )?;
     if video.derived + video.failed > 0 {
         emit_progress(app, WorkClass::Previews, None);
         notify_video_changes(app, conn, projection, &video.changed_hashes);
@@ -1251,26 +1267,30 @@ fn run_optional_class(
             let Some(ffmpeg) = settings.ffmpeg.as_deref() else {
                 return Ok(false);
             };
-            let stats = with_active(app, class, || {
-                crate::video::derive_strips_pending(
-                    conn,
-                    cache,
-                    ffmpeg,
-                    &settings.temp_dir,
-                    &settings.strip,
-                    priority,
-                    &|hash| crate::derived_runtime::active_item(app, class, hash),
-                    &|hash| notify_item_update(app, conn, projection, "snapshots", hash, hash),
-                    if foreground {
-                        None
-                    } else {
-                        cursor.after_hash.as_deref()
-                    },
-                    &stop,
-                    &progress(app, class),
-                )
-            })?
-            .unwrap_or_default();
+            let stats = active_or_pause_for_storage(
+                app,
+                conn,
+                class,
+                with_active(app, class, || {
+                    crate::video::derive_strips_pending(
+                        conn,
+                        cache,
+                        ffmpeg,
+                        &settings.temp_dir,
+                        &settings.strip,
+                        priority,
+                        &|hash| crate::derived_runtime::active_item(app, class, hash),
+                        &|hash| notify_item_update(app, conn, projection, "snapshots", hash, hash),
+                        if foreground {
+                            None
+                        } else {
+                            cursor.after_hash.as_deref()
+                        },
+                        &stop,
+                        &progress(app, class),
+                    )
+                }),
+            )?;
             if stats.attempted > 0 {
                 // Issues change only when a write actually opened or resolved
                 // one; a clean attempt has nothing new for the Issues inbox (C-M3).
@@ -1467,6 +1487,48 @@ pub(crate) fn pause_for_resource_safety(
     )?;
     notify_issues(app);
     Ok(())
+}
+
+/// A full disk or unwritable cache is a lifecycle condition, not a bad file:
+/// every remaining item in the class would fail the same write the same way.
+/// This pauses the class exactly like a resource-safety failure, with one
+/// Issue naming the condition, instead of recording a permanent per-item
+/// failure for every item the pass has not reached yet (R6-05).
+pub(crate) fn pause_for_storage_safety(
+    app: &AppHandle,
+    conn: &Connection,
+    class: WorkClass,
+    error: &str,
+) -> Result<(), String> {
+    crate::derived_runtime::pause_for_safety(app, class)?;
+    crate::index_store::upsert_issue(
+        conn,
+        None,
+        &format!("cache-storage-unavailable-{}", class.id()),
+        crate::resource_limits::storage_message(error),
+    )?;
+    notify_issues(app);
+    Ok(())
+}
+
+/// Runs a `with_active` result through the storage-safety gate: a cache-write
+/// failure pauses `class` and answers "no work done" instead of propagating as
+/// an ordinary pass error that would otherwise unwind the whole background
+/// loop (R6-05).
+fn active_or_pause_for_storage<T: Default>(
+    app: &AppHandle,
+    conn: &Connection,
+    class: WorkClass,
+    result: Result<Option<T>, String>,
+) -> Result<T, String> {
+    match result {
+        Ok(value) => Ok(value.unwrap_or_default()),
+        Err(error) if crate::resource_limits::is_storage_unavailable(&error) => {
+            pause_for_storage_safety(app, conn, class, &error)?;
+            Ok(T::default())
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub fn notify_item_update(

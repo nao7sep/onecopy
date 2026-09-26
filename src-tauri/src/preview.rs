@@ -329,7 +329,8 @@ fn copy_file_atomic(src: &Path, target: &Path) -> Result<(), String> {
     let parent = target
         .parent()
         .ok_or_else(|| "cache path has no parent".to_string())?;
-    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| crate::resource_limits::cache_write_error("preview copy cache directory", e))?;
     let stem = target
         .file_stem()
         .and_then(|s| s.to_str())
@@ -337,11 +338,11 @@ fn copy_file_atomic(src: &Path, target: &Path) -> Result<(), String> {
     let tmp = parent.join(format!("{stem}-{}.tmp", nanoid::generate()?));
     std::fs::copy(src, &tmp).map_err(|e| {
         crate::fs_recovery::remove_file(&tmp, "preview copy staging cleanup");
-        e.to_string()
+        crate::resource_limits::cache_write_error("preview copy staging write", e)
     })?;
     std::fs::rename(&tmp, target).map_err(|e| {
         crate::fs_recovery::remove_file(&tmp, "preview copy publication cleanup");
-        e.to_string()
+        crate::resource_limits::cache_write_error("preview copy publication", e)
     })?;
     Ok(())
 }
@@ -567,7 +568,12 @@ fn record_preview_failure_or_combine(
     failure: String,
 ) -> String {
     // A stopped attempt is not a failed one; the next attempt starts fresh.
-    if failure.starts_with(crate::scanner::CANCELLED) {
+    // A full disk or unwritable cache is the same: every later click would
+    // fail the identical write, so this is not evidence the FILE is broken
+    // (R6-05).
+    if failure.starts_with(crate::scanner::CANCELLED)
+        || crate::resource_limits::is_storage_unavailable(&failure)
+    {
         return failure;
     }
     match crate::derived_state::record_preview_failure(conn, hash, path, &failure) {
@@ -896,6 +902,15 @@ fn derive_candidate_rows(
                     traces[index].finish(crate::activity::ActivityState::Cancelled, None);
                     return Err(crate::scanner::CANCELLED.to_string());
                 }
+                Err(err) if crate::resource_limits::is_storage_unavailable(&err) => {
+                    // A full disk or unwritable cache, not a bad file: every
+                    // remaining item would fail the same write. Stop the pass
+                    // here rather than recording one permanent failure per
+                    // item; the derived-work owner turns this into a paused
+                    // lifecycle condition with a single Issue (R6-05).
+                    traces[index].finish(crate::activity::ActivityState::Waiting, None);
+                    return Err(err);
+                }
                 Err(err) => {
                     stats.failed += 1;
                     stats.issues_changed |=
@@ -1175,7 +1190,8 @@ pub fn write_webp(img: &DynamicImage, target: &Path, quality: f32) -> Result<(),
     let parent = target
         .parent()
         .ok_or_else(|| "cache path has no parent".to_string())?;
-    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| crate::resource_limits::cache_write_error("WebP cache directory", e))?;
 
     let rgba = img.to_rgba8();
     let encoded =
@@ -1188,11 +1204,11 @@ pub fn write_webp(img: &DynamicImage, target: &Path, quality: f32) -> Result<(),
     let tmp = parent.join(format!("{stem}-{}.tmp", nanoid::generate()?));
     std::fs::write(&tmp, &*encoded).map_err(|e| {
         crate::fs_recovery::remove_file(&tmp, "WebP staging write cleanup");
-        e.to_string()
+        crate::resource_limits::cache_write_error("WebP staging write", e)
     })?;
     std::fs::rename(&tmp, target).map_err(|e| {
         crate::fs_recovery::remove_file(&tmp, "WebP publication cleanup");
-        e.to_string()
+        crate::resource_limits::cache_write_error("WebP publication", e)
     })?;
     Ok(())
 }

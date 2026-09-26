@@ -253,7 +253,8 @@ fn derive_videos_pending_limit(
     };
     // not recorded: ffmpeg frame staging (temp/, wiped at launch); the WebP
     // results land through preview.rs's own unrecorded cache writes.
-    std::fs::create_dir_all(temp_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(temp_dir)
+        .map_err(|e| crate::resource_limits::cache_write_error("video staging directory", e))?;
 
     let rows = crate::derived_state::video_candidates(conn, true, limit, only_hash)?;
 
@@ -305,6 +306,13 @@ fn derive_videos_pending_limit(
                 trace.finish(crate::activity::ActivityState::Cancelled, None);
                 return Err(crate::scanner::CANCELLED.to_string());
             }
+            Err(err) if crate::resource_limits::is_storage_unavailable(&err) => {
+                // A full disk or unwritable cache, not a broken video: every
+                // remaining item would fail the same write. The derived-work
+                // owner turns this into a paused lifecycle condition (R6-05).
+                trace.finish(crate::activity::ActivityState::Waiting, None);
+                return Err(err);
+            }
             Err(err) => {
                 stats.failed += 1;
                 stats.issues_changed |=
@@ -337,7 +345,8 @@ pub fn derive_strips_pending(
 ) -> Result<StripDeriveStats, String> {
     // not recorded: ffmpeg strip-frame staging lives in temp/ and produces
     // reconstructible binary cache entries.
-    std::fs::create_dir_all(temp_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(temp_dir)
+        .map_err(|e| crate::resource_limits::cache_write_error("video staging directory", e))?;
     let rows = if priority_hashes.is_empty() {
         crate::derived_state::strip_candidates(
             conn,
@@ -402,6 +411,21 @@ pub fn derive_strips_pending(
                     );
                 }
                 return Err(crate::scanner::CANCELLED.to_string());
+            }
+            Err(err) if crate::resource_limits::is_storage_unavailable(&err) => {
+                // A full disk or unwritable cache, not a broken video: every
+                // remaining item would fail the same write. Clean up any
+                // partial frames this attempt staged, exactly like a
+                // cancellation, and let the derived-work owner pause the
+                // class with one Issue instead of failing every video (R6-05).
+                trace.finish(crate::activity::ActivityState::Waiting, None);
+                for index in 0..count {
+                    crate::fs_recovery::remove_file(
+                        &strip_path(cache, &hash, index),
+                        "storage-unavailable video snapshot cleanup",
+                    );
+                }
+                return Err(err);
             }
             Err(err) => {
                 // -1 = strips failed: keeps the row out of every later pass

@@ -36,6 +36,12 @@ pub const MODEL_RUNNING_HEADROOM: u64 = 512 * 1024 * 1024;
 pub const SIMILARITY_REQUIRED_AVAILABLE: u64 = 512 * 1024 * 1024;
 pub const SAFETY_ERROR_PREFIX: &str = "resource safety: ";
 pub const DECODE_LIMIT_PREFIX: &str = "decode safety: ";
+/// A cache-side write failure, never a bad source file: the disk holding the
+/// data root is full, or its cache directory has stopped accepting writes.
+/// Every remaining item in the pass would fail the same way, so this is a
+/// lifecycle condition the derive owner pauses on rather than a per-item
+/// failure it records one Issue for each of (R6-05).
+pub const STORAGE_UNAVAILABLE_PREFIX: &str = "cache storage unavailable: ";
 
 fn image_limits() -> Limits {
     let mut limits = Limits::default();
@@ -75,6 +81,24 @@ pub fn is_decode_limit(error: &str) -> bool {
     error.starts_with(DECODE_LIMIT_PREFIX)
 }
 
+pub fn is_storage_unavailable(error: &str) -> bool {
+    error.starts_with(STORAGE_UNAVAILABLE_PREFIX)
+}
+
+/// Classifies a cache-write I/O failure. `context` is folded into the message
+/// either way; only the prefix on a storage/write-refusal kind changes, so
+/// callers can react without inspecting `std::io::Error` themselves.
+pub fn cache_write_error(context: &str, error: std::io::Error) -> String {
+    match error.kind() {
+        std::io::ErrorKind::StorageFull
+        | std::io::ErrorKind::ReadOnlyFilesystem
+        | std::io::ErrorKind::PermissionDenied => {
+            format!("{STORAGE_UNAVAILABLE_PREFIX}{context}: {error}")
+        }
+        _ => format!("{context}: {error}"),
+    }
+}
+
 pub fn require_available(bytes: u64, operation: &str) -> Result<(), String> {
     let Some(available) = available_memory_bytes() else {
         return Err(format!(
@@ -97,6 +121,10 @@ pub fn is_safety_error(error: &str) -> bool {
 
 pub fn safety_message(error: &str) -> &str {
     error.strip_prefix(SAFETY_ERROR_PREFIX).unwrap_or(error)
+}
+
+pub fn storage_message(error: &str) -> &str {
+    error.strip_prefix(STORAGE_UNAVAILABLE_PREFIX).unwrap_or(error)
 }
 
 /// Maximum native image conversions that may be in flight together now.
