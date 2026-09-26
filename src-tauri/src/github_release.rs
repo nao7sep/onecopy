@@ -95,10 +95,19 @@ fn parse_latest_tag(bytes: &[u8]) -> Result<String, String> {
 
 async fn run_check(app: &AppHandle) -> Result<ReleaseCheckOutcome, String> {
     let attempted_at_utc = crate::logging::now_iso_millis();
-    let saved = crate::storage::patch_state(
-        app,
-        &json!({ "githubReleaseLastAttemptAtUtc": attempted_at_utc }),
-    )?;
+    // The state-file write is filesystem I/O; this function runs on a tokio
+    // worker (spawned by `check()` below), so it goes through the same
+    // blocking-pool dispatch every other filesystem write in the app uses
+    // instead of blocking the async worker directly.
+    let owned_app = app.clone();
+    let attempt_marker = attempted_at_utc.clone();
+    let saved = crate::dispatch(move || {
+        crate::storage::patch_state(
+            &owned_app,
+            &json!({ "githubReleaseLastAttemptAtUtc": attempt_marker }),
+        )
+    })
+    .await?;
     if let Some(record) = saved.quarantined {
         crate::failure_runtime::emit_or_record(
             app,

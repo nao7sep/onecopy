@@ -142,7 +142,7 @@ fn install_panic_hook() {
 // request-sequence guards (`staleGuard` in src/state/request-seq.ts): a
 // 30k-item month query on the main thread was exactly the block a slow
 // machine felt as a frozen window.
-async fn dispatch<F, T>(f: F) -> Result<T, String>
+pub(crate) async fn dispatch<F, T>(f: F) -> Result<T, String>
 where
     F: FnOnce() -> Result<T, String> + Send + 'static,
     T: Send + 'static,
