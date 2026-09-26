@@ -174,6 +174,6 @@ Completed transcripts remain reconstructible derived information while their con
 
 ## Rebuilding the library index
 
-`Rebuild library index…` is a Settings maintenance action, not an everyday refresh command. It discards reconstructible library information, generated preparation, transcripts, and Issues so they can be derived again.
+`Rebuild library index…` is a Settings maintenance action, not an everyday refresh command. It discards reconstructible library information, transcripts, and Issues so they can be derived again. Generated preparation stored under an exact content identity depends only on those bytes and is reused; preparation stored under a provisional identity names a path rather than content and is discarded with it.
 
 Rebuilding never changes user files, Settings, managed tools, or retained authored records. It cannot overlap an active file operation because it removes information used to plan that operation. A rebuild request made while mutation work is active is refused with an explanation rather than queued for later execution.

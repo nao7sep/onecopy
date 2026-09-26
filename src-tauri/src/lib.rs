@@ -456,6 +456,9 @@ async fn rebuild_library_index(app: AppHandle) -> Result<(), String> {
                             })?;
                     scan_runtime::restart_source_walks();
                     let data_root = paths::data_root(&app)?;
+                    preview::purge_for_rebuild(&preview::CachePaths::new(
+                        data_root.join(storage::CACHE_DIR_NAME),
+                    ))?;
                     let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
                     index_store::clear_reconstructible(&conn)?;
                     notifications::clear_active(&app)

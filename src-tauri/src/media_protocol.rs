@@ -129,8 +129,19 @@ pub(crate) fn serve_original(
     builder.body(bytes).unwrap_or_else(|_| not_found())
 }
 
-/// Serves immutable content-addressed thumbnails, previews, full-resolution
-/// stills, and video strip frames. Cache misses are expected 404s.
+/// How long the webview may keep a cache entry. An entry under a content
+/// hash never changes; one under a provisional key (`p<path id>`) is replaced
+/// when that path's file changes or a rebuild hands the id to another file.
+pub(crate) fn cache_control(key: &str) -> &'static str {
+    if crate::scanner::is_provisional(key) {
+        "no-store"
+    } else {
+        "public, max-age=31536000, immutable"
+    }
+}
+
+/// Serves thumbnails, previews, full-resolution stills, and video strip
+/// frames. Cache misses are expected 404s.
 pub(crate) fn serve_cache(
     request: &tauri::http::Request<Vec<u8>>,
 ) -> tauri::http::Response<Vec<u8>> {
@@ -139,6 +150,7 @@ pub(crate) fn serve_cache(
     };
     let cache = crate::preview::CachePaths::new(root);
     let path = request.uri().path().trim_start_matches('/');
+    let key = path.split_once('-').map_or("", |(_, key)| key);
     let file = if let Some(hash) = path.strip_prefix("thumb-") {
         cache.thumb(hash)
     } else if let Some(hash) = path.strip_prefix("preview-") {
@@ -162,7 +174,7 @@ pub(crate) fn serve_cache(
             tauri::http::Response::builder()
                 .status(200)
                 .header("Content-Type", content_type)
-                .header("Cache-Control", "public, max-age=31536000, immutable")
+                .header("Cache-Control", cache_control(key))
                 .body(bytes)
                 .unwrap_or_else(|_| not_found())
         }

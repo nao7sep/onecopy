@@ -47,3 +47,17 @@ fn section_recheck_answers_busy_while_a_file_operation_runs() {
     drop(operation);
     assert!(crate::scan_runtime::section_admission().is_ok());
 }
+
+#[test]
+fn a_rebuild_requested_during_a_file_operation_is_refused_at_once_and_never_queued() {
+    // `begin_rebuild` takes this same claim, reporting only state failures.
+    let _serial = crate::scan_runtime::serial_test();
+    let operation = begin().unwrap();
+    let requested = std::time::Instant::now();
+    let refused = begin().map(|_| ()).unwrap_err();
+    assert!(requested.elapsed() < std::time::Duration::from_millis(100));
+    assert_eq!(refused, "Another file operation is already running.");
+    drop(operation);
+    // Nothing waited to run once the operation ended.
+    assert!(!active());
+}

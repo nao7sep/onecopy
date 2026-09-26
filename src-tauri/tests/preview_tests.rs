@@ -739,3 +739,40 @@ fn an_unwritable_cache_pauses_the_pass_instead_of_failing_every_item() {
     let recovered = derive_images_pending(&conn, &cache, 320, 1600, None, None).unwrap();
     assert_eq!((recovered.derived, recovered.failed), (1, 0));
 }
+
+#[test]
+fn a_rebuild_discards_provisional_entries_and_transcripts_but_reuses_content_addressed_ones() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-rebuild-cache-")
+        .tempdir()
+        .unwrap();
+    let cache = CachePaths::new(dir.path().join("cache"));
+    let exact = "3f2a9c0d";
+    let provisional = "p17";
+    let mut kept = vec![cache.thumb(exact), cache.preview(exact), cache.fullres(exact)];
+    kept.push(onecopy_lib::video::strip_path(&cache, exact, 0));
+    let mut purged = vec![
+        cache.thumb(provisional),
+        cache.preview(provisional),
+        cache.fullres(provisional),
+        cache.transcript(exact),
+        cache.transcript(provisional),
+    ];
+    purged.push(onecopy_lib::video::strip_path(&cache, provisional, 2));
+    for path in kept.iter().chain(&purged) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"bytes").unwrap();
+    }
+
+    purge_for_rebuild(&cache).unwrap();
+
+    for path in &kept {
+        assert!(path.exists(), "{} was discarded", path.display());
+    }
+    for path in &purged {
+        assert!(!path.exists(), "{} survived the rebuild", path.display());
+    }
+    // An empty or never-created cache is not an error.
+    purge_for_rebuild(&cache).unwrap();
+    purge_for_rebuild(&CachePaths::new(dir.path().join("absent"))).unwrap();
+}
