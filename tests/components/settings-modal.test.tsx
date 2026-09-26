@@ -137,6 +137,23 @@ describe("Settings categories", () => {
     expect(screen.getAllByRole("button", { name: "Move up" })[0].textContent).toBe("Move up");
   });
 
+  // screen-priority.md: the configured display order is meaningful only with
+  // two or more monitors, so a single-display machine must render no order
+  // section at all (not merely a one-row, unreorderable one).
+  it("renders no screen-priority section with a single display", async () => {
+    setMonitors([{
+      name: "Fixture 0", position: { x: 0, y: 0 },
+      size: { width: 1920, height: 1080 }, scaleFactor: 1,
+    }]);
+    render(<SettingsModal open onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("tab", { name: "Appearance" }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(screen.queryByRole("button", { name: "Move up" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Move down" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Identify screens" })).toBeNull();
+  });
+
   // One occurrence, one report: the row that asked shows the failure, so the
   // core must not raise its generic storage notice beside it and the status bar
   // must not count the one failed write as two Issues.
