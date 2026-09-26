@@ -170,6 +170,16 @@ function Tile({
   );
 }
 
+function badgeToneClass(tone: PresentationBadge["tone"]): string {
+  return tone === "danger"
+    ? "bg-danger-surface text-danger"
+    : tone === "warning"
+      ? "bg-warning-surface text-warning"
+      : tone === "primary"
+        ? "bg-primary-surface text-primary"
+        : "bg-surface-muted text-ink-muted";
+}
+
 function TileBadge({
   badge,
   className,
@@ -177,14 +187,7 @@ function TileBadge({
   badge: PresentationBadge | FaceRatingPresentation;
   className: string;
 }) {
-  const tone =
-    badge.tone === "danger"
-      ? "bg-danger-surface text-danger"
-      : badge.tone === "warning"
-        ? "bg-warning-surface text-warning"
-        : badge.tone === "primary"
-          ? "bg-primary-surface text-primary"
-          : "bg-surface-muted text-ink-muted";
+  const tone = badgeToneClass(badge.tone);
   return (
     <span
       className={`absolute truncate rounded-md px-1.5 py-0.5 text-[11px] font-medium ${tone} ${className}`}
@@ -198,6 +201,19 @@ function TileBadge({
           <span className="sr-only">{badge.label}</span>
         </>
       )}
+    </span>
+  );
+}
+
+/** Inline variant of `TileBadge` for flat rows, where the badge sits beside
+ * the filename instead of floating over artwork. */
+function RowBadge({ badge }: { badge: PresentationBadge }) {
+  return (
+    <span
+      className={`ml-2 shrink-0 truncate rounded-md px-1.5 py-0.5 text-[11px] font-medium ${badgeToneClass(badge.tone)}`}
+      title={badge.label}
+    >
+      {badge.text}
     </span>
   );
 }
@@ -334,12 +350,14 @@ function ListRow({
   isAnchor,
   onSelect,
   widths,
+  presentation,
 }: {
   item: SectionItem;
   isSelected: boolean;
   isAnchor: boolean;
   onSelect: (event: React.MouseEvent) => void;
   widths: Record<SizedColumn, number>;
+  presentation: ItemPresentation;
 }) {
   const { t, dateTime, number } = useI18n();
   const drag = useDestinationItemDrag({
@@ -389,6 +407,7 @@ function ListRow({
             {t("grid.copyCount", { count: item.copyCount })}
           </span>
         ) : null}
+        {presentation.status !== null ? <RowBadge badge={presentation.status} /> : null}
       </span>
       <span
         className="shrink-0 text-right tabular-nums text-xs text-ink-muted"
@@ -868,6 +887,7 @@ export default function Grid({
                   isAnchor={isAnchor}
                   onSelect={onSelect}
                   widths={columnWidths}
+                  presentation={presentation}
                 />
               ) : (
                 <Tile

@@ -431,6 +431,23 @@ describe("other files", () => {
 
     expect(useItemsStore.getState().selectedItem).toBe("h3");
   });
+
+  it("shows truthful preparation and error state, not a plain row (R5.1 D6b)", () => {
+    const failed = item(1, {
+      derivedWork: {
+        ...EMPTY_ITEM_WORK,
+        transcripts: {
+          state: "failed",
+          hasValue: false,
+          reason: null,
+          done: null,
+          total: null,
+        },
+      },
+    });
+    const { view } = renderGrid([failed], false, "list");
+    expect(view.getByText("Transcript failed")).toBeTruthy();
+  });
 });
 
 describe("shift+arrow", () => {
