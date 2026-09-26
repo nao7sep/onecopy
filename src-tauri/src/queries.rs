@@ -11,7 +11,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use chrono::{Datelike, TimeZone};
 use chrono_tz::Tz;
@@ -303,20 +303,30 @@ static SECTION_COUNTS_CACHE: Mutex<Option<SectionCountsCache>> = Mutex::new(None
 /// index snapshot and the OS display timezone is unchanged. The cache owns a
 /// read-only-in-practice observer connection, so `PRAGMA data_version` changes
 /// for every writer connection without adding a revision table or trigger.
+///
+/// The global mutex is held only to take and to return the cache slot, never
+/// while `load` recomputes: a scan-time pile-up of concurrent callers used to
+/// queue on this lock for the full O(library) recount instead of each running
+/// (redundantly, on a miss) in parallel. Every caller reunites its slot with
+/// the shared one afterward so the persistent connection is normally reused.
 pub fn cached_section_counts(db_file: &Path, display_tz: Tz) -> Result<SectionCounts, String> {
-    let mut cache = SECTION_COUNTS_CACHE
+    let mut owned = {
+        let mut slot = SECTION_COUNTS_CACHE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match slot.take() {
+            Some(existing) if existing.db_file == db_file => existing,
+            _ => SectionCountsCache::open(db_file)?,
+        }
+    };
+
+    let result = owned.load(display_tz).map(|(counts, _)| counts);
+
+    let mut slot = SECTION_COUNTS_CACHE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let needs_connection = cache
-        .as_ref()
-        .is_none_or(|existing| existing.db_file != db_file);
-    if needs_connection {
-        *cache = Some(SectionCountsCache::open(db_file)?);
-    }
-    let cache = cache
-        .as_mut()
-        .ok_or_else(|| "section count cache could not be initialized".to_string())?;
-    cache.load(display_tz).map(|(counts, _)| counts)
+    *slot = Some(owned);
+    result
 }
 
 /// One grid row: a logical file within a section. `hash` is None for
@@ -356,7 +366,7 @@ pub struct ItemProjectionContext {
     pub capabilities: crate::derived_state::WorkCapabilities,
 }
 
-#[derive(Deserialize, Debug, Clone, Copy)]
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum SectionSortOrder {
     Time,
@@ -366,7 +376,7 @@ pub enum SectionSortOrder {
     Ext,
 }
 
-#[derive(Deserialize, Debug, Clone, Copy)]
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SectionSort {
     pub order: SectionSortOrder,
@@ -475,6 +485,121 @@ pub fn section_window(
     Ok(window)
 }
 
+#[derive(Clone)]
+struct SectionOrderCache {
+    db_file: String,
+    kind: String,
+    month: String,
+    sort: SectionSort,
+    revision: (i64, u64),
+    identities: Arc<Vec<SectionIdentity>>,
+}
+
+static SECTION_ORDER_CACHE: Mutex<Option<SectionOrderCache>> = Mutex::new(None);
+
+/// A cheap, monotonic stand-in for "has this connection's view of the index
+/// changed". `PRAGMA data_version` only changes when a *different* connection
+/// commits (by SQLite's own definition), so it misses a write this same
+/// connection just made -- which normal per-command dispatch never does (each
+/// command opens its own fresh connection), but a caller that reuses one
+/// connection across a write and a read otherwise would silently see a stale
+/// cached order. Pairing it with `total_changes()`, which counts this
+/// connection's own statements, covers both cases without a real query.
+fn section_index_revision(conn: &Connection) -> Result<(i64, u64), String> {
+    let data_version = conn
+        .pragma_query_value(None, "data_version", |row| row.get::<_, i64>(0))
+        .map_err(|error| error.to_string())?;
+    Ok((data_version, conn.total_changes()))
+}
+
+/// Returns one section's complete ordered identity sequence, sorted once per
+/// index revision instead of once per caller. `reconcile_section`, section
+/// windows, range reads, family-context recovery, and viewer-session
+/// materialization used to each run their own full-section `ORDER BY`; they
+/// now share this one ordering for a given `(db, kind, month, sort)` while the
+/// index revision stays the same.
+fn ordered_section_identities(
+    conn: &Connection,
+    kind: &str,
+    month: &str,
+    bounds: Option<(i64, i64)>,
+    sort: SectionSort,
+) -> Result<Arc<Vec<SectionIdentity>>, String> {
+    let db_file = conn.path().unwrap_or_default().to_string();
+    let revision = section_index_revision(conn)?;
+    {
+        let cache = SECTION_ORDER_CACHE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(existing) = cache.as_ref() {
+            if existing.db_file == db_file
+                && existing.kind == kind
+                && existing.month == month
+                && existing.sort == sort
+                && existing.revision == revision
+            {
+                return Ok(existing.identities.clone());
+            }
+        }
+    }
+
+    let candidates = section_candidates_sql(kind == "other", bounds.is_some());
+    let params = section_candidate_params(kind, bounds);
+    let sql = format!(
+        "WITH candidates AS ({candidates}) SELECT hash, path_id FROM candidates ORDER BY {}",
+        section_order_sql(sort)
+    );
+    let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
+    let identities = statement
+        .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            Ok(SectionIdentity {
+                hash: row.get(0)?,
+                path_id: row.get(1)?,
+            })
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| error.to_string())?;
+    drop(statement);
+    let identities = Arc::new(identities);
+
+    let mut cache = SECTION_ORDER_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *cache = Some(SectionOrderCache {
+        db_file,
+        kind: kind.to_string(),
+        month: month.to_string(),
+        sort,
+        revision,
+        identities: identities.clone(),
+    });
+    Ok(identities)
+}
+
+/// Clamps `[start, end)` to `ordered`'s bounds and slices it without copying.
+fn ordered_section_slice(ordered: &[SectionIdentity], start: u64, end: u64) -> &[SectionIdentity] {
+    let total = ordered.len() as u64;
+    let start = start.min(total) as usize;
+    let end = end.min(total).max(start as u64) as usize;
+    &ordered[start..end]
+}
+
+fn recovery_context_from_ordered(
+    ordered: &[SectionIdentity],
+    index: u64,
+) -> SectionRecoveryContextOutput {
+    let start = index.saturating_sub(RECOVERY_NEIGHBOR_LIMIT);
+    let end = index.saturating_add(RECOVERY_NEIGHBOR_LIMIT + 1);
+    let slice = ordered_section_slice(ordered, start, end);
+    let anchor_offset = ((index - start) as usize).min(slice.len());
+    SectionRecoveryContextOutput {
+        index,
+        before: slice[..anchor_offset].iter().rev().cloned().collect(),
+        after: slice.get(anchor_offset + 1..).unwrap_or_default().to_vec(),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn section_window_snapshot(
     conn: &Connection,
@@ -495,17 +620,8 @@ fn section_window_snapshot(
         ));
     }
     let bounds = month_bounds(month, display_tz)?;
-    let candidates = section_candidates_sql(kind == "other", bounds.is_some());
-    let base_params = section_candidate_params(kind, bounds);
-    let total_sql = format!("WITH candidates AS ({candidates}) SELECT COUNT(*) FROM candidates");
-    let total = conn
-        .query_row(
-            &total_sql,
-            rusqlite::params_from_iter(base_params.iter()),
-            |row| row.get::<_, i64>(0),
-        )
-        .map_err(|error| error.to_string())?
-        .max(0) as u64;
+    let ordered = ordered_section_identities(conn, kind, month, bounds, sort)?;
+    let total = ordered.len() as u64;
     let start = start.min(total);
     if start == total {
         return Ok(SectionWindow {
@@ -514,34 +630,12 @@ fn section_window_snapshot(
             items: Vec::new(),
         });
     }
-
-    let mut page_params = base_params;
-    page_params.push((limit as i64).into());
-    page_params.push((start.min(i64::MAX as u64) as i64).into());
-    let page_sql = format!(
-        "WITH candidates AS ({candidates}) \
-         SELECT hash, path_id FROM candidates ORDER BY {} LIMIT ?{} OFFSET ?{}",
-        section_order_sql(sort),
-        page_params.len() - 1,
-        page_params.len(),
-    );
-    let mut statement = conn.prepare(&page_sql).map_err(|error| error.to_string())?;
-    let identities = statement
-        .query_map(rusqlite::params_from_iter(page_params.iter()), |row| {
-            Ok(SectionIdentity {
-                hash: row.get(0)?,
-                path_id: row.get(1)?,
-            })
-        })
-        .map_err(|error| error.to_string())?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|error| error.to_string())?;
-    drop(statement);
-
+    let end = start.saturating_add(u64::from(limit));
+    let identities = ordered_section_slice(&ordered, start, end);
     Ok(SectionWindow {
         total,
         start,
-        items: section_items_by_identity(conn, &identities, projection)?,
+        items: section_items_by_identity(conn, identities, projection)?,
     })
 }
 
@@ -549,8 +643,9 @@ const RECOVERY_NEIGHBOR_LIMIT: u64 = 64;
 
 /// Reconciles selection and the work-position anchor against one ordered
 /// section snapshot, then returns only the display window around the chosen
-/// anchor. The scan retains matches for explicitly supplied identities; it
-/// never materializes the section itself.
+/// anchor. The section is sorted exactly once (`ordered_section_identities`);
+/// the match scan, display window, and recovery neighbors are all sliced from
+/// that single ordering instead of each re-sorting the section.
 #[allow(clippy::too_many_arguments)]
 pub fn reconcile_section(
     conn: &Connection,
@@ -575,17 +670,9 @@ pub fn reconcile_section(
             "section window limit must be between 1 and {MAX_SECTION_WINDOW_ITEMS}"
         ));
     }
-    let transaction =
-        rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Deferred)
-            .map_err(|error| error.to_string())?;
     let bounds = month_bounds(month, display_tz)?;
-    let candidates = section_candidates_sql(kind == "other", bounds.is_some());
-    let params = section_candidate_params(kind, bounds);
-    let sql = format!(
-        "WITH candidates AS ({candidates}) \
-         SELECT hash, path_id FROM candidates ORDER BY {}",
-        section_order_sql(sort)
-    );
+    let ordered = ordered_section_identities(conn, kind, month, bounds, sort)?;
+    let total = ordered.len() as u64;
 
     let wanted: HashSet<String> = selected
         .iter()
@@ -600,29 +687,15 @@ pub fn reconcile_section(
         .map(SectionIdentity::key)
         .collect();
     let mut matches = HashMap::<String, PositionedSectionIdentity>::with_capacity(wanted.len());
-    let mut statement = transaction
-        .prepare(&sql)
-        .map_err(|error| error.to_string())?;
-    let mut rows = statement
-        .query(rusqlite::params_from_iter(params.iter()))
-        .map_err(|error| error.to_string())?;
-    let mut total = 0_u64;
-    while let Some(row) = rows.next().map_err(|error| error.to_string())? {
-        let identity = SectionIdentity {
-            hash: row.get(0).map_err(|error| error.to_string())?,
-            path_id: row.get(1).map_err(|error| error.to_string())?,
-        };
+    for (index, identity) in ordered.iter().enumerate() {
         let key = identity.key();
         if wanted.contains(&key) {
             matches.insert(
                 key,
-                PositionedSectionIdentity::from_identity(identity, total),
+                PositionedSectionIdentity::from_identity(identity.clone(), index as u64),
             );
         }
-        total += 1;
     }
-    drop(rows);
-    drop(statement);
 
     let mut live_selected = matched_identities(selected, &matches);
     live_selected.sort_by_key(|member| member.index);
@@ -639,10 +712,9 @@ pub fn reconcile_section(
     );
     let anchor = match chosen {
         Some(AnchorChoice::Known(member)) => Some(member),
-        Some(AnchorChoice::Index(index)) => {
-            section_identity_at(&transaction, kind, bounds, sort, index)?
-                .map(|identity| PositionedSectionIdentity::from_identity(identity, index))
-        }
+        Some(AnchorChoice::Index(index)) => ordered
+            .get(index as usize)
+            .map(|identity| PositionedSectionIdentity::from_identity(identity.clone(), index)),
         None => None,
     };
 
@@ -651,21 +723,19 @@ pub fn reconcile_section(
     let start = anchor_index
         .saturating_sub(u64::from(limit) / 2)
         .min(max_start);
-    let window = section_window_snapshot(
-        &transaction,
-        kind,
-        month,
-        display_tz,
-        sort,
+    let end = start.saturating_add(u64::from(limit));
+    let window = SectionWindow {
+        total,
         start,
-        limit,
-        projection,
-    )?;
+        items: section_items_by_identity(
+            conn,
+            ordered_section_slice(&ordered, start, end),
+            projection,
+        )?,
+    };
     let context = anchor
         .as_ref()
-        .map(|member| section_recovery_context(&transaction, kind, bounds, sort, member.index))
-        .transpose()?;
-    transaction.commit().map_err(|error| error.to_string())?;
+        .map(|member| recovery_context_from_ordered(&ordered, member.index));
 
     Ok(SectionReconciliation {
         anchor,
@@ -744,72 +814,6 @@ fn choose_reconciled_anchor(
     Some(AnchorChoice::Index(0))
 }
 
-fn section_identity_at(
-    conn: &Connection,
-    kind: &str,
-    bounds: Option<(i64, i64)>,
-    sort: SectionSort,
-    index: u64,
-) -> Result<Option<SectionIdentity>, String> {
-    section_identity_range(conn, kind, bounds, sort, index, index.saturating_add(1))
-        .map(|mut identities| identities.pop())
-}
-
-fn section_recovery_context(
-    conn: &Connection,
-    kind: &str,
-    bounds: Option<(i64, i64)>,
-    sort: SectionSort,
-    index: u64,
-) -> Result<SectionRecoveryContextOutput, String> {
-    let start = index.saturating_sub(RECOVERY_NEIGHBOR_LIMIT);
-    let end = index.saturating_add(RECOVERY_NEIGHBOR_LIMIT + 1);
-    let identities = section_identity_range(conn, kind, bounds, sort, start, end)?;
-    let anchor_offset = (index - start) as usize;
-    Ok(SectionRecoveryContextOutput {
-        index,
-        before: identities[..anchor_offset].iter().rev().cloned().collect(),
-        after: identities.get(anchor_offset + 1..).unwrap_or_default().to_vec(),
-    })
-}
-
-fn section_identity_range(
-    conn: &Connection,
-    kind: &str,
-    bounds: Option<(i64, i64)>,
-    sort: SectionSort,
-    start: u64,
-    end: u64,
-) -> Result<Vec<SectionIdentity>, String> {
-    if end <= start {
-        return Ok(Vec::new());
-    }
-    let candidates = section_candidates_sql(kind == "other", bounds.is_some());
-    let mut params = section_candidate_params(kind, bounds);
-    let limit = end.saturating_sub(start).min(i64::MAX as u64) as i64;
-    params.push(limit.into());
-    params.push((start.min(i64::MAX as u64) as i64).into());
-    let sql = format!(
-        "WITH candidates AS ({candidates}) \
-         SELECT hash, path_id FROM candidates ORDER BY {} LIMIT ?{} OFFSET ?{}",
-        section_order_sql(sort),
-        params.len() - 1,
-        params.len(),
-    );
-    let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
-    let identities = statement
-        .query_map(rusqlite::params_from_iter(params.iter()), |row| {
-            Ok(SectionIdentity {
-                hash: row.get(0)?,
-                path_id: row.get(1)?,
-            })
-        })
-        .map_err(|error| error.to_string())?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|error| error.to_string())?;
-    Ok(identities)
-}
-
 /// Returns the ordered identities for one deliberate Main range-selection.
 /// The result may be large because its size is the user's explicit selection,
 /// while ordinary browsing and rendering remain capped.
@@ -825,18 +829,15 @@ pub fn section_range(
     if !matches!(kind, "image" | "video" | "other") {
         return Err(format!("bad section kind: {kind}"));
     }
-    let transaction =
-        rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Deferred)
-            .map_err(|error| error.to_string())?;
     let bounds = month_bounds(month, display_tz)?;
-    let members = section_identity_range(&transaction, kind, bounds, sort, start, end)?
-        .into_iter()
+    let ordered = ordered_section_identities(conn, kind, month, bounds, sort)?;
+    let members = ordered_section_slice(&ordered, start, end)
+        .iter()
         .enumerate()
         .map(|(offset, identity)| {
-            PositionedSectionIdentity::from_identity(identity, start + offset as u64)
+            PositionedSectionIdentity::from_identity(identity.clone(), start + offset as u64)
         })
         .collect();
-    transaction.commit().map_err(|error| error.to_string())?;
     Ok(members)
 }
 
@@ -854,45 +855,26 @@ pub fn section_family_context(
     if !matches!(kind, "image" | "video" | "other") {
         return Err(format!("bad section kind: {kind}"));
     }
-    let transaction =
-        rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Deferred)
-            .map_err(|error| error.to_string())?;
     let bounds = month_bounds(month, display_tz)?;
     let family: HashSet<&str> = member_hashes.iter().map(String::as_str).collect();
-    let candidates = section_candidates_sql(kind == "other", bounds.is_some());
-    let params = section_candidate_params(kind, bounds);
-    let sql = format!(
-        "WITH candidates AS ({candidates}) \
-         SELECT hash FROM candidates ORDER BY {}",
-        section_order_sql(sort)
-    );
-    let mut statement = transaction.prepare(&sql).map_err(|error| error.to_string())?;
-    let mut rows = statement
-        .query(rusqlite::params_from_iter(params.iter()))
-        .map_err(|error| error.to_string())?;
-    let mut index = 0_u64;
-    let mut last_member = None;
-    while let Some(row) = rows.next().map_err(|error| error.to_string())? {
-        let hash: Option<String> = row.get(0).map_err(|error| error.to_string())?;
-        if hash.as_deref().is_some_and(|value| family.contains(value)) {
-            last_member = Some(index);
-        }
-        index += 1;
-    }
-    drop(rows);
-    drop(statement);
-    let context = last_member
-        .map(|member_index| {
-            section_recovery_context(&transaction, kind, bounds, sort, member_index)
+    let ordered = ordered_section_identities(conn, kind, month, bounds, sort)?;
+    let last_member = ordered
+        .iter()
+        .enumerate()
+        .filter(|(_, identity)| {
+            identity
+                .hash
+                .as_deref()
+                .is_some_and(|value| family.contains(value))
         })
-        .transpose()?;
-    transaction.commit().map_err(|error| error.to_string())?;
-    Ok(context)
+        .map(|(index, _)| index as u64)
+        .last();
+    Ok(last_member.map(|index| recovery_context_from_ordered(&ordered, index)))
 }
 
-/// Streams one complete ordered identity sequence without collecting it.
-/// The caller may persist it in a disposable store while this read
-/// transaction keeps membership and order on one index snapshot.
+/// Visits one complete ordered identity sequence from the shared per-revision
+/// ordering. The caller may persist it in a disposable store while relying on
+/// the same section order every other reader currently sees.
 pub fn visit_section_identities(
     conn: &Connection,
     kind: &str,
@@ -904,34 +886,12 @@ pub fn visit_section_identities(
     if !matches!(kind, "image" | "video" | "other") {
         return Err(format!("bad section kind: {kind}"));
     }
-    let transaction =
-        rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Deferred)
-            .map_err(|error| error.to_string())?;
     let bounds = month_bounds(month, display_tz)?;
-    let candidates = section_candidates_sql(kind == "other", bounds.is_some());
-    let params = section_candidate_params(kind, bounds);
-    let sql = format!(
-        "WITH candidates AS ({candidates}) \
-         SELECT hash, path_id FROM candidates ORDER BY {}",
-        section_order_sql(sort)
-    );
-    let mut statement = transaction.prepare(&sql).map_err(|error| error.to_string())?;
-    let mut rows = statement
-        .query(rusqlite::params_from_iter(params.iter()))
-        .map_err(|error| error.to_string())?;
-    let mut count = 0_u64;
-    while let Some(row) = rows.next().map_err(|error| error.to_string())? {
-        let identity = SectionIdentity {
-            hash: row.get(0).map_err(|error| error.to_string())?,
-            path_id: row.get(1).map_err(|error| error.to_string())?,
-        };
-        visit(count, &identity)?;
-        count += 1;
+    let ordered = ordered_section_identities(conn, kind, month, bounds, sort)?;
+    for (index, identity) in ordered.iter().enumerate() {
+        visit(index as u64, identity)?;
     }
-    drop(rows);
-    drop(statement);
-    transaction.commit().map_err(|error| error.to_string())?;
-    Ok(count)
+    Ok(ordered.len() as u64)
 }
 
 fn section_candidate_params(kind: &str, bounds: Option<(i64, i64)>) -> Vec<rusqlite::types::Value> {
@@ -1822,9 +1782,16 @@ const ISSUES_PAGE_SQL: &str =
     "SELECT id, path, kind, message, first_seen_utc, last_seen_utc, occurrence_count FROM active_issues
      ORDER BY first_seen_utc ASC, id ASC LIMIT ?1";
 
+/// The largest page `get_issues` serves regardless of the client-supplied
+/// limit, matching `activity::MAX_PAGE_SIZE`'s bound on the analogous
+/// Activity page (C-L5: an unclamped client limit could otherwise pull every
+/// Issue row and its JSON on each poll).
+const MAX_ISSUES_PAGE_SIZE: u32 = 500;
+
 /// OLDEST first (the developer's call — the longest-standing condition leads),
 /// capped; the count comes with it for the status-bar element.
 pub fn issues(conn: &Connection, limit: u32) -> Result<(u64, Vec<IssueRow>), String> {
+    let limit = limit.clamp(1, MAX_ISSUES_PAGE_SIZE);
     let total: i64 = conn
         .query_row("SELECT COUNT(*) FROM active_issues", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;

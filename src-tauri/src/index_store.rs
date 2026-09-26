@@ -416,7 +416,12 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
     }
     let conn = Connection::open(db_file).map_err(|e| e.to_string())?;
     conn.create_collation("onecopy_nocase", |left, right| {
-        left.to_lowercase().cmp(&right.to_lowercase())
+        // Allocation-free case-insensitive compare: char::to_lowercase yields a
+        // small stack iterator per character, so this never heap-allocates a
+        // lowercased copy of either string (unlike `str::to_lowercase`).
+        left.chars()
+            .flat_map(char::to_lowercase)
+            .cmp(right.chars().flat_map(char::to_lowercase))
     })
     .map_err(|error| error.to_string())?;
     static JOURNAL: crate::sqlite::JournalSetup = crate::sqlite::JournalSetup::new();

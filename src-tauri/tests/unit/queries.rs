@@ -429,3 +429,101 @@ fn undated_sorts_last_and_months_sort_oldest_first() {
     let months: Vec<&str> = counts.others.iter().map(|s| s.month.as_str()).collect();
     assert_eq!(months, vec!["2009-01", "2024-12", "undated"]);
 }
+
+#[test]
+fn get_issues_clamps_an_unbounded_client_limit() {
+    let (_dir, conn) = seeded();
+    for index in 0..(MAX_ISSUES_PAGE_SIZE as usize + 20) {
+        crate::index_store::upsert_issue(
+            &conn,
+            Some(&format!("/a/{index}.jpg")),
+            "preview-error",
+            "decode failed",
+        )
+        .unwrap();
+    }
+
+    let (total, rows) = issues(&conn, u32::MAX).unwrap();
+    assert_eq!(total, MAX_ISSUES_PAGE_SIZE as u64 + 20);
+    assert_eq!(
+        rows.len(),
+        MAX_ISSUES_PAGE_SIZE as usize,
+        "a client-supplied limit above the cap must still be served at the cap"
+    );
+}
+
+fn seed_month_image(conn: &Connection, hash: &str, name: &str, t: i64) {
+    conn.execute_batch(&format!(
+        "INSERT INTO contents (hash, byte_size, kind) VALUES ('{hash}', 1, 'image');
+         INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms, resolved_source)
+           VALUES ('/a/{name}', '/a', '{name}', 'image', '{hash}', {t}, 'metadata');"
+    ))
+    .unwrap();
+}
+
+#[test]
+fn section_order_is_sorted_once_per_index_revision_and_reused_across_callers() {
+    let (_d, conn) = seeded();
+    seed_month_image(&conn, "h1", "a.jpg", utc_ms(2016, 3, 1, 0));
+    seed_month_image(&conn, "h2", "b.jpg", utc_ms(2016, 3, 2, 0));
+    seed_month_image(&conn, "h3", "c.jpg", utc_ms(2016, 3, 3, 0));
+
+    let time_desc = SectionSort {
+        order: SectionSortOrder::Time,
+        desc: true,
+    };
+    let bounds = month_bounds("2016-03", chrono_tz::UTC).unwrap();
+
+    let first = ordered_section_identities(&conn, "image", "2016-03", bounds, time_desc).unwrap();
+    assert_eq!(first.len(), 3);
+
+    // Reading again with no committed change reuses the exact same ordering
+    // (same Arc allocation): the section is sorted once per revision, not
+    // once per caller (reconcile_section, section windows, range reads, and
+    // family-context recovery all call through this same entry point).
+    let second = ordered_section_identities(&conn, "image", "2016-03", bounds, time_desc).unwrap();
+    assert!(
+        Arc::ptr_eq(&first, &second),
+        "an unchanged index revision must reuse the cached ordering rather than re-sorting"
+    );
+
+    // A committed write bumps the index revision, so the next read recomputes
+    // instead of serving a stale ordering.
+    seed_month_image(&conn, "h4", "d.jpg", utc_ms(2016, 3, 4, 0));
+    let third = ordered_section_identities(&conn, "image", "2016-03", bounds, time_desc).unwrap();
+    assert!(
+        !Arc::ptr_eq(&first, &third),
+        "a new committed write must invalidate the cached ordering"
+    );
+    assert_eq!(third.len(), 4);
+}
+
+#[test]
+fn section_order_cache_does_not_serve_a_stale_order_after_this_same_connection_writes() {
+    // Regression guard for a subtler trap than a cross-connection write:
+    // `PRAGMA data_version` only advances for a *different* connection's
+    // commit, so a cache keyed on it alone would miss this connection's own
+    // write. Ordinary command dispatch never shares one connection across a
+    // write and a later read (Phase 3 opens a fresh connection per command),
+    // but the cache must still be correct if that ever changes.
+    let (_d, conn) = seeded();
+    seed_month_image(&conn, "h1", "a.jpg", utc_ms(2016, 3, 1, 0));
+    let time_desc = SectionSort {
+        order: SectionSortOrder::Time,
+        desc: true,
+    };
+    let bounds = month_bounds("2016-03", chrono_tz::UTC).unwrap();
+
+    let before = ordered_section_identities(&conn, "image", "2016-03", bounds, time_desc).unwrap();
+    assert_eq!(before.len(), 1);
+
+    conn.execute("UPDATE paths SET missing = 1 WHERE file_name = 'a.jpg'", [])
+        .unwrap();
+
+    let after = ordered_section_identities(&conn, "image", "2016-03", bounds, time_desc).unwrap();
+    assert_eq!(
+        after.len(),
+        0,
+        "this connection's own write must be visible on the next read"
+    );
+}
