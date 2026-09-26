@@ -502,6 +502,19 @@ pub struct WorkTrace {
     draft: ActivityDraft,
     finished: bool,
     progress: std::sync::Arc<Mutex<TraceProgress>>,
+    visibility: TraceVisibility,
+}
+
+/// Whether a trace's rows count as ordinary Activity history or debug-only
+/// detail. A per-item trace inside a background chunk (one photo among
+/// hundreds) is diagnostic detail, not an operation the user reviews; the
+/// pass itself already records one ordinary trace. Debug rows still go
+/// through the same `record()` gate as everything else in debug mode, so no
+/// separate retention concern is introduced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TraceVisibility {
+    Ordinary,
+    DebugOnly,
 }
 
 struct TraceProgress {
@@ -509,7 +522,27 @@ struct TraceProgress {
     counts: Option<(u64, u64)>,
 }
 
-fn report_progress(draft: &ActivityDraft, progress: &Mutex<TraceProgress>, done: u64, total: u64) {
+fn observe(draft: ActivityDraft, visibility: TraceVisibility) {
+    match visibility {
+        TraceVisibility::Ordinary => observe_work(draft),
+        TraceVisibility::DebugOnly => {
+            if let Err(error) = record(draft) {
+                crate::logging::warn(
+                    "activity recording failed",
+                    json!({"error": {"message": error}}),
+                );
+            }
+        }
+    }
+}
+
+fn report_progress(
+    draft: &ActivityDraft,
+    progress: &Mutex<TraceProgress>,
+    visibility: TraceVisibility,
+    done: u64,
+    total: u64,
+) {
     let Ok(mut progress) = progress.lock() else {
         return;
     };
@@ -522,7 +555,7 @@ fn report_progress(draft: &ActivityDraft, progress: &Mutex<TraceProgress>, done:
     draft.kind = ActivityKind::Progressed;
     draft.done = Some(done.min(total));
     draft.total = Some(total);
-    observe_work(draft);
+    observe(draft, visibility);
 }
 
 impl WorkTrace {
@@ -530,6 +563,26 @@ impl WorkTrace {
         owner: ActivityOwner,
         subject: Option<ActivitySubject>,
         target: Option<&str>,
+    ) -> Self {
+        Self::begin_with_visibility(owner, subject, target, TraceVisibility::Ordinary)
+    }
+
+    /// A trace for per-item work inside a larger background pass (for
+    /// example one photo in a preview-derivation chunk): debug detail, never
+    /// an ordinary Activity row (W-M3).
+    pub fn begin_debug(
+        owner: ActivityOwner,
+        subject: Option<ActivitySubject>,
+        target: Option<&str>,
+    ) -> Self {
+        Self::begin_with_visibility(owner, subject, target, TraceVisibility::DebugOnly)
+    }
+
+    fn begin_with_visibility(
+        owner: ActivityOwner,
+        subject: Option<ActivitySubject>,
+        target: Option<&str>,
+        visibility: TraceVisibility,
     ) -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let mut draft = ActivityDraft::new(owner, ActivityKind::Started);
@@ -540,7 +593,7 @@ impl WorkTrace {
         draft.subject = subject;
         draft.target_hash = target.map(str::to_owned);
         draft.current = Some(ActivityState::Running);
-        observe_work(draft.clone());
+        observe(draft.clone(), visibility);
         Self {
             draft,
             finished: false,
@@ -548,18 +601,20 @@ impl WorkTrace {
                 last_recorded: Instant::now() - std::time::Duration::from_secs(1),
                 counts: None,
             })),
+            visibility,
         }
     }
 
     pub fn progress(&self, done: u64, total: u64) {
-        report_progress(&self.draft, &self.progress, done, total);
+        report_progress(&self.draft, &self.progress, self.visibility, done, total);
     }
 
     pub fn progress_reporter(&self) -> impl Fn(u64, u64) + Send + 'static {
         let draft = self.draft.clone();
         let progress = self.progress.clone();
+        let visibility = self.visibility;
         move |done, total| {
-            report_progress(&draft, &progress, done, total);
+            report_progress(&draft, &progress, visibility, done, total);
         }
     }
 
@@ -587,7 +642,7 @@ impl WorkTrace {
         if let Some(target) = target {
             draft.target_hash = Some(target.into());
         }
-        observe_work(draft);
+        observe(draft, self.visibility);
     }
 
     pub fn result<T>(&mut self, result: &Result<T, String>) {
@@ -612,7 +667,7 @@ impl Drop for WorkTrace {
         let mut draft = self.draft.clone();
         draft.kind = ActivityKind::Closed;
         draft.current = None;
-        observe_work(draft);
+        observe(draft, self.visibility);
     }
 }
 

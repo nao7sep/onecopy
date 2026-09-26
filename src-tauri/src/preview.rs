@@ -819,7 +819,9 @@ fn derive_candidate_rows(
             Vec::new()
         };
         let mut outcomes: Vec<Option<DeriveOutcome>> = (0..chunk.len()).map(|_| None).collect();
-        let mut traces: Vec<_> = chunk.iter().map(|(hash, _)| crate::activity::WorkTrace::begin(
+        // Per-item detail inside a chunk is debug-only: the pass that owns
+        // this chunk already records one ordinary trace (W-M3).
+        let mut traces: Vec<_> = chunk.iter().map(|(hash, _)| crate::activity::WorkTrace::begin_debug(
             crate::activity::ActivityOwner::BackgroundWork, Some(crate::activity::ActivitySubject::Previews), Some(hash))).collect();
         if parallel.len() > 1 {
             for (index, outcome) in

@@ -17,6 +17,19 @@ fn debug_diagnostics_do_not_create_ordinary_work_rows() {
         .is_empty());
 }
 
+// (W-M3) Per-item background preview traces must never become ordinary
+// Activity rows — the pass that owns their chunk already records one. This
+// checks the routing `WorkTrace` itself carries; `debug_only` rows still go
+// through the same `record()` debug gate as everything else.
+#[test]
+fn begin_debug_traces_are_marked_debug_only_not_ordinary() {
+    let ordinary = WorkTrace::begin(ActivityOwner::BackgroundWork, None, None);
+    assert_eq!(ordinary.visibility, TraceVisibility::Ordinary);
+
+    let debug_only = WorkTrace::begin_debug(ActivityOwner::BackgroundWork, None, None);
+    assert_eq!(debug_only.visibility, TraceVisibility::DebugOnly);
+}
+
 #[test]
 fn throttling_keeps_latest_counts_for_terminal_publication() {
     let trace = WorkTrace::begin(
