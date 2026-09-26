@@ -145,7 +145,7 @@ export default function InspectableImage({
           enlargeSmall || (knownWidth !== null && knownHeight !== null)
             ? "h-full w-full"
             : "max-h-full max-w-full"
-        } cursor-zoom-in object-contain`}
+        } cursor-crosshair object-contain`}
         style={
           !enlargeSmall && knownWidth !== null && knownHeight !== null
             ? { maxWidth: `${knownWidth}px`, maxHeight: `${knownHeight}px` }

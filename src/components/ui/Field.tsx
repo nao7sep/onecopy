@@ -11,6 +11,7 @@
 // flex rows it replaces did not do.
 
 import type { InputHTMLAttributes, SelectHTMLAttributes, ReactNode } from "react";
+import { ChevronDown } from "lucide-react";
 
 const CONTROL =
   "h-8 max-w-full rounded-lg border bg-background px-2.5 text-sm text-ink outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary-ring disabled:text-ink-muted";
@@ -64,7 +65,23 @@ export function Select({
   className = "",
   ...props
 }: SelectHTMLAttributes<HTMLSelectElement>) {
-  return <select {...props} className={`${CONTROL} border-input-border pr-1 ${className}`} />;
+  // A restyled control draws its own chevron rather than keeping the
+  // platform's native one (interface-styling-conventions, R8-07): every other
+  // Settings field is fully app-styled, and the browser's own arrow glyph sat
+  // oddly next to the app's own drawn chevrons used elsewhere.
+  return (
+    <span className="relative inline-flex min-w-0 max-w-full">
+      <select
+        {...props}
+        className={`${CONTROL} appearance-none border-input-border pr-6 ${className}`}
+      />
+      <ChevronDown
+        aria-hidden="true"
+        size={14}
+        className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-ink-muted"
+      />
+    </span>
+  );
 }
 
 /** A real switch rather than a bare checkbox. The native control is kept as
