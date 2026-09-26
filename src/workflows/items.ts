@@ -93,33 +93,35 @@ export function installItemWorkflow(): void {
   });
 }
 
-/** Deletes the current grid selection, preserving file-manager recovery. */
-export async function deleteSelectedItems(permanent: boolean): Promise<void> {
-  const { selectedItem, selectedKeys } = useItemsStore.getState();
+/** Freezes the current grid selection, in section order, as the exact
+ * logical-item set a deletion review shows and a confirmed deletion acts on.
+ * Nothing re-reads the live selection after this capture: a refresh that
+ * recovers the anchor to a neighbour must never retarget the deletion. */
+export function captureDeleteSelection(): string[] {
+  const { selectedItem, selectedKeys, selectedPositions } = useItemsStore.getState();
   const keys =
     selectedKeys.size > 0
-      ? selectedKeys
+      ? [...selectedKeys]
       : selectedItem !== null
-        ? new Set([selectedItem])
-        : new Set<string>();
-  await deleteItems(keys, permanent);
+        ? [selectedItem]
+        : [];
+  return keys.sort(
+    (left, right) =>
+      (selectedPositions.get(left) ?? Number.MAX_SAFE_INTEGER) -
+      (selectedPositions.get(right) ?? Number.MAX_SAFE_INTEGER),
+  );
 }
 
-/** Deletes an explicit logical-item set and refreshes every affected owner. */
+/** Deletes an explicit, already-frozen ordered logical-item set and
+ * refreshes every affected owner. */
 export async function deleteItems(
-  keys: Set<string>,
+  keys: readonly string[],
   permanent: boolean,
 ): Promise<void> {
-  if (keys.size === 0) return;
+  if (keys.length === 0) return;
   try {
-    const positions = useItemsStore.getState().selectedPositions;
-    const orderedKeys = [...keys].sort(
-      (left, right) =>
-        (positions.get(left) ?? Number.MAX_SAFE_INTEGER) -
-        (positions.get(right) ?? Number.MAX_SAFE_INTEGER),
-    );
     const outcome = await invoke<DeleteBatchOutcome>("delete_items", {
-      items: orderedKeys.map((key) => {
+      items: keys.map((key) => {
         const identity = identityFromKey(key);
         return {
           hash: identity.hash,

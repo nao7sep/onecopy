@@ -9,16 +9,25 @@ import type {
   ViewerMainProjection,
 } from "../models/viewerSession";
 
+/** The exact member a viewer deletion review names and a confirmed deletion
+ * acts on, frozen when the review is requested. A refresh that advances the
+ * sequence never retargets it. */
+export interface ViewerDeleteReview {
+  kind: "trash" | "permanent";
+  key: string;
+  fileName: string;
+}
+
 interface QuickViewState {
   session: ActiveViewerSession | null;
-  pendingDelete: "trash" | "permanent" | null;
+  pendingDelete: ViewerDeleteReview | null;
   failure: Message | null;
   currentKey: () => string | null;
   start: (snapshot: ViewerSequenceSnapshot, presentation: ViewerPresentation, main: ViewerMainRelationship) => void;
   attachMainProjection: (projection: ViewerMainProjection) => void;
   update: (snapshot: ViewerSequenceSnapshot) => void;
   setPresentation: (presentation: ViewerPresentation) => void;
-  requestDelete: (kind: "trash" | "permanent") => void;
+  requestDelete: (kind: ViewerDeleteReview["kind"]) => void;
   cancelDelete: () => void;
   setFailure: (failure: Message | null) => void;
   close: () => void;
@@ -51,7 +60,17 @@ export const useQuickViewStore = create<QuickViewState>((set, get) => ({
     const session = get().session;
     if (session !== null) set({ session: { ...session, presentation } });
   },
-  requestDelete: (pendingDelete) => set({ pendingDelete }),
+  requestDelete: (kind) => {
+    const session = get().session;
+    if (session === null) return;
+    set({
+      pendingDelete: {
+        kind,
+        key: identityKey(session.member),
+        fileName: session.item.fileName,
+      },
+    });
+  },
   cancelDelete: () => set({ pendingDelete: null }),
   setFailure: (failure) => set({ failure }),
   close: () => set({ session: null, pendingDelete: null, failure: null }),

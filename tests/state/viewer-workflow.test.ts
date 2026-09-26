@@ -8,10 +8,13 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import { useItemsStore } from "../../src/state/items-store";
 import { useQuickViewStore } from "../../src/state/quick-view-store";
+import type { ViewerSequenceSnapshot } from "../../src/models/viewerSession";
 import { revealInMain } from "../../src/workflows/reveal-in-main";
 import {
+  confirmViewerDelete,
   handleViewerKey,
   moveViewer,
+  requestViewerDelete,
   openViewerFromMain,
   viewerBroadcast,
   closeViewer,
@@ -352,9 +355,33 @@ describe("viewer workflow", () => {
       await handleViewerKey({ key, repeat: true });
       expect(useQuickViewStore.getState().session?.presentation).toBe("quick");
     }
-    useQuickViewStore.setState({ pendingDelete: "permanent" });
+    useQuickViewStore.setState({ pendingDelete: { kind: "permanent", key: "b", fileName: "b.jpg" } });
     for (const key of [" ", "f", "Escape", "ArrowRight"]) await handleViewerKey({ key });
     expect(useQuickViewStore.getState().session?.item.hash).toBe("b");
     expect(useQuickViewStore.getState().session?.presentation).toBe("quick");
+  });
+
+  it("deletes the member the review named even after a refresh advances the sequence", async () => {
+    mockCommand("delete_items", () => ({ error: null, failedFiles: 0 }));
+    expect(openViewerFromMain("quick")).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(useQuickViewStore.getState().session?.item.hash).toBe("b");
+
+    await requestViewerDelete(true);
+    // The watcher reports b removed externally; reconciliation advances the
+    // open sequence to c while the permanent-delete review is still open.
+    sequenceIndex = 2;
+    useQuickViewStore.getState().update(sequenceSnapshot() as ViewerSequenceSnapshot);
+    expect(useQuickViewStore.getState().session?.item.hash).toBe("c");
+    expect(viewerBroadcast().pendingDelete).toEqual({ kind: "permanent", fileName: "b.jpg" });
+
+    await confirmViewerDelete();
+
+    const deletes = invokeCalls.filter((call) => call.command === "delete_items");
+    expect(deletes).toHaveLength(1);
+    expect(deletes[0]!.args).toEqual({
+      items: [{ hash: "b", pathId: null }],
+      permanent: true,
+    });
   });
 });

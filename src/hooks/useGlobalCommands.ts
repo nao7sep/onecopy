@@ -19,16 +19,25 @@ import {
   shadowsMacTextEditing,
 } from "../utils/shortcuts";
 import { requestComparisonFromMain } from "../workflows/comparison";
-import { deleteSelectedItems, rescanCurrentSection } from "../workflows/items";
+import {
+  captureDeleteSelection,
+  deleteItems,
+  rescanCurrentSection,
+} from "../workflows/items";
 import { handleFViewer, handleSpaceQuickView } from "../workflows/quick-view";
 import { isAudioFile, itemKey } from "../models/items";
 import { toggleMainPlayback } from "../workflows/playback";
 import { isComposingEvent } from "./useComposing";
 import { useQuickViewStore } from "../state/quick-view-store";
 
+/** The exact ordered logical items a Main deletion review shows. */
+interface DeleteReview {
+  keys: readonly string[];
+  permanent: boolean;
+}
+
 export function useGlobalCommands() {
-  const [confirmPermanent, setConfirmPermanent] = useState<number | null>(null);
-  const [confirmTrash, setConfirmTrash] = useState<number | null>(null);
+  const [deleteReview, setDeleteReview] = useState<DeleteReview | null>(null);
 
   const openSettings = useCallback(() => {
     const appData = useAppStore.getState().appData;
@@ -76,23 +85,17 @@ export function useGlobalCommands() {
         }
         event.preventDefault();
         if (event.repeat) return;
-        const { selectedKeys, selectedItem } = useItemsStore.getState();
-        const count =
-          selectedKeys.size > 0
-            ? selectedKeys.size
-            : selectedItem !== null
-              ? 1
-              : 0;
-        if (count === 0) return;
+        const keys = captureDeleteSelection();
+        if (keys.length === 0) return;
         if (event.shiftKey) {
-          setConfirmPermanent(count);
+          setDeleteReview({ keys, permanent: true });
         } else if (
-          count > 1 ||
+          keys.length > 1 ||
           useAppStore.getState().appData?.config?.confirmTrashDelete === true
         ) {
-          setConfirmTrash(count);
+          setDeleteReview({ keys, permanent: false });
         } else {
-          void deleteSelectedItems(false);
+          void deleteItems(keys, false);
         }
       } else if (
         event.key === " " &&
@@ -156,17 +159,21 @@ export function useGlobalCommands() {
   return {
     openHelp: () => useAppShellStore.getState().openUtility("shortcuts"),
     openSettings,
-    confirmPermanent,
-    confirmTrash,
-    cancelPermanentDelete: () => setConfirmPermanent(null),
-    cancelTrashDelete: () => setConfirmTrash(null),
+    confirmPermanent:
+      deleteReview?.permanent === true ? deleteReview.keys.length : null,
+    confirmTrash:
+      deleteReview?.permanent === false ? deleteReview.keys.length : null,
+    cancelPermanentDelete: () => setDeleteReview(null),
+    cancelTrashDelete: () => setDeleteReview(null),
     confirmPermanentDelete: () => {
-      setConfirmPermanent(null);
-      void deleteSelectedItems(true);
+      if (deleteReview === null) return;
+      setDeleteReview(null);
+      void deleteItems(deleteReview.keys, true);
     },
     confirmTrashDelete: () => {
-      setConfirmTrash(null);
-      void deleteSelectedItems(false);
+      if (deleteReview === null) return;
+      setDeleteReview(null);
+      void deleteItems(deleteReview.keys, false);
     },
   };
 }

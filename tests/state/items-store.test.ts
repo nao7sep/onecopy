@@ -7,7 +7,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useItemsStore } from "../../src/state/items-store";
 import { currentMainFeedback, useMainFeedbackStore } from "../../src/state/main-feedback-store";
-import { deleteSelectedItems } from "../../src/workflows/items";
+import { captureDeleteSelection, deleteItems } from "../../src/workflows/items";
 import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import {
   invokeCalls,
@@ -384,7 +384,7 @@ describe("explicit selection", () => {
       ]),
     });
 
-    await deleteSelectedItems(false);
+    await deleteItems(captureDeleteSelection(), false);
 
     const call = invokeCalls.find((candidate) => candidate.command === "delete_items");
     expect(call?.args.items).toEqual([

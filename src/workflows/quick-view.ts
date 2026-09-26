@@ -23,7 +23,7 @@ import {
 import { useAppStore } from "../state/app-store";
 import { useItemsStore } from "../state/items-store";
 import { beginMainFeedback } from "../state/main-feedback-store";
-import { useQuickViewStore } from "../state/quick-view-store";
+import { useQuickViewStore, type ViewerDeleteReview } from "../state/quick-view-store";
 import { recordActionFailure } from "../state/notifications-store";
 import { deleteItems } from "./items";
 import { toggleMainPlayback } from "./playback";
@@ -42,7 +42,7 @@ export interface ViewerBroadcast {
   detail: ItemDetail | null;
   index: number;
   length: number;
-  pendingDelete: "trash" | "permanent" | null;
+  pendingDelete: Pick<ViewerDeleteReview, "kind" | "fileName"> | null;
   sectionKind: "image" | "video" | "other" | null;
   /** A descriptor, not words: the fullscreen window renders it in its own
    * language, and follows a language change while it stays on screen. */
@@ -79,7 +79,10 @@ export function viewerBroadcast(): ViewerBroadcast {
     detail: session?.detail ?? null,
     index: session?.index ?? 0,
     length: session?.length ?? 0,
-    pendingDelete: useQuickViewStore.getState().pendingDelete,
+    pendingDelete: (() => {
+      const pending = useQuickViewStore.getState().pendingDelete;
+      return pending === null ? null : { kind: pending.kind, fileName: pending.fileName };
+    })(),
     sectionKind: session === null ? null
       : session.detail.kind === "image" ? "image"
       : session.detail.kind === "video" ? "video" : "other",
@@ -466,14 +469,14 @@ export async function requestViewerDelete(permanent: boolean): Promise<void> {
 }
 
 export async function confirmViewerDelete(): Promise<void> {
-  const kind = useQuickViewStore.getState().pendingDelete;
+  const pending = useQuickViewStore.getState().pendingDelete;
   useQuickViewStore.getState().cancelDelete();
-  if (kind !== null) await deleteViewerCurrent(kind === "permanent");
+  if (pending !== null) await deleteItems([pending.key], pending.kind === "permanent");
 }
 
 async function deleteViewerCurrent(permanent: boolean): Promise<void> {
   const key = useQuickViewStore.getState().currentKey();
-  if (key !== null) await deleteItems(new Set([key]), permanent);
+  if (key !== null) await deleteItems([key], permanent);
 }
 
 export async function handleViewerKey(message: ViewerKeyMessage): Promise<void> {

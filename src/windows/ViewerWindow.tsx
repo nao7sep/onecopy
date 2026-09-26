@@ -152,17 +152,17 @@ export default function ViewerWindow() {
       {state.pendingDelete !== null ? (
         <ConfirmDialog
           title={
-            state.pendingDelete === "permanent"
+            state.pendingDelete.kind === "permanent"
               ? t("common.deletePermanentlyTitle")
               : t("viewer.deleteTitle")
           }
           message={
-            state.pendingDelete === "permanent"
-              ? t("viewer.deletePermanentlyBody", { name: item.fileName })
-              : t("viewer.deleteBody", { name: item.fileName })
+            state.pendingDelete.kind === "permanent"
+              ? t("viewer.deletePermanentlyBody", { name: state.pendingDelete.fileName })
+              : t("viewer.deleteBody", { name: state.pendingDelete.fileName })
           }
           confirmLabel={
-            state.pendingDelete === "permanent"
+            state.pendingDelete.kind === "permanent"
               ? t("common.deletePermanently")
               : t("common.delete")
           }

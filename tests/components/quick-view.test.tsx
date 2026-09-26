@@ -127,7 +127,7 @@ describe("Quick View", () => {
 
   it("leaves a nested confirmation's arrows and Escape to the confirmation", async () => {
     render(<Host />);
-    act(() => useQuickViewStore.setState({ pendingDelete: "permanent" }));
+    act(() => useQuickViewStore.setState({ pendingDelete: { kind: "permanent", key: "photo-hash", fileName: "photo.jpg" } }));
     const cancel = screen.getByRole("button", { name: "Cancel" });
     expect(document.activeElement).toBe(cancel);
     fireEvent.keyDown(cancel, { key: "ArrowRight" });

@@ -43,7 +43,7 @@ it("focuses the fullscreen command surface on entry and native-window reactivati
 it("does not steal confirmation focus on reactivation or forward its decision keys", async () => {
   const user = userEvent.setup();
   render(<ViewerWindow />);
-  await act(async () => deliver("viewer://state", { ...state, pendingDelete: "permanent" }));
+  await act(async () => deliver("viewer://state", { ...state, pendingDelete: { kind: "permanent", fileName: "photo.jpg" } }));
   const cancel = screen.getByRole("button", { name: "Cancel" });
   expect(document.activeElement).toBe(cancel);
   fireEvent(window, new Event("focus"));

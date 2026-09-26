@@ -119,18 +119,18 @@ export default function QuickView() {
       {pendingDelete !== null ? (
         <ConfirmDialog
           title={t(
-            pendingDelete === "permanent"
+            pendingDelete.kind === "permanent"
               ? "common.deletePermanentlyTitle"
               : "viewer.deleteTitle",
           )}
           message={t(
-            pendingDelete === "permanent"
+            pendingDelete.kind === "permanent"
               ? "viewer.deletePermanentlyBody"
               : "viewer.deleteBody",
-            { name: item.fileName },
+            { name: pendingDelete.fileName },
           )}
           confirmLabel={t(
-            pendingDelete === "permanent"
+            pendingDelete.kind === "permanent"
               ? "common.deletePermanently"
               : "common.delete",
           )}

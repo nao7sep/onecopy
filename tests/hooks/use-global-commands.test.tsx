@@ -44,6 +44,15 @@ function Harness() {
       <output aria-label="Trash confirmation">
         {commands.confirmTrash ?? "none"}
       </output>
+      <output aria-label="Permanent confirmation">
+        {commands.confirmPermanent ?? "none"}
+      </output>
+      <button type="button" onClick={commands.confirmTrashDelete}>
+        Confirm trash
+      </button>
+      <button type="button" onClick={commands.confirmPermanentDelete}>
+        Confirm permanent
+      </button>
     </>
   );
 }
@@ -139,5 +148,68 @@ describe("global destructive commands", () => {
     expect(view.getByLabelText("Trash confirmation").textContent).toBe(
       "none",
     );
+  });
+
+  it("permanently deletes the reviewed item, not the neighbour a refresh recovered to", async () => {
+    mockCommand("delete_items", () => ({ error: null, failedFiles: 0 }));
+    const view = render(<Harness />);
+    const area = view.container.querySelector("#main-item-area")!;
+
+    fireEvent.keyDown(area, { key: "Delete", shiftKey: true });
+    expect(view.getByLabelText("Permanent confirmation").textContent).toBe("1");
+
+    // A watcher refresh under the open review: the reviewed item left the
+    // section and recovery selected its neighbour.
+    useItemsStore.setState({
+      selectedItem: "neighbour-hash",
+      selectedKeys: new Set(["neighbour-hash"]),
+      selectedPositions: new Map([["neighbour-hash", 0]]),
+    });
+    await act(async () => {
+      fireEvent.click(view.getByText("Confirm permanent"));
+    });
+
+    const deletes = invokeCalls.filter((call) => call.command === "delete_items");
+    expect(deletes).toHaveLength(1);
+    expect(deletes[0]!.args).toEqual({
+      items: [{ hash: "image-hash", pathId: null }],
+      permanent: true,
+    });
+  });
+
+  it("trashes exactly the reviewed items in their reviewed order", async () => {
+    mockCommand("delete_items", () => ({ error: null, failedFiles: 0 }));
+    useItemsStore.setState({
+      selectedKeys: new Set(["image-hash-2", "image-hash"]),
+      selectedPositions: new Map([
+        ["image-hash", 0],
+        ["image-hash-2", 1],
+      ]),
+    });
+    const view = render(<Harness />);
+    fireEvent.keyDown(view.container.querySelector("#main-item-area")!, { key: "Delete" });
+    expect(view.getByLabelText("Trash confirmation").textContent).toBe("2");
+
+    // A refresh drops one reviewed item and moves the other.
+    useItemsStore.setState({
+      selectedKeys: new Set(["image-hash-2", "unreviewed-hash"]),
+      selectedPositions: new Map([
+        ["unreviewed-hash", 0],
+        ["image-hash-2", 1],
+      ]),
+    });
+    await act(async () => {
+      fireEvent.click(view.getByText("Confirm trash"));
+    });
+
+    const deletes = invokeCalls.filter((call) => call.command === "delete_items");
+    expect(deletes).toHaveLength(1);
+    expect(deletes[0]!.args).toEqual({
+      items: [
+        { hash: "image-hash", pathId: null },
+        { hash: "image-hash-2", pathId: null },
+      ],
+      permanent: false,
+    });
   });
 });
