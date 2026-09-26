@@ -868,20 +868,7 @@ async fn ensure_fullres(app: AppHandle, hash: String) -> Result<(), String> {
         logging::boundary(
             "ensure_fullres",
             json!({ "hash": hash }),
-            || {
-                let data_root = paths::data_root()?;
-                let cache_root = paths::cache_root()?;
-                let cache = preview::CachePaths::new(cache_root);
-                if cache.fullres(&hash).is_file() {
-                    return Ok(());
-                }
-                let _work = derived_runtime::begin_requested_preview(&app, &hash)?;
-                let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-                // Presence decides availability, same rule as the scan settings.
-                let ffmpeg = binaries_manager::ffmpeg_path(&data_root);
-                let ffmpeg = ffmpeg.exists().then_some(ffmpeg);
-                preview::ensure_fullres(&conn, &cache, ffmpeg.as_deref(), &hash)
-            },
+            || derived_work::ensure_fullres(&app, &paths::data_root()?, &hash),
             |_| json!({}),
         )
     })
@@ -982,12 +969,7 @@ async fn background_work_snapshot() -> Result<background_work::BackgroundWorkSna
         let data_root = paths::data_root()?;
         background_work::snapshot(
             &data_root,
-            derived_runtime::snapshot(derived_runtime::RuntimeConditions {
-                // Index upkeep holds most automatic work back even though
-                // visible previews still interleave with it.
-                busy: !derived_work::available() || scan_runtime::running(),
-                worker_running: derived_work::started(),
-            })?,
+            derived_runtime::snapshot(derived_work::runtime_conditions())?,
             derived_work::work_capabilities(&data_root)?,
         )
     })

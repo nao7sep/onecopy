@@ -350,13 +350,23 @@ pub fn is_idle() -> bool {
         && !crate::scan_runtime::running()
 }
 
-/// Whether automatic work may be admitted at all. Which index owner it runs
-/// beside or yields to is `scan_runtime`'s share decision.
+/// Whether automatic work may be admitted at all: the launch decision opened
+/// it, no requested work holds the exclusive claim, and `scan_runtime`
+/// admits derived work. Which index owner it runs beside or yields to is
+/// `scan_runtime`'s share decision.
 pub(crate) fn available() -> bool {
-    !crate::derived_runtime::shutting_down()
-        && AUTOMATIC_ADMITTED.load(Ordering::SeqCst)
+    AUTOMATIC_ADMITTED.load(Ordering::SeqCst)
         && !crate::derived_runtime::exclusive()
-        && !crate::scan_runtime::foreground_pending()
+        && crate::scan_runtime::derived_work_admissible()
+}
+
+/// The runtime conditions Background Work reports: busy exactly when the
+/// worker would not be admitted to an ordinary turn.
+pub fn runtime_conditions() -> crate::derived_runtime::RuntimeConditions {
+    crate::derived_runtime::RuntimeConditions {
+        busy: !available() || !crate::scan_runtime::ordinary_share_free(),
+        worker_running: started(),
+    }
 }
 
 /// Opens the automatic media queue only after the launch source decision has
@@ -657,6 +667,19 @@ pub fn ensure_preview(
         canonical_hash,
         coalesced,
     })
+}
+
+/// The 100% view's full-resolution conversion for one item, under the
+/// requested-preview claim; an existing entry returns at once.
+pub fn ensure_fullres(app: &AppHandle, data_root: &Path, hash: &str) -> Result<(), String> {
+    let cache = CachePaths::new(data_root.join(crate::storage::CACHE_DIR_NAME));
+    if cache.fullres(hash).is_file() {
+        return Ok(());
+    }
+    let _work = crate::derived_runtime::begin_requested_preview(app, hash)?;
+    let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
+    let ffmpeg = crate::ai_dependencies::production_ffmpeg(data_root);
+    crate::preview::ensure_fullres(&conn, &cache, ffmpeg.as_deref(), hash)
 }
 
 #[derive(serde::Serialize)]

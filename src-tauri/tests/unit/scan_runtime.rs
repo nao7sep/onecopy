@@ -244,3 +244,25 @@ fn a_file_removed_while_its_walk_was_parked_is_absent_not_a_failure() {
         .unwrap();
     assert_eq!(issues, 0);
 }
+
+#[test]
+fn the_share_admission_and_the_reported_availability_give_one_answer() {
+    let _serial = serial_test();
+    assert!(derived_work_admissible());
+    assert!(ordinary_share_free());
+    assert_eq!(with_derived_share(ShareRank::Ordinary, || ()), Some(()));
+
+    let foreground = admit_foreground(None, None, &|| false, &mut || {}).unwrap();
+    // A held index claim declines an ordinary turn, and availability says so.
+    assert!(!ordinary_share_free());
+    assert_eq!(with_derived_share(ShareRank::Ordinary, || ()), None);
+    drop(foreground);
+
+    FOREGROUND_WAITERS.fetch_add(1, Ordering::SeqCst);
+    // A waiting foreground action closes derived admission for every rank.
+    assert!(!derived_work_admissible());
+    assert!(!ordinary_share_free());
+    assert_eq!(with_derived_share(ShareRank::Urgent, || ()), None);
+    FOREGROUND_WAITERS.fetch_sub(1, Ordering::SeqCst);
+    assert!(ordinary_share_free());
+}

@@ -53,9 +53,15 @@ pub fn production_face_scoring(root: &Path) -> Option<FaceScoringDependencies> {
     })
 }
 
+/// The installed managed ffmpeg, the one presence rule every media path
+/// reads.
+pub fn production_ffmpeg(root: &Path) -> Option<PathBuf> {
+    production_path(root, FFMPEG)
+}
+
 pub fn production_transcription(root: &Path) -> TranscriptionDependencies {
     TranscriptionDependencies {
-        ffmpeg: production_path(root, FFMPEG),
+        ffmpeg: production_ffmpeg(root),
         model: production_path(root, WHISPER),
     }
 }

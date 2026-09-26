@@ -484,6 +484,19 @@ fn take_share(state: &mut IndexState, rank: ShareRank) -> Share {
     }
 }
 
+/// Whether automatic derived work may be admitted at all: never while the app
+/// exits or a foreground action waits. The share admission below and derived
+/// work's own availability both read this one answer.
+pub(crate) fn derived_work_admissible() -> bool {
+    !crate::app_lifecycle::shutting_down() && !foreground_pending()
+}
+
+/// Whether an ordinary automatic derived turn would be admitted now — what
+/// Background Work reports as "held back by index work".
+pub(crate) fn ordinary_share_free() -> bool {
+    derived_work_admissible() && index_state().free_for_share(ShareRank::Ordinary)
+}
+
 /// Runs one automatic derived turn under a share. An ordinary share is taken
 /// only when the index is free and no background owner waits; otherwise it
 /// declines at once with `None`. An urgent share announces itself, lets a
@@ -493,7 +506,7 @@ fn take_share(state: &mut IndexState, rank: ShareRank) -> Share {
 pub(crate) fn with_derived_share<T>(rank: ShareRank, work: impl FnOnce() -> T) -> Option<T> {
     let mut waiting = None;
     let _share = loop {
-        if crate::app_lifecycle::shutting_down() || foreground_pending() {
+        if !derived_work_admissible() {
             return None;
         }
         let mut state = index_state();
