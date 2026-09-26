@@ -1368,7 +1368,9 @@ fn run_optional_class(
     priority: &[String],
     foreground: bool,
 ) -> Result<bool, String> {
-    if class_paused(class) || !optional_enabled(settings, class) {
+    if class_paused(class)
+        || class.gate(settings.capabilities()) != crate::derived_state::ClassGate::Runnable
+    {
         return Ok(false);
     }
     let stop = cancelled;
@@ -1476,11 +1478,6 @@ fn run_optional_class(
             let Some(assets) = settings.face_models.as_ref() else {
                 return Ok(false);
             };
-            // Face scoring has only its CPU path; a saved backend it does not
-            // offer leaves only this engine unavailable (derived_state reason).
-            if settings.face_acceleration.is_err() {
-                return Ok(false);
-            }
             let result = with_active(app, class, || {
                 crate::face::face_scores_pending(
                     conn,
@@ -1535,9 +1532,6 @@ fn run_optional_class(
             if !foreground && cursor.exhausted {
                 return Ok(false);
             }
-            if settings.transcription_model.is_none() || settings.ffmpeg.is_none() {
-                return Ok(false);
-            }
             let Ok(transcription_acceleration) = settings.transcription_acceleration.clone() else {
                 return Ok(false);
             };
@@ -1578,17 +1572,6 @@ fn run_optional_class(
             Ok(false)
         }
         WorkClass::Previews => Ok(false),
-    }
-}
-
-fn optional_enabled(settings: &Settings, class: WorkClass) -> bool {
-    match class {
-        WorkClass::Snapshots => settings.video_snapshots_enabled,
-        WorkClass::Similarity => settings.similarity_enabled,
-        WorkClass::Faces => settings.face_enabled,
-        WorkClass::VideoTranscripts => settings.video_transcription_enabled,
-        WorkClass::AudioTranscripts => settings.audio_transcription_enabled,
-        WorkClass::Previews => true,
     }
 }
 

@@ -69,6 +69,153 @@ impl WorkClass {
     }
 }
 
+/// Whether a class may run under the current settings and tools, and when
+/// not, the reason code every surface shows (Background Work, item states,
+/// the coordinator's own gate).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClassGate {
+    Runnable,
+    /// Turned off in Settings.
+    Disabled(&'static str),
+    /// On, but a tool or model is missing or the saved acceleration is not
+    /// offered here.
+    Unavailable(&'static str),
+}
+
+/// What an item needs before a class can produce its output. The SQL form
+/// selects candidates and counts debt; the fact form projects one item's
+/// state, so the two cannot disagree about when work may start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Prerequisite {
+    None,
+    /// The item's preview is ready.
+    Preview,
+    /// The video's poster is ready and its duration is known.
+    PosterAndDuration,
+    /// The video's duration is known, from metadata or its poster, or its
+    /// poster is ready: a playable container that reports no duration still
+    /// has a transcribable soundtrack.
+    DurationOrPoster,
+}
+
+impl Prerequisite {
+    /// SQL over contents alias `c`.
+    fn sql(self) -> String {
+        let ready = preview_available_predicate("c");
+        match self {
+            Self::None => "1".to_string(),
+            Self::Preview => ready,
+            Self::PosterAndDuration => format!("(c.duration_ms IS NOT NULL AND {ready})"),
+            Self::DurationOrPoster => format!("(c.duration_ms IS NOT NULL OR {ready})"),
+        }
+    }
+
+    pub(crate) fn holds(self, preview_ready: bool, duration_known: bool) -> bool {
+        match self {
+            Self::None => true,
+            Self::Preview => preview_ready,
+            Self::PosterAndDuration => preview_ready && duration_known,
+            Self::DurationOrPoster => duration_known || preview_ready,
+        }
+    }
+
+    /// The item state while the prerequisite does not hold.
+    fn unmet(self, preview_failed: bool, has_value: bool) -> ItemWorkState {
+        let (blocked, waiting) = match self {
+            Self::Preview => ("Preview generation failed", "Waiting for the preview"),
+            _ => ("Video poster generation failed", "Waiting for the video poster"),
+        };
+        if preview_failed {
+            item_state("blocked", has_value, Some(blocked))
+        } else {
+            item_state("waiting", has_value, Some(waiting))
+        }
+    }
+}
+
+impl WorkClass {
+    /// The one per-class gate.
+    pub(crate) fn gate(self, capabilities: WorkCapabilities) -> ClassGate {
+        let transcription = |enabled: bool, setting: &'static str| {
+            if !enabled {
+                ClassGate::Disabled(setting)
+            } else if !capabilities.transcription_runnable() {
+                ClassGate::Unavailable(transcript_unavailable_reason(capabilities))
+            } else {
+                ClassGate::Runnable
+            }
+        };
+        match self {
+            // Previews always run; formats that need ffmpeg wait for it per
+            // item (see `preview_pending_predicates`).
+            Self::Previews => ClassGate::Runnable,
+            Self::Snapshots if !capabilities.video_snapshots_enabled => {
+                ClassGate::Disabled("enable-video-snapshots")
+            }
+            Self::Snapshots if !capabilities.ffmpeg => ClassGate::Unavailable("waiting-for-ffmpeg"),
+            Self::Snapshots => ClassGate::Runnable,
+            Self::Similarity if !capabilities.similarity_enabled => {
+                ClassGate::Disabled("enable-similarity")
+            }
+            Self::Similarity => ClassGate::Runnable,
+            Self::Faces if !capabilities.face_enabled => ClassGate::Disabled("enable-face-scoring"),
+            Self::Faces if !capabilities.faces_runnable() => {
+                ClassGate::Unavailable(face_unavailable_reason(capabilities))
+            }
+            Self::Faces => ClassGate::Runnable,
+            Self::VideoTranscripts => transcription(
+                capabilities.video_transcription_enabled,
+                "enable-video-transcription",
+            ),
+            Self::AudioTranscripts => transcription(
+                capabilities.audio_transcription_enabled,
+                "enable-audio-transcription",
+            ),
+        }
+    }
+
+    pub(crate) fn prerequisite(self) -> Prerequisite {
+        match self {
+            Self::Previews | Self::AudioTranscripts => Prerequisite::None,
+            Self::Similarity | Self::Faces => Prerequisite::Preview,
+            Self::Snapshots => Prerequisite::PosterAndDuration,
+            Self::VideoTranscripts => Prerequisite::DurationOrPoster,
+        }
+    }
+
+    /// SQL (aliases `l` review_contents, `c` contents, `r` analysis_receipts)
+    /// selecting items whose output this class still owes and whose
+    /// prerequisite holds, whatever the gate says. Previews and similarity
+    /// have their own debt units (`preview_pending_predicates`, dirty
+    /// buckets) and are not listed here.
+    pub(crate) fn owed_sql(self) -> Option<String> {
+        let ready = self.prerequisite().sql();
+        match self {
+            Self::Snapshots => Some(format!("(l.kind = 'video' AND c.strip_frames IS NULL AND {ready})")),
+            Self::Faces => Some(format!("(l.kind = 'image' AND r.face_state IS NULL AND {ready})")),
+            Self::VideoTranscripts => Some(format!(
+                "(c.kind = 'video' AND {ready} AND r.transcript_state IS NULL)"
+            )),
+            Self::AudioTranscripts => Some(format!(
+                "(c.kind = 'audio' AND {ready} AND r.transcript_state IS NULL)"
+            )),
+            Self::Previews | Self::Similarity => None,
+        }
+    }
+
+    /// SQL (same aliases) selecting items whose output for this class failed.
+    fn failed_sql(self) -> Option<String> {
+        match self {
+            Self::Previews => Some(format!("(l.kind IN ('image', 'video') AND c.derived_at_utc = '{FAILED}')")),
+            Self::Snapshots => Some("(l.kind = 'video' AND c.strip_frames < 0)".to_string()),
+            Self::Faces => Some(format!("(r.face_state = '{FAILED}')")),
+            Self::VideoTranscripts => Some(format!("(c.kind = 'video' AND r.transcript_state = '{FAILED}')")),
+            Self::AudioTranscripts => Some(format!("(c.kind = 'audio' AND r.transcript_state = '{FAILED}')")),
+            Self::Similarity => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct WorkCapabilities {
     pub ffmpeg: bool,
@@ -125,48 +272,66 @@ impl WorkDebts {
     }
 }
 
-struct DebtCounts {
-    image_previews: u64,
-    video_previews: u64,
-    waiting_images: u64,
-    preview_failures: u64,
-    snapshots: u64,
-    snapshot_failures: u64,
-    faces: u64,
-    face_failures: u64,
-    video_transcripts: u64,
-    video_transcript_failures: u64,
-    audio_transcripts: u64,
-    audio_transcript_failures: u64,
-}
+/// The classes whose owed and failed outputs are counted row by row.
+const COUNTED: [WorkClass; 4] = [
+    WorkClass::Snapshots,
+    WorkClass::Faces,
+    WorkClass::VideoTranscripts,
+    WorkClass::AudioTranscripts,
+];
 
 fn work_debt_sql(ffmpeg: bool) -> String {
     let (image_pending, _) = preview_pending_predicates(ffmpeg);
     let video_pending = video_preview_pending_predicate();
-    let preview_ready = preview_available_predicate("c");
+    let mut columns = vec![
+        format!("COALESCE(SUM(l.kind = 'image' AND {image_pending}), 0)"),
+        format!("COALESCE(SUM(l.kind = 'video' AND {video_pending}), 0)"),
+        format!("COALESCE(SUM(l.kind = 'image' AND c.derived_at_utc = '{NEEDS_FFMPEG}'), 0)"),
+        format!(
+            "COALESCE(SUM({}), 0)",
+            WorkClass::Previews.failed_sql().expect("previews record failures")
+        ),
+    ];
+    for class in COUNTED {
+        columns.push(format!(
+            "COALESCE(SUM({}), 0)",
+            class.owed_sql().expect("counted classes owe rows")
+        ));
+        columns.push(format!(
+            "COALESCE(SUM({}), 0)",
+            class.failed_sql().expect("counted classes record failures")
+        ));
+    }
     format!(
-        "SELECT
-           COALESCE(SUM(l.kind = 'image' AND {image_pending}), 0),
-           COALESCE(SUM(l.kind = 'video' AND {video_pending}), 0),
-           COALESCE(SUM(l.kind = 'image' AND c.derived_at_utc = '{NEEDS_FFMPEG}'), 0),
-           COALESCE(SUM(l.kind IN ('image', 'video') AND c.derived_at_utc = '{FAILED}'), 0),
-           COALESCE(SUM(l.kind = 'video' AND c.strip_frames IS NULL
-                        AND c.duration_ms IS NOT NULL
-                        AND {preview_ready}), 0),
-           COALESCE(SUM(l.kind = 'video' AND c.strip_frames < 0), 0),
-           COALESCE(SUM(l.kind = 'image' AND r.face_state IS NULL
-                        AND {preview_ready}), 0),
-           COALESCE(SUM(r.face_state = '{FAILED}'), 0),
-           COALESCE(SUM(c.kind = 'video'
-                        AND (c.duration_ms IS NOT NULL OR {preview_ready})
-                        AND r.transcript_state IS NULL), 0),
-           COALESCE(SUM(c.kind = 'video' AND r.transcript_state = '{FAILED}'), 0),
-           COALESCE(SUM(c.kind = 'audio' AND r.transcript_state IS NULL), 0),
-           COALESCE(SUM(c.kind = 'audio' AND r.transcript_state = '{FAILED}'), 0)
+        "SELECT {}
          FROM review_contents l
          JOIN contents c ON c.hash = l.content_hash
-         LEFT JOIN analysis_receipts r ON r.content_hash = l.content_hash"
+         LEFT JOIN analysis_receipts r ON r.content_hash = l.content_hash",
+        columns.join(",\n           ")
     )
+}
+
+/// One gated class's debt from its owed and failed counts.
+fn gated_debt(gate: ClassGate, owed: u64, failed: u64) -> WorkDebt {
+    match gate {
+        ClassGate::Disabled(reason) => WorkDebt {
+            disabled: true,
+            reason: Some(reason),
+            ..WorkDebt::default()
+        },
+        ClassGate::Unavailable(reason) => WorkDebt {
+            blocked: owed,
+            failed,
+            reason: Some(reason),
+            unavailable: true,
+            ..WorkDebt::default()
+        },
+        ClassGate::Runnable => WorkDebt {
+            runnable: owed,
+            failed,
+            ..WorkDebt::default()
+        },
+    }
 }
 
 /// Durable output debt for every fixed class. This is the sole owner of the
@@ -178,139 +343,50 @@ pub(crate) fn work_debts(
     capabilities: WorkCapabilities,
 ) -> Result<WorkDebts, String> {
     let sql = work_debt_sql(capabilities.ffmpeg);
-    let counts = conn
+    let counts: Vec<u64> = conn
         .query_row(&sql, [], |row| {
-            let count = |column| row.get::<_, i64>(column).map(|value| value.max(0) as u64);
-            Ok(DebtCounts {
-                image_previews: count(0)?,
-                video_previews: count(1)?,
-                waiting_images: count(2)?,
-                preview_failures: count(3)?,
-                snapshots: count(4)?,
-                snapshot_failures: count(5)?,
-                faces: count(6)?,
-                face_failures: count(7)?,
-                video_transcripts: count(8)?,
-                video_transcript_failures: count(9)?,
-                audio_transcripts: count(10)?,
-                audio_transcript_failures: count(11)?,
-            })
+            (0..4 + 2 * COUNTED.len())
+                .map(|column| row.get::<_, i64>(column).map(|value| value.max(0) as u64))
+                .collect()
         })
         .map_err(|error| error.to_string())?;
+    let (image_previews, video_previews, waiting_images, preview_failures) =
+        (counts[0], counts[1], counts[2], counts[3]);
 
     let previews = if capabilities.ffmpeg {
         WorkDebt {
-            runnable: counts.image_previews + counts.video_previews,
-            failed: counts.preview_failures,
+            runnable: image_previews + video_previews,
+            failed: preview_failures,
             ..WorkDebt::default()
         }
     } else {
-        let blocked = counts.video_previews + counts.waiting_images;
+        let blocked = video_previews + waiting_images;
         WorkDebt {
-            runnable: counts.image_previews,
+            runnable: image_previews,
             blocked,
-            failed: counts.preview_failures,
+            failed: preview_failures,
             reason: (blocked > 0).then_some("waiting-for-ffmpeg"),
             ..WorkDebt::default()
         }
     };
-    let snapshots = if !capabilities.video_snapshots_enabled {
-        WorkDebt {
-            disabled: true,
-            reason: Some("enable-video-snapshots"),
-            ..WorkDebt::default()
-        }
-    } else if capabilities.ffmpeg {
-        WorkDebt {
-            runnable: counts.snapshots,
-            failed: counts.snapshot_failures,
-            ..WorkDebt::default()
-        }
-    } else {
-        WorkDebt {
-            blocked: counts.snapshots,
-            failed: counts.snapshot_failures,
-            reason: Some("waiting-for-ffmpeg"),
-            unavailable: true,
-            ..WorkDebt::default()
-        }
-    };
-    let similarity = if capabilities.similarity_enabled {
-        WorkDebt {
+    let similarity = match WorkClass::Similarity.gate(capabilities) {
+        ClassGate::Runnable => WorkDebt {
             runnable: crate::similarity::dirty_bucket_count(conn)?,
             ..WorkDebt::default()
-        }
-    } else {
-        WorkDebt {
-            disabled: true,
-            reason: Some("enable-similarity"),
-            ..WorkDebt::default()
-        }
+        },
+        gate => gated_debt(gate, 0, 0),
     };
-    let faces = if !capabilities.face_enabled {
-        WorkDebt {
-            disabled: true,
-            reason: Some("enable-face-scoring"),
-            ..WorkDebt::default()
-        }
-    } else if capabilities.faces_runnable() {
-        WorkDebt {
-            runnable: counts.faces,
-            failed: counts.face_failures,
-            ..WorkDebt::default()
-        }
-    } else {
-        WorkDebt {
-            blocked: counts.faces,
-            failed: counts.face_failures,
-            reason: Some(face_unavailable_reason(capabilities)),
-            unavailable: true,
-            ..WorkDebt::default()
-        }
-    };
-    let transcript_debt = |enabled: bool, runnable: u64, failed: u64, setting: &'static str| {
-        if !enabled {
-            WorkDebt {
-                disabled: true,
-                reason: Some(setting),
-                ..WorkDebt::default()
-            }
-        } else if capabilities.transcription_runnable() {
-            WorkDebt {
-                runnable,
-                failed,
-                ..WorkDebt::default()
-            }
-        } else {
-            WorkDebt {
-                blocked: runnable,
-                failed,
-                reason: Some(transcript_unavailable_reason(capabilities)),
-                unavailable: true,
-                ..WorkDebt::default()
-            }
-        }
-    };
-    let video_transcripts = transcript_debt(
-        capabilities.video_transcription_enabled,
-        counts.video_transcripts,
-        counts.video_transcript_failures,
-        "enable-video-transcription",
-    );
-    let audio_transcripts = transcript_debt(
-        capabilities.audio_transcription_enabled,
-        counts.audio_transcripts,
-        counts.audio_transcript_failures,
-        "enable-audio-transcription",
-    );
-    Ok(WorkDebts([
-        previews,
-        snapshots,
-        similarity,
-        faces,
-        video_transcripts,
-        audio_transcripts,
-    ]))
+    let mut debts = [WorkDebt::default(); 6];
+    debts[WorkClass::Previews as usize] = previews;
+    debts[WorkClass::Similarity as usize] = similarity;
+    for (index, class) in COUNTED.into_iter().enumerate() {
+        debts[class as usize] = gated_debt(
+            class.gate(capabilities),
+            counts[4 + 2 * index],
+            counts[5 + 2 * index],
+        );
+    }
+    Ok(WorkDebts(debts))
 }
 
 // EXCEPTION (tests-folder convention): this pins the private aggregate SQL
@@ -322,6 +398,14 @@ pub(crate) fn work_debts(
 // only for this test.
 #[path = "../tests/unit/derived_state/debt_query_tests.rs"]
 mod debt_query_tests;
+
+#[cfg(test)]
+// EXCEPTION to tests-folder conventions: exercises the private per-class
+// gate, prerequisite and owed SQL together, so their SQL and item-state
+// forms are proven to agree; promoting them would widen the crate's API only
+// for this test.
+#[path = "../tests/unit/derived_state/class_rule_tests.rs"]
+mod class_rule_tests;
 
 pub const FACE_ERROR: &str = "face-score-error";
 pub const PREVIEW_ERROR: &str = "decode-error";
@@ -417,36 +501,34 @@ pub(crate) fn item_work_states(
     let preview_ready = preview.as_ref().is_some_and(|state| state.state == "ready");
     let preview_failed = preview.as_ref().is_some_and(|state| state.state == "failed");
 
+    let duration_known = facts.duration_ms.is_some();
+    // Receipts first; then the class gate; then the class prerequisite.
+    let gated = |class: WorkClass, has_value: bool| match class.gate(capabilities) {
+        ClassGate::Disabled(reason) => item_state("disabled", has_value, Some(reason)),
+        ClassGate::Unavailable(reason) => item_state("unavailable", has_value, Some(reason)),
+        ClassGate::Runnable if !class.prerequisite().holds(preview_ready, duration_known) => {
+            class.prerequisite().unmet(preview_failed, has_value)
+        }
+        ClassGate::Runnable => item_state("pending", has_value, None),
+    };
+
     let snapshots = (facts.kind == "video").then(|| {
         if facts.strip_frames == Some(STRIP_FAILED) {
             item_state("failed", false, Some("Video snapshot generation failed"))
         } else if let Some(count) = facts.strip_frames {
             item_state("ready", count > 0, None)
-        } else if !capabilities.video_snapshots_enabled {
-            item_state("disabled", false, Some("Video snapshots are off"))
-        } else if !capabilities.ffmpeg {
-            item_state("unavailable", false, Some("waiting-for-ffmpeg"))
-        } else if preview_failed {
-            item_state("blocked", false, Some("Preview generation failed"))
-        } else if !preview_ready || facts.duration_ms.is_none() {
-            item_state("waiting", false, Some("Waiting for the video poster"))
         } else {
-            item_state("pending", false, None)
+            gated(WorkClass::Snapshots, false)
         }
     });
 
     let similarity = (facts.kind == "image").then(|| {
         let has_value = facts.similar_group_id.is_some();
-        if !capabilities.similarity_enabled {
-            item_state("disabled", has_value, Some("Similar-photo analysis is off"))
-        } else if preview_failed {
-            item_state("blocked", has_value, Some("Preview generation failed"))
-        } else if !preview_ready {
-            item_state("waiting", has_value, Some("Waiting for the preview"))
-        } else if similarity_dirty {
-            item_state("pending", has_value, None)
-        } else {
-            item_state("ready", has_value, None)
+        match gated(WorkClass::Similarity, has_value) {
+            pending if pending.state == "pending" && !similarity_dirty => {
+                item_state("ready", has_value, None)
+            }
+            state => state,
         }
     });
 
@@ -459,45 +541,20 @@ pub(crate) fn item_work_states(
                 facts.face_score.is_some_and(|score| score > 0.0),
                 None,
             )
-        } else if !capabilities.face_enabled {
-            item_state("disabled", false, Some("Face scoring is off"))
-        } else if !capabilities.faces_runnable() {
-            item_state("unavailable", false, Some(face_unavailable_reason(capabilities)))
-        } else if preview_failed {
-            item_state("blocked", false, Some("Preview generation failed"))
-        } else if !preview_ready {
-            item_state("waiting", false, Some("Waiting for the preview"))
         } else {
-            item_state("pending", false, None)
+            gated(WorkClass::Faces, false)
         }
     });
 
-    let transcripts = matches!(facts.kind, "video" | "audio").then(|| {
-        let enabled = if facts.kind == "video" {
-            capabilities.video_transcription_enabled
-        } else {
-            capabilities.audio_transcription_enabled
-        };
+    let transcripts = WorkClass::transcription_for_kind(facts.kind).map(|class| {
         if facts.transcript_state == Some(FAILED) {
             item_state("failed", false, Some("Transcription failed"))
         } else if facts.transcript_state == Some(READY_TEXT) {
             item_state("ready", true, None)
         } else if facts.transcript_state == Some(READY_EMPTY) {
             item_state("ready", false, None)
-        } else if !enabled {
-            item_state("disabled", false, Some("Automatic transcription is off"))
-        } else if !capabilities.transcription_runnable() {
-            item_state(
-                "unavailable",
-                false,
-                Some(transcript_unavailable_reason(capabilities)),
-            )
-        } else if facts.kind == "video" && preview_failed {
-            item_state("blocked", false, Some("Video poster generation failed"))
-        } else if facts.kind == "video" && facts.duration_ms.is_none() && !preview_ready {
-            item_state("waiting", false, Some("Waiting for the video poster"))
         } else {
-            item_state("pending", false, None)
+            gated(class, false)
         }
     });
 
@@ -511,40 +568,17 @@ pub(crate) fn item_work_states(
 }
 
 fn priority_predicate(class: WorkClass, capabilities: WorkCapabilities) -> String {
-    let preview_ready = preview_available_predicate("c");
     match class {
         WorkClass::Previews => {
             let (image, video) = preview_pending_predicates(capabilities.ffmpeg);
             format!("((l.kind = 'image' AND {image}) OR (l.kind = 'video' AND {video}))")
         }
-        WorkClass::Snapshots if capabilities.video_snapshots_enabled && capabilities.ffmpeg => {
-            format!(
-                "l.kind = 'video' AND c.strip_frames IS NULL AND c.duration_ms IS NOT NULL \
-             AND {preview_ready}"
-            )
-        }
-        WorkClass::Faces if capabilities.face_enabled && capabilities.faces_runnable() => {
-            format!("l.kind = 'image' AND r.face_state IS NULL AND {preview_ready}")
-        }
-        WorkClass::VideoTranscripts
-            if capabilities.video_transcription_enabled && capabilities.transcription_runnable() =>
-        {
-            format!(
-                "c.kind = 'video' AND (c.duration_ms IS NOT NULL OR {preview_ready}) \
-                 AND r.transcript_state IS NULL"
-            )
-        }
-        WorkClass::AudioTranscripts
-            if capabilities.audio_transcription_enabled && capabilities.transcription_runnable() =>
-        {
-            "c.kind = 'audio' AND r.transcript_state IS NULL".to_string()
-        }
-        WorkClass::Similarity if capabilities.similarity_enabled => format!("l.kind = 'image' AND {}", crate::similarity::pending_bucket_predicate("l")),
-        WorkClass::Similarity
-        | WorkClass::Snapshots
-        | WorkClass::Faces
-        | WorkClass::VideoTranscripts
-        | WorkClass::AudioTranscripts => "0".to_string(),
+        _ if class.gate(capabilities) != ClassGate::Runnable => "0".to_string(),
+        WorkClass::Similarity => format!(
+            "l.kind = 'image' AND {}",
+            crate::similarity::pending_bucket_predicate("l")
+        ),
+        _ => class.owed_sql().expect("gated classes owe rows"),
     }
 }
 
@@ -744,15 +778,14 @@ pub fn strip_candidates(
     after_hash: Option<&str>,
     limit: usize,
 ) -> Result<Vec<(String, i64, String)>, String> {
-    let preview_ready = preview_available_predicate("c");
+    let owed = WorkClass::Snapshots.owed_sql().expect("snapshots owe rows");
     let mut statement = conn
         .prepare(&format!(
             "SELECT c.hash, c.duration_ms, p.abs_path \
              FROM review_contents l \
              JOIN contents c ON c.hash = l.content_hash \
              JOIN paths p ON p.id = l.representative_path_id \
-             WHERE l.kind = 'video' AND c.strip_frames IS NULL \
-               AND c.duration_ms IS NOT NULL AND {preview_ready} \
+             WHERE {owed} \
                AND l.content_hash > ?1 AND p.missing = 0 \
              ORDER BY l.content_hash LIMIT ?2"
         ))
@@ -779,15 +812,14 @@ pub fn prioritized_strip_candidates(
         .map(|index| format!("(?{index}, {})", index - 1))
         .collect::<Vec<_>>()
         .join(", ");
-    let preview_ready = preview_available_predicate("c");
+    let owed = WorkClass::Snapshots.owed_sql().expect("snapshots owe rows");
     let sql = format!(
         "WITH hinted(hash, priority) AS (VALUES {values}) \
          SELECT c.hash, c.duration_ms, p.abs_path FROM hinted h \
          JOIN review_contents l ON l.content_hash = h.hash \
          JOIN contents c ON c.hash = l.content_hash \
          JOIN paths p ON p.id = l.representative_path_id \
-         WHERE l.kind = 'video' AND c.strip_frames IS NULL \
-           AND c.duration_ms IS NOT NULL AND p.missing = 0 AND {preview_ready} \
+         WHERE {owed} AND p.missing = 0 \
          ORDER BY h.priority LIMIT {limit}"
     );
     let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
@@ -806,7 +838,7 @@ pub fn face_candidates(
     after_hash: Option<&str>,
     limit: usize,
 ) -> Result<Vec<(String, String)>, String> {
-    let preview_ready = preview_available_predicate("c");
+    let owed = WorkClass::Faces.owed_sql().expect("faces owe rows");
     let mut statement = conn
         .prepare(&format!(
             "SELECT c.hash, p.abs_path \
@@ -814,8 +846,7 @@ pub fn face_candidates(
              JOIN contents c ON c.hash = l.content_hash \
              JOIN paths p ON p.id = l.representative_path_id \
              LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
-             WHERE l.kind = 'image' AND r.face_state IS NULL \
-               AND {preview_ready} \
+             WHERE {owed} \
                AND l.content_hash > ?1 AND p.missing = 0 \
              ORDER BY l.content_hash LIMIT ?2"
         ))
@@ -842,7 +873,7 @@ pub fn prioritized_face_candidates(
         .map(|index| format!("(?{index}, {})", index - 1))
         .collect::<Vec<_>>()
         .join(", ");
-    let preview_ready = preview_available_predicate("c");
+    let owed = WorkClass::Faces.owed_sql().expect("faces owe rows");
     let sql = format!(
         "WITH hinted(hash, priority) AS (VALUES {values}) \
          SELECT c.hash, p.abs_path FROM hinted h \
@@ -850,8 +881,7 @@ pub fn prioritized_face_candidates(
          JOIN contents c ON c.hash = l.content_hash \
          JOIN paths p ON p.id = l.representative_path_id \
          LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
-         WHERE l.kind = 'image' AND r.face_state IS NULL \
-           AND p.missing = 0 AND {preview_ready} \
+         WHERE {owed} AND p.missing = 0 \
          ORDER BY h.priority LIMIT {limit}"
     );
     let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
@@ -865,15 +895,10 @@ pub fn prioritized_face_candidates(
     Ok(rows)
 }
 
-/// A video's audio is transcribed once its duration is known, from metadata
-/// or its poster pass, or once its poster is ready: a playable container
-/// that reports no duration still has a transcribable soundtrack.
-fn transcript_ready_predicate(kind: &str) -> String {
-    if kind == "audio" {
-        "1".to_string()
-    } else {
-        format!("(c.duration_ms IS NOT NULL OR {})", preview_available_predicate("c"))
-    }
+fn transcript_owed(kind: &str) -> Result<String, String> {
+    WorkClass::transcription_for_kind(kind)
+        .and_then(WorkClass::owed_sql)
+        .ok_or_else(|| format!("unsupported transcription kind: {kind}"))
 }
 
 pub fn transcript_candidates(
@@ -882,9 +907,7 @@ pub fn transcript_candidates(
     after_hash: Option<&str>,
     limit: usize,
 ) -> Result<Vec<(String, String)>, String> {
-    if !matches!(kind, "video" | "audio") {
-        return Err(format!("unsupported transcription kind: {kind}"));
-    }
+    let owed = transcript_owed(kind)?;
     let mut statement = conn
         .prepare(&format!(
             "SELECT c.hash, p.abs_path \
@@ -892,16 +915,14 @@ pub fn transcript_candidates(
              JOIN contents c ON c.hash = l.content_hash \
              JOIN paths p ON p.id = l.representative_path_id \
              LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
-             WHERE c.kind = ?1 AND {} \
-               AND r.transcript_state IS NULL AND p.missing = 0 \
-               AND l.content_hash > ?2 \
-             ORDER BY l.content_hash LIMIT ?3",
-            transcript_ready_predicate(kind)
+             WHERE {owed} AND p.missing = 0 \
+               AND l.content_hash > ?1 \
+             ORDER BY l.content_hash LIMIT ?2"
         ))
         .map_err(|error| error.to_string())?;
     let rows = statement
         .query_map(
-            params![kind, after_hash.unwrap_or(""), limit as i64],
+            params![after_hash.unwrap_or(""), limit as i64],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .map_err(|error| error.to_string())?
@@ -916,9 +937,7 @@ pub fn prioritized_transcript_candidates(
     hashes: &[String],
     limit: usize,
 ) -> Result<Vec<(String, String)>, String> {
-    if !matches!(kind, "video" | "audio") {
-        return Err(format!("unsupported transcription kind: {kind}"));
-    }
+    let owed = transcript_owed(kind)?;
     if hashes.is_empty() {
         return Ok(Vec::new());
     }
@@ -933,10 +952,8 @@ pub fn prioritized_transcript_candidates(
          JOIN contents c ON c.hash = l.content_hash \
          JOIN paths p ON p.id = l.representative_path_id \
          LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
-         WHERE c.kind = '{kind}' AND {ready} \
-           AND r.transcript_state IS NULL AND p.missing = 0 \
-         ORDER BY h.priority LIMIT {limit}",
-        ready = transcript_ready_predicate(kind)
+         WHERE {owed} AND p.missing = 0 \
+         ORDER BY h.priority LIMIT {limit}"
     );
     let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
     let rows = statement
