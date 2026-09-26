@@ -229,4 +229,25 @@ describe("the app-frame notification host", () => {
     await act(async () => fireBackendEvent("notification://cleared"));
     expect(document.body.textContent).not.toContain("Couldn’t open the selected file.");
   });
+
+  // R4.4 E3 / Finding E.3: a persistent notice lives in `notifications.rs`'s
+  // process-wide ACTIVE list, not in any one window's component state, so it
+  // must survive a Quick View <-> fullscreen switch rather than being tied to
+  // whichever surface happened to be mounted when it arrived. The fullscreen
+  // half (a brand-new webview hydrating from `get_active_notifications`) needs
+  // a module registry this instance's `install()` singleton has never run in;
+  // see `notification-survives-viewer-switch.test.tsx` for that half.
+  it("stays visible across a Quick View open/close cycle, because it lives in the shared store, not the mounted surface", () => {
+    const { unmount } = render(<NotificationHost />);
+    act(() => useNotificationsStore.setState({ active: [notice()] }));
+    expect(document.body.textContent).toContain("Couldn’t open the selected file.");
+
+    // Quick View opening and closing does not remount Main's NotificationHost
+    // (App.tsx keeps it mounted outside the conditional Quick View branch);
+    // simulating the surrounding tree changing around it must not lose the
+    // notice held in `useNotificationsStore`.
+    unmount();
+    render(<NotificationHost />);
+    expect(document.body.textContent).toContain("Couldn’t open the selected file.");
+  });
 });
