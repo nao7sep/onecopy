@@ -7,6 +7,8 @@ import { useCallback, useRef, type MutableRefObject } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { log, toErrorFields } from "./repositories";
 import { createEventInstaller } from "./utils/eventInstallation";
+import { recordActionFailure } from "./state/notifications-store";
+import { message } from "./i18n/translate";
 
 interface ReleaseMessage {
   token: number;
@@ -105,15 +107,26 @@ function resume(token: number, restorePlayback = true): void {
       if (!element.isConnected || src === null) continue;
       element.setAttribute("src", src);
       const restore = () => {
+        let seekFailed = false;
         if (time > 0) {
           try {
             element.currentTime = time;
           } catch {
             // A removed item or unsupported codec has no seekable timeline.
+            seekFailed = true;
           }
         }
         if (playing && restorePlayback) {
-          void element.play().catch(() => undefined);
+          element.play().catch((error) => {
+            // content-presentation.md: "reports restoration failure
+            // otherwise" — a failed file operation must not leave the player
+            // silently paused at the wrong spot with no explanation.
+            log.error("playback restore failed", toErrorFields(error));
+            recordActionFailure("playback-restore-failed", message("playback.restoreFailed"), error);
+          });
+        } else if (seekFailed) {
+          log.error("playback position restore failed", { element: element.tagName });
+          recordActionFailure("playback-restore-failed", message("playback.restoreFailed"));
         }
       };
       element.addEventListener("loadedmetadata", restore, { once: true });

@@ -71,8 +71,25 @@ function shouldRetainUnownedSession(current: PlaybackSession): boolean {
   return preview.follow && previewKey === current.key;
 }
 
+/** Persistent Preview never becomes another playback owner while the
+ * transient viewer is open for the same content (viewing-sessions.md: "Main
+ * keeps ... persistent Preview follows it without becoming another playback
+ * owner"; content-presentation.md: "Only one OneCopy surface owns playback").
+ * A viewer registration briefly missing mid-item-change (Quick View drops the
+ * old item's registration before Preview catches up to the new anchor) must
+ * not hand the live session to Preview for that gap — the viewer session
+ * being OPEN is what reserves the slot, not merely having a registration this
+ * instant. */
+function eligibleRegistrations(): PlaybackRegistration[] {
+  const all = [...registrations.values()];
+  if (useQuickViewStore.getState().session === null) return all;
+  return all.filter(
+    (registration) => registration.surface !== "preview-split" && registration.surface !== "preview-window",
+  );
+}
+
 function recompute(): void {
-  const next = choosePlaybackSession(registrations.values(), session, policy());
+  const next = choosePlaybackSession(eligibleRegistrations(), session, policy());
   if (
     next === null &&
     session !== null &&
@@ -82,16 +99,23 @@ function recompute(): void {
   } else {
     session = next;
   }
-  if (
-    session !== null &&
-    pendingSeek?.key === session.key &&
-    Number.isFinite(pendingSeek.position)
-  ) {
-    session = {
-      ...session,
-      position: Math.max(0, pendingSeek.position ?? 0),
-      playing: pendingSeek.play ?? true,
-    };
+  if (pendingSeek !== null) {
+    if (
+      session !== null &&
+      pendingSeek.key === session.key &&
+      Number.isFinite(pendingSeek.position)
+    ) {
+      session = {
+        ...session,
+        position: Math.max(0, pendingSeek.position ?? 0),
+        playing: pendingSeek.play ?? true,
+      };
+    }
+    // Single-shot regardless of match: a seek queued for a player that has
+    // not registered YET is meant for the very next recompute, not for
+    // whatever unrelated item eventually reuses this key later
+    // (content-presentation.md D2 — a timestamp with no live session must
+    // never leave a seek that fires minutes afterward on a different visit).
     pendingSeek = null;
   }
   broadcast();
@@ -171,9 +195,15 @@ function seek(target: PlaybackTarget): void {
     session.key !== target.key ||
     !Number.isFinite(target.position)
   ) {
-    if (Number.isFinite(target.position)) pendingSeek = target;
+    // Queued for the IMMEDIATELY NEXT recompute only (see `recompute`'s
+    // single-shot consumption) — worth it for a player that is opening this
+    // instant and about to register, never for "whenever this key is next
+    // reused", which is what let a click minutes ago silently reappear on a
+    // later, unrelated visit (content-presentation.md D2).
+    pendingSeek = Number.isFinite(target.position) ? target : null;
     return;
   }
+  pendingSeek = null;
   session = {
     ...session,
     position: Math.max(0, target.position ?? 0),
@@ -203,6 +233,12 @@ const install = createEventInstaller(
         log.error("playback handshake failed", toErrorFields(error));
       });
     });
+    // Reserve/release the owner slot the instant the viewer opens or closes,
+    // rather than waiting for the next register/unregister to happen to
+    // recompute it.
+    listeners.retain(useQuickViewStore.subscribe((state, previous) => {
+      if ((state.session === null) !== (previous.session === null)) recompute();
+    }));
     listeners.retain(useAppStore.subscribe((state, previous) => {
       if (
         (state.appData?.config === previous.appData?.config &&

@@ -156,4 +156,113 @@ describe("playback workflow", () => {
     });
     expect(latestState()).toBeNull();
   });
+
+  // content-presentation.md D1: "Only one OneCopy surface owns playback at a
+  // time" and Preview "follows it without becoming another playback owner"
+  // while the transient viewer is open for the same content.
+  it("never hands the live session to Preview while the viewer is open for the same content", () => {
+    fireEvent("playback://register", {
+      surface: "preview-split",
+      key: "clip",
+      medium: "video",
+    });
+    expect(latestState()).toMatchObject({ owner: "preview-split", key: "clip" });
+
+    // Quick View opens for the SAME item and briefly has no registration of
+    // its own (the item change drops the old registration before the new
+    // one lands) — Preview must not reclaim ownership during that gap.
+    useQuickViewStore.setState({
+      session: { presentation: "quick", member: { hash: "clip", pathId: null } } as never,
+    });
+    expect(latestState()).toMatchObject({ key: "clip", owner: null });
+
+    fireEvent("playback://register", {
+      surface: "quick",
+      key: "clip",
+      medium: "video",
+    });
+    expect(latestState()).toMatchObject({ owner: "quick", key: "clip" });
+
+    fireEvent("playback://unregister", {
+      surface: "quick",
+      key: "clip",
+      medium: "video",
+    });
+    // The viewer is still open (now showing something else) — Preview
+    // remains ineligible even with no current viewer registration.
+    expect(latestState()).toMatchObject({ key: "clip", owner: null });
+
+    useQuickViewStore.setState({ session: null });
+    expect(latestState()).toMatchObject({ owner: "preview-split", key: "clip" });
+
+    fireEvent("playback://unregister", {
+      surface: "preview-split",
+      key: "clip",
+      medium: "video",
+    });
+  });
+
+  // content-presentation.md D2: a timestamp seek queued for a key with no
+  // live or registering player must not fire on some unrelated later visit.
+  describe("seeking a key with no live player", () => {
+    it("never survives past the next unrelated recompute to fire on a later, unrelated visit", () => {
+      fireEvent("playback://seek", { key: "later", position: 42, play: true });
+      // An unrelated registration recomputes the session once — the queued
+      // seek is single-shot and is dropped here, not held for "later" only.
+      fireEvent("playback://register", {
+        surface: "preview-split",
+        key: "unrelated",
+        medium: "video",
+      });
+      fireEvent("playback://unregister", {
+        surface: "preview-split",
+        key: "unrelated",
+        medium: "video",
+      });
+      // Minutes afterward, the same key finally gets a real player: it must
+      // start at 0, not jump to the stale click from before.
+      fireEvent("playback://register", {
+        surface: "preview-split",
+        key: "later",
+        medium: "video",
+      });
+      expect(latestState()).toMatchObject({ key: "later", position: 0 });
+      fireEvent("playback://unregister", {
+        surface: "preview-split",
+        key: "later",
+        medium: "video",
+      });
+    });
+
+    it("applies a queued seek only to the very next registration, then drops it", () => {
+      // No player is registered for this key YET (it is opening) — the seek
+      // queues for whichever registration arrives next.
+      fireEvent("playback://seek", { key: "opening", position: 30, play: true });
+      fireEvent("playback://register", {
+        surface: "preview-split",
+        key: "opening",
+        medium: "video",
+      });
+      expect(latestState()).toMatchObject({ key: "opening", position: 30, playing: true });
+
+      fireEvent("playback://unregister", {
+        surface: "preview-split",
+        key: "opening",
+        medium: "video",
+      });
+      // The seek was single-shot: reusing the same key on a LATER,
+      // independent registration never replays it.
+      fireEvent("playback://register", {
+        surface: "preview-split",
+        key: "opening",
+        medium: "video",
+      });
+      expect(latestState()).toMatchObject({ key: "opening", position: 0 });
+      fireEvent("playback://unregister", {
+        surface: "preview-split",
+        key: "opening",
+        medium: "video",
+      });
+    });
+  });
 });

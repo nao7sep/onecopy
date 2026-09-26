@@ -75,6 +75,54 @@ describe("media-use boundary", () => {
     expect(play).not.toHaveBeenCalled();
   });
 
+  // content-presentation.md D5: "reports restoration failure otherwise" — a
+  // failed restore (seek or resumed playback) is surfaced, not swallowed.
+  it("reports a restoration failure when a surviving player fails to resume playing", async () => {
+    mockCommand("record_recent_notification", () => ({}));
+    const view = render(<Player />);
+    const video = view.container.querySelector("video")!;
+    Object.defineProperty(video, "paused", { configurable: true, get: () => false });
+    vi.spyOn(video, "play").mockRejectedValue(new Error("codec unavailable"));
+
+    await act(async () => {
+      fireEvent("media-use://release", { token: 11, keys: ["item"] });
+      await new Promise((resolve) => window.setTimeout(resolve, 60));
+    });
+    act(() => fireEvent("media-use://resume", { token: 11 }));
+    await act(async () => {
+      video.dispatchEvent(new Event("loadedmetadata"));
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    expect(
+      invokeCalls.some((call) => call.command === "record_recent_notification"),
+    ).toBe(true);
+  });
+
+  it("reports a restoration failure when the saved position cannot be re-applied", async () => {
+    mockCommand("record_recent_notification", () => ({}));
+    const view = render(<Player />);
+    const video = view.container.querySelector("video")!;
+    Object.defineProperty(video, "currentTime", {
+      configurable: true,
+      get: () => 5,
+      set: () => {
+        throw new Error("no seekable timeline");
+      },
+    });
+
+    await act(async () => {
+      fireEvent("media-use://release", { token: 12, keys: ["item"] });
+      await new Promise((resolve) => window.setTimeout(resolve, 60));
+    });
+    act(() => fireEvent("media-use://resume", { token: 12 }));
+    video.dispatchEvent(new Event("loadedmetadata"));
+
+    expect(
+      invokeCalls.some((call) => call.command === "record_recent_notification"),
+    ).toBe(true);
+  });
+
   it("restores local media when the backend cannot accept the release", async () => {
     mockCommand("media_use_released", () =>
       Promise.reject(new Error("release owner unavailable")),
