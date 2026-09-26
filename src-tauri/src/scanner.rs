@@ -1194,10 +1194,10 @@ fn walk_root_with_progress(
         .filter_entry(|entry| !is_excluded_from_discovery(entry.path(), data_root))
     {
         check_cancel()?;
-        // A pending foreground action takes the index here and the walk
-        // continues from this entry afterwards. Rows and attributes it cached
-        // may have changed meanwhile.
-        if crate::scan_runtime::yield_to_foreground()? {
+        // A pending foreground action or urgent preparation takes the index
+        // here and the walk continues from this entry afterwards. Rows and
+        // attributes it cached may have changed meanwhile.
+        if crate::scan_runtime::yield_at_safe_point()? {
             visibility_directories = crate::visibility_index::DirectoryFacts::default();
             issues_present = crate::index_store::any_issues(conn)?;
         }

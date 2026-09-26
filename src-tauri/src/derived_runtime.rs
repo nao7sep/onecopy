@@ -4,15 +4,16 @@
 //! projection.
 //!
 //! Work runs in two lanes. Preview preparation (thumbnails, screen previews,
-//! full-resolution images) has its own capacity-gated lane; every other class
-//! (snapshots, similarity, faces, transcription) shares one heavy lane. So a
-//! transcription never stops preview work and a requested preview never waits
-//! behind one.
+//! full-resolution images), automatic or requested, has its own
+//! capacity-gated lane; every other class (snapshots, similarity, faces,
+//! transcription) shares one heavy lane. So a transcription never stops
+//! preview work and preview work never waits behind one.
 //!
 //! Each running job carries its own stop request. Automatic jobs run inside
-//! the index claim and also stop while a foreground admission is pending;
-//! requested jobs do not hold that claim, so a foreground admission never
-//! stops them. `cancelled` answers for the job owned by the calling thread; a
+//! a `scan_runtime` share and also stop when that share is preempted: every
+//! share by a pending foreground admission, and an ordinary share by a
+//! waiting background index owner. Requested jobs hold no share, so neither
+//! ever stops them. `cancelled` answers for the job owned by the calling thread; a
 //! helper thread that polls for a job carries it with
 //! [`on_behalf_of_current_job`].
 
@@ -42,6 +43,9 @@ struct Job {
     id: u64,
     class: WorkClass,
     manual: bool,
+    /// Admitted under an urgent share: a waiting background index owner does
+    /// not stop it.
+    urgent: bool,
     hash: Option<String>,
     stop: bool,
     done: Option<u64>,
@@ -117,12 +121,13 @@ impl RuntimeState {
         self.claim.as_ref().is_some_and(|claim| claim.covers(hash))
     }
 
-    fn insert(&mut self, class: WorkClass, manual: bool, hash: Option<String>) -> u64 {
+    fn insert(&mut self, class: WorkClass, manual: bool, urgent: bool, hash: Option<String>) -> u64 {
         self.next_job = self.next_job.wrapping_add(1);
         let job = Job {
             id: self.next_job,
             class,
             manual,
+            urgent,
             hash,
             stop: false,
             done: None,
@@ -168,16 +173,36 @@ impl RuntimeState {
     }
 }
 
+/// What the index admission currently asks automatic work to yield to.
+#[derive(Clone, Copy, Default)]
+struct Preemption {
+    foreground: bool,
+    background: bool,
+}
+
+impl Preemption {
+    fn current() -> Self {
+        Self {
+            foreground: crate::scan_runtime::foreground_pending(),
+            background: crate::scan_runtime::background_pending(),
+        }
+    }
+
+    fn stops(self, manual: bool, urgent: bool) -> bool {
+        !manual && (self.foreground || (self.background && !urgent))
+    }
+}
+
 fn job_cancelled(
     runtime: &RuntimeState,
     job: &Job,
     shutting_down: bool,
-    foreground_pending: bool,
+    preemption: Preemption,
 ) -> bool {
     shutting_down
         || job.stop
         || runtime.paused(job.class)
-        || (!job.manual && foreground_pending)
+        || preemption.stops(job.manual, job.urgent)
 }
 
 /// Whether a queued requested heavy job must keep waiting for its turn.
@@ -324,11 +349,12 @@ impl ActiveGuard {
     }
 
     /// Automatic admission never waits: it declines while the lane is full,
-    /// requested work runs or is queued in it, the class is paused, a
-    /// foreground admission is pending, or a file operation holds the media
-    /// boundary.
+    /// requested work runs or is queued in it, the class is paused, the
+    /// calling thread's share is preempted, or a file operation holds the
+    /// media boundary.
     fn begin(app: Option<&AppHandle>, class: WorkClass) -> Result<Option<Self>, String> {
         let capacity = preview_capacity(class);
+        let urgent = crate::scan_runtime::urgent_share();
         let mut runtime = lock(app)?;
         let lane_full = if lane_is_previews(class) {
             runtime.previews.len() >= capacity
@@ -338,14 +364,14 @@ impl ActiveGuard {
             runtime.heavy.is_some() || runtime.manual_heavy_queued()
         };
         if shutting_down()
-            || crate::scan_runtime::foreground_pending()
+            || Preemption::current().stops(false, urgent)
             || runtime.claim.is_some()
             || runtime.paused(class)
             || lane_full
         {
             return Ok(None);
         }
-        let id = runtime.insert(class, false, None);
+        let id = runtime.insert(class, false, urgent, None);
         drop(runtime);
         Ok(Some(Self::bind(app, id, None)))
     }
@@ -426,7 +452,7 @@ fn requested_preview(app: Option<&AppHandle>, hash: &str) -> Result<ManualWorkGu
         }
         if preview_admits(&runtime, ticket, hash, capacity) {
             runtime.preview_queue.pop_front();
-            let id = runtime.insert(WorkClass::Previews, true, Some(hash.to_string()));
+            let id = runtime.insert(WorkClass::Previews, true, false, Some(hash.to_string()));
             RUNTIME.1.notify_all();
             drop(runtime);
             return Ok(ManualWorkGuard {
@@ -503,7 +529,7 @@ fn requested_heavy(
         RUNTIME.1.notify_all();
         return Err(paused_message(class));
     }
-    let id = runtime.insert(class, true, Some(hash.to_string()));
+    let id = runtime.insert(class, true, false, Some(hash.to_string()));
     drop(runtime);
     Ok(ManualWorkGuard {
         _guard: ActiveGuard::bind(app, id, Some(ticket)),
@@ -611,31 +637,10 @@ pub(crate) fn exclusive() -> bool {
         })
 }
 
-pub(crate) fn automatic_optional_active() -> bool {
-    RUNTIME
-        .0
-        .lock()
-        .map(|runtime| runtime.heavy.as_ref().is_some_and(|job| !job.manual))
-        .unwrap_or_else(|_| {
-            report_poison_once(None);
-            false
-        })
-}
-
-pub(crate) fn preempt_automatic_optional_for_required() {
-    let class = RUNTIME.0.lock().ok().and_then(|mut runtime| {
-        let job = runtime.heavy.as_mut().filter(|job| !job.manual)?;
-        job.stop = true;
-        Some(job.class)
-    });
-    if let Some(class) = class {
-        request_active_cancel(class);
-    }
-}
-
-/// Foreground admission is pending: automatic jobs already observe it through
-/// `cancelled`; this also interrupts a native engine at once instead of at
-/// its next poll.
+/// A foreground admission or background index owner is waiting: automatic
+/// jobs already observe it through `cancelled`; this also interrupts a native
+/// engine at once instead of at its next poll. The heavy lane never holds an
+/// urgent share, so both preempt its automatic job.
 pub(crate) fn preempt_automatic() {
     let class = RUNTIME.0.lock().ok().and_then(|runtime| {
         runtime
@@ -672,15 +677,15 @@ pub(crate) fn is_paused(class: WorkClass) -> bool {
 /// subprocess poll interval; in-process work stops at the next item edge.
 pub fn cancelled() -> bool {
     let shutting_down = shutting_down();
-    let foreground_pending = crate::scan_runtime::foreground_pending();
+    let preemption = Preemption::current();
     RUNTIME
         .0
         .lock()
         .map(|runtime| {
             shutting_down
-                || runtime.current_job().is_some_and(|job| {
-                    job_cancelled(&runtime, job, shutting_down, foreground_pending)
-                })
+                || runtime
+                    .current_job()
+                    .is_some_and(|job| job_cancelled(&runtime, job, shutting_down, preemption))
         })
         .unwrap_or_else(|_| {
             report_poison_once(None);
@@ -787,13 +792,13 @@ pub fn report_manual_progress(app: &AppHandle, class: &str, done: u64, total: u6
     }
 }
 
-fn active_snapshot(runtime: &RuntimeState, foreground_pending: bool) -> Option<ActiveWorkSnapshot> {
+fn active_snapshot(runtime: &RuntimeState, preemption: Preemption) -> Option<ActiveWorkSnapshot> {
     runtime.display_job().map(|job| ActiveWorkSnapshot {
         class: job.class,
         hash: job.hash.clone(),
         done: job.done,
         total: job.total,
-        stopping: job_cancelled(runtime, job, false, foreground_pending),
+        stopping: job_cancelled(runtime, job, false, preemption),
     })
 }
 
@@ -801,7 +806,7 @@ pub(crate) fn emit_state_changed(app: &AppHandle) {
     if shutting_down() {
         return;
     }
-    let foreground_pending = crate::scan_runtime::foreground_pending();
+    let preemption = Preemption::current();
     let payload = match RUNTIME.0.lock() {
         Ok(runtime) => {
             let paused_classes = WorkClass::ALL
@@ -812,7 +817,7 @@ pub(crate) fn emit_state_changed(app: &AppHandle) {
             json!({
                 "workerRunning": crate::derived_work::started(),
                 "pausedClasses": paused_classes,
-                "active": active_snapshot(&runtime, foreground_pending).map(|active| json!({
+                "active": active_snapshot(&runtime, preemption).map(|active| json!({
                     "id": active.class.id(),
                     "hash": active.hash,
                     "done": active.done,
@@ -830,12 +835,12 @@ pub(crate) fn emit_state_changed(app: &AppHandle) {
 }
 
 pub fn snapshot(conditions: RuntimeConditions) -> Result<RuntimeSnapshot, String> {
-    let foreground_pending = crate::scan_runtime::foreground_pending();
+    let preemption = Preemption::current();
     let runtime = lock(None)?;
     Ok(RuntimeSnapshot {
         worker_running: conditions.worker_running,
         paused_classes: runtime.paused_classes,
-        active: active_snapshot(&runtime, foreground_pending),
+        active: active_snapshot(&runtime, preemption),
         busy: conditions.busy,
     })
 }

@@ -1772,7 +1772,9 @@ async fn background_work_snapshot(
         background_work::snapshot(
             &data_root,
             derived_runtime::snapshot(derived_runtime::RuntimeConditions {
-                busy: !derived_work::available(),
+                // Index upkeep holds most automatic work back even though
+                // visible previews still interleave with it.
+                busy: !derived_work::available() || scan_runtime::running(),
                 worker_running: derived_work::started(),
             })?,
             derived_work::work_capabilities(&data_root)?,

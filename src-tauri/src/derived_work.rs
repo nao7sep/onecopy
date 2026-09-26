@@ -2,10 +2,13 @@
 //! time facts, then wakes this coordinator; previews, video posters, scene
 //! strips, transcripts, face scores, and similarity are never scan phases.
 //!
-//! Preview/poster work runs in bounded fair turns. Independent native image
-//! conversions may share a turn under live CPU and memory budgets; database
-//! publication, ffmpeg routes, and every other heavy class remain serialized.
-//! All runnable backlogs progress continuously; attention orders bounded turns.
+//! Two workers consume the backlog continuously in bounded fair turns: the
+//! preview lane (thumbnails, previews, posters) and, beside it, the heavy
+//! lane (snapshots, similarity, faces, transcription). Independent native
+//! image conversions may share a preview turn under live CPU and memory
+//! budgets; heavy classes stay serialized. Attention orders the turns, and
+//! required preparation for the selected, visible, and nearby items holds an
+//! urgent share of the index admission so it interleaves with index upkeep.
 //! Activity adjusts conversion capacity, never eligibility. All classes re-read settings for each
 //! pass, so installing a tool or changing a feature takes effect on the next
 //! wake without restarting either indexing or the app.
@@ -26,12 +29,15 @@ use crate::derived_runtime::{
 };
 use crate::derived_state::WorkClass;
 use crate::logging;
+use crate::scan_runtime::ShareRank;
+use crate::work_priority::{Lane, Tier};
 use crate::preview::CachePaths;
 
 pub const WORKER_FAILED: &str = "derived-worker-failed";
 
 static LAST_ACTIVITY_MS: AtomicI64 = AtomicI64::new(0);
-static STARTED: AtomicBool = AtomicBool::new(false);
+/// One flag per `Lane`: whether that lane's worker is running.
+static STARTED: [AtomicBool; 2] = [AtomicBool::new(false), AtomicBool::new(false)];
 static AUTOMATIC_ADMITTED: AtomicBool = AtomicBool::new(false);
 static DEBT_REVISION: AtomicU64 = AtomicU64::new(0);
 static ATTENTION_GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -140,7 +146,6 @@ struct CandidateCursors {
     turns: crate::work_priority::Turns,
     attention_generation: u64,
     section: SectionCursor,
-    library_optional: bool,
 }
 
 #[derive(Default)]
@@ -322,11 +327,12 @@ pub fn is_idle() -> bool {
         && !crate::scan_runtime::running()
 }
 
+/// Whether automatic work may be admitted at all. Which index owner it runs
+/// beside or yields to is `scan_runtime`'s share decision.
 pub(crate) fn available() -> bool {
     !crate::derived_runtime::shutting_down()
         && AUTOMATIC_ADMITTED.load(Ordering::SeqCst)
         && !crate::derived_runtime::exclusive()
-        && !crate::scan_runtime::running()
         && !crate::scan_runtime::foreground_pending()
 }
 
@@ -354,7 +360,8 @@ pub fn wake() {
 }
 
 /// Reschedules automatic work without invalidating its candidate cursors,
-/// for example after a foreground action released the index claim.
+/// for example after a foreground action or an index owner released the
+/// index claim.
 pub(crate) fn wake_scheduler() {
     wake_priority();
 }
@@ -364,7 +371,7 @@ fn wake_priority() {
     match generation.lock() {
         Ok(mut value) => {
             *value = value.wrapping_add(1);
-            ready.notify_one();
+            ready.notify_all();
         }
         Err(_) => logging::error("derived-work wake state is unavailable", json!({})),
     }
@@ -396,85 +403,10 @@ pub fn set_priority(
         }
         Err(_) => logging::error("derived-work priority state is unavailable", json!({})),
     }
-    if crate::derived_runtime::automatic_optional_active() {
-        let hints = PRIORITY.lock().map(|hints| hints.clone());
-        if let Ok(hints) = hints {
-            let required = hints
-                .visible
-                .iter()
-                .chain(&hints.nearby)
-                .cloned()
-                .collect::<Vec<_>>();
-            if required_priority_pending(hints.selected.as_deref(), &required) {
-                crate::derived_runtime::preempt_automatic_optional_for_required();
-            }
-        }
-    }
     wake_priority();
 }
 
-fn required_priority_pending(selected: Option<&str>, visible: &[String]) -> bool {
-    if class_paused(WorkClass::Previews) {
-        return false;
-    }
-    let Some(data_root) = crate::DATA_ROOT.get() else {
-        return false;
-    };
-    let pending = (|| -> Result<bool, String> {
-        let config = crate::storage::read_config_for_setup(data_root)?;
-        let settings = settings_from_config(config.as_ref(), data_root);
-        let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
-        priority_candidates_for_class(
-            &conn,
-            &settings,
-            WorkClass::Previews.id(),
-            selected,
-            visible,
-            None,
-        )
-        .map(|candidates| !candidates.is_empty())
-    })();
-    pending.unwrap_or_else(|error| {
-        logging::error(
-            "urgent preview priority could not be evaluated",
-            json!({ "error": { "message": error } }),
-        );
-        // Yield optional work; the coordinator owns the terminal failure if
-        // its next ordinary settings/database read also fails.
-        true
-    })
-}
-
-/// Recheck only on a new attention generation, including the race between a
-/// hint arriving and an optional executor acquiring its runtime claim.
-fn optional_stop() -> impl Fn() -> bool + Send + 'static {
-    let observed = std::cell::Cell::new(u64::MAX);
-    move || {
-        if cancelled() {
-            return true;
-        }
-        let generation = ATTENTION_GENERATION.load(Ordering::SeqCst);
-        if generation == observed.get() {
-            return false;
-        }
-        observed.set(generation);
-        let hints = PRIORITY.lock().map(|hints| hints.clone());
-        if let Ok(hints) = hints {
-            let hashes = hints
-                .visible
-                .iter()
-                .chain(&hints.nearby)
-                .cloned()
-                .collect::<Vec<_>>();
-            if required_priority_pending(hints.selected.as_deref(), &hashes) {
-                crate::derived_runtime::preempt_automatic_optional_for_required();
-                return true;
-            }
-        }
-        false
-    }
-}
-
+/// Starts whichever lane worker is not running; `Ok(false)` when both were.
 pub fn start(app: AppHandle) -> Result<bool, String> {
     let mut workers = WORKERS
         .lock()
@@ -483,22 +415,31 @@ pub fn start(app: AppHandle) -> Result<bool, String> {
         return Err("previews and analysis are shutting down".to_string());
     }
     join_finished(&mut workers);
-    if STARTED.swap(true, Ordering::SeqCst) {
-        return Ok(false);
+    let mut started = false;
+    for lane in Lane::ALL {
+        if STARTED[lane.index()].swap(true, Ordering::SeqCst) {
+            continue;
+        }
+        let handle = app.clone();
+        let worker = std::thread::Builder::new()
+            .name(match lane {
+                Lane::Previews => "onecopy-derived-previews".to_string(),
+                Lane::Heavy => "onecopy-derived-heavy".to_string(),
+            })
+            .spawn(move || derived_worker(handle, lane))
+            .map_err(|error| {
+                STARTED[lane.index()].store(false, Ordering::SeqCst);
+                format!("could not start previews-and-analysis worker: {error}")
+            })?;
+        workers.push(worker);
+        started = true;
     }
-    let handle = app.clone();
-    let worker = std::thread::Builder::new()
-        .name("onecopy-derived-work".to_string())
-        .spawn(move || derived_worker(handle))
-        .map_err(|error| {
-            STARTED.store(false, Ordering::SeqCst);
-            format!("could not start previews-and-analysis worker: {error}")
-        })?;
-    workers.push(worker);
     drop(workers);
-    crate::derived_runtime::emit_state_changed(&app);
-    wake();
-    Ok(true)
+    if started {
+        crate::derived_runtime::emit_state_changed(&app);
+        wake();
+    }
+    Ok(started)
 }
 
 /// Owns each requested transcription thread beside the automatic coordinator
@@ -520,15 +461,18 @@ pub fn spawn_manual_transcription(work: impl FnOnce() + Send + 'static) -> Resul
     Ok(())
 }
 
+/// Whether both lane workers are running.
 pub fn started() -> bool {
-    STARTED.load(Ordering::SeqCst)
+    STARTED.iter().all(|started| started.load(Ordering::SeqCst))
 }
 
-fn derived_worker(app: AppHandle) {
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_worker_loop(&app)));
+fn derived_worker(app: AppHandle, lane: Lane) {
+    let started = &STARTED[lane.index()];
+    let outcome =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_worker_loop(&app, lane)));
     let failure = match outcome {
         Ok(Ok(())) => {
-            STARTED.store(false, Ordering::SeqCst);
+            started.store(false, Ordering::SeqCst);
             crate::derived_runtime::emit_state_changed(&app);
             return;
         }
@@ -536,7 +480,7 @@ fn derived_worker(app: AppHandle) {
         Err(payload) => crate::failure_runtime::panic_message(payload),
     };
     if crate::app_lifecycle::shutting_down() {
-        STARTED.store(false, Ordering::SeqCst);
+        started.store(false, Ordering::SeqCst);
         logging::error(
             "derived-media worker failed during shutdown",
             json!({ "error": { "message": failure } }),
@@ -551,7 +495,7 @@ fn derived_worker(app: AppHandle) {
     );
     // Finish the old worker's failure record before admitting its replacement;
     // otherwise the replacement could resolve a condition not yet recorded.
-    STARTED.store(false, Ordering::SeqCst);
+    started.store(false, Ordering::SeqCst);
     crate::derived_runtime::emit_state_changed(&app);
     crate::failure_runtime::emit_or_record(
         &app,
@@ -560,7 +504,7 @@ fn derived_worker(app: AppHandle) {
     );
 }
 
-fn run_worker_loop(app: &AppHandle) -> Result<(), String> {
+fn run_worker_loop(app: &AppHandle, lane: Lane) -> Result<(), String> {
     let (generation, ready) = WAKE.get_or_init(|| (Mutex::new(0), Condvar::new()));
     let mut observed = 0u64;
     let mut run_again = true;
@@ -603,10 +547,9 @@ fn run_worker_loop(app: &AppHandle) -> Result<(), String> {
         if !available() {
             continue;
         }
-        let Some(pass) =
-            crate::scan_runtime::try_with_derived_claim(|| run_one_pass(app, &mut cursors))
-        else {
-            continue;
+        let pass = match lane {
+            Lane::Previews => run_preview_pass(app, &mut cursors),
+            Lane::Heavy => run_heavy_pass(app, &mut cursors),
         };
         match pass {
             Ok(did_work) => {
@@ -805,111 +748,244 @@ fn coalesce_requested_preview(
 #[path = "../tests/unit/derived_work.rs"]
 mod requested_preview_tests;
 
-/// One bounded pass. Settings and SQLite are opened once per batch, while
-/// every media item is still independently claimed and checkpointed. This
-/// avoids reopening both millions of times without holding stale settings
-/// indefinitely.
-fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool, String> {
+/// What one pass reads once: settings and SQLite are opened per bounded
+/// pass, while every media item is still independently claimed and
+/// checkpointed. This avoids reopening both millions of times without holding
+/// stale settings indefinitely.
+struct Pass {
+    settings: Settings,
+    conn: Connection,
+    cache: CachePaths,
+    projection: crate::queries::ItemProjectionContext,
+    hints: PriorityHints,
+}
+
+fn open_pass() -> Result<Pass, String> {
     let data_root = crate::DATA_ROOT.get().ok_or("data root unset")?.clone();
     let config = crate::storage::read_config_for_setup(&data_root)?;
     let settings = settings_from_config(config.as_ref(), &data_root);
     let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
-    crate::similarity::ensure_config_current(&conn, &settings.similarity)?;
     let cache = CachePaths::new(settings.cache_root.clone());
     let projection = crate::queries::ItemProjectionContext {
         capabilities: settings.capabilities(),
     };
+    Ok(Pass {
+        settings,
+        conn,
+        cache,
+        projection,
+        hints: current_hints()?,
+    })
+}
 
-    let hints = PRIORITY
+fn current_hints() -> Result<PriorityHints, String> {
+    Ok(PRIORITY
         .lock()
         .map_err(|_| "derived-work priority state is unavailable".to_string())?
-        .clone();
-    if WorkClass::ALL.into_iter().all(class_paused) {
-        crate::failure_runtime::emit_or_record(app, "derived://quiet", json!({}));
+        .clone())
+}
+
+fn lane_classes(lane: Lane) -> &'static [WorkClass] {
+    match lane {
+        Lane::Previews => &[WorkClass::Previews],
+        Lane::Heavy => &OPTIONAL_CLASSES,
+    }
+}
+
+/// One preview-lane pass. Required preparation for the selected, visible, and
+/// nearby items runs under an urgent share, so it interleaves with source
+/// checking, watcher ingestion, and file-information completion at their safe
+/// points; the section sweep and the library run under an ordinary share.
+fn run_preview_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool, String> {
+    if class_paused(WorkClass::Previews) {
         return Ok(false);
     }
+    let pass = open_pass()?;
+    if urgent_preview_pending(&pass)? {
+        match crate::scan_runtime::with_derived_share(ShareRank::Urgent, || {
+            run_urgent_previews(app, &pass)
+        }) {
+            None => return Ok(false),
+            Some(result) => {
+                if result? {
+                    cursors.turns.completed(Tier::Visible);
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    crate::scan_runtime::with_derived_share(ShareRank::Ordinary, || {
+        run_lane_tiers(app, Lane::Previews, &pass, cursors)
+    })
+    .unwrap_or(Ok(false))
+}
+
+fn urgent_preview_pending(pass: &Pass) -> Result<bool, String> {
+    for (selected, hashes) in [
+        (pass.hints.selected.as_deref(), &pass.hints.visible),
+        (None, &pass.hints.nearby),
+    ] {
+        if !priority_candidates_for_class(
+            &pass.conn,
+            &pass.settings,
+            WorkClass::Previews.id(),
+            selected,
+            hashes,
+            None,
+        )?
+        .is_empty()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Bounded visible, then nearby, turns for as long as they find work, reading
+/// the latest attention before each. It holds the urgent share throughout, so
+/// a scroll interrupts index upkeep once rather than once per turn.
+fn run_urgent_previews(app: &AppHandle, pass: &Pass) -> Result<bool, String> {
+    let mut did_work = false;
+    while available() {
+        let hints = current_hints()?;
+        let mut worked = false;
+        for (selected, hashes) in [
+            (hints.selected.as_deref(), &hints.visible),
+            (None, &hints.nearby),
+        ] {
+            let candidates = priority_candidates_for_class(
+                &pass.conn,
+                &pass.settings,
+                WorkClass::Previews.id(),
+                selected,
+                hashes,
+                None,
+            )?;
+            if candidates.is_empty() {
+                continue;
+            }
+            worked = derive_priority_previews(
+                app,
+                &pass.conn,
+                &pass.cache,
+                &pass.settings,
+                pass.projection,
+                &candidates,
+                VISIBLE_PREVIEW_TURN,
+            )?;
+            break;
+        }
+        if !worked {
+            break;
+        }
+        did_work = true;
+    }
+    Ok(did_work)
+}
+
+/// One heavy-lane pass under an ordinary share: it yields to foreground work
+/// and to every waiting index owner at its next safe point.
+fn run_heavy_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool, String> {
+    if OPTIONAL_CLASSES.into_iter().all(class_paused) {
+        return Ok(false);
+    }
+    let pass = open_pass()?;
+    crate::scan_runtime::with_derived_share(ShareRank::Ordinary, || {
+        crate::similarity::ensure_config_current(&pass.conn, &pass.settings.similarity)?;
+        run_lane_tiers(app, Lane::Heavy, &pass, cursors)
+    })
+    .unwrap_or(Ok(false))
+}
+
+/// One bounded turn of `lane` in fair-turn order. The preview lane's visible
+/// and nearby tiers run urgently before this.
+fn run_lane_tiers(
+    app: &AppHandle,
+    lane: Lane,
+    pass: &Pass,
+    cursors: &mut CandidateCursors,
+) -> Result<bool, String> {
+    let Pass {
+        settings,
+        conn,
+        cache,
+        projection,
+        hints,
+    } = pass;
+    let projection = *projection;
     if cursors.attention_generation != hints.generation {
         cursors.section = SectionCursor::default();
         cursors.attention_generation = hints.generation;
     }
     let mut section_hashes = None;
     for tier in cursors.turns.order() {
-        use crate::work_priority::Tier;
+        if !lane.runs(tier) || (lane == Lane::Previews && matches!(tier, Tier::Visible | Tier::Nearby)) {
+            continue;
+        }
         if ATTENTION_GENERATION.load(Ordering::SeqCst) != hints.generation {
             return Ok(true);
         }
-        if matches!(tier, Tier::SectionRequired | Tier::SectionOptional) && section_hashes.is_none()
-        {
+        if tier == Tier::Section && section_hashes.is_none() {
             section_hashes = Some(section_window_hashes(
-                &conn,
-                &settings,
-                &hints,
+                conn,
+                settings,
+                lane,
+                hints,
                 &mut cursors.section,
             )?);
         }
-        let did_work = match tier {
-            Tier::VisibleRequired | Tier::NearbyRequired | Tier::SectionRequired => {
-                let (selected, hashes, limit) = match tier {
-                    Tier::VisibleRequired => (
-                        hints.selected.as_deref(),
-                        &hints.visible,
-                        VISIBLE_PREVIEW_TURN,
-                    ),
-                    Tier::NearbyRequired => (None, &hints.nearby, VISIBLE_PREVIEW_TURN),
-                    _ => (None, section_hashes.as_ref().unwrap(), SECTION_PREVIEW_TURN),
-                };
+        let did_work = match (lane, tier) {
+            (Lane::Previews, Tier::Section) => {
                 let candidates = priority_candidates_for_class(
-                    &conn,
-                    &settings,
+                    conn,
+                    settings,
                     WorkClass::Previews.id(),
-                    selected,
-                    hashes,
+                    None,
+                    section_hashes.as_ref().unwrap(),
                     None,
                 )?;
                 derive_priority_previews(
                     app,
-                    &conn,
-                    &cache,
-                    &settings,
+                    conn,
+                    cache,
+                    settings,
                     projection,
                     &candidates,
-                    limit,
+                    SECTION_PREVIEW_TURN,
                 )?
             }
-            Tier::VisibleOptional | Tier::SectionOptional => {
-                let (selected, hashes) = if tier == Tier::VisibleOptional {
-                    (hints.selected.as_deref(), &hints.visible)
-                } else {
-                    (None, section_hashes.as_ref().unwrap())
-                };
-                run_priority_optional_turn(
-                    app, &conn, &cache, &settings, projection, cursors, selected, hashes, None,
-                )?
-            }
-            Tier::Library => {
-                let optional_first = cursors.library_optional;
-                let mut worked = false;
-                for optional in [optional_first, !optional_first] {
-                    worked = if optional {
-                        run_global_optional_turn(
-                            app, &conn, &cache, &settings, projection, cursors,
-                        )?
-                    } else {
-                        derive_global_required(app, &conn, &cache, &settings, projection)?
-                    };
-                    if worked {
-                        cursors.library_optional = !optional;
-                        break;
-                    }
-                }
-                worked
+            (Lane::Previews, _) => derive_global_required(app, conn, cache, settings, projection)?,
+            (Lane::Heavy, Tier::Visible) => run_priority_optional_turn(
+                app,
+                conn,
+                cache,
+                settings,
+                projection,
+                cursors,
+                hints.selected.as_deref(),
+                &hints.visible,
+                None,
+            )?,
+            (Lane::Heavy, Tier::Section) => run_priority_optional_turn(
+                app,
+                conn,
+                cache,
+                settings,
+                projection,
+                cursors,
+                None,
+                section_hashes.as_ref().unwrap(),
+                None,
+            )?,
+            (Lane::Heavy, _) => {
+                run_global_optional_turn(app, conn, cache, settings, projection, cursors)?
             }
         };
         if did_work {
             cursors.turns.completed(tier);
             return Ok(true);
         }
-        if tier == Tier::SectionOptional {
+        if tier == Tier::Section {
             cursors.section.current = None;
         }
     }
@@ -925,6 +1001,7 @@ fn run_one_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool,
 fn section_window_hashes(
     conn: &Connection,
     settings: &Settings,
+    lane: Lane,
     hints: &PriorityHints,
     sweep: &mut SectionCursor,
 ) -> Result<Vec<String>, String> {
@@ -967,7 +1044,8 @@ fn section_window_hashes(
     let Some(position) = edge.as_ref() else {
         return Ok(Vec::new());
     };
-    let rows = section_pending_candidates(conn, settings, section, view.sort, position, before)?;
+    let rows =
+        section_pending_candidates(conn, settings, lane, section, view.sort, position, before)?;
     let hashes = rows
         .iter()
         .filter_map(|row| row.hash.clone())
@@ -978,18 +1056,21 @@ fn section_window_hashes(
     Ok(hashes)
 }
 
-/// Seek only runnable output debt; completed, disabled, blocked, and paused
-/// classes must not force a walk through a prepared section on every scroll.
+/// Seek only `lane`'s runnable output debt; completed, disabled, blocked, and
+/// paused classes, and the other lane's classes, must not force a walk
+/// through a prepared section on every scroll.
 pub fn section_pending_candidates(
     conn: &Connection,
     settings: &Settings,
+    lane: Lane,
     section: &SectionPriority,
     sort: crate::queries::SectionSort,
     position: &crate::queries::SectionWorkPosition,
     before: bool,
 ) -> Result<Vec<crate::queries::SectionWorkPosition>, String> {
     let pending = crate::derived_state::pending_work_predicate(
-        settings.capabilities(), WorkClass::ALL.into_iter().filter(|class| !class_paused(*class)),
+        settings.capabilities(),
+        lane_classes(lane).iter().copied().filter(|class| !class_paused(*class)),
     );
     crate::queries::section_pending_work_page(
         conn, &section.kind, section.start_ms.zip(section.end_ms), sort, position, before, &pending,
@@ -1219,7 +1300,7 @@ fn run_optional_class(
     if class_paused(class) || !optional_enabled(settings, class) {
         return Ok(false);
     }
-    let stop = optional_stop();
+    let stop = cancelled;
     match class {
         WorkClass::Similarity => {
             let result = with_active(app, class, || {
@@ -1979,7 +2060,7 @@ fn transcribe_next(
             source_path: &path,
             replace_existing: false,
             acceleration: context.transcription_acceleration,
-            cancel_when: Some(Box::new(optional_stop())),
+            cancel_when: Some(Box::new(cancelled)),
         },
         |hash| {
             if candidate_hash != hash {

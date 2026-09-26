@@ -625,8 +625,9 @@ fn process_dirty_claimed(
         if !owns_generation(generation) {
             return Err(scanner::CANCELLED.to_string());
         }
-        // A pending foreground action takes the index between directories.
-        crate::scan_runtime::yield_to_foreground().map(|_| ())
+        // A pending foreground action or urgent preparation takes the index
+        // between directories.
+        crate::scan_runtime::yield_at_safe_point().map(|_| ())
     })?;
     if !owns_generation(generation) {
         return Err(scanner::CANCELLED.to_string());

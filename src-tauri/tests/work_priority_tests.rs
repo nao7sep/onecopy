@@ -1,4 +1,4 @@
-use onecopy_lib::work_priority::{Tier, Turns};
+use onecopy_lib::work_priority::{Lane, Tier, Turns};
 use onecopy_lib::{index_store, queries, resource_limits};
 
 #[test]
@@ -12,21 +12,27 @@ fn continuous_library_turns_do_not_require_attention_or_inactivity() {
             .unwrap();
         turns.completed(runnable);
     }
-    assert_eq!(turns.order()[0], Tier::VisibleRequired);
+    assert_eq!(turns.order()[0], Tier::Visible);
 }
 
 #[test]
 fn fairness_never_displaces_urgent_preparation_but_bounds_section_monopoly() {
     let mut turns = Turns::default();
     for _ in 0..8 {
-        turns.completed(Tier::SectionRequired);
+        turns.completed(Tier::Section);
     }
-    assert_eq!(
-        &turns.order()[..3],
-        &[Tier::VisibleRequired, Tier::NearbyRequired, Tier::Library]
-    );
+    assert_eq!(turns.order(), [Tier::Visible, Tier::Nearby, Tier::Library, Tier::Section]);
     turns.completed(Tier::Library);
-    assert_eq!(turns.order()[2], Tier::VisibleOptional);
+    assert_eq!(turns.order(), [Tier::Visible, Tier::Nearby, Tier::Section, Tier::Library]);
+}
+
+#[test]
+fn optional_enrichment_has_no_nearby_tier() {
+    assert!(Lane::Previews.runs(Tier::Nearby));
+    assert!(!Lane::Heavy.runs(Tier::Nearby));
+    for tier in [Tier::Visible, Tier::Section, Tier::Library] {
+        assert!(Lane::Heavy.runs(tier) && Lane::Previews.runs(tier));
+    }
 }
 
 #[test]
@@ -141,10 +147,14 @@ fn outward_work_pages_follow_every_main_sort_and_survive_anchor_removal() {
     let mut pending = Vec::new();
     if anchor.hash.as_deref().is_some_and(|hash| hash == "hash-010" || hash == "hash-170") { pending.push(anchor.hash.clone().unwrap()); }
     for before in [true, false] {
-        pending.extend(onecopy_lib::derived_work::section_pending_candidates(&conn, &settings, &section, sort, &anchor, before).unwrap().into_iter().filter_map(|row| row.hash));
+        pending.extend(onecopy_lib::derived_work::section_pending_candidates(&conn, &settings, Lane::Previews, &section, sort, &anchor, before).unwrap().into_iter().filter_map(|row| row.hash));
     }
     pending.sort();
     assert_eq!(pending, ["hash-010", "hash-170"]);
+    // Preview debt never drives the heavy lane's section sweep.
+    for before in [true, false] {
+        assert!(onecopy_lib::derived_work::section_pending_candidates(&conn, &settings, Lane::Heavy, &section, sort, &anchor, before).unwrap().is_empty());
+    }
 }
 
 #[test]

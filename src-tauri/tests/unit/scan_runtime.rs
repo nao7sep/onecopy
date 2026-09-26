@@ -80,7 +80,7 @@ fn a_parked_source_walk_continues_after_foreground_work_and_restarts_after_a_res
                     entered_tx.send(()).unwrap();
                     let mut steps = 0u32;
                     while steps < 100 {
-                        yield_to_foreground()?;
+                        yield_at_safe_point()?;
                         steps += 1;
                         std::thread::sleep(Duration::from_millis(2));
                     }
@@ -141,7 +141,7 @@ fn a_parked_owner_takes_the_claim_back_before_another_background_owner() {
             |_| {},
             move || {
                 entered_tx.send(()).unwrap();
-                while !yield_to_foreground()? {
+                while !yield_at_safe_point()? {
                     std::thread::sleep(Duration::from_millis(2));
                 }
                 walker_order.lock().unwrap().push("walker");

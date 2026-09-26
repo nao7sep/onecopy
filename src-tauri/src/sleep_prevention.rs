@@ -2,12 +2,19 @@
 //! Windows SetThreadExecutionState is thread-affine: the assertion must be
 //! created AND dropped on this dedicated owner thread, not on worker threads.
 
+use std::cell::Cell;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::JoinHandle;
 
 const ISSUE: &str = "sleep-prevention-failed";
 static SERVICE: OnceLock<Arc<Control>> = OnceLock::new();
 static WORKER: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
+
+thread_local! {
+    /// Work scopes this thread holds, so a parked owner can release exactly
+    /// its own part of the assertion.
+    static HELD: Cell<usize> = const { Cell::new(0) };
+}
 
 #[derive(Clone, Copy, Default)]
 struct State {
@@ -53,17 +60,28 @@ impl Control {
 
     fn begin(self: &Arc<Self>) -> WorkGuard {
         self.update(|state| state.active += 1);
+        HELD.with(|held| held.set(held.get() + 1));
         WorkGuard(Some(Arc::clone(self)))
+    }
+
+    fn park(self: &Arc<Self>) -> ParkedGuard {
+        let held = HELD.with(Cell::get);
+        if held > 0 {
+            self.update(|state| state.active -= held);
+        }
+        ParkedGuard(Some((Arc::clone(self), held)))
     }
 }
 
 /// Kept through the actual operation, including its cancellation cleanup.
-/// Returning an error or unwinding a worker drops it just like success.
+/// Returning an error or unwinding a worker drops it just like success. It
+/// is created and dropped on the thread that does the work.
 pub(crate) struct WorkGuard(Option<Arc<Control>>);
 
 impl Drop for WorkGuard {
     fn drop(&mut self) {
         if let Some(control) = &self.0 {
+            HELD.with(|held| held.set(held.get() - 1));
             control.update(|state| state.active -= 1);
         }
     }
@@ -71,6 +89,25 @@ impl Drop for WorkGuard {
 
 pub(crate) fn begin_work() -> WorkGuard {
     SERVICE.get().map_or(WorkGuard(None), Control::begin)
+}
+
+/// Releases the calling thread's work scopes while its owner is parked
+/// waiting for other work, which is idle rather than actual execution, and
+/// takes them back when dropped.
+pub(crate) struct ParkedGuard(Option<(Arc<Control>, usize)>);
+
+impl Drop for ParkedGuard {
+    fn drop(&mut self) {
+        if let Some((control, held)) = self.0.take() {
+            if held > 0 {
+                control.update(|state| state.active += held);
+            }
+        }
+    }
+}
+
+pub(crate) fn idle_while_parked() -> ParkedGuard {
+    SERVICE.get().map_or(ParkedGuard(None), Control::park)
 }
 
 pub(crate) fn configured(config: Option<&serde_json::Value>) -> bool {

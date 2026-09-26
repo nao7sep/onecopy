@@ -1,14 +1,25 @@
 //! Shared admission for index-changing work.
 //!
-//! One projection claim serializes every index writer: source checking,
-//! file-information completion, watcher ingestion, foreground actions, and
-//! automatic derived turns. Foreground admission is the single authority that
-//! preempts every holder. It announces itself before it waits; from then on
-//! file-information completion cancels, source checking and watcher
-//! ingestion yield the claim in place at their next safe point, and automatic
-//! derived work observes the pending admission through
-//! `derived_runtime::cancelled`. A foreground caller never waits without a
-//! deadline or a working cancel, and background owners wait behind it.
+//! One projection claim serializes every index owner: source checking,
+//! file-information completion, watcher ingestion, and foreground actions.
+//! Automatic derived work holds a share instead: the preview lane and the
+//! heavy lane each hold one and run beside each other, and an exclusive claim
+//! waits until every share is released.
+//!
+//! This module is the one authority that ranks waiting work, from the top:
+//!
+//! 1. Foreground admission preempts every holder. It announces itself before
+//!    it waits; from then on file-information completion cancels, source
+//!    checking and watcher ingestion yield the claim in place at their next
+//!    safe point, and automatic derived work observes it through
+//!    `derived_runtime::cancelled`. A foreground caller never waits without a
+//!    deadline or a working cancel.
+//! 2. An urgent share, for required preparation of the selected, visible and
+//!    nearby items, preempts background index owners the same way at their
+//!    safe points, so that preparation interleaves with long index upkeep.
+//! 3. A waiting background index owner preempts ordinary shares, the rest of
+//!    automatic derived work, at their safe points.
+//! 4. Ordinary shares take whatever the index leaves free.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -20,6 +31,8 @@ use tauri::AppHandle;
 
 static ACTIVE_OWNER: AtomicU8 = AtomicU8::new(0);
 static FOREGROUND_WAITERS: AtomicUsize = AtomicUsize::new(0);
+static BACKGROUND_WAITERS: AtomicUsize = AtomicUsize::new(0);
+static URGENT_WAITERS: AtomicUsize = AtomicUsize::new(0);
 static WALK_EPOCH: AtomicU64 = AtomicU64::new(0);
 const CLOSING: &str = "OneCopy is closing; no new library work can start.";
 const WAIT_SLICE: Duration = Duration::from_millis(50);
@@ -42,11 +55,32 @@ struct IndexState {
     /// writes between its walked prefix and the rest of its turn.
     parked: Option<u64>,
     next_claim: u64,
+    /// Automatic derived shares currently held.
+    shares: usize,
 }
 
 impl IndexState {
     fn free_for_background(&self) -> bool {
-        self.holder.is_none() && self.parked.is_none() && !foreground_pending()
+        self.holder.is_none()
+            && self.parked.is_none()
+            && self.shares == 0
+            && !foreground_pending()
+            && !urgent_pending()
+    }
+
+    /// A parked owner takes its claim back before any other background
+    /// owner, once foreground work and urgent preparation are done.
+    fn free_for_parked(&self) -> bool {
+        self.holder.is_none() && self.shares == 0 && !foreground_pending() && !urgent_pending()
+    }
+
+    fn free_for_share(&self, rank: ShareRank) -> bool {
+        self.holder.is_none()
+            && !foreground_pending()
+            && match rank {
+                ShareRank::Urgent => true,
+                ShareRank::Ordinary => self.parked.is_none() && !background_pending(),
+            }
     }
 }
 
@@ -99,6 +133,25 @@ struct Claim {
 impl Drop for Claim {
     fn drop(&mut self) {
         release(self.id);
+    }
+}
+
+/// Counts one announced waiter for as long as it waits or holds what it
+/// waited for.
+struct Waiting(&'static AtomicUsize);
+
+impl Waiting {
+    fn announce(counter: &'static AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Self(counter)
+    }
+}
+
+impl Drop for Waiting {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+        drop(index_state());
+        INDEX.1.notify_all();
     }
 }
 
@@ -212,17 +265,29 @@ impl Drop for YielderScope {
     }
 }
 
-/// Waits behind the current holder, every pending foreground admission, and
-/// a parked owner. Returns `None` when the owner is retired or the app closes
-/// first.
+/// Waits behind the current holder, every pending foreground admission and
+/// urgent share, a parked owner, and every share. While it waits, ordinary
+/// shares yield to it at their safe points. Returns `None` when the owner is
+/// retired or the app closes first.
 fn claim_background(cancelled: &dyn Fn() -> bool) -> Option<Claim> {
+    let mut waiting = None;
     loop {
         if crate::app_lifecycle::shutting_down() || cancelled() {
             return None;
         }
         let mut state = index_state();
         if state.free_for_background() {
-            return Some(take(&mut state));
+            let claim = take(&mut state);
+            drop(state);
+            drop(waiting);
+            return Some(claim);
+        }
+        if waiting.is_none() {
+            drop(state);
+            waiting = Some(Waiting::announce(&BACKGROUND_WAITERS));
+            // Interrupt a native engine at once instead of at its next poll.
+            crate::derived_runtime::preempt_automatic();
+            continue;
         }
         wait_slice(state, None);
     }
@@ -263,6 +328,7 @@ fn run_owner<T>(
     drop(scope);
     drop(active);
     drop(claim);
+    crate::derived_work::wake_scheduler();
     result
 }
 
@@ -307,12 +373,14 @@ pub(crate) fn with_watcher_claim<T>(
 }
 
 /// A safe point for a yielding background owner. Outside such an owner, or
-/// with no foreground admission pending, it returns `Ok(false)` at once.
-/// Otherwise it releases the claim, waits until foreground work is done, takes
-/// the claim back, and returns `Ok(true)`; a stop or exit while parked, or a
-/// library reset for a source walk, ends the owner's turn instead.
-pub(crate) fn yield_to_foreground() -> Result<bool, String> {
-    if !foreground_pending() {
+/// with neither a foreground admission nor an urgent share waiting, it
+/// returns `Ok(false)` at once. Otherwise it releases the claim, waits until
+/// that work is done, takes the claim back, and returns `Ok(true)`; a stop or
+/// exit while parked, or a library reset for a source walk, ends the owner's
+/// turn instead. A parked owner is idle, so it releases its keep-awake
+/// assertion while it waits.
+pub(crate) fn yield_at_safe_point() -> Result<bool, String> {
+    if !foreground_pending() && !urgent_pending() {
         return Ok(false);
     }
     let parked = YIELDER.with(|current| {
@@ -336,6 +404,7 @@ pub(crate) fn yield_to_foreground() -> Result<bool, String> {
         crate::scanner::SCAN_CANCEL.store(false, Ordering::SeqCst);
     }
     on_yield(true);
+    let idle = crate::sleep_prevention::idle_while_parked();
     {
         let mut state = index_state();
         if state.holder == Some(claim) {
@@ -356,13 +425,14 @@ pub(crate) fn yield_to_foreground() -> Result<bool, String> {
             return Err(crate::scanner::CANCELLED.to_string());
         }
         let mut state = index_state();
-        if state.holder.is_none() && !foreground_pending() {
+        if state.free_for_parked() {
             state.holder = Some(claim);
             state.parked = None;
             break;
         }
         wait_slice(state, None);
     }
+    drop(idle);
     publish(owner, &*cancelled);
     on_yield(false);
     if epoch.is_some_and(|epoch| epoch != WALK_EPOCH.load(Ordering::SeqCst)) {
@@ -381,28 +451,77 @@ pub(crate) fn restart_source_walks() {
     WALK_EPOCH.fetch_add(1, Ordering::SeqCst);
 }
 
-/// Automatic derived work owns one bounded turn only when no index lifecycle
-/// already owns or is waiting on the projection boundary. It observes a later
-/// foreground admission through `derived_runtime::cancelled` and returns.
-pub(crate) fn try_with_derived_claim<T>(work: impl FnOnce() -> T) -> Option<T> {
-    if crate::app_lifecycle::shutting_down() {
-        return None;
-    }
-    let _claim = {
+/// How an automatic derived share ranks against index owners.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ShareRank {
+    /// Required preparation for the selected, visible and nearby items.
+    Urgent,
+    /// Every other automatic derived turn.
+    Ordinary,
+}
+
+thread_local! {
+    static SHARE: Cell<Option<ShareRank>> = const { Cell::new(None) };
+}
+
+struct Share {
+    previous: Option<ShareRank>,
+}
+
+impl Drop for Share {
+    fn drop(&mut self) {
+        SHARE.with(|share| share.set(self.previous));
         let mut state = index_state();
-        if !state.free_for_background() {
+        state.shares -= 1;
+        INDEX.1.notify_all();
+    }
+}
+
+fn take_share(state: &mut IndexState, rank: ShareRank) -> Share {
+    state.shares += 1;
+    Share {
+        previous: SHARE.with(|share| share.replace(Some(rank))),
+    }
+}
+
+/// Runs one automatic derived turn under a share. An ordinary share is taken
+/// only when the index is free and no background owner waits; otherwise it
+/// declines at once with `None`. An urgent share announces itself, lets a
+/// background index owner reach its safe point, and waits for it; it declines
+/// only for foreground work or exit. Either observes later preemption through
+/// `derived_runtime::cancelled`.
+pub(crate) fn with_derived_share<T>(rank: ShareRank, work: impl FnOnce() -> T) -> Option<T> {
+    let mut waiting = None;
+    let _share = loop {
+        if crate::app_lifecycle::shutting_down() || foreground_pending() {
             return None;
         }
-        take(&mut state)
+        let mut state = index_state();
+        if state.free_for_share(rank) {
+            break take_share(&mut state, rank);
+        }
+        if rank == ShareRank::Ordinary {
+            return None;
+        }
+        if waiting.is_none() {
+            waiting = Some(Waiting::announce(&URGENT_WAITERS));
+        }
+        // Source checking and watcher ingestion park in place at their safe
+        // point; completion has no place to park, so it ends its turn there
+        // and requeues the rest, as it does for foreground work.
+        if ACTIVE_OWNER.load(Ordering::SeqCst) == Owner::FileInformation as u8 {
+            crate::file_information_runtime::preempt();
+        }
+        wait_slice(state, None);
     };
-    if crate::app_lifecycle::shutting_down()
-        || crate::source_check_runtime::running()
-        || crate::file_information_runtime::running()
-        || ACTIVE_OWNER.load(Ordering::SeqCst) != 0
-    {
-        return None;
-    }
+    drop(waiting);
     Some(work())
+}
+
+/// Whether automatic derived work admitted on this thread holds an urgent
+/// share.
+pub(crate) fn urgent_share() -> bool {
+    SHARE.with(Cell::get) == Some(ShareRank::Urgent)
 }
 
 #[derive(Debug)]
@@ -444,7 +563,7 @@ pub(crate) fn admit_foreground(
             return Err(Refusal::Cancelled);
         }
         let mut state = index_state();
-        if state.holder.is_none() {
+        if state.holder.is_none() && state.shares == 0 {
             let claim = take(&mut state);
             drop(state);
             let active = enter(Owner::Foreground, &|| false);
@@ -546,6 +665,16 @@ pub(crate) fn begin_admitted_mutation(
 
 pub(crate) fn foreground_pending() -> bool {
     FOREGROUND_WAITERS.load(Ordering::SeqCst) != 0
+}
+
+/// A background index owner waits for the claim; ordinary shares yield to
+/// it at their safe points.
+pub(crate) fn background_pending() -> bool {
+    BACKGROUND_WAITERS.load(Ordering::SeqCst) != 0
+}
+
+fn urgent_pending() -> bool {
+    URGENT_WAITERS.load(Ordering::SeqCst) != 0
 }
 
 pub fn running() -> bool {

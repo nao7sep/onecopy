@@ -309,3 +309,37 @@ fn first_success_resolves_a_condition_retained_from_a_previous_run() {
     assert!(recovered);
     drop(work);
 }
+
+#[test]
+fn a_parked_owner_releases_its_assertion_until_it_resumes() {
+    let mut harness = Harness::new(true, false);
+    let walk = harness.control.begin();
+    let owner = harness.acquired();
+    // The walk waits in place for a file operation: nothing is executing.
+    let parked = harness.control.park();
+    assert_eq!(harness.next(), Event::Released(owner));
+    assert_eq!(harness.control.state.lock().unwrap().active, 0);
+    drop(parked);
+    assert_eq!(harness.acquired(), owner);
+    drop(walk);
+    assert_eq!(harness.next(), Event::Released(owner));
+
+    // Only the parked thread's own work leaves the assertion.
+    let elsewhere = harness.control.clone();
+    let (started, running) = channel();
+    let (finish, done) = channel::<()>();
+    let other = thread::spawn(move || {
+        let _work = elsewhere.begin();
+        started.send(()).unwrap();
+        done.recv().unwrap();
+    });
+    running.recv().unwrap();
+    let owner = harness.acquired();
+    let parked = harness.control.park();
+    assert_eq!(harness.control.state.lock().unwrap().active, 1);
+    drop(parked);
+    finish.send(()).unwrap();
+    other.join().unwrap();
+    assert_eq!(harness.next(), Event::Released(owner));
+    harness.finish();
+}
