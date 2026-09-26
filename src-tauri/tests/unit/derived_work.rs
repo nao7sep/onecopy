@@ -45,3 +45,38 @@ fn identical_requested_previews_share_one_result() {
     assert_eq!(follower.join().unwrap().unwrap(), ("canonical".to_string(), true));
     assert_eq!(executions.load(Ordering::SeqCst), 0);
 }
+
+#[test]
+fn a_panicking_leader_settles_its_followers_and_retires_the_flight() {
+    let key = format!("test-preview-{}", crate::nanoid::generate().unwrap());
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let leader_key = key.clone();
+    let leader = std::thread::spawn(move || {
+        coalesce_requested_preview(&leader_key, || {
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            panic!("decoder panicked on a malformed image");
+        })
+    });
+    started_rx.recv().unwrap();
+    let observed = REQUESTED_PREVIEWS.lock().unwrap().get(&key).unwrap().clone();
+    let follower_key = key.clone();
+    let follower = std::thread::spawn(move || {
+        coalesce_requested_preview(&follower_key, || Ok("wrong".to_string()))
+    });
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while Arc::strong_count(&observed) < 4 && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    release_tx.send(()).unwrap();
+
+    assert!(leader.join().is_err(), "the panic still reaches the command boundary");
+    assert!(follower.join().unwrap().is_err(), "the follower was settled with a failure");
+    assert!(REQUESTED_PREVIEWS.lock().unwrap().get(&key).is_none());
+    // A later request derives again instead of waiting on the dead flight.
+    assert_eq!(
+        coalesce_requested_preview(&key, || Ok("canonical".to_string())).unwrap(),
+        ("canonical".to_string(), false)
+    );
+}

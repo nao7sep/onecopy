@@ -721,25 +721,53 @@ fn coalesce_requested_preview(
         return canonical_hash.map(|hash| (hash, true));
     }
 
+    let mut leading = LeadingFlight {
+        hash,
+        flight,
+        settled: false,
+    };
     let result = work();
-    {
-        let mut published = flight
+    leading.settle(result.clone());
+    result.map(|hash| (hash, false))
+}
+
+/// The leader's obligation to its followers. However the leader's work ends,
+/// including by a panic, dropping this publishes a result and retires the
+/// flight, so no follower waits forever and a later request starts afresh.
+struct LeadingFlight<'a> {
+    hash: &'a str,
+    flight: Arc<RequestedPreviewFlight>,
+    settled: bool,
+}
+
+impl LeadingFlight<'_> {
+    fn settle(&mut self, result: Result<String, String>) {
+        let mut published = self
+            .flight
             .result
             .lock()
-            .map_err(|_| "requested preview state is unavailable".to_string())?;
-        *published = Some(result.clone());
-        flight.ready.notify_all();
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *published = Some(result);
+        self.flight.ready.notify_all();
+        self.settled = true;
     }
-    let mut active = REQUESTED_PREVIEWS
-        .lock()
-        .map_err(|_| "requested preview state is unavailable".to_string())?;
-    if active
-        .get(hash)
-        .is_some_and(|current| Arc::ptr_eq(current, &flight))
-    {
-        active.remove(hash);
+}
+
+impl Drop for LeadingFlight<'_> {
+    fn drop(&mut self) {
+        if !self.settled {
+            self.settle(Err("preview preparation stopped unexpectedly".to_string()));
+        }
+        let mut active = REQUESTED_PREVIEWS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if active
+            .get(self.hash)
+            .is_some_and(|current| Arc::ptr_eq(current, &self.flight))
+        {
+            active.remove(self.hash);
+        }
     }
-    result.map(|hash| (hash, false))
 }
 
 #[cfg(test)]
