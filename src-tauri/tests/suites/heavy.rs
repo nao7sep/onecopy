@@ -15,3 +15,5 @@ mod preview_heavy_tests;
 mod transcription_heavy_tests;
 #[path = "../video_heavy_tests.rs"]
 mod video_heavy_tests;
+#[path = "../removable_volume_heavy_tests.rs"]
+mod removable_volume_heavy_tests;

@@ -11,9 +11,15 @@ fn canonical(path: &Path) -> Result<PathBuf, String> {
         .map_err(|e| format!("could not resolve directory {}: {e}", path.display()))
 }
 
+/// Whether `candidate` is `root` or lies beneath it physically. Only a
+/// candidate that cannot be resolved is an error: a root that cannot be
+/// resolved right now (an unplugged drive, a removed folder) cannot contain
+/// anything that exists, so it answers "not within".
 pub fn directory_is_within(candidate: &Path, root: &Path) -> Result<bool, String> {
     let candidate = canonical(candidate)?;
-    let root = canonical(root)?;
+    let Ok(root) = canonical(root) else {
+        return Ok(false);
+    };
     let root_identity = crate::file_identity::FileIdentity::from_path(&root)
         .map_err(|e| format!("could not identify source directory {}: {e}", root.display()))?;
     for ancestor in candidate.ancestors() {

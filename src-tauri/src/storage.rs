@@ -375,24 +375,46 @@ pub fn load_config_source_dirs(data_root: &Path) -> Result<Vec<String>, String> 
 /// All roots whose own permission boundary must contain recoverable deleted
 /// files. The returned set is an operation-planning snapshot.
 pub fn load_config_file_roots(data_root: &Path) -> Result<Vec<PathBuf>, String> {
+    Ok(load_configured_roots(data_root)?.all())
+}
+
+/// The configured source and destination roots, each in configured order.
+#[derive(Clone, Debug, Default)]
+pub struct ConfiguredRoots {
+    pub sources: Vec<PathBuf>,
+    pub destinations: Vec<PathBuf>,
+}
+
+impl ConfiguredRoots {
+    /// Every distinct configured root, sources first.
+    pub fn all(&self) -> Vec<PathBuf> {
+        let mut roots = Vec::new();
+        for root in self.sources.iter().chain(&self.destinations) {
+            if !roots.contains(root) {
+                roots.push(root.clone());
+            }
+        }
+        roots
+    }
+}
+
+pub fn load_configured_roots(data_root: &Path) -> Result<ConfiguredRoots, String> {
     let config = read_config_for_setup(data_root)?;
-    let mut roots = Vec::new();
-    for key in ["sourceDirs", "destinationRoots"] {
-        for value in config
+    let list = |key: &str| {
+        config
             .as_ref()
             .and_then(|document| document.get(key))
             .and_then(JsonValue::as_array)
             .into_iter()
             .flatten()
             .filter_map(JsonValue::as_str)
-        {
-            let root = PathBuf::from(value);
-            if !roots.contains(&root) {
-                roots.push(root);
-            }
-        }
-    }
-    Ok(roots)
+            .map(PathBuf::from)
+            .collect::<Vec<_>>()
+    };
+    Ok(ConfiguredRoots {
+        sources: list("sourceDirs"),
+        destinations: list("destinationRoots"),
+    })
 }
 
 /// Patch-merges into `config.json` and returns the merged document. The core

@@ -78,6 +78,35 @@ impl FileIdentity {
     }
 }
 
+/// The physical volume holding `path`, following a final symlink. Two paths
+/// are on the same filesystem exactly when these agree, however each is
+/// spelled (a mapped or `subst` drive, a symlinked root, a verbatim path).
+pub fn volume_of(path: &Path) -> io::Result<u64> {
+    let fs_path = crate::winpath::for_fs(path);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        let file = OpenOptions::new()
+            .access_mode(0)
+            .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS)
+            .open(fs_path.as_ref())?;
+        return Ok(u64::from(from_windows_file(&file)?.volume));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Ok(std::fs::metadata(fs_path.as_ref())?.dev())
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = fs_path;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "volume identity is unsupported on this platform",
+        ))
+    }
+}
+
 #[cfg(windows)]
 fn from_windows_file(file: &File) -> io::Result<FileIdentity> {
     use std::mem::MaybeUninit;
@@ -105,7 +134,9 @@ fn from_windows_file(file: &File) -> io::Result<FileIdentity> {
 }
 
 /// Opens one existing regular file without following a final symlink/reparse
-/// point, then captures the physical identity of that exact descriptor.
+/// point, then captures the physical identity of that exact descriptor. The
+/// open never waits on a special file: a FIFO put at the path is refused
+/// rather than blocking the operation that asked.
 pub fn open_regular_nofollow(path: &Path) -> io::Result<(File, FileIdentity)> {
     let fs_path = crate::winpath::for_fs(path);
     let mut options = OpenOptions::new();
@@ -113,7 +144,9 @@ pub fn open_regular_nofollow(path: &Path) -> io::Result<(File, FileIdentity)> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
+        // O_NONBLOCK only changes opening a FIFO or device; reads of the
+        // regular file this function accepts are unaffected by it.
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     #[cfg(windows)]
     {
@@ -142,11 +175,20 @@ pub fn path_names(path: &Path, expected: FileIdentity) -> bool {
     FileIdentity::from_path(path).is_ok_and(|actual| actual == expected)
 }
 
+/// Whether `path` currently names the file behind `file`. The identity is read
+/// from the open descriptor at the moment of the check, not remembered: FAT
+/// and exFAT derive an empty file's number from its directory entry, so a
+/// rename changes it, while the open descriptor follows the file.
+pub fn path_names_file(path: &Path, file: &File) -> bool {
+    FileIdentity::from_file(file).is_ok_and(|expected| path_names(path, expected))
+}
+
 /// Moves a private staging pathname into a fresh private hold and verifies the
-/// physical file that actually moved. This is the operation-owned claim used
-/// by both publication and cleanup. A replacement is restored (or retained in
-/// the hold if its old name was occupied again), never treated as ours.
-pub fn claim_private(path: &Path, expected: FileIdentity) -> io::Result<std::path::PathBuf> {
+/// physical file that actually moved against this operation's open
+/// descriptor. This is the operation-owned claim used by both publication and
+/// cleanup. A replacement is restored (or retained in the hold if its old name
+/// was occupied again), never treated as ours.
+pub fn claim_private(path: &Path, file: &File) -> io::Result<std::path::PathBuf> {
     let Some(parent) = path.parent() else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -160,7 +202,7 @@ pub fn claim_private(path: &Path, expected: FileIdentity) -> io::Result<std::pat
         ));
         match crate::fs_publish::rename_no_replace(path, &hold) {
             Ok(()) => {
-                if path_names(&hold, expected) {
+                if path_names_file(&hold, file) {
                     return Ok(hold);
                 } else {
                     // The pathname was replaced before our claim. Put that
@@ -193,8 +235,8 @@ pub fn claim_private(path: &Path, expected: FileIdentity) -> io::Result<std::pat
 
 /// Best-effort cleanup of a private staging pathname. Callers never use this
 /// for a public committed target; public targets are never unlinked as rollback.
-pub fn remove_private_if_owned(path: &Path, expected: FileIdentity) {
-    match claim_private(path, expected) {
+pub fn remove_private_if_owned(path: &Path, file: &File) {
+    match claim_private(path, file) {
         Ok(hold) => crate::fs_recovery::remove_file(&hold, "private staging cleanup"),
         Err(error)
             if matches!(
@@ -208,5 +250,73 @@ pub fn remove_private_if_owned(path: &Path, expected: FileIdentity) {
                 "error": { "message": error.to_string() },
             }),
         ),
+    }
+}
+
+/// One file this operation created under a private destination name, bound
+/// to the descriptor that wrote it. Until it is published, dropping it removes
+/// the private file, but only while that name still holds this file, so every
+/// early return, failure, and cancellation abandons its private output.
+#[derive(Debug)]
+pub struct PrivateFile {
+    path: std::path::PathBuf,
+    file: File,
+    published: bool,
+}
+
+impl PrivateFile {
+    pub fn new(path: std::path::PathBuf, file: File) -> Self {
+        Self {
+            path,
+            file,
+            published: false,
+        }
+    }
+
+    /// The private name, or the final name once published.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn file_mut(&mut self) -> &mut File {
+        &mut self.file
+    }
+
+    /// Whether `path` currently names this file.
+    pub fn is_named_by(&self, path: &Path) -> bool {
+        path_names_file(path, &self.file)
+    }
+
+    /// Moves the file to a fresh private hold so no other writer can have
+    /// replaced the name between this check and publication.
+    pub fn claim(&mut self) -> io::Result<()> {
+        self.path = claim_private(&self.path, &self.file)?;
+        Ok(())
+    }
+
+    /// Publishes the file at `target` without replacing another entry. An
+    /// occupied target answers `AlreadyExists` and the file stays private.
+    pub fn publish(&mut self, target: &Path) -> io::Result<()> {
+        crate::fs_publish::rename_no_replace(&self.path, target)?;
+        self.path = target.to_path_buf();
+        self.published = true;
+        if !path_names_file(target, &self.file) {
+            // Not `AlreadyExists`: the name was ours and is now someone
+            // else's, which is a failure, not an occupied target to review.
+            return Err(io::Error::other(
+                format!(
+                    "published output was replaced before completion: {}",
+                    target.display()
+                )));
+        }
+        Ok(())
+    }
+}
+
+impl Drop for PrivateFile {
+    fn drop(&mut self) {
+        if !self.published {
+            remove_private_if_owned(&self.path, &self.file);
+        }
     }
 }

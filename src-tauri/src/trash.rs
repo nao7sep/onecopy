@@ -111,7 +111,14 @@ fn prepare_trash(
             owning_root.display()
         ));
     }
-    if volume_root_of(original)? != volume_root_of(owning_root)? {
+    // Compare physical volumes, not spellings: a root configured through a
+    // mapped or `subst` drive or a symlink indexes its files under another
+    // spelling of the same filesystem.
+    let original_volume = crate::file_identity::volume_of(original)
+        .map_err(|error| format!("trash source is unavailable: {error}"))?;
+    let root_volume = crate::file_identity::volume_of(owning_root)
+        .map_err(|error| format!("deleted-file root is unavailable: {error}"))?;
+    if original_volume != root_volume {
         return Err("recoverable deletion must stay on the same filesystem".to_string());
     }
     let trash_root = owning_root.join(TRASH_DIR_NAME);
@@ -137,7 +144,16 @@ fn prepare_trash(
         .file_name()
         .ok_or_else(|| format!("{} has no file name", original.display()))?;
     let target = day_dir.join(name);
+    // Deleted files stay inside the root's own permission boundary: an
+    // existing `.onecopy-trash` or day folder must be a real directory there,
+    // never a symlink or anything else that would lead elsewhere.
+    ensure_real_directory_if_present(&trash_root)?;
     std::fs::create_dir_all(&day_dir).map_err(|e| e.to_string())?;
+    ensure_real_directory_if_present(&trash_root)?;
+    ensure_real_directory_if_present(&day_dir)?;
+    if !crate::path_identity::directory_is_within(&day_dir, owning_root)? {
+        return Err("deleted-file storage escaped its configured root".to_string());
+    }
 
     let stored = available_stored_path(&target)?;
 
@@ -185,6 +201,18 @@ fn commit_trash(
     hide_windows(&plan.trash_root);
 
     Ok(plan.record)
+}
+
+fn ensure_real_directory_if_present(path: &Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(crate::winpath::for_fs(path).as_ref()) {
+        Ok(metadata) if metadata.file_type().is_dir() => Ok(()),
+        Ok(_) => Err(format!(
+            "deleted-file storage is not a real directory: {}",
+            path.display()
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("deleted-file storage is unavailable: {error}")),
+    }
 }
 
 /// Selects `target`, falling back to `stem-2.ext`, `stem-3.ext`, … when the
@@ -252,6 +280,12 @@ mod boundary_tests;
 /// Selects the most-specific configured root containing a planned file. A
 /// nested root owns its own deleted files instead of leaking them into an
 /// ancestor root with potentially broader permissions.
+///
+/// A file that is gone, or whose drive is away, is matched by spelling
+/// against every form its root can take in the index: as configured, as the
+/// filesystem spells it (Windows verbatim), and as the root resolves when it
+/// is present. No move can occur until `trash_file` revalidates the live path,
+/// so this only lets execution report such a file as one unavailable target.
 pub fn root_for_file(file: &Path, configured_roots: &[PathBuf]) -> Result<PathBuf, String> {
     if !file.is_absolute() {
         return Err(format!("{} is not an absolute path", file.display()));
@@ -264,16 +298,24 @@ pub fn root_for_file(file: &Path, configured_roots: &[PathBuf]) -> Result<PathBu
             }
             match crate::path_identity::directory_is_within(file, root) {
                 Ok(within) => within,
-                // A source may disappear after it was indexed. Planning still
-                // freezes its configured lexical owner so execution can report
-                // that file as one ordinary unavailable target. No move can
-                // occur until trash_file revalidates the live physical path.
-                Err(_) => file.starts_with(root),
+                Err(_) => root_spellings(root)
+                    .iter()
+                    .any(|spelling| file.starts_with(spelling)),
             }
         })
         .max_by_key(|root| root.components().count())
         .cloned()
         .ok_or_else(|| format!("{} is outside every configured root", file.display()))
+}
+
+fn root_spellings(root: &Path) -> Vec<PathBuf> {
+    let filesystem = crate::winpath::for_fs(root).into_owned();
+    let mut spellings = vec![root.to_path_buf()];
+    if let Ok(resolved) = std::fs::canonicalize(&filesystem) {
+        spellings.push(resolved);
+    }
+    spellings.push(filesystem);
+    spellings
 }
 
 /// One trash root's standing facts for the Trash surface: where it is, how

@@ -6,11 +6,11 @@ fn private_cleanup_preserves_a_replacement() {
     let path = dir.path().join("stage.tmp");
     let held = dir.path().join("held.tmp");
     std::fs::write(&path, b"ours").unwrap();
-    let identity = FileIdentity::from_path(&path).unwrap();
+    let ours = std::fs::File::open(&path).unwrap();
     std::fs::rename(&path, &held).unwrap();
     std::fs::write(&path, b"winner").unwrap();
 
-    remove_private_if_owned(&path, identity);
+    remove_private_if_owned(&path, &ours);
 
     assert_eq!(std::fs::read(&path).unwrap(), b"winner");
     assert_eq!(std::fs::read(&held).unwrap(), b"ours");
@@ -22,11 +22,11 @@ fn physical_claim_rejects_and_restores_a_replacement() {
     let path = dir.path().join("stage.tmp");
     let ours = dir.path().join("ours.tmp");
     std::fs::write(&path, b"ours").unwrap();
-    let identity = FileIdentity::from_path(&path).unwrap();
+    let descriptor = std::fs::File::open(&path).unwrap();
     std::fs::rename(&path, &ours).unwrap();
     std::fs::write(&path, b"winner").unwrap();
 
-    assert!(claim_private(&path, identity).is_err());
+    assert!(claim_private(&path, &descriptor).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), b"winner");
     assert_eq!(std::fs::read(&ours).unwrap(), b"ours");
 }

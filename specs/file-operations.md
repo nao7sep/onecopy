@@ -42,21 +42,21 @@ Copy leaves every companion source in place. A successfully established winning 
 
 At operation start, a destination must be a configured destination root or a selected descendant reached beneath one, must exist as a directory, and must be outside every configured source. The selected destination's current state is the authority for that operation; OneCopy does not maintain a durable destination-volume identity or continuously prove the physical identity of the directory and all of its ancestors.
 
-Destination names follow the destination filesystem's natural case behavior. OneCopy does not impose cross-platform case equivalence on a filesystem that distinguishes case. An occupied exact destination path follows the reviewed conflict policy and is never replaced silently.
+Destination names follow the destination filesystem's natural case behavior. OneCopy does not impose cross-platform case equivalence on a filesystem that distinguishes case. On a case-insensitive destination, names that differ only by case are one name everywhere OneCopy plans: between selected items, against existing entries, among companions that would share an output name, and when choosing a Rename suffix. An occupied exact destination path follows the reviewed conflict policy and is never replaced silently.
 
 ## Destination conflicts
 
-Before filesystem work begins, OneCopy checks the complete selected set and presents every known destination conflict together. The user chooses one policy for the complete operation: Cancel, Rename and Copy/Move, or Overwrite. There is no Skip and no intentionally partial selected set. Cancel performs no filesystem work; resolving or cancelling expected conflicts does not itself create an Issue.
+Before filesystem work begins, OneCopy checks the complete selected set and presents every known destination conflict together. The user chooses one policy for the complete operation: Cancel, Rename and Copy/Move, or Overwrite. Overwrite is offered only when every conflict is with an existing regular file outside the selected set; when a conflict lies between selected items or the existing entry is not a regular file, the choices are Cancel and Rename. There is no Skip and no intentionally partial selected set. Cancel performs no filesystem work; resolving or cancelling expected conflicts does not itself create an Issue.
 
 Rename treats the main output and its companion outputs as one family and applies one available suffix consistently. The default is `name 2.ext` on macOS and `name (2).ext` on Windows. One simple setting may choose between those styles; OneCopy does not expose an unrestricted filename format string.
 
-Overwrite first prepares and read-back-verifies the complete replacement privately. It then sends the existing destination file and its companion family to recoverable deleted-file storage before publishing the verified replacement. It never silently destroys the replaced destination group.
+Overwrite first prepares and read-back-verifies the complete replacement privately: every output of the item. It then sends the existing destination file and its companion family to recoverable deleted-file storage before publishing the verified replacement. When any output of the item cannot be prepared, nothing of that item is displaced; its conflicting outputs fail and the existing destination files stay in place. It never silently destroys the replaced destination group.
 
 A freshly byte-verified existing output may count as already delivered. A newly confirmed Move retry may therefore finish only source cleanup after proving that the required destination bytes already exist; it does not duplicate the output, assume equality from names or metadata, or replay stale intent.
 
 ## Verified publication
 
-Each main or distinct companion output is an independent output group. OneCopy writes one output completely under a private destination name, rereads it and proves that the new bytes match the selected source, then publishes it at the final name without overwriting another entry. An incomplete write must never appear as a finished destination file.
+Each main or distinct companion output is an independent output group. OneCopy writes one output completely under a private destination name, rereads it and proves that the new bytes match the selected source, then publishes it at the final name without overwriting another entry. An incomplete write must never appear as a finished destination file. Where the filesystem offers no exclusive rename (exFAT on macOS), OneCopy reserves the final name by creating it exclusively and replaces only that empty reservation, so an interruption at that instant can leave an empty file at the final name, never partial bytes. Private names are short and fixed in length: a final name the destination accepts can always be staged, and a final name it refuses fails as that one file.
 
 Read-back verification is mandatory for every Copy and Move output. It is a correctness rule and has no user-disableable mode.
 
@@ -72,7 +72,7 @@ One persistent nonmodal operation surface shows progress, Cancel, `Cancelling af
 
 ## Cancellation
 
-Cancellation takes effect between physical files or other bounded filesystem steps. It does not terminate a write, publication, recoverable move, or deletion halfway through its owned step. OneCopy removes or abandons its unpublished private output as appropriate, but never rolls back work that has already reached its completed boundary.
+Cancellation takes effect between physical files or other bounded filesystem steps. It does not interrupt a publication, recoverable move, or deletion halfway through its owned step. Writing and verifying a private output that is not yet published may stop mid-file. OneCopy removes its unpublished private output on cancellation and on every failure, but never rolls back work that has already reached its completed boundary.
 
 Because cancellation is bounded, a batch and even one logical item's physical copies may complete partially. The partial result follows the same accounting and recovery rules as any other failure.
 
@@ -82,7 +82,7 @@ Recoverable deletion keeps each file under the most-specific configured root con
 
 The configured root is OneCopy's access boundary. Choosing a root authorizes discovery and file operations throughout its descendants, including descendants with narrower access than the configured root. OneCopy preserves the file's own access metadata as the filesystem permits, but does not infer separate user-access intent from nested directories, reproduce permissions inherited only from those directories, or make deleted files private to the current account. Configuring a broader root when users require exclusive access to its separate descendants is a configuration error rather than an access policy OneCopy can reconstruct.
 
-Each configured root stores its deleted files beneath its own hidden `.onecopy-trash` directory. Before moving a file, OneCopy proves that the file is contained by the frozen root and that the move remains on the same filesystem; failed validation leaves the source untouched. The directory is created lazily beneath that root so its access remains constrained by the root's traversal and permission boundary. Source discovery, watchers, and destination browsing exclude these directories everywhere they occur.
+Each configured root stores its deleted files beneath its own hidden `.onecopy-trash` directory. Before moving a file, OneCopy proves that the file is contained by the frozen root, that the move remains on the same physical filesystem however the root and file are spelled, and that the root's deleted-files directory is a real directory inside it rather than a link elsewhere; failed validation leaves the source untouched. The directory is created lazily beneath that root so its access remains constrained by the root's traversal and permission boundary. Source discovery, watchers, and destination browsing exclude these directories everywhere they occur.
 
 The application home does not own deleted-file storage. Two application homes configured for the same root intentionally see the same root-local location, while files protected by different configured roots never move into one shared drive-level or application-level directory.
 

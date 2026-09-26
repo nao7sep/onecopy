@@ -89,9 +89,9 @@ fn hash_while_copying_copies_exactly_and_hashes_the_stream() {
         .unwrap();
     let dst = dst_dir.path().join("out.bin");
 
-    let (hash, total, identity) = hash_while_copying(&src, &dst).unwrap();
+    let (hash, total, private) = hash_while_copying(&src, &dst).unwrap();
     assert_eq!(total, bytes.len() as u64);
-    assert!(onecopy_lib::file_identity::path_names(&dst, identity));
+    assert!(private.is_named_by(&dst));
     assert_eq!(hash, blake3::hash(&bytes).to_hex().to_string());
     assert_eq!(std::fs::read(&dst).unwrap(), bytes);
 }
@@ -170,4 +170,37 @@ fn hash_while_copying_refuses_to_clobber_an_existing_destination() {
     assert!(hash_while_copying(&src, &dst).is_err());
     // The existing file is untouched.
     assert_eq!(std::fs::read(&dst).unwrap(), b"already here");
+}
+
+#[cfg(unix)]
+#[test]
+fn copying_reads_only_the_regular_file_at_the_source_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = dir.path().join("outside.jpg");
+    std::fs::write(&outside, b"not the recorded file").unwrap();
+    let link = dir.path().join("link.jpg");
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+    let dst = dir.path().join("out-link.tmp");
+    assert!(hash_while_copying(&link, &dst).is_err());
+    assert!(!dst.exists());
+
+    // A FIFO at the source path is refused at once instead of blocking the
+    // operation until a writer appears.
+    let fifo = dir.path().join("pipe.jpg");
+    let name = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let dst = dir.path().join("out-fifo.tmp");
+    assert!(hash_while_copying(&fifo, &dst).is_err());
+    assert!(!dst.exists());
+}
+
+#[test]
+fn a_dropped_unpublished_copy_removes_its_private_output() {
+    let (_dir, src) = temp_file("drop", b"bytes");
+    let dst_dir = tempfile::tempdir().unwrap();
+    let dst = dst_dir.path().join("private.tmp");
+    let (_, _, private) = hash_while_copying(&src, &dst).unwrap();
+    assert!(dst.exists());
+    drop(private);
+    assert!(!dst.exists());
 }

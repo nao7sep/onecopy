@@ -146,16 +146,18 @@ pub fn full_hash_cancellable_with_progress(
     Ok(hasher.finalize().to_hex().to_string())
 }
 
-/// Copies `src` to `dst` while hashing the bytes read. Returns (hash, bytes copied).
+/// Copies `src` to `dst` while hashing the bytes read. Returns (hash, bytes
+/// copied, the private output bound to the descriptor that wrote it).
 /// not recorded: this writes the user's own media into a destination root —
 /// OUTPUT, not app-managed text (data-backup conventions).
 /// The destination is created fresh (never clobbering an existing file: the
 /// collision policy upstream decides skips/conflicts before this runs) and
-/// fsynced before return; renaming/staging discipline belongs to the caller.
+/// fsynced before return; publication belongs to the caller, and dropping the
+/// returned output unpublished removes it.
 pub fn hash_while_copying(
     src: &Path,
     dst: &Path,
-) -> std::io::Result<(String, u64, crate::file_identity::FileIdentity)> {
+) -> std::io::Result<(String, u64, crate::file_identity::PrivateFile)> {
     hash_while_copying_detailed(src, dst, &|| false, &mut |_, _| {}, |_| {})
         .map_err(CopyFailure::into_io)
 }
@@ -165,7 +167,7 @@ fn hash_while_copying_with_after_sync(
     src: &Path,
     dst: &Path,
     after_sync: impl FnOnce(&Path),
-) -> std::io::Result<(String, u64, crate::file_identity::FileIdentity)> {
+) -> std::io::Result<(String, u64, crate::file_identity::PrivateFile)> {
     hash_while_copying_detailed(src, dst, &|| false, &mut |_, _| {}, after_sync)
         .map_err(CopyFailure::into_io)
 }
@@ -178,7 +180,7 @@ pub fn hash_while_copying_cancellable(
     dst: &Path,
     cancelled: &dyn Fn() -> bool,
     progress: &mut dyn FnMut(u64, u64),
-) -> std::io::Result<(String, u64, crate::file_identity::FileIdentity)> {
+) -> std::io::Result<(String, u64, crate::file_identity::PrivateFile)> {
     hash_while_copying_detailed(src, dst, cancelled, progress, |_| {})
         .map_err(CopyFailure::into_io)
 }
@@ -204,7 +206,7 @@ pub(crate) fn hash_while_copying_cancellable_detailed(
     dst: &Path,
     cancelled: &dyn Fn() -> bool,
     progress: &mut dyn FnMut(u64, u64),
-) -> Result<(String, u64, crate::file_identity::FileIdentity), CopyFailure> {
+) -> Result<(String, u64, crate::file_identity::PrivateFile), CopyFailure> {
     hash_while_copying_detailed(src, dst, cancelled, progress, |_| {})
 }
 
@@ -214,86 +216,73 @@ fn hash_while_copying_detailed(
     cancelled: &dyn Fn() -> bool,
     progress: &mut dyn FnMut(u64, u64),
     after_sync: impl FnOnce(&Path),
-) -> Result<(String, u64, crate::file_identity::FileIdentity), CopyFailure> {
-    let mut reader = File::open(crate::winpath::for_fs(src).as_ref())
-        .map_err(CopyFailure::Source)?;
+) -> Result<(String, u64, crate::file_identity::PrivateFile), CopyFailure> {
+    // The source is the regular file currently at the recorded path: a
+    // symlink put there is not followed and a FIFO is refused without waiting.
+    let (mut reader, _) =
+        crate::file_identity::open_regular_nofollow(src).map_err(CopyFailure::Source)?;
     let expected_total = reader
         .metadata()
         .map_err(CopyFailure::Source)?
         .len();
-    let mut writer = File::options()
+    let writer = File::options()
         .read(true)
         .write(true)
         .create_new(true)
-        .open(dst)
+        .open(crate::winpath::for_fs(dst).as_ref())
         .map_err(CopyFailure::Destination)?;
-    let identity = match crate::file_identity::FileIdentity::from_file(&writer) {
-        Ok(identity) => identity,
-        Err(error) => {
-            drop(writer);
-            crate::fs_recovery::remove_file(dst, "failed copy staging cleanup");
-            return Err(CopyFailure::Destination(error));
-        }
-    };
+    // From here every failure or cancellation drops the private output, which
+    // removes it while `dst` still names this descriptor's file.
+    let mut private = crate::file_identity::PrivateFile::new(dst.to_path_buf(), writer);
     let mut hasher = blake3::Hasher::new();
     let mut buf = vec![0u8; BUF_SIZE];
     let mut total: u64 = 0;
     progress(total, expected_total);
 
-    let copied = (|| -> Result<(String, u64), CopyFailure> {
-        loop {
-            if cancelled() {
-                return Err(CopyFailure::Cancelled);
-            }
-            let n = reader.read(&mut buf).map_err(CopyFailure::Source)?;
-            if n == 0 {
-                break;
-            }
-            hasher.update(&buf[..n]);
-            writer
-                .write_all(&buf[..n])
-                .map_err(CopyFailure::Destination)?;
-            total += n as u64;
-            progress(total, expected_total);
+    let writer = private.file_mut();
+    loop {
+        if cancelled() {
+            return Err(CopyFailure::Cancelled);
         }
-        writer.sync_all().map_err(CopyFailure::Destination)?;
-        after_sync(dst);
-        let streamed_hash = hasher.finalize().to_hex().to_string();
-
-        // Verify through the same descriptor that received the bytes. Reopening
-        // `dst` would make a pathname replacement the object being verified.
+        let n = reader.read(&mut buf).map_err(CopyFailure::Source)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
         writer
-            .seek(SeekFrom::Start(0))
+            .write_all(&buf[..n])
             .map_err(CopyFailure::Destination)?;
-        let mut read_back = blake3::Hasher::new();
-        loop {
-            // The output is still private, so a cancel here abandons it like
-            // one during the copy; a large file never pins its holder.
-            if cancelled() {
-                return Err(CopyFailure::Cancelled);
-            }
-            let n = writer.read(&mut buf).map_err(CopyFailure::Destination)?;
-            if n == 0 {
-                break;
-            }
-            read_back.update(&buf[..n]);
-        }
-        if read_back.finalize().to_hex().as_str() != streamed_hash {
-            return Err(CopyFailure::Destination(std::io::Error::other(
-                "staged destination read-back did not match the copied bytes",
-            )));
-        }
-        Ok((streamed_hash, total))
-    })();
-    drop(writer);
-
-    match copied {
-        Ok((hash, bytes)) => Ok((hash, bytes, identity)),
-        Err(error) => {
-            crate::file_identity::remove_private_if_owned(dst, identity);
-            Err(error)
-        }
+        total += n as u64;
+        progress(total, expected_total);
     }
+    writer.sync_all().map_err(CopyFailure::Destination)?;
+    after_sync(dst);
+    let streamed_hash = hasher.finalize().to_hex().to_string();
+
+    // Verify through the same descriptor that received the bytes. Reopening
+    // `dst` would make a pathname replacement the object being verified.
+    writer
+        .seek(SeekFrom::Start(0))
+        .map_err(CopyFailure::Destination)?;
+    let mut read_back = blake3::Hasher::new();
+    loop {
+        // The output is still private, so a cancel here abandons it like
+        // one during the copy; a large file never pins its holder.
+        if cancelled() {
+            return Err(CopyFailure::Cancelled);
+        }
+        let n = writer.read(&mut buf).map_err(CopyFailure::Destination)?;
+        if n == 0 {
+            break;
+        }
+        read_back.update(&buf[..n]);
+    }
+    if read_back.finalize().to_hex().as_str() != streamed_hash {
+        return Err(CopyFailure::Destination(std::io::Error::other(
+            "staged destination read-back did not match the copied bytes",
+        )));
+    }
+    Ok((streamed_hash, total, private))
 }
 
 #[cfg(test)]

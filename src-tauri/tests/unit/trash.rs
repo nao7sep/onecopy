@@ -127,3 +127,29 @@ fn size_of(root: &Path) -> (u64, u64) {
     let measure = measure_root(root);
     (measure.bytes, measure.files)
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn recoverable_deletion_works_on_a_volume_without_exclusive_rename() {
+    use crate::fs_publish::seam::without_exclusive_rename;
+
+    let dir = tempfile::tempdir().unwrap();
+    let source_dir = dir.path().join("source");
+    std::fs::create_dir_all(&source_dir).unwrap();
+    let source = source_dir.join("photo.jpg");
+    std::fs::write(&source, b"source").unwrap();
+
+    let record = without_exclusive_rename(|| trash_file(&source, &source_dir, None)).unwrap();
+    assert!(!source.exists());
+    assert_eq!(std::fs::read(&record.stored_path).unwrap(), b"source");
+
+    // An exact-boundary winner at the stored name still survives.
+    std::fs::write(&source, b"second").unwrap();
+    let result = without_exclusive_rename(|| {
+        trash_file_with_before_move(&source, &source_dir, None, |target| {
+            std::fs::write(target, b"winner").unwrap()
+        })
+    });
+    assert!(result.is_err());
+    assert_eq!(std::fs::read(&source).unwrap(), b"second");
+}

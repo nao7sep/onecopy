@@ -123,7 +123,10 @@ struct DeleteTarget {
     abs_path: String,
     content_hash: Option<String>,
     bytes: u64,
-    owning_root: std::path::PathBuf,
+    /// The frozen configured root for recoverable deletion. A copy whose owner
+    /// cannot be established (its drive is away, or its source was removed)
+    /// fails as that one file; it never stops planning.
+    owning_root: Result<std::path::PathBuf, String>,
 }
 
 #[derive(Clone, Debug)]
@@ -256,10 +259,13 @@ fn delete_targets(
     for target in targets {
         let file = Path::new(&target.abs_path);
         let result = match mode {
-            DeleteMode::Trash => {
-                trash::trash_file(file, &target.owning_root, target.content_hash.as_deref())
-                    .map(|_| ())
-            }
+            DeleteMode::Trash => match &target.owning_root {
+                Ok(owning_root) => {
+                    trash::trash_file(file, owning_root, target.content_hash.as_deref())
+                        .map(|_| ())
+                }
+                Err(error) => Err(error.clone()),
+            },
             DeleteMode::Permanent => permanently_delete_file(file),
         };
 
@@ -392,22 +398,17 @@ fn collect_delete_targets(
     Ok(companions
         .into_iter()
         .map(|(path_id, abs_path, content_hash, indexed_bytes)| {
-            let owning_root = trash::root_for_file(Path::new(&abs_path), roots)?;
-            let bytes =
-                std::fs::symlink_metadata(crate::winpath::for_fs(Path::new(&abs_path)).as_ref())
-                    .ok()
-                    .filter(|metadata| metadata.file_type().is_file())
-                    .map(|metadata| metadata.len())
-                    .unwrap_or_else(|| indexed_bytes.unwrap_or(0).max(0) as u64);
-            Ok(DeleteTarget {
+            let owning_root = trash::root_for_file(Path::new(&abs_path), roots);
+            let bytes = current_or_indexed_bytes(&abs_path, indexed_bytes);
+            DeleteTarget {
                 path_id,
                 abs_path,
                 content_hash,
                 bytes,
                 owning_root,
-            })
+            }
         })
-        .collect::<Result<Vec<_>, String>>()?)
+        .collect())
 }
 
 /// Deletes an ordered logical-item set accepted now, under one
@@ -581,13 +582,10 @@ pub fn delete_accepted_batch(
 }
 
 fn permanently_delete_file(file: &Path) -> Result<(), String> {
-    let metadata = match std::fs::symlink_metadata(crate::winpath::for_fs(file).as_ref()) {
-        Ok(metadata) => metadata,
-        // Already gone from disk: the index intent still applies; the walk
-        // would have marked it missing anyway.
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error.to_string()),
-    };
+    // A missing file fails as that one file, exactly as recoverable deletion
+    // does: nothing was deleted, so the receipt must not count it.
+    let metadata = std::fs::symlink_metadata(crate::winpath::for_fs(file).as_ref())
+        .map_err(|error| format!("file to delete is unavailable: {error}"))?;
     if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
         return Err(format!("not a regular file: {}", file.display()));
     }
@@ -705,7 +703,7 @@ struct DeliverySource {
     abs_path: String,
     content_hash: Option<String>,
     bytes: u64,
-    owning_root: std::path::PathBuf,
+    owning_root: Result<std::path::PathBuf, String>,
 }
 
 #[derive(Clone, Debug)]
@@ -866,15 +864,10 @@ pub fn move_batch_reviewed(
     cancelled: &dyn Fn() -> bool,
     mut on_progress: impl FnMut(MoveBatchProgress),
 ) -> Result<MoveBatchOutcome, String> {
-    if !dest_dir.is_dir() {
-        return Err(format!(
-            "destination is not a directory: {}",
-            dest_dir.display()
-        ));
-    }
-
-    let roots = crate::storage::load_config_file_roots(app_root)?;
-    let destination_root = trash::root_for_file(dest_dir, &roots)?;
+    let configured = crate::storage::load_configured_roots(app_root)?;
+    let destination_root = admit_destination(dest_dir, &configured)?;
+    let roots = configured.all();
+    let names = DestinationNames::for_directory(dest_dir);
     let mut seen = HashSet::new();
     let mut ordered = Vec::new();
     for item in items {
@@ -903,7 +896,7 @@ pub fn move_batch_reviewed(
                 ..MoveBatchOutcome::default()
             });
         }
-        let unit = collect_move_unit(conn, item, dest_dir, &roots, accepted)?;
+        let unit = collect_move_unit(conn, item, dest_dir, &roots, accepted, names)?;
         plan.files_total = plan
             .files_total
             .saturating_add(unit.deliveries.len() as u64);
@@ -938,7 +931,7 @@ pub fn move_batch_reviewed(
             current_file_bytes_total: None,
         });
     }
-    let review = match review_destination_conflicts(&mut plan, cancelled) {
+    let review = match review_destination_conflicts(&mut plan, names, cancelled) {
         Ok(review) => review,
         Err(error) if error == crate::scanner::CANCELLED => {
             return Ok(MoveBatchOutcome {
@@ -984,7 +977,7 @@ pub fn move_batch_reviewed(
         );
     }
     if conflict_policy == Some(DestinationConflictPolicy::Rename) {
-        apply_conflict_renames(&mut plan, rename_style)?;
+        apply_conflict_renames(&mut plan, rename_style, names)?;
     }
     let mut batch = MoveBatchOutcome {
         files_total: plan.files_total,
@@ -1142,6 +1135,106 @@ pub fn move_batch_reviewed(
     Ok(batch)
 }
 
+/// Destination admission at operation start: the destination must exist as a
+/// directory, be a configured destination root or a folder beneath one, and
+/// lie outside every configured source. Returns the most specific configured
+/// destination root containing it, which owns overwrite displacement. A
+/// configured root that is unavailable right now neither admits nor refuses
+/// anything, so one unplugged drive never blocks another destination.
+pub fn admit_destination(
+    dest_dir: &Path,
+    configured: &crate::storage::ConfiguredRoots,
+) -> Result<std::path::PathBuf, String> {
+    if !dest_dir.is_dir() {
+        return Err(format!(
+            "destination is not a directory: {}",
+            dest_dir.display()
+        ));
+    }
+    let mut owner: Option<(usize, &std::path::PathBuf)> = None;
+    for root in &configured.destinations {
+        if crate::path_identity::directory_is_within(dest_dir, root)? {
+            let depth = std::fs::canonicalize(crate::winpath::for_fs(root).as_ref())
+                .map(|resolved| resolved.components().count())
+                .unwrap_or(0);
+            if owner.is_none_or(|(deepest, _)| depth > deepest) {
+                owner = Some((depth, root));
+            }
+        }
+    }
+    let Some((_, destination_root)) = owner else {
+        return Err(format!(
+            "destination {} is not a configured destination root or one of its folders",
+            dest_dir.display()
+        ));
+    };
+    for source in &configured.sources {
+        if crate::path_identity::directory_is_within(dest_dir, source)? {
+            return Err(format!(
+                "destination {} lies inside the scanned directory {}; move-out targets must be outside every source directory",
+                dest_dir.display(),
+                source.display()
+            ));
+        }
+    }
+    Ok(destination_root.clone())
+}
+
+/// How the destination filesystem compares names. Case-insensitive volumes
+/// (the default on macOS and Windows) treat names differing only by case as
+/// one entry, so planning, conflict review and renames must too.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DestinationNames {
+    fold_case: bool,
+}
+
+impl DestinationNames {
+    pub fn for_directory(directory: &Path) -> Self {
+        Self {
+            fold_case: !directory_is_case_sensitive(directory),
+        }
+    }
+
+    pub fn folds_case(self) -> bool {
+        self.fold_case
+    }
+
+    /// The key under which the destination filesystem identifies `path`.
+    fn key(self, path: &Path) -> std::ffi::OsString {
+        if self.fold_case {
+            path.to_string_lossy().to_lowercase().into()
+        } else {
+            path.as_os_str().to_owned()
+        }
+    }
+
+    fn same(self, left: &Path, right: &Path) -> bool {
+        self.key(left) == self.key(right)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn directory_is_case_sensitive(directory: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(path) = std::ffi::CString::new(directory.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: `path` is an owned NUL-terminated buffer alive for the call.
+    // An unanswerable query reads as case-insensitive, which only ever
+    // presents more names as conflicts, never fewer.
+    unsafe { libc::pathconf(path.as_ptr(), libc::_PC_CASE_SENSITIVE) == 1 }
+}
+
+#[cfg(windows)]
+fn directory_is_case_sensitive(_directory: &Path) -> bool {
+    false
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn directory_is_case_sensitive(_directory: &Path) -> bool {
+    true
+}
+
 fn move_plan_token(plan: &MovePlan, mode: MoveOutMode, review: &DestinationReview) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(match mode {
@@ -1194,6 +1287,7 @@ fn move_plan_token(plan: &MovePlan, mode: MoveOutMode, review: &DestinationRevie
 
 fn review_destination_conflicts(
     plan: &mut MovePlan,
+    names: DestinationNames,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<DestinationReview, String> {
     let mut review = DestinationReview::default();
@@ -1202,7 +1296,7 @@ fn review_destination_conflicts(
         if cancelled() {
             return Err(crate::scanner::CANCELLED.to_string());
         }
-        if !claimed.insert(delivery.target.clone()) {
+        if !claimed.insert(names.key(&delivery.target)) {
             delivery.rename_required = true;
             review.conflicts.push(DestinationConflict {
                 path: delivery.target.to_string_lossy().into_owned(),
@@ -1240,6 +1334,7 @@ fn review_destination_conflicts(
                 let (family, preserved_paths, replaceable) = reviewed_replacement_family(
                     &delivery.target,
                     delivery.primary,
+                    names,
                     bytes,
                     hash,
                     cancelled,
@@ -1265,7 +1360,11 @@ fn observe_destination(
 ) -> Result<DestinationObservation, String> {
     let metadata = match std::fs::symlink_metadata(crate::winpath::for_fs(path).as_ref()) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        // A name the destination cannot hold holds nothing; publishing it
+        // later fails as that one file.
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound || is_name_error(&error) =>
+        {
             return Ok(DestinationObservation::Absent)
         }
         Err(error) => {
@@ -1323,6 +1422,7 @@ fn delivery_matches_hash(
 fn reviewed_replacement_family(
     target: &Path,
     include_companions: bool,
+    names: DestinationNames,
     target_bytes: u64,
     target_hash: String,
     cancelled: &dyn Fn() -> bool,
@@ -1343,7 +1443,10 @@ fn reviewed_replacement_family(
             // parent so recovery manifests and plan tokens keep one canonical
             // spelling while later filesystem calls can add the prefix again.
             let path = parent.join(entry.map_err(|error| error.to_string())?.file_name());
-            if path == target || path.file_stem() != Some(stem) {
+            let same_stem = path
+                .file_stem()
+                .is_some_and(|candidate| names.same(Path::new(candidate), Path::new(stem)));
+            if names.same(&path, target) || !same_stem {
                 continue;
             }
             let extension = path
@@ -1384,6 +1487,7 @@ fn reviewed_replacement_family(
 fn apply_conflict_renames(
     plan: &mut MovePlan,
     style: DestinationRenameStyle,
+    names: DestinationNames,
 ) -> Result<(), String> {
     let needs_rename = plan
         .units
@@ -1400,7 +1504,7 @@ fn apply_conflict_renames(
             reserved.extend(
                 unit.deliveries
                     .iter()
-                    .map(|delivery| delivery.target.clone()),
+                    .map(|delivery| names.key(&delivery.target)),
             );
         }
     }
@@ -1414,10 +1518,15 @@ fn apply_conflict_renames(
                 .iter()
                 .map(|delivery| renamed_target(&delivery.target, number, style))
                 .collect::<Option<Vec<_>>>()?;
+            // A name the destination cannot hold (too long, invalid there)
+            // is not occupied: it is planned and then fails at publication as
+            // that one file, like any other refused final name.
             let available = candidates.iter().all(|candidate| {
-                !reserved.contains(candidate)
+                !reserved.contains(&names.key(candidate))
                     && std::fs::symlink_metadata(crate::winpath::for_fs(candidate).as_ref())
-                        .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+                        .is_err_and(|error| {
+                            error.kind() == std::io::ErrorKind::NotFound || is_name_error(&error)
+                        })
             });
             available.then_some(candidates)
         });
@@ -1428,10 +1537,25 @@ fn apply_conflict_renames(
             delivery.target = target.clone();
             delivery.replacement_family.clear();
             delivery.rename_required = false;
-            reserved.insert(target);
+            reserved.insert(names.key(&target));
         }
     }
     Ok(())
+}
+
+/// Whether the filesystem refused a name itself rather than the storage.
+fn is_name_error(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::InvalidFilename {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        error.raw_os_error() == Some(libc::EILSEQ)
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
 }
 
 fn renamed_target(
@@ -1458,6 +1582,7 @@ fn collect_move_unit(
     dest_dir: &Path,
     roots: &[std::path::PathBuf],
     accepted: &AcceptedFiles,
+    names: DestinationNames,
 ) -> Result<MoveUnit, String> {
     let (mut primary_rows, mut companion_rows): (Vec<_>, Vec<_>) = match item.item_ref()? {
         ItemRef::Hash(hash) => (
@@ -1498,7 +1623,7 @@ fn collect_move_unit(
     };
     accepted.retain_accepted(&mut primary_rows);
     accepted.retain_accepted(&mut companion_rows);
-    let primary_sources = delivery_sources(primary_rows, roots)?;
+    let primary_sources = delivery_sources(primary_rows, roots);
     let provisional_hash = item
         .hash
         .as_ref()
@@ -1517,12 +1642,15 @@ fn collect_move_unit(
         });
     }
 
+    // Companions that would land on the same destination entry are one
+    // output: on a case-insensitive destination `x.xmp` and `x.XMP` are one
+    // name, and the companion beside the highest-ranked main copy supplies it.
     let mut companions = Vec::<(String, Vec<DeliverySource>)>::new();
-    for source in delivery_sources(companion_rows, roots)? {
+    for source in delivery_sources(companion_rows, roots) {
         let name = file_name(&source.abs_path)?;
         if let Some((_, sources)) = companions
             .iter_mut()
-            .find(|(existing, _)| *existing == name)
+            .find(|(existing, _)| names.same(Path::new(existing), Path::new(&name)))
         {
             sources.push(source);
         } else {
@@ -1547,28 +1675,30 @@ fn collect_move_unit(
     })
 }
 
-fn delivery_sources(
-    rows: Vec<PhysicalRow>,
-    roots: &[std::path::PathBuf],
-) -> Result<Vec<DeliverySource>, String> {
+fn delivery_sources(rows: Vec<PhysicalRow>, roots: &[std::path::PathBuf]) -> Vec<DeliverySource> {
     rows.into_iter()
         .map(|(path_id, abs_path, content_hash, indexed_bytes)| {
-            let owning_root = trash::root_for_file(Path::new(&abs_path), roots)?;
-            let bytes =
-                std::fs::symlink_metadata(crate::winpath::for_fs(Path::new(&abs_path)).as_ref())
-                    .ok()
-                    .filter(|metadata| metadata.file_type().is_file())
-                    .map(|metadata| metadata.len())
-                    .unwrap_or_else(|| indexed_bytes.unwrap_or(0).max(0) as u64);
-            Ok(DeliverySource {
+            let owning_root = trash::root_for_file(Path::new(&abs_path), roots);
+            let bytes = current_or_indexed_bytes(&abs_path, indexed_bytes);
+            DeliverySource {
                 path_id,
                 abs_path,
                 content_hash,
                 bytes,
                 owning_root,
-            })
+            }
         })
         .collect()
+}
+
+/// A planned file's size for progress: its current size when it is a regular
+/// file now, otherwise the indexed size (an unavailable copy still counts).
+fn current_or_indexed_bytes(abs_path: &str, indexed_bytes: Option<i64>) -> u64 {
+    std::fs::symlink_metadata(crate::winpath::for_fs(Path::new(abs_path)).as_ref())
+        .ok()
+        .filter(|metadata| metadata.file_type().is_file())
+        .map(|metadata| metadata.len())
+        .unwrap_or_else(|| indexed_bytes.unwrap_or(0).max(0) as u64)
 }
 
 fn file_name(path: &str) -> Result<String, String> {
@@ -1581,8 +1711,7 @@ fn file_name(path: &str) -> Result<String, String> {
 
 struct StagedOutput {
     target: std::path::PathBuf,
-    staged: std::path::PathBuf,
-    identity: crate::file_identity::FileIdentity,
+    private: crate::file_identity::PrivateFile,
     hash: String,
     bytes: u64,
     primary: bool,
@@ -1606,11 +1735,12 @@ enum MoveUnitResult {
     Cancelled(MoveOutOutcome),
 }
 
-struct NaturalTarget {
-    identity: crate::file_identity::FileIdentity,
-    delivered: bool,
-}
-
+/// Delivers one logical item. Every output is first written and verified
+/// under a private name; only then is any output published, so Overwrite
+/// never displaces the destination family before the complete replacement
+/// exists. Each staged output removes itself when dropped unpublished, so
+/// every early return, failure, conflict and cancellation below abandons the
+/// private output it still holds.
 fn execute_move_unit(
     conn: &Connection,
     cache: &CachePaths,
@@ -1622,8 +1752,8 @@ fn execute_move_unit(
     on_progress: &mut dyn FnMut(MoveUnitProgress),
 ) -> Result<MoveUnitResult, String> {
     let mut outcome = MoveOutOutcome::default();
-    let mut natural_targets = Vec::<NaturalTarget>::new();
-    let mut primary_promoted = false;
+    let mut staged = Vec::<(&DeliveryPlan, StagedOutput, Vec<i64>)>::new();
+    let mut replacement_prepared = true;
     for delivery in &unit.deliveries {
         if cancelled() {
             return Ok(MoveUnitResult::Cancelled(outcome));
@@ -1640,16 +1770,13 @@ fn execute_move_unit(
                     && mode != MoveOutMode::CopyKeepAll
                     && !crate::scanner::is_provisional(hash)
             });
-        let (output, changed_sources) = match stage_delivery(
-            conn,
-            delivery,
-            recorded_hash,
-            cancelled,
-            on_progress,
-        )? {
-            StageResult::Ready(output, changed_sources) => (output, changed_sources),
+        match stage_delivery(conn, delivery, recorded_hash, cancelled, on_progress)? {
+            StageResult::Ready(output, changed_sources) => {
+                staged.push((delivery, output, changed_sources))
+            }
             StageResult::Cancelled => return Ok(MoveUnitResult::Cancelled(outcome)),
             StageResult::Failed => {
+                replacement_prepared = false;
                 outcome
                     .undelivered
                     .push(delivery.target.to_string_lossy().into_owned());
@@ -1657,123 +1784,123 @@ fn execute_move_unit(
                     bytes: delivery.bytes,
                     failed: true,
                 });
-                continue;
-            }
-        };
-        if output.primary {
-            if !primary_promoted {
-                if let Some(stored) = &unit.provisional_hash {
-                    crate::scanner::promote_identity(conn, cache, stored, &output.hash)?;
-                }
-                primary_promoted = true;
             }
         }
+    }
+    if let Some(stored) = &unit.provisional_hash {
+        if let Some((_, primary, _)) = staged.iter().find(|(_, output, _)| output.primary) {
+            crate::scanner::promote_identity(conn, cache, stored, &primary.hash)?;
+        }
+    }
 
+    for (delivery, mut output, changed_sources) in staged {
+        if cancelled() {
+            return Ok(MoveUnitResult::Cancelled(outcome));
+        }
         // From publication through this output group's source cleanup,
         // cancellation is deliberately deferred. The next output is the next
         // safe boundary.
-        let claimed = match crate::file_identity::claim_private(&output.staged, output.identity) {
-            Ok(claimed) => claimed,
-            Err(error) => {
-                crate::file_identity::remove_private_if_owned(&output.staged, output.identity);
-                return Err(format!(
-                    "private output changed before publication: {error}"
-                ));
-            }
-        };
-        let delivered = match publish_claimed(conn, &claimed, &output.target, output.identity) {
-            Ok(true) => {
-                outcome.exported = outcome.exported.saturating_add(1);
-                natural_targets.push(NaturalTarget {
-                    identity: output.identity,
-                    delivered: true,
-                });
-                true
-            }
-            Ok(false) => {
-                let existing = crate::file_identity::open_regular_nofollow(&output.target);
-                let delivered = match existing {
-                    Ok((mut file, identity)) => {
-                        if let Some(previous) = natural_targets
-                            .iter()
-                            .find(|target| target.identity == identity)
-                        {
-                            previous.delivered
-                        } else {
-                            let total = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
-                            let hash = crate::hashing::full_hash_file_cancellable(
-                                &mut file,
-                                total,
-                                cancelled,
-                                &mut |done, total| {
-                                    on_progress(MoveUnitProgress::Stream { done, total })
-                                },
-                            );
-                            if hash.as_ref().is_err_and(|error| {
-                                error.kind() == std::io::ErrorKind::Interrupted && cancelled()
-                            }) {
-                                return Ok(MoveUnitResult::Cancelled(outcome));
-                            }
-                            let same = hash.is_ok_and(|hash| hash == output.hash);
-                            natural_targets.push(NaturalTarget {
-                                identity,
-                                delivered: same,
-                            });
-                            if same {
-                                crate::file_identity::remove_private_if_owned(
-                                    &claimed,
-                                    output.identity,
-                                );
-                                outcome.skipped_identical =
-                                    outcome.skipped_identical.saturating_add(1);
-                                true
-                            } else if conflict_policy == Some(DestinationConflictPolicy::Overwrite)
-                            {
-                                drop(file);
-                                preserve_reviewed_destination_family(
-                                    conn,
-                                    &delivery.replacement_family,
-                                    destination_root,
-                                )?;
-                                outcome.trashed_destination_files = outcome
-                                    .trashed_destination_files
-                                    .saturating_add(delivery.replacement_family.len() as u64);
-                                if !publish_claimed(
-                                    conn,
-                                    &claimed,
-                                    &output.target,
-                                    output.identity,
-                                )? {
-                                    return Err(format!(
-                                        "a new destination conflict appeared at {}",
-                                        output.target.display()
-                                    ));
-                                }
-                                outcome.exported = outcome.exported.saturating_add(1);
-                                true
-                            } else {
-                                crate::file_identity::remove_private_if_owned(
-                                    &claimed,
-                                    output.identity,
-                                );
-                                false
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        crate::file_identity::remove_private_if_owned(&claimed, output.identity);
-                        false
-                    }
-                };
-                if !delivered {
+        output
+            .private
+            .claim()
+            .map_err(|error| format!("private output changed before publication: {error}"))?;
+        let delivered = match output.private.publish(&output.target) {
+            Ok(()) => {
+                let durable = sync_published(conn, &output.target)?;
+                if durable {
+                    outcome.exported = outcome.exported.saturating_add(1);
+                } else {
                     outcome
-                        .conflicts
+                        .undelivered
                         .push(output.target.to_string_lossy().into_owned());
                 }
-                delivered
+                durable
             }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let existing_hash = match crate::file_identity::open_regular_nofollow(&output.target)
+                {
+                    Ok((mut file, _)) => {
+                        let total = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+                        let hash = crate::hashing::full_hash_file_cancellable(
+                            &mut file,
+                            total,
+                            cancelled,
+                            &mut |done, total| {
+                                on_progress(MoveUnitProgress::Stream { done, total })
+                            },
+                        );
+                        if hash.as_ref().is_err_and(|error| {
+                            error.kind() == std::io::ErrorKind::Interrupted && cancelled()
+                        }) {
+                            return Ok(MoveUnitResult::Cancelled(outcome));
+                        }
+                        Some(hash.ok())
+                    }
+                    Err(_) => None,
+                };
+                match existing_hash {
+                    Some(Some(hash)) if hash == output.hash => {
+                        outcome.skipped_identical = outcome.skipped_identical.saturating_add(1);
+                        true
+                    }
+                    Some(_)
+                        if conflict_policy == Some(DestinationConflictPolicy::Overwrite)
+                            && !replacement_prepared
+                            && !delivery.replacement_family.is_empty() =>
+                    {
+                        let message = "the existing destination was kept because the complete \
+                                       replacement for this item could not be prepared";
+                        crate::index_store::upsert_issue(
+                            conn,
+                            Some(output.target.to_string_lossy().as_ref()),
+                            "copy-error",
+                            message,
+                        )?;
+                        outcome
+                            .undelivered
+                            .push(output.target.to_string_lossy().into_owned());
+                        false
+                    }
+                    Some(_) if conflict_policy == Some(DestinationConflictPolicy::Overwrite) => {
+                        preserve_reviewed_destination_family(
+                            conn,
+                            &delivery.replacement_family,
+                            destination_root,
+                        )?;
+                        outcome.trashed_destination_files = outcome
+                            .trashed_destination_files
+                            .saturating_add(delivery.replacement_family.len() as u64);
+                        match output.private.publish(&output.target) {
+                            Ok(()) => {}
+                            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                                return Err(format!(
+                                    "a new destination conflict appeared at {}",
+                                    output.target.display()
+                                ))
+                            }
+                            Err(error) => return Err(error.to_string()),
+                        }
+                        let durable = sync_published(conn, &output.target)?;
+                        if durable {
+                            outcome.exported = outcome.exported.saturating_add(1);
+                        } else {
+                            outcome
+                                .undelivered
+                                .push(output.target.to_string_lossy().into_owned());
+                        }
+                        durable
+                    }
+                    _ => {
+                        outcome
+                            .conflicts
+                            .push(output.target.to_string_lossy().into_owned());
+                        false
+                    }
+                }
+            }
+            // A failure at this one final name (too long or invalid for the
+            // destination filesystem, or refused by it) fails only this file.
             Err(error) => {
-                crate::file_identity::remove_private_if_owned(&claimed, output.identity);
                 logging::warn(
                     "copy-out publication failed",
                     json!({ "target": output.target.to_string_lossy(), "error": { "message": error.to_string() } }),
@@ -1848,40 +1975,23 @@ fn execute_move_unit(
     Ok(MoveUnitResult::Completed(outcome))
 }
 
-fn publish_claimed(
-    conn: &Connection,
-    claimed: &Path,
-    target: &Path,
-    identity: crate::file_identity::FileIdentity,
-) -> Result<bool, String> {
-    match crate::fs_publish::rename_no_replace(claimed, target) {
-        Ok(()) => {
-            if !crate::file_identity::path_names(target, identity) {
-                return Err(format!(
-                    "published output was replaced before completion: {}",
-                    target.display()
-                ));
-            }
-            if let Some(parent) = target.parent() {
-                if let Err(error) = crate::fs_publish::sync_directory(parent) {
-                    crate::index_store::upsert_issue(
-                        conn,
-                        Some(target.to_string_lossy().as_ref()),
-                        "copy-error",
-                        &format!(
-                            "output was published but its directory could not be synced: {error}"
-                        ),
-                    )?;
-                    return Err(format!(
-                        "could not durably publish {}: {error}",
-                        target.display()
-                    ));
-                }
-            }
-            Ok(true)
+/// Makes a just-published output durable. An output whose directory could not
+/// be synced is reported as not delivered, so its sources stay in place.
+fn sync_published(conn: &Connection, target: &Path) -> Result<bool, String> {
+    let Some(parent) = target.parent() else {
+        return Ok(true);
+    };
+    match crate::fs_publish::sync_directory(parent) {
+        Ok(()) => Ok(true),
+        Err(error) => {
+            crate::index_store::upsert_issue(
+                conn,
+                Some(target.to_string_lossy().as_ref()),
+                "copy-error",
+                &format!("output was published but its directory could not be synced: {error}"),
+            )?;
+            Ok(false)
         }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-        Err(error) => Err(error.to_string()),
     }
 }
 
@@ -1940,8 +2050,8 @@ fn stage_delivery(
             &mut |done, total| on_progress(MoveUnitProgress::Stream { done, total }),
         );
         match copied {
-            Ok((hash, _, identity)) if recorded_hash.is_some_and(|recorded| recorded != hash) => {
-                crate::file_identity::remove_private_if_owned(&staged, identity);
+            Ok((hash, _, private)) if recorded_hash.is_some_and(|recorded| recorded != hash) => {
+                drop(private);
                 let message = "this copy no longer matches the content OneCopy indexed, so it was \
                                neither delivered nor removed; another matching copy was used if one \
                                remained";
@@ -1952,12 +2062,11 @@ fn stage_delivery(
                 crate::index_store::upsert_issue(conn, Some(&source.abs_path), "copy-error", message)?;
                 changed_sources.push(source.path_id);
             }
-            Ok((hash, bytes, identity)) => {
+            Ok((hash, bytes, private)) => {
                 return Ok(StageResult::Ready(
                     StagedOutput {
                         target: delivery.target.clone(),
-                        staged,
-                        identity,
+                        private,
                         hash,
                         bytes,
                         primary: delivery.primary,
@@ -1978,6 +2087,9 @@ fn stage_delivery(
                     &error.to_string(),
                 )?;
             }
+            // The private name has a short fixed length, so a failure to
+            // write it concerns the destination itself (full, disconnected,
+            // read-only, broken) and stops later writes there.
             Err(crate::hashing::CopyFailure::Destination(error)) => {
                 let message = format!(
                     "destination could not accept {}: {error}",
@@ -2000,12 +2112,15 @@ fn stage_delivery(
     Ok(StageResult::Failed)
 }
 
+/// A private name beside the final target with a short fixed length. It never
+/// exceeds a final name longer than itself, so a name the destination accepts
+/// can always be staged, and a name it refuses fails at publication as that
+/// one file.
 fn output_stage_path(target: &Path) -> Result<std::path::PathBuf, String> {
-    let stem = target
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or("output");
-    Ok(target.with_file_name(format!("{stem}-{}.tmp", crate::nanoid::generate()?)))
+    Ok(target.with_file_name(format!(
+        ".onecopy-stage-{}.tmp",
+        crate::nanoid::generate()?
+    )))
 }
 
 fn collect4(

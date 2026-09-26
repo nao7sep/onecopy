@@ -4,7 +4,9 @@
 //! `renamex_np(RENAME_EXCL)`; Windows exposes `MoveFileExW` without
 //! `MOVEFILE_REPLACE_EXISTING`. Both move the exact staged file into the final
 //! directory entry in one atomic commit, so a crash cannot expose partial bytes
-//! and an existing public-destination winner is untouched. Private rebuildable
+//! and an existing public-destination winner is untouched. macOS volumes that
+//! refuse `RENAME_EXCL` (exFAT) reserve the final name with an exclusive empty
+//! placeholder and replace only that placeholder. Private rebuildable
 //! cache entries also use an explicit atomic replacement path.
 
 use std::io;
@@ -24,6 +26,23 @@ pub fn sync_directory(_path: &Path) -> io::Result<()> {
 
 #[cfg(target_os = "macos")]
 pub fn rename_no_replace(source: &Path, target: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    if seam::EXCLUSIVE_RENAME_UNSUPPORTED.with(std::cell::Cell::get) {
+        return publish_without_exclusive_rename(source, target);
+    }
+    match rename_exclusive(source, target) {
+        // exFAT (and other volumes macOS mounts without RENAME_EXCL) refuse
+        // the exclusive rename outright rather than failing on an occupied
+        // target, so they publish through an exclusive placeholder instead.
+        Err(error) if error.raw_os_error() == Some(libc::ENOTSUP) => {
+            publish_without_exclusive_rename(source, target)
+        }
+        result => result,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn rename_exclusive(source: &Path, target: &Path) -> io::Result<()> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
 
@@ -41,6 +60,60 @@ pub fn rename_no_replace(source: &Path, target: &Path) -> io::Result<()> {
         Err(io::Error::last_os_error())
     }
 }
+
+/// No-clobber publication for a volume without an exclusive rename. The final
+/// name is reserved by creating it exclusively, so an occupied target answers
+/// `AlreadyExists` exactly as the exclusive rename would, and the ordinary
+/// rename then replaces only that app-created empty placeholder. The rename
+/// itself is still atomic: the name holds either the empty placeholder or the
+/// complete file, never partial bytes. A placeholder that is no longer ours at
+/// the moment of replacement is left alone.
+#[cfg(target_os = "macos")]
+fn publish_without_exclusive_rename(source: &Path, target: &Path) -> io::Result<()> {
+    std::fs::symlink_metadata(source)?;
+    let placeholder = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target)?;
+    if !crate::file_identity::path_names_file(target, &placeholder) {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("the reserved name was replaced: {}", target.display()),
+        ));
+    }
+    match std::fs::rename(source, target) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            if crate::file_identity::path_names_file(target, &placeholder) {
+                crate::fs_recovery::remove_file(target, "publication placeholder cleanup");
+            }
+            Err(error)
+        }
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) mod seam {
+    thread_local! {
+        /// Makes this thread's publications behave as on a volume that
+        /// refuses `RENAME_EXCL` (exFAT).
+        pub static EXCLUSIVE_RENAME_UNSUPPORTED: std::cell::Cell<bool> =
+            const { std::cell::Cell::new(false) };
+    }
+
+    pub fn without_exclusive_rename<T>(run: impl FnOnce() -> T) -> T {
+        EXCLUSIVE_RENAME_UNSUPPORTED.with(|flag| flag.set(true));
+        let result = run();
+        EXCLUSIVE_RENAME_UNSUPPORTED.with(|flag| flag.set(false));
+        result
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+// EXCEPTION to tests-folder conventions: the seam that stands in for a volume
+// without RENAME_EXCL is private and must not widen the shipped API.
+#[path = "../tests/unit/fs_publish.rs"]
+mod unsupported_exclusive_rename_tests;
 
 /// Atomically publishes a private same-volume staging file over an existing
 /// rebuildable cache artifact. Public user destinations never use this.

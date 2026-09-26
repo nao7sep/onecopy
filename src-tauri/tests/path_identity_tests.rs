@@ -49,3 +49,16 @@ fn destination_may_be_any_configured_root_or_descendant() {
     assert!(!directory_is_within_any(&outside, &roots).unwrap());
     assert!(!directory_is_within_any(&outside, &[]).unwrap());
 }
+
+#[test]
+fn an_unavailable_root_contains_nothing_but_an_unavailable_candidate_is_an_error() {
+    let temp = tempfile::tempdir().unwrap();
+    let destination = temp.path().join("destination");
+    let offline = temp.path().join("offline-drive");
+    std::fs::create_dir_all(&destination).unwrap();
+
+    assert!(!directory_is_within(&destination, &offline).unwrap());
+    let roots = [offline.as_path(), destination.as_path()];
+    assert!(directory_is_within_any(&destination, &roots).unwrap());
+    assert!(directory_is_within(&offline, &destination).is_err());
+}

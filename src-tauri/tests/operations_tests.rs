@@ -624,6 +624,7 @@ fn companion_name_collisions_follow_the_destination_filesystem_and_representativ
             "the natural collision publishes one sidecar"
         );
     }
+    assert!(private_leftovers(&dest).is_empty(), "{:?}", private_leftovers(&dest));
 }
 
 #[test]
@@ -1800,4 +1801,329 @@ fn copies_discovered_after_acceptance_never_join_a_confirmed_move() {
     assert_eq!(outcome.post_action.deleted_files, 2);
     assert!(!f.root.join("reviewed.jpg").exists());
     assert!(f.root.join("backup").join("late.jpg").exists());
+}
+
+fn write_config(f: &Fixture, sources: &[&std::path::Path], destinations: &[&std::path::Path]) {
+    let list = |paths: &[&std::path::Path]| {
+        paths
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+    };
+    std::fs::write(
+        f.app_root.join("config.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "sourceDirs": list(sources),
+            "destinationRoots": list(destinations),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+fn item_named(f: &Fixture, file_name: &str) -> ItemIdentity {
+    let hash: String = f
+        .conn
+        .query_row(
+            "SELECT content_hash FROM paths WHERE file_name = ?1",
+            [file_name],
+            |row| row.get(0),
+        )
+        .unwrap();
+    ItemIdentity {
+        hash: Some(hash),
+        path_id: None,
+    }
+}
+
+fn private_leftovers(dir: &std::path::Path) -> Vec<String> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(".onecopy-") || name.ends_with(".tmp"))
+        .collect()
+}
+
+#[test]
+fn an_unavailable_source_or_destination_root_does_not_block_another_destination() {
+    let f = fixture("offline-roots");
+    std::fs::write(f.root.join("keep.jpg"), b"bytes").unwrap();
+    scan(&f);
+    let offline_source = f._dir.path().join("unplugged-source");
+    let offline_destination = f._dir.path().join("unplugged-destination");
+    let dest = f._dir.path().join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    write_config(
+        &f,
+        &[&offline_source, &f.root],
+        &[&offline_destination, f._dir.path()],
+    );
+
+    let outcome = move_batch(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        &[item_named(&f, "keep.jpg")],
+        &dest,
+        MoveOutMode::CopyKeepAll,
+        &|| false,
+        |_| {},
+    )
+    .unwrap();
+
+    assert_eq!(outcome.error, None);
+    assert_eq!(outcome.exported, 1);
+    assert_eq!(std::fs::read(dest.join("keep.jpg")).unwrap(), b"bytes");
+}
+
+#[test]
+fn destination_admission_refuses_a_source_folder_and_an_unconfigured_folder() {
+    let f = fixture("admission");
+    std::fs::write(f.root.join("keep.jpg"), b"bytes").unwrap();
+    scan(&f);
+    let inside_source = f.root.join("sub");
+    std::fs::create_dir_all(&inside_source).unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let item = item_named(&f, "keep.jpg");
+
+    for (dest, expected) in [
+        (inside_source.as_path(), "inside the scanned directory"),
+        (elsewhere.path(), "not a configured destination root"),
+        (f._dir.path().join("absent").as_path(), "not a directory"),
+    ] {
+        let error = move_batch(
+            &f.conn,
+            &f.app_root,
+            &f.cache,
+            std::slice::from_ref(&item),
+            dest,
+            MoveOutMode::CopyKeepAll,
+            &|| false,
+            |_| {},
+        )
+        .unwrap_err();
+        assert!(error.contains(expected), "{error}");
+    }
+    assert_eq!(std::fs::read_dir(&inside_source).unwrap().count(), 0);
+    assert_eq!(std::fs::read_dir(elsewhere.path()).unwrap().count(), 0);
+    assert!(f.root.join("keep.jpg").exists());
+}
+
+#[test]
+fn a_copy_whose_owner_cannot_be_established_fails_only_itself() {
+    // A copy under a source removed in Settings (or on a drive whose owner
+    // cannot be resolved) is one unavailable file, not a planning failure.
+    let f = fixture("unowned-copy");
+    let removed = f._dir.path().join("removed-source");
+    std::fs::create_dir_all(&removed).unwrap();
+    std::fs::write(f.root.join("a.jpg"), b"same").unwrap();
+    std::fs::write(removed.join("a.jpg"), b"same").unwrap();
+    scanner::walk_root(&f.conn, &removed, &lists()).unwrap();
+    scan(&f);
+    let dest_root = f._dir.path().join("destinations");
+    std::fs::create_dir_all(&dest_root).unwrap();
+    write_config(&f, &[&f.root], &[&dest_root]);
+    let item = item_named(&f, "a.jpg");
+
+    let outcome = delete_batch(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        std::slice::from_ref(&item),
+        DeleteMode::Trash,
+        &|| false,
+        |_| {},
+    )
+    .unwrap();
+
+    assert_eq!(outcome.error, None);
+    assert_eq!(outcome.deleted_files, 1);
+    assert_eq!(outcome.failed_files, 1);
+    assert!(!f.root.join("a.jpg").exists());
+    assert!(removed.join("a.jpg").exists());
+}
+
+#[test]
+fn a_missing_file_fails_as_itself_in_both_deletion_modes() {
+    for mode in [DeleteMode::Trash, DeleteMode::Permanent] {
+        let f = fixture("missing-delete");
+        std::fs::write(f.root.join("gone.jpg"), b"bytes").unwrap();
+        scan(&f);
+        let item = item_named(&f, "gone.jpg");
+        std::fs::remove_file(f.root.join("gone.jpg")).unwrap();
+
+        let outcome = delete_batch(
+            &f.conn,
+            &f.app_root,
+            &f.cache,
+            &[item],
+            mode,
+            &|| false,
+            |_| {},
+        )
+        .unwrap();
+
+        assert_eq!(outcome.deleted_files, 0, "{mode:?}");
+        assert_eq!(outcome.failed_files, 1, "{mode:?}");
+    }
+}
+
+#[test]
+fn case_only_name_collisions_in_the_selection_are_reviewed_like_the_destination_compares() {
+    let f = fixture("case-collision");
+    for (dir, name, bytes) in [("a", "IMG.JPG", b"first".as_slice()), ("b", "img.jpg", b"second".as_slice())] {
+        std::fs::create_dir_all(f.root.join(dir)).unwrap();
+        std::fs::write(f.root.join(dir).join(name), bytes).unwrap();
+    }
+    scan(&f);
+    let dest = f._dir.path().join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    let items = vec![item_named(&f, "IMG.JPG"), item_named(&f, "img.jpg")];
+    let folds_case = DestinationNames::for_directory(&dest).folds_case();
+
+    let review = move_batch(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        &items,
+        &dest,
+        MoveOutMode::CopyKeepAll,
+        &|| false,
+        |_| {},
+    )
+    .unwrap();
+
+    if !folds_case {
+        assert!(!review.requires_conflict_choice);
+        assert_eq!(review.exported, 2);
+        return;
+    }
+    assert!(review.requires_conflict_choice, "the collision is presented before any work");
+    assert!(!review.overwrite_allowed);
+    assert!(review.reviewed_conflicts.iter().all(|conflict| conflict.within_selection));
+    assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0);
+
+    let outcome = move_batch_reviewed(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        &items,
+        &AcceptedFiles::capture(&f.conn, &items).unwrap(),
+        &dest,
+        MoveOutMode::CopyKeepAll,
+        Some(DestinationConflictPolicy::Rename),
+        review.plan_token.as_deref(),
+        DestinationRenameStyle::SpaceNumber,
+        &|| false,
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(outcome.error, None);
+    assert_eq!(outcome.exported, 2);
+    assert_eq!(std::fs::read(dest.join("IMG.JPG")).unwrap(), b"first");
+    assert_eq!(std::fs::read(dest.join("img 2.jpg")).unwrap(), b"second");
+}
+
+#[test]
+fn a_name_the_destination_refuses_fails_only_that_file_and_long_names_still_stage() {
+    let f = fixture("long-names");
+    // A 255-byte name fits the destination; its private name must too.
+    let long = format!("{}.jpg", "x".repeat(251));
+    std::fs::write(f.root.join(&long), b"long-name").unwrap();
+    std::fs::write(f.root.join("short.jpg"), b"short-name").unwrap();
+    scan(&f);
+    let dest = f._dir.path().join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    let items = vec![item_named(&f, &long), item_named(&f, "short.jpg")];
+
+    let copied = move_batch(
+        &f.conn, &f.app_root, &f.cache, &items, &dest,
+        MoveOutMode::CopyKeepAll, &|| false, |_| {},
+    )
+    .unwrap();
+    assert_eq!(copied.error, None);
+    assert_eq!(copied.exported, 2);
+
+    // Renaming the long name past the filesystem limit fails only it. The
+    // copy settled each item's identity, so name them again.
+    let items = vec![item_named(&f, &long), item_named(&f, "short.jpg")];
+    std::fs::write(dest.join(&long), b"occupied").unwrap();
+    std::fs::remove_file(dest.join("short.jpg")).unwrap();
+    let review = move_batch(
+        &f.conn, &f.app_root, &f.cache, &items, &dest,
+        MoveOutMode::CopyKeepAll, &|| false, |_| {},
+    )
+    .unwrap();
+    assert!(review.requires_conflict_choice, "{review:?}");
+    let outcome = move_batch_reviewed(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        &items,
+        &AcceptedFiles::capture(&f.conn, &items).unwrap(),
+        &dest,
+        MoveOutMode::CopyKeepAll,
+        Some(DestinationConflictPolicy::Rename),
+        review.plan_token.as_deref(),
+        DestinationRenameStyle::SpaceNumber,
+        &|| false,
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(outcome.error, None);
+    assert_eq!(outcome.undelivered.len(), 1);
+    assert_eq!(outcome.exported, 1);
+    assert_eq!(std::fs::read(dest.join("short.jpg")).unwrap(), b"short-name");
+    assert_eq!(std::fs::read(dest.join(&long)).unwrap(), b"occupied");
+    assert!(private_leftovers(&dest).is_empty(), "{:?}", private_leftovers(&dest));
+}
+
+#[cfg(unix)]
+#[test]
+fn overwrite_displaces_nothing_until_the_complete_replacement_is_prepared() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let f = fixture("overwrite-incomplete");
+    std::fs::write(f.root.join("x.jpg"), b"new-primary").unwrap();
+    std::fs::write(f.root.join("x.xmp"), b"new-sidecar").unwrap();
+    scan(&f);
+    let dest = f._dir.path().join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    std::fs::write(dest.join("x.jpg"), b"old-primary").unwrap();
+    std::fs::write(dest.join("x.xmp"), b"old-sidecar").unwrap();
+    let item = item_named(&f, "x.jpg");
+    let review = move_batch(
+        &f.conn, &f.app_root, &f.cache, std::slice::from_ref(&item), &dest,
+        MoveOutMode::MoveTrashRest, &|| false, |_| {},
+    )
+    .unwrap();
+    assert!(review.overwrite_allowed);
+    // The incoming sidecar cannot be read when the operation runs.
+    std::fs::set_permissions(f.root.join("x.xmp"), std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let outcome = move_batch_reviewed(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        std::slice::from_ref(&item),
+        &AcceptedFiles::capture(&f.conn, std::slice::from_ref(&item)).unwrap(),
+        &dest,
+        MoveOutMode::MoveTrashRest,
+        Some(DestinationConflictPolicy::Overwrite),
+        review.plan_token.as_deref(),
+        DestinationRenameStyle::SpaceNumber,
+        &|| false,
+        |_| {},
+    )
+    .unwrap();
+    std::fs::set_permissions(f.root.join("x.xmp"), std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert_eq!(outcome.error, None);
+    assert_eq!(outcome.trashed_destination_files, 0);
+    assert_eq!(outcome.exported, 0);
+    assert_eq!(std::fs::read(dest.join("x.jpg")).unwrap(), b"old-primary");
+    assert_eq!(std::fs::read(dest.join("x.xmp")).unwrap(), b"old-sidecar");
+    assert!(f.root.join("x.jpg").exists());
+    assert!(f.root.join("x.xmp").exists());
+    assert!(private_leftovers(&dest).is_empty(), "{:?}", private_leftovers(&dest));
 }

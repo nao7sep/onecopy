@@ -536,3 +536,47 @@ fn empty_removes_nothing_when_the_location_changed_after_its_totals_were_confirm
     assert!(!outcome.plan_changed);
     assert_eq!(overview(std::slice::from_ref(&source)).remove(0).files, 0);
 }
+
+#[cfg(unix)]
+#[test]
+fn a_root_configured_through_a_symlink_keeps_recoverable_deletion() {
+    let f = fixture("symlinked-root");
+    let link = f._dir.path().join("photos-link");
+    std::os::unix::fs::symlink(&f.source, &link).unwrap();
+    // The index records files under the root's resolved spelling.
+    let resolved = std::fs::canonicalize(&f.source).unwrap();
+    let file = resolved.join("a.jpg");
+    std::fs::write(&file, b"bytes").unwrap();
+
+    assert_eq!(root_for_file(&file, std::slice::from_ref(&link)).unwrap(), link);
+    assert_eq!(
+        root_for_file(&resolved.join("gone.jpg"), std::slice::from_ref(&link)).unwrap(),
+        link,
+        "a missing file under the resolved spelling keeps its configured owner"
+    );
+    let record = trash_file(&file, &link, None).unwrap();
+
+    assert!(!file.exists());
+    assert_eq!(std::fs::read(&record.stored_path).unwrap(), b"bytes");
+    assert!(f.source.join(TRASH_DIR_NAME).is_dir());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_deleted_files_folder_that_is_not_a_real_directory_is_never_used() {
+    let f = fixture("symlinked-trash");
+    let elsewhere = f._dir.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, f.source.join(TRASH_DIR_NAME)).unwrap();
+    let file = f.source.join("a.jpg");
+    std::fs::write(&file, b"bytes").unwrap();
+
+    assert!(trash_file(&file, &f.source, None).is_err());
+    assert_eq!(std::fs::read(&file).unwrap(), b"bytes");
+    assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+
+    std::fs::remove_file(f.source.join(TRASH_DIR_NAME)).unwrap();
+    std::fs::write(f.source.join(TRASH_DIR_NAME), b"a file").unwrap();
+    assert!(trash_file(&file, &f.source, None).is_err());
+    assert_eq!(std::fs::read(&file).unwrap(), b"bytes");
+}
