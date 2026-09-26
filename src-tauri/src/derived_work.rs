@@ -478,7 +478,7 @@ pub fn start(app: AppHandle) -> Result<bool, String> {
 /// Owns each requested transcription thread beside the automatic coordinator
 /// so final shutdown closes their shared admission and joins both populations
 /// through one derived-media lifecycle.
-pub fn spawn_manual_transcription(work: impl FnOnce() + Send + 'static) -> Result<(), String> {
+fn spawn_manual_transcription(work: impl FnOnce() + Send + 'static) -> Result<(), String> {
     let mut workers = WORKERS
         .lock()
         .map_err(|_| "derived-media worker state is unavailable".to_string())?;
@@ -1922,11 +1922,11 @@ fn finish_transcription_attempt(
     }
 }
 
-/// Complete one production transcription attempt. Manual and automatic callers
-/// retain their different admission, priority, preemption, and UI-event
-/// responsibilities; this operation owns the common identity, cache reuse,
-/// dependency, engine claim, generation, durable-result, and terminal-
-/// classification boundary.
+/// Complete one production transcription attempt. Requested and automatic
+/// runs keep their own admission, priority, and preemption; this operation
+/// owns the common identity, cache reuse, dependency, engine claim,
+/// generation, durable-result, and terminal-classification boundary, and
+/// [`run_transcription`] publishes its events for both.
 pub fn complete_transcription_attempt(
     mut attempt: TranscriptionAttempt<'_>,
     mut on_identity: impl FnMut(&str),
