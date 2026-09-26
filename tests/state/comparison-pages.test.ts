@@ -129,6 +129,25 @@ describe("page-local decisions", () => {
     ).toEqual(["h4", "h5", "h6", "h7"]);
   });
 
+  // image-comparison.md: "With marks, Enter... opens an exact-count review
+  // before requesting recoverable deletion of every other image on the
+  // current visible page" — always, even when only one image is targeted (it
+  // is never skipped the way a single-item Delete elsewhere can be).
+  it("still reviews a single-image visible complement, never skipping straight to deletion", async () => {
+    useComparisonStore.getState().selectSlot(0, "toggle");
+    useComparisonStore.getState().selectSlot(1, "toggle");
+    useComparisonStore.getState().selectSlot(2, "toggle");
+
+    const result = await useComparisonStore.getState().requestPageDecision(false);
+
+    expect(result).toBeNull();
+    expect(useComparisonStore.getState().pendingAction).toMatchObject({
+      keepHashes: ["h0", "h1", "h2"],
+      targetHashes: ["h3"],
+    });
+    expect(invokeCalls.some((call) => call.command === "delete_items")).toBe(false);
+  });
+
   it("completes an all-selected page without a filesystem operation", async () => {
     useComparisonStore.getState().markAll();
     const result = await useComparisonStore
