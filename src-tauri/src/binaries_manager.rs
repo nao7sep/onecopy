@@ -809,6 +809,16 @@ fn install_ffmpeg_started(
         Some(InstallPhase::Download),
     ));
     let resolved = acquisition::resolve_latest(&guard.cancelled, &guard.deadline)?;
+    // The digest belongs to the build just resolved. A rolling release can be
+    // republished at any moment, so fetching it after a long download could
+    // pair these bytes with another build's digest and fail spuriously, or
+    // record the older build's name for newer bytes.
+    guard.deadline.check(&guard.cancelled)?;
+    let expected = binaries::parse_sums(
+        &acquisition::fetch_text(&resolved.sums_url, &guard.cancelled, &guard.deadline)?,
+        &resolved.sums_asset,
+    )
+    .ok_or_else(|| format!("{} not in the checksum file", resolved.sums_asset))?;
     on_progress(InstallProgress::fixed(
         InstallPhase::Resolve,
         1,
@@ -835,12 +845,6 @@ fn install_ffmpeg_started(
                 ));
             },
         )?;
-        guard.deadline.check(&guard.cancelled)?;
-        let expected = binaries::parse_sums(
-            &acquisition::fetch_text(&resolved.sums_url, &guard.cancelled, &guard.deadline)?,
-            &resolved.sums_asset,
-        )
-        .ok_or_else(|| format!("{} not in the checksum file", resolved.sums_asset))?;
         guard.deadline.check(&guard.cancelled)?;
         let actual = acquisition::file_sha256(
             &partial,
