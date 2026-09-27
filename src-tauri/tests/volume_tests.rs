@@ -89,3 +89,18 @@ fn enforce_no_substitution_fails_closed_when_the_record_cannot_be_read() {
     let result = enforce_no_substitution(app_data.path(), &[dir_str]);
     assert!(result.is_err(), "an unreadable record must refuse admission, not pass it open");
 }
+
+// A directory with a recorded identity that can no longer be read (a
+// different volume without one at the same path, or a failed probe) keeps the
+// gate closed. `/dev` is a directory on a filesystem `diskutil` cannot
+// identify.
+#[cfg(target_os = "macos")]
+#[test]
+fn enforce_no_substitution_fails_closed_when_a_recorded_volume_cannot_be_identified() {
+    let app_data = tempfile::tempdir().unwrap();
+    assert_eq!(volume_identity(std::path::Path::new("/dev")), None);
+    check_identity(app_data.path(), "/dev", "recorded-volume-identity").unwrap();
+
+    let result = enforce_no_substitution(app_data.path(), &["/dev".to_string()]);
+    assert!(result.is_err(), "an unreadable current identity must refuse admission");
+}

@@ -194,9 +194,9 @@ pub fn check_identity(root: &Path, dir: &str, current: &str) -> Result<IdentityC
 /// read failure keeps the gate CLOSED rather than reading as "nothing
 /// recorded" (R3-07) — the opposite of `verify_source_dirs`'s own frontend
 /// status, which must still answer something for every directory even when
-/// this fails. A directory that is absent, or whose filesystem has no stable
-/// identity to read, is not this gate's concern and is skipped, exactly as
-/// `check_identity`'s callers already treat that case.
+/// this fails. A directory that is absent, or that has no recorded identity
+/// because its filesystem had none to read, is not this gate's concern and is
+/// skipped.
 pub fn enforce_no_substitution(data_root: &Path, dirs: &[String]) -> Result<(), String> {
     let _guard = store_lock();
     let recorded = load_unlocked(data_root)?;
@@ -210,8 +210,14 @@ pub fn enforce_no_substitution(data_root: &Path, dirs: &[String]) -> Result<(), 
         };
         let root = crate::trash::volume_root_of(path)
             .map_err(|error| format!("could not verify the volume for {dir}: {error}"))?;
+        // A filesystem without a stable identity is never recorded, so a
+        // recorded directory whose identity cannot be read now is either a
+        // different volume without one or a check that failed: neither is
+        // verified-safe.
         let Some(current) = platform_identity(&root) else {
-            continue;
+            return Err(format!(
+                "could not verify the volume for {dir}; recheck source folders before continuing"
+            ));
         };
         if current != known.identity {
             return Err(format!(
