@@ -73,6 +73,7 @@ pub mod trash;
 pub mod video;
 pub mod viewer_sequence;
 pub mod volume;
+pub mod volume_io;
 pub mod watcher;
 pub mod winpath;
 pub mod window_placement;

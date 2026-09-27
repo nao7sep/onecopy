@@ -32,3 +32,5 @@ mod volume_tests;
 mod window_placement_tests;
 #[path = "../winpath_tests.rs"]
 mod winpath_tests;
+#[path = "../volume_io_tests.rs"]
+mod volume_io_tests;
