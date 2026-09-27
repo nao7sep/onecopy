@@ -132,6 +132,11 @@ whisper-rs = "0.16.0"
 ndarray = "0.17.2"
 encoding_rs = "0.8.35"
 chardetng = "1.0.0"
+# APFS and HFS+ normalize filenames (to a variant close to NFD) when
+# comparing and storing them, so destination name comparison on macOS must
+# do the same or an NFC/NFD pair looks like two different names at planning
+# and one name at publication.
+unicode-normalization = "0.1.25"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [

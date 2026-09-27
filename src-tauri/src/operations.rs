@@ -16,6 +16,7 @@ use std::path::Path;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use unicode_normalization::UnicodeNormalization;
 
 use crate::logging;
 use crate::preview::{self, CachePaths};
@@ -1224,16 +1225,21 @@ pub fn admit_destination(
 
 /// How the destination filesystem compares names. Case-insensitive volumes
 /// (the default on macOS and Windows) treat names differing only by case as
-/// one entry, so planning, conflict review and renames must too.
+/// one entry, so planning, conflict review and renames must too. APFS and
+/// HFS+ (macOS) additionally normalize names on the way to disk, so a name
+/// that differs only in Unicode normalization form (NFC vs. NFD) is also one
+/// entry there, case sensitivity aside; NTFS, exFAT and FAT do not normalize.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DestinationNames {
     fold_case: bool,
+    normalize_unicode: bool,
 }
 
 impl DestinationNames {
     pub fn for_directory(directory: &Path) -> Self {
         Self {
             fold_case: !directory_is_case_sensitive(directory),
+            normalize_unicode: cfg!(target_os = "macos"),
         }
     }
 
@@ -1243,11 +1249,17 @@ impl DestinationNames {
 
     /// The key under which the destination filesystem identifies `path`.
     fn key(self, path: &Path) -> std::ffi::OsString {
-        if self.fold_case {
-            path.to_string_lossy().to_lowercase().into()
-        } else {
-            path.as_os_str().to_owned()
+        if !self.fold_case && !self.normalize_unicode {
+            return path.as_os_str().to_owned();
         }
+        let mut text = path.to_string_lossy().into_owned();
+        if self.normalize_unicode {
+            text = text.nfc().collect();
+        }
+        if self.fold_case {
+            text = text.to_lowercase();
+        }
+        text.into()
     }
 
     fn same(self, left: &Path, right: &Path) -> bool {

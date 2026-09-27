@@ -2027,6 +2027,65 @@ fn case_only_name_collisions_in_the_selection_are_reviewed_like_the_destination_
 }
 
 #[test]
+#[cfg(target_os = "macos")]
+fn nfc_nfd_name_collisions_are_reviewed_like_the_destination_compares() {
+    // APFS and HFS+ normalize names on the way to disk, so an NFC-composed
+    // name and its NFD-decomposed equivalent are the same destination entry,
+    // even on a case-sensitive volume. This pair must be caught at planning,
+    // not left to fail when publication discovers the destination already
+    // holds the other spelling.
+    let nfc_name = "caf\u{00e9}.jpg"; // "café", é as U+00E9
+    let nfd_name = "cafe\u{0301}.jpg"; // "café", e + combining acute U+0301
+    let f = fixture("nfc-nfd-collision");
+    for (dir, name, bytes) in [
+        ("a", nfc_name, b"first".as_slice()),
+        ("b", nfd_name, b"second".as_slice()),
+    ] {
+        std::fs::create_dir_all(f.root.join(dir)).unwrap();
+        std::fs::write(f.root.join(dir).join(name), bytes).unwrap();
+    }
+    scan(&f);
+    let dest = f._dir.path().join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    let items = vec![item_named(&f, nfc_name), item_named(&f, nfd_name)];
+
+    let review = move_batch(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        &items,
+        &dest,
+        MoveOutMode::CopyKeepAll,
+        &|| false,
+        |_| {},
+    )
+    .unwrap();
+
+    assert!(review.requires_conflict_choice, "the collision is presented before any work");
+    assert!(!review.overwrite_allowed);
+    assert!(review.reviewed_conflicts.iter().all(|conflict| conflict.within_selection));
+    assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0);
+
+    let outcome = move_batch_reviewed(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        &items,
+        &AcceptedFiles::capture(&f.conn, &items).unwrap(),
+        &dest,
+        MoveOutMode::CopyKeepAll,
+        Some(DestinationConflictPolicy::Rename),
+        review.plan_token.as_deref(),
+        DestinationRenameStyle::SpaceNumber,
+        &|| false,
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(outcome.error, None);
+    assert_eq!(outcome.exported, 2);
+}
+
+#[test]
 fn a_name_the_destination_refuses_fails_only_that_file_and_long_names_still_stage() {
     let f = fixture("long-names");
     // A 255-byte name fits the destination; its private name must too.
