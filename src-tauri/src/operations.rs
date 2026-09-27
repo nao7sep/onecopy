@@ -2127,6 +2127,10 @@ fn execute_move_unit(
                     .post_action
                     .removed_rows
                     .saturating_add(cleanup.removed_rows);
+                outcome.post_action.unknown_files = outcome
+                    .post_action
+                    .unknown_files
+                    .saturating_add(cleanup.unknown_files);
             }
         }
         if !outcome.conflicts.is_empty() {

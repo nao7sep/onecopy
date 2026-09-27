@@ -2585,3 +2585,37 @@ fn a_stalled_source_volume_does_not_stop_deletes_on_a_healthy_one() {
     assert!(volume.wait_until_settled(SETTLE));
     assert!(stalled_root.join("away.jpg").exists());
 }
+
+#[test]
+fn a_move_whose_source_cleanup_is_given_up_on_reports_it_as_outcome_unknown() {
+    let f = fixture("cleanup-unknown");
+    std::fs::write(f.root.join("photo.jpg"), b"image-bytes").unwrap();
+    scan(&f);
+    let dest = f._dir.path().join("destination");
+    std::fs::create_dir(&dest).unwrap();
+    let volume = FakeStallingVolume::mount(&f.root, STALL_BOUND);
+    // The source's move into Deleted files is the only rename on the source.
+    volume.stall(&[Op::Rename], None);
+
+    let outcome = move_batch(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        &[item_named(&f, "photo.jpg")],
+        &dest,
+        MoveOutMode::MoveTrashRest,
+        &|| false,
+        |_| {},
+    )
+    .unwrap();
+
+    assert_eq!(outcome.exported, 1);
+    assert_eq!(outcome.post_action.deleted_files, 0);
+    assert_eq!(outcome.post_action.unknown_files, 1);
+    assert_eq!(
+        open_issue_kinds(&f, &f.root.join("photo.jpg")),
+        vec![DELETE_OUTCOME_UNKNOWN]
+    );
+    volume.release();
+    assert!(volume.wait_until_settled(SETTLE));
+}
