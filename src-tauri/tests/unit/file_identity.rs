@@ -82,3 +82,36 @@ fn this_installations_dead_pid_file_is_swept() {
         "a different installation's dead-pid-looking file is never treated as this one's"
     );
 }
+
+#[test]
+fn sweep_removes_only_this_installations_dead_leftover() {
+    // The mechanism `sweep_private_tmp_leftovers` delegates to, exercised
+    // with a proven fingerprint injected directly: a real process-global
+    // settled data root cannot be set up per case in one test binary (see the
+    // `#[cfg(test)]` exception above `mod tests` in `src/file_identity.rs`),
+    // so this is where "the dead leftover is actually removed from disk" is
+    // proven, matching what a destination-folder sweep does once this
+    // process's identity is settled. `operations_tests.rs`'s
+    // `an_operation_sweeps_only_its_own_dead_leftover_from_the_destination_folder`
+    // proves the complementary, always-true-in-that-process half: an
+    // unsettled process sweeps nothing, not even its own dead-pid-looking
+    // leftover.
+    let dir = tempfile::tempdir().unwrap();
+    let fingerprint = "a".repeat(HOME_FINGERPRINT_HEX_LEN);
+    let dead_pid = exited_pid();
+    let dead = dir.path().join(owner_name(&fingerprint, dead_pid));
+    let live = dir.path().join(owner_name(&fingerprint, std::process::id()));
+    let other_fingerprint = "b".repeat(HOME_FINGERPRINT_HEX_LEN);
+    let foreign = dir.path().join(owner_name(&other_fingerprint, dead_pid));
+    let ordinary = dir.path().join("photo.jpg");
+    for path in [&dead, &live, &foreign, &ordinary] {
+        std::fs::write(path, b"leftover").unwrap();
+    }
+
+    sweep_private_tmp_leftovers_against(dir.path(), Some(&fingerprint));
+
+    assert!(!dead.exists(), "this installation's dead-process leftover is swept");
+    assert!(live.exists(), "a live process's own file is never removed");
+    assert!(foreign.exists(), "a different installation's file is never removed");
+    assert!(ordinary.exists(), "ordinary content is never touched");
+}

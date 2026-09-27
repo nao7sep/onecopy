@@ -464,6 +464,16 @@ fn is_abandoned_leftover_against(path: &Path, current_fingerprint: Option<&str>)
 /// roots the same way through `is_abandoned_leftover`. Best-effort and
 /// shallow: a read failure here never stops the operation that called it.
 pub fn sweep_private_tmp_leftovers(dir: &Path) {
+    sweep_private_tmp_leftovers_against(dir, this_application_home_fingerprint());
+}
+
+/// The mechanism behind `sweep_private_tmp_leftovers`, taking the current
+/// process's fingerprint explicitly for the same reason
+/// `is_abandoned_leftover_against` does: exercising the "this home's dead
+/// leftover is actually removed" outcome needs a proven fingerprint, which a
+/// single test binary's one process-global settled data root cannot supply
+/// per case.
+fn sweep_private_tmp_leftovers_against(dir: &Path, current_fingerprint: Option<&str>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(_) => return,
@@ -472,7 +482,7 @@ pub fn sweep_private_tmp_leftovers(dir: &Path) {
         let path = entry.path();
         if entry.file_type().is_ok_and(|file_type| file_type.is_file())
             && is_private_tmp_name(&path)
-            && is_abandoned_leftover(&path)
+            && is_abandoned_leftover_against(&path, current_fingerprint)
         {
             crate::fs_recovery::remove_file(&path, "private staging leftover cleanup");
         }

@@ -2329,14 +2329,27 @@ fn exited_pid() -> u32 {
 }
 
 #[test]
-fn an_operation_sweeps_only_its_own_dead_leftover_from_the_destination_folder() {
+fn an_unsettled_operation_sweeps_nothing_from_the_destination_folder() {
     // Ordinary Copy/Move staging lands flat in the destination folder, which
     // the library's source walk never visits (it is outside every configured
     // source). `move_batch` is therefore the one place a crash's leftover
-    // staging there ever gets cleaned up. This proves it sweeps only what it
-    // can prove is this application home's own now-dead leftover, never a
-    // live process's file or a different application home's file sharing
-    // the same destination folder.
+    // staging there ever gets cleaned up — but only once this process's own
+    // application-home identity is proven (a settled data root with a
+    // readable installation id; `file_identity::is_abandoned_leftover`).
+    // This test binary never settles `paths::data_root` (like
+    // `scanner_tests.rs` and `file_identity_tests.rs`, deliberately: it is
+    // one process-global OnceLock shared by every test in the binary, so no
+    // single test can settle it without racing every other one), so this
+    // process has no proven fingerprint and sweeps nothing here, not even a
+    // leftover that carries its own (unsettled-placeholder) home tag and a
+    // dead pid. What this proves at the operation level is that `move_batch`
+    // never removes a live process's file or a different application home's
+    // file sharing the same destination folder, and that its own dead-pid-
+    // looking leftover survives too while unproven. The complementary,
+    // settled-home half — that such a leftover actually gets removed once
+    // proven — is exercised directly, with an injected fingerprint, by
+    // `sweep_removes_only_this_installations_dead_leftover` in
+    // `tests/unit/file_identity.rs`.
     let f = fixture("destination-sweep");
     std::fs::write(f.root.join("keep.jpg"), b"bytes").unwrap();
     scan(&f);
@@ -2366,12 +2379,17 @@ fn an_operation_sweeps_only_its_own_dead_leftover_from_the_destination_folder() 
 
     assert_eq!(outcome.error, None);
     assert_eq!(outcome.exported, 1);
-    assert!(!dead.exists(), "this home's dead-process leftover is swept before writing");
+    assert!(
+        dead.exists(),
+        "an unsettled process has no proven identity, so even its own dead-pid-looking leftover survives"
+    );
     assert!(live.exists(), "a live process's own file is never removed");
     assert!(foreign.exists(), "a different application home's file is never removed");
     let remaining = private_leftovers(&dest);
-    assert!(
-        remaining.iter().any(|name| name == live.file_name().unwrap().to_str().unwrap()),
-        "expected the live leftover to remain: {remaining:?}"
-    );
+    for path in [&dead, &live, &foreign] {
+        assert!(
+            remaining.iter().any(|name| name == path.file_name().unwrap().to_str().unwrap()),
+            "expected {path:?} to remain: {remaining:?}"
+        );
+    }
 }
