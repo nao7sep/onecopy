@@ -728,16 +728,7 @@ pub(crate) fn move_items_out(
             };
             publisher.progress(&last_progress);
             let config = crate::storage::read_config_for_setup(&data_root)?;
-            let rename_style = match config
-                .as_ref()
-                .and_then(|value| value.get("destinationConflictRenameStyle"))
-                .and_then(serde_json::Value::as_str)
-            {
-                Some("parenthesized-number") => {
-                    crate::operations::DestinationRenameStyle::ParenthesizedNumber
-                }
-                _ => crate::operations::DestinationRenameStyle::SpaceNumber,
-            };
+            let rename_style = crate::file_names::RenameStyle::from_config(config.as_ref());
             // Destination admission belongs to the operation itself.
             let destination = std::path::Path::new(&dest_dir);
             let cache =

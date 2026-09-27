@@ -16,8 +16,8 @@ use std::path::Path;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use unicode_normalization::UnicodeNormalization;
 
+use crate::file_names::{self, FolderNames, RenameStyle};
 use crate::logging;
 use crate::preview::{self, CachePaths};
 use crate::trash;
@@ -740,13 +740,6 @@ pub enum DestinationConflictPolicy {
     Overwrite,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum DestinationRenameStyle {
-    SpaceNumber,
-    ParenthesizedNumber,
-}
-
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DestinationConflict {
@@ -978,7 +971,7 @@ pub fn move_batch(
         mode,
         None,
         None,
-        DestinationRenameStyle::SpaceNumber,
+        RenameStyle::SpaceNumber,
         cancelled,
         on_progress,
     )
@@ -998,7 +991,7 @@ pub fn move_batch_reviewed(
     mode: MoveOutMode,
     conflict_policy: Option<DestinationConflictPolicy>,
     expected_plan_token: Option<&str>,
-    rename_style: DestinationRenameStyle,
+    rename_style: RenameStyle,
     cancelled: &dyn Fn() -> bool,
     mut on_progress: impl FnMut(MoveBatchProgress),
 ) -> Result<MoveBatchOutcome, String> {
@@ -1012,7 +1005,7 @@ pub fn move_batch_reviewed(
     crate::file_identity::sweep_private_tmp_leftovers(dest_dir);
     let roots = configured.all();
     let operation = crate::nanoid::generate()?;
-    let names = DestinationNames::for_directory(dest_dir);
+    let names = FolderNames::for_directory(dest_dir);
     let mut seen = HashSet::new();
     let mut ordered = Vec::new();
     for item in items {
@@ -1347,76 +1340,6 @@ pub fn admit_destination(
     Ok(destination_root.clone())
 }
 
-/// How the destination filesystem compares names. Case-insensitive volumes
-/// (the default on macOS and Windows) treat names differing only by case as
-/// one entry, so planning, conflict review and renames must too. APFS and
-/// HFS+ (macOS) additionally normalize names on the way to disk, so a name
-/// that differs only in Unicode normalization form (NFC vs. NFD) is also one
-/// entry there, case sensitivity aside; NTFS, exFAT and FAT do not normalize.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DestinationNames {
-    fold_case: bool,
-    normalize_unicode: bool,
-}
-
-impl DestinationNames {
-    pub fn for_directory(directory: &Path) -> Self {
-        Self {
-            fold_case: !directory_is_case_sensitive(directory),
-            normalize_unicode: cfg!(target_os = "macos"),
-        }
-    }
-
-    pub fn folds_case(self) -> bool {
-        self.fold_case
-    }
-
-    /// The key under which the destination filesystem identifies `path`.
-    fn key(self, path: &Path) -> std::ffi::OsString {
-        if !self.fold_case && !self.normalize_unicode {
-            return path.as_os_str().to_owned();
-        }
-        let mut text = path.to_string_lossy().into_owned();
-        if self.normalize_unicode {
-            text = text.nfc().collect();
-        }
-        if self.fold_case {
-            text = text.to_lowercase();
-        }
-        text.into()
-    }
-
-    fn same(self, left: &Path, right: &Path) -> bool {
-        self.key(left) == self.key(right)
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn directory_is_case_sensitive(directory: &Path) -> bool {
-    use std::os::unix::ffi::OsStrExt;
-    let Ok(path) = std::ffi::CString::new(directory.as_os_str().as_bytes()) else {
-        return false;
-    };
-    // An unanswerable query (a volume not responding included) reads as
-    // case-insensitive, which only ever presents more names as conflicts,
-    // never fewer.
-    volume_io::call(directory, volume_io::Op::Stat, None, move || {
-        // SAFETY: `path` is an owned NUL-terminated buffer alive for the call.
-        Ok(unsafe { libc::pathconf(path.as_ptr(), libc::_PC_CASE_SENSITIVE) == 1 }) // volume_io worker
-    })
-    .unwrap_or(false)
-}
-
-#[cfg(windows)]
-fn directory_is_case_sensitive(_directory: &Path) -> bool {
-    false
-}
-
-#[cfg(not(any(target_os = "macos", windows)))]
-fn directory_is_case_sensitive(_directory: &Path) -> bool {
-    true
-}
-
 fn move_plan_token(plan: &MovePlan, mode: MoveOutMode, review: &DestinationReview) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(mode.as_str().as_bytes());
@@ -1465,7 +1388,7 @@ fn move_plan_token(plan: &MovePlan, mode: MoveOutMode, review: &DestinationRevie
 
 fn review_destination_conflicts(
     plan: &mut MovePlan,
-    names: DestinationNames,
+    names: FolderNames,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<DestinationReview, String> {
     let mut review = DestinationReview::default();
@@ -1541,7 +1464,7 @@ fn observe_destination(
         // A name the destination cannot hold holds nothing; publishing it
         // later fails as that one file.
         Err(error)
-            if error.kind() == std::io::ErrorKind::NotFound || is_name_error(&error) =>
+            if error.kind() == std::io::ErrorKind::NotFound || file_names::is_name_error(&error) =>
         {
             return Ok(DestinationObservation::Absent)
         }
@@ -1600,7 +1523,7 @@ fn delivery_matches_hash(
 fn reviewed_replacement_family(
     target: &Path,
     include_companions: bool,
-    names: DestinationNames,
+    names: FolderNames,
     target_bytes: u64,
     target_hash: String,
     cancelled: &dyn Fn() -> bool,
@@ -1664,8 +1587,8 @@ fn reviewed_replacement_family(
 
 fn apply_conflict_renames(
     plan: &mut MovePlan,
-    style: DestinationRenameStyle,
-    names: DestinationNames,
+    style: RenameStyle,
+    names: FolderNames,
 ) -> Result<(), String> {
     let needs_rename = plan
         .units
@@ -1694,7 +1617,7 @@ fn apply_conflict_renames(
             let candidates = unit
                 .deliveries
                 .iter()
-                .map(|delivery| renamed_target(&delivery.target, number, style))
+                .map(|delivery| file_names::renamed(&delivery.target, number, style))
                 .collect::<Option<Vec<_>>>()?;
             // A name the destination cannot hold (too long, invalid there)
             // is not occupied: it is planned and then fails at publication as
@@ -1703,7 +1626,7 @@ fn apply_conflict_renames(
                 !reserved.contains(&names.key(candidate))
                     && volume_io::symlink_metadata(candidate)
                         .is_err_and(|error| {
-                            error.kind() == std::io::ErrorKind::NotFound || is_name_error(&error)
+                            error.kind() == std::io::ErrorKind::NotFound || file_names::is_name_error(&error)
                         })
             });
             available.then_some(candidates)
@@ -1721,46 +1644,13 @@ fn apply_conflict_renames(
     Ok(())
 }
 
-/// Whether the filesystem refused a name itself rather than the storage.
-fn is_name_error(error: &std::io::Error) -> bool {
-    if error.kind() == std::io::ErrorKind::InvalidFilename {
-        return true;
-    }
-    #[cfg(unix)]
-    {
-        error.raw_os_error() == Some(libc::EILSEQ)
-    }
-    #[cfg(not(unix))]
-    {
-        false
-    }
-}
-
-fn renamed_target(
-    target: &Path,
-    number: u32,
-    style: DestinationRenameStyle,
-) -> Option<std::path::PathBuf> {
-    let stem = target.file_stem()?.to_str()?;
-    let suffix = match style {
-        DestinationRenameStyle::SpaceNumber => format!(" {number}"),
-        DestinationRenameStyle::ParenthesizedNumber => format!(" ({number})"),
-    };
-    let mut name = format!("{stem}{suffix}");
-    if let Some(extension) = target.extension().and_then(|value| value.to_str()) {
-        name.push('.');
-        name.push_str(extension);
-    }
-    Some(target.with_file_name(name))
-}
-
 fn collect_move_unit(
     conn: &Connection,
     item: ItemIdentity,
     dest_dir: &Path,
     roots: &[std::path::PathBuf],
     accepted: &AcceptedFiles,
-    names: DestinationNames,
+    names: FolderNames,
 ) -> Result<MoveUnit, String> {
     let (mut primary_rows, mut companion_rows): (Vec<_>, Vec<_>) = match item.item_ref()? {
         ItemRef::Hash(hash) => (

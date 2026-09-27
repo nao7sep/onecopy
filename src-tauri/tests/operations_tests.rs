@@ -3,6 +3,7 @@
 
 use onecopy_lib::extensions;
 use onecopy_lib::index_store;
+use onecopy_lib::file_names::{FolderNames, RenameStyle};
 use onecopy_lib::operations::*;
 use onecopy_lib::preview::CachePaths;
 use onecopy_lib::scanner::{self, ScanLists};
@@ -147,7 +148,7 @@ fn visibility_changes_before_conflict_acceptance_require_fresh_review() {
     std::fs::write(f.root.join("late.jpg"), b"same-image").unwrap();
     scan(&f);
     let result = move_batch_reviewed(&f.conn, &f.app_root, &f.cache, &items, &AcceptedFiles::capture(&f.conn, &items).unwrap(), &dest, MoveOutMode::MoveTrashRest,
-        Some(DestinationConflictPolicy::Overwrite), review.plan_token.as_deref(), DestinationRenameStyle::SpaceNumber, &|| false, |_| {}).unwrap();
+        Some(DestinationConflictPolicy::Overwrite), review.plan_token.as_deref(), RenameStyle::SpaceNumber, &|| false, |_| {}).unwrap();
     assert!(result.plan_changed);
     assert_eq!(std::fs::read(dest.join("photo.jpg")).unwrap(), b"old-image");
     assert!(!dest.join(".photo.jpg").exists());
@@ -724,7 +725,7 @@ fn destination_batch_preflights_internal_collisions_and_renames_the_complete_set
         MoveOutMode::CopyKeepAll,
         Some(DestinationConflictPolicy::Rename),
         Some(token),
-        DestinationRenameStyle::SpaceNumber,
+        RenameStyle::SpaceNumber,
         &|| false,
         |_| {},
     )
@@ -930,7 +931,7 @@ fn dot_store_copy_overwrite_then_move_verifies_existing_output_and_only_cleans_s
     let copied = move_batch_reviewed(&f.conn, &f.app_root, &f.cache, selection,
         &AcceptedFiles::capture(&f.conn, selection).unwrap(), &dest,
         MoveOutMode::CopyKeepAll, Some(DestinationConflictPolicy::Overwrite), review.plan_token.as_deref(),
-        DestinationRenameStyle::SpaceNumber, &|| false, |_| {}).unwrap();
+        RenameStyle::SpaceNumber, &|| false, |_| {}).unwrap();
     assert_eq!(copied.exported, 1);
     assert_eq!(copied.trashed_destination_files, 1);
     assert_eq!(copied.post_action.deleted_files, 0);
@@ -996,7 +997,7 @@ fn conflicting_destination_waits_for_one_reviewed_policy_before_any_effect() {
         MoveOutMode::MoveTrashRest,
         Some(DestinationConflictPolicy::Rename),
         review.plan_token.as_deref(),
-        DestinationRenameStyle::ParenthesizedNumber,
+        RenameStyle::ParenthesizedNumber,
         &|| false,
         |_| {},
     )
@@ -1058,7 +1059,7 @@ fn overwrite_preserves_the_reviewed_destination_family_before_publication() {
         MoveOutMode::MoveTrashRest,
         Some(DestinationConflictPolicy::Overwrite),
         review.plan_token.as_deref(),
-        DestinationRenameStyle::SpaceNumber,
+        RenameStyle::SpaceNumber,
         &|| false,
         |_| {},
     )
@@ -1143,7 +1144,7 @@ fn changed_destination_review_refuses_overwrite_without_filesystem_effects() {
         MoveOutMode::MoveTrashRest,
         Some(DestinationConflictPolicy::Overwrite),
         review.plan_token.as_deref(),
-        DestinationRenameStyle::SpaceNumber,
+        RenameStyle::SpaceNumber,
         &|| false,
         |_| {},
     )
@@ -1297,7 +1298,7 @@ fn companion_conflict_renames_the_complete_output_family_consistently() {
         MoveOutMode::MoveTrashRest,
         Some(DestinationConflictPolicy::Rename),
         review.plan_token.as_deref(),
-        DestinationRenameStyle::SpaceNumber,
+        RenameStyle::SpaceNumber,
         &|| false,
         |_| {},
     )
@@ -1844,7 +1845,7 @@ fn copies_discovered_after_acceptance_never_join_a_confirmed_move() {
         MoveOutMode::MoveDeleteRest,
         None,
         None,
-        DestinationRenameStyle::SpaceNumber,
+        RenameStyle::SpaceNumber,
         &|| false,
         |_| {},
     )
@@ -2033,7 +2034,7 @@ fn case_only_name_collisions_in_the_selection_are_reviewed_like_the_destination_
     let dest = f._dir.path().join("dest");
     std::fs::create_dir_all(&dest).unwrap();
     let items = vec![item_named(&f, "IMG.JPG"), item_named(&f, "img.jpg")];
-    let folds_case = DestinationNames::for_directory(&dest).folds_case();
+    let folds_case = FolderNames::for_directory(&dest).folds_case();
 
     let review = move_batch(
         &f.conn,
@@ -2067,7 +2068,7 @@ fn case_only_name_collisions_in_the_selection_are_reviewed_like_the_destination_
         MoveOutMode::CopyKeepAll,
         Some(DestinationConflictPolicy::Rename),
         review.plan_token.as_deref(),
-        DestinationRenameStyle::SpaceNumber,
+        RenameStyle::SpaceNumber,
         &|| false,
         |_| {},
     )
@@ -2128,7 +2129,7 @@ fn nfc_nfd_name_collisions_are_reviewed_like_the_destination_compares() {
         MoveOutMode::CopyKeepAll,
         Some(DestinationConflictPolicy::Rename),
         review.plan_token.as_deref(),
-        DestinationRenameStyle::SpaceNumber,
+        RenameStyle::SpaceNumber,
         &|| false,
         |_| {},
     )
@@ -2178,7 +2179,7 @@ fn a_name_the_destination_refuses_fails_only_that_file_and_long_names_still_stag
         MoveOutMode::CopyKeepAll,
         Some(DestinationConflictPolicy::Rename),
         review.plan_token.as_deref(),
-        DestinationRenameStyle::SpaceNumber,
+        RenameStyle::SpaceNumber,
         &|| false,
         |_| {},
     )
@@ -2224,7 +2225,7 @@ fn overwrite_displaces_nothing_until_the_complete_replacement_is_prepared() {
         MoveOutMode::MoveTrashRest,
         Some(DestinationConflictPolicy::Overwrite),
         review.plan_token.as_deref(),
-        DestinationRenameStyle::SpaceNumber,
+        RenameStyle::SpaceNumber,
         &|| false,
         |_| {},
     )
