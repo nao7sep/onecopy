@@ -2393,3 +2393,195 @@ fn an_unsettled_operation_sweeps_nothing_from_the_destination_folder() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// A volume that stops answering (volume_io's fake stalling volume)
+
+use onecopy_lib::volume_io::{FakeStallingVolume, Op};
+
+const STALL_BOUND: std::time::Duration = std::time::Duration::from_millis(300);
+const SETTLE: std::time::Duration = std::time::Duration::from_secs(10);
+
+fn open_issue_kinds(f: &Fixture, path: &std::path::Path) -> Vec<String> {
+    let mut statement = f
+        .conn
+        .prepare("SELECT kind FROM active_issues WHERE path = ?1 ORDER BY kind")
+        .unwrap();
+    statement
+        .query_map([path.to_string_lossy()], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+fn row_state(f: &Fixture, file_name: &str) -> Option<i64> {
+    use rusqlite::OptionalExtension;
+    f.conn
+        .query_row(
+            "SELECT missing FROM paths WHERE file_name = ?1",
+            [file_name],
+            |row| row.get(0),
+        )
+        .optional()
+        .unwrap()
+}
+
+/// Moves with the destination's publication given up on; `land` decides
+/// whether the stalled rename then completes or fails.
+fn move_with_publication_given_up(label: &str, land: bool) {
+    let f = fixture(label);
+    std::fs::write(f.root.join("photo.jpg"), b"image-bytes").unwrap();
+    scan(&f);
+    let dest = f._dir.path().join("destination");
+    std::fs::create_dir(&dest).unwrap();
+    let volume = FakeStallingVolume::mount(&dest, STALL_BOUND);
+    // The private claim is a rename too; the publication is the next one.
+    volume.stall_after(&[Op::Rename], None, 1);
+
+    let outcome = move_batch(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        &[item_named(&f, "photo.jpg")],
+        &dest,
+        MoveOutMode::MoveTrashRest,
+        &|| false,
+        |_| {},
+    )
+    .unwrap();
+
+    let target = dest.join("photo.jpg");
+    assert_eq!(outcome.unknown, vec![target.to_string_lossy().into_owned()]);
+    assert_eq!(outcome.exported, 0);
+    assert!(outcome.error.is_some(), "nothing further goes to a stalled destination");
+    // A Move never handles a source after an unknown publication.
+    assert_eq!(outcome.post_action.deleted_files, 0);
+    assert_eq!(std::fs::read(f.root.join("photo.jpg")).unwrap(), b"image-bytes");
+    assert_eq!(row_state(&f, "photo.jpg"), Some(0));
+    assert_eq!(open_issue_kinds(&f, &target), vec![COPY_OUTCOME_UNKNOWN]);
+
+    if land {
+        volume.release();
+    } else {
+        volume.fail();
+    }
+    assert!(volume.wait_until_settled(SETTLE));
+    if land {
+        assert_eq!(std::fs::read(&target).unwrap(), b"image-bytes");
+    } else {
+        assert!(!target.exists());
+    }
+    assert!(private_leftovers(&dest).is_empty(), "{:?}", private_leftovers(&dest));
+    // Either way the source is still there: a duplicate, never a loss.
+    assert!(f.root.join("photo.jpg").exists());
+}
+
+#[test]
+fn a_publication_given_up_on_that_lands_later_leaves_a_complete_copy_and_the_source() {
+    move_with_publication_given_up("publish-lands", true);
+}
+
+#[test]
+fn a_publication_given_up_on_that_fails_later_leaves_nothing_public_or_private() {
+    move_with_publication_given_up("publish-fails", false);
+}
+
+fn delete_with_move_given_up(label: &str, mode: DeleteMode, land: bool) {
+    let f = fixture(label);
+    std::fs::write(f.root.join("photo.jpg"), b"image-bytes").unwrap();
+    scan(&f);
+    let item = item_named(&f, "photo.jpg");
+    let volume = FakeStallingVolume::mount(&f.root, STALL_BOUND);
+    volume.stall(
+        &[match mode {
+            DeleteMode::Trash => Op::Rename,
+            DeleteMode::Permanent => Op::Remove,
+        }],
+        None,
+    );
+
+    let hash = item.hash.clone().unwrap();
+    let outcome =
+        delete_item(&f.conn, &f.app_root, &f.cache, ItemRef::Hash(&hash), mode).unwrap();
+
+    assert_eq!(outcome.deleted_files, 0);
+    assert_eq!(outcome.unknown_files, 1);
+    assert_eq!(outcome.removed_rows, 0, "the row waits for the next source check");
+    assert_eq!(row_state(&f, "photo.jpg"), Some(0));
+    assert_eq!(
+        open_issue_kinds(&f, &f.root.join("photo.jpg")),
+        vec![DELETE_OUTCOME_UNKNOWN]
+    );
+    if mode == DeleteMode::Trash {
+        // Provenance was committed before the move was attempted.
+        let trash = f.root.join(onecopy_lib::trash::TRASH_DIR_NAME);
+        let day = std::fs::read_dir(&trash).unwrap().next().unwrap().unwrap().path();
+        let manifest = std::fs::read_to_string(day.join("manifest.jsonl")).unwrap();
+        assert!(manifest.contains("photo.jpg"));
+    }
+
+    if land {
+        volume.release();
+    } else {
+        volume.fail();
+    }
+    assert!(volume.wait_until_settled(SETTLE));
+    assert_eq!(f.root.join("photo.jpg").exists(), !land);
+    // The next source check settles the row either way.
+    scanner::walk_root(&f.conn, &f.root, &lists()).unwrap();
+    assert_eq!(row_state(&f, "photo.jpg"), Some(i64::from(land)));
+}
+
+#[test]
+fn a_trash_move_given_up_on_keeps_the_row_until_the_next_check_finds_it_moved() {
+    delete_with_move_given_up("trash-lands", DeleteMode::Trash, true);
+}
+
+#[test]
+fn a_trash_move_given_up_on_keeps_the_row_until_the_next_check_finds_it_in_place() {
+    delete_with_move_given_up("trash-fails", DeleteMode::Trash, false);
+}
+
+#[test]
+fn a_permanent_delete_given_up_on_keeps_the_row_until_the_next_check_settles_it() {
+    delete_with_move_given_up("remove-lands", DeleteMode::Permanent, true);
+    delete_with_move_given_up("remove-fails", DeleteMode::Permanent, false);
+}
+
+#[test]
+fn a_stalled_source_volume_does_not_stop_deletes_on_a_healthy_one() {
+    let f = fixture("stalled-and-healthy");
+    let stalled_root = f._dir.path().join("stalled");
+    std::fs::create_dir(&stalled_root).unwrap();
+    std::fs::write(stalled_root.join("away.jpg"), b"away-bytes").unwrap();
+    std::fs::write(f.root.join("here.jpg"), b"here-bytes").unwrap();
+    write_config(&f, &[&stalled_root, &f.root], &[f._dir.path()]);
+    scan(&f);
+    scanner::walk_root(&f.conn, &stalled_root, &lists()).unwrap();
+    scanner::hash_pending(&f.conn, &f.cache).unwrap();
+    let items = [item_named(&f, "away.jpg"), item_named(&f, "here.jpg")];
+    let volume = FakeStallingVolume::mount(&stalled_root, STALL_BOUND);
+    volume.stall(&[], None);
+
+    let started = std::time::Instant::now();
+    let outcome = delete_batch(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        &items,
+        DeleteMode::Trash,
+        &|| false,
+        |_| {},
+    )
+    .unwrap();
+
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    assert_eq!(outcome.deleted_files, 1);
+    assert_eq!(outcome.failed_files, 1);
+    assert_eq!(outcome.unknown_files, 0, "a check that never ran has a known outcome");
+    assert!(!f.root.join("here.jpg").exists());
+    assert_eq!(row_state(&f, "away.jpg"), Some(0));
+    volume.release();
+    assert!(volume.wait_until_settled(SETTLE));
+    assert!(stalled_root.join("away.jpg").exists());
+}

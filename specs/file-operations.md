@@ -18,7 +18,18 @@ A Move main output covers the item's other copies only when the delivered bytes 
 
 Unavailable source directories or drives do not disable the application or invalidate every available copy. An operation uses the available planned sources, records unavailable paths, and leaves their handling to later reconciliation or a newly confirmed operation.
 
-OneCopy records the physical volume identity of each configured source directory the first time it sees it. Every mutation admission, trash Empty, and source-check start re-verifies that identity before touching a file, and refuses to proceed when a different physical volume now answers at that configured path, or when the recorded identity cannot be read at all — a failed check is never treated as verified-safe. A filesystem with no stable identity to read degrades to presence-only, as elsewhere in this contract.
+OneCopy records the physical volume identity of each configured source directory the first time it sees it. Every mutation admission, trash Empty, and source-check start re-verifies that identity before touching a file, and refuses to proceed when a different physical volume now answers at that configured path, when the recorded identity cannot be read at all, or when the drive does not answer the check in time — a failed check is never treated as verified-safe. A filesystem with no stable identity to read degrades to presence-only, as elsewhere in this contract.
+
+## Drives that stop answering
+
+A network share, a sleeping NAS, or a failing removable drive can stop answering without failing. Every filesystem step OneCopy takes on a configured source or destination has a time limit: about 15 seconds for a quick check (whether a file exists, its size and dates) and about 30 seconds for each read, write, rename, or removal, with the final flush of a large new file allowed longer in proportion to its size. A step that exceeds its limit is given up on and fails as a drive that is not responding; the drive answers again by itself once the step returns. While a drive has a step outstanding that was given up on, every later step on that drive fails at once as not responding instead of waiting again, and work on every other drive continues normally.
+
+Giving up on a step does not undo it: a rename or removal given up on may still complete later. OneCopy therefore reports such a file's **outcome as unknown** instead of guessing:
+
+- A publication given up on leaves either the complete verified output at its final name or nothing there (a private output that never landed is removed once the step returns). The file counts as outcome unknown, its sources stay in place — a Move never handles a source after an unknown publication — and nothing further is written to that destination in the operation.
+- A recoverable move or permanent deletion given up on leaves the file either in deleted-file storage (its provenance was recorded first) or still in place. The file counts as outcome unknown and its index entry stays; the next source check settles it as present or missing.
+
+Each such file carries a current Issue saying its outcome is unknown. A step that was refused at once because its drive had not answered earlier has a known outcome: nothing happened, and it fails like any other unavailable file.
 
 ## Operation modes
 
@@ -70,11 +81,11 @@ A failure tied to one planned file is recorded and skipped when later files have
 
 Completed outputs, recoverable moves, permanent deletions, and source cleanups remain completed when later work fails or is cancelled. OneCopy does not copy completed outputs back, search deleted-file storage for rollback material, or represent the batch as atomic. Unattempted sources and sources whose required output failed remain in place.
 
-One persistent nonmodal operation surface shows progress, Cancel, `Cancelling after current file…`, and the final completed, failed, and unstarted result. The result identifies completed work, preserved sources, failed files, and the unstarted remainder truthfully. A completed recoverable operation keeps its exact-count receipt visible and offers direct access to the stored files. A retry is a newly confirmed operation over current library and filesystem state, not a replay of stale destructive intent.
+One persistent nonmodal operation surface shows progress, Cancel, `Cancelling after current file…`, and the final completed, failed, outcome-unknown, and unstarted result. The result identifies completed work, preserved sources, failed files, files whose outcome is unknown (`Drives that stop answering`), and the unstarted remainder truthfully. A completed recoverable operation keeps its exact-count receipt visible and offers direct access to the stored files. A retry is a newly confirmed operation over current library and filesystem state, not a replay of stale destructive intent.
 
 ## Cancellation
 
-Cancellation takes effect between physical files or other bounded filesystem steps. It does not interrupt a publication, recoverable move, or deletion halfway through its owned step. Writing and verifying a private output that is not yet published may stop mid-file. OneCopy removes its unpublished private output on cancellation and on every failure, but never rolls back work that has already reached its completed boundary.
+Cancellation takes effect between physical files or other bounded filesystem steps. It does not interrupt a publication, recoverable move, or deletion halfway through its owned step: from a copy's final publication through a Move's cleanup of the sources it covers, Cancel lets each of those short steps finish within its own time limit. Writing and verifying a private output that is not yet published may stop mid-file, and Cancel also ends a read or write of that private output that a drive is not answering, without waiting for the drive. OneCopy removes its unpublished private output on cancellation and on every failure, but never rolls back work that has already reached its completed boundary.
 
 Because cancellation is bounded, a batch and even one logical item's physical copies may complete partially. The partial result follows the same accounting and recovery rules as any other failure.
 

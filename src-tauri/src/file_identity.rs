@@ -5,13 +5,20 @@
 //! private cleanup and verified publication bind to the filesystem identity
 //! returned by that handle so an unrelated replacement is never treated as an
 //! app-created temporary output.
+//!
+//! Every filesystem call here runs on a `volume_io` worker: path probes go
+//! through its bounded primitives, and the functions taking a raw `File` run
+//! only inside `VolumeFile::with`, on the worker that holds the file.
 
 #[cfg(not(windows))]
 use std::fs::Metadata;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io;
-use std::path::Path;
-use std::sync::OnceLock;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+
+use crate::volume_io::{self, Op, VolumeFile};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FileIdentity {
@@ -40,22 +47,28 @@ impl FileIdentity {
     pub fn from_path(path: &Path) -> io::Result<Self> {
         #[cfg(windows)]
         {
-            use std::os::windows::fs::OpenOptionsExt;
-
-            let fs_path = crate::winpath::for_fs(path);
-            let mut options = OpenOptions::new();
-            options.read(true).custom_flags(
-                windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT
-                    | windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS,
-            );
-            return Self::from_file(&options.open(fs_path.as_ref())?);
+            let fs_path = crate::winpath::for_fs(path).into_owned();
+            return volume_io::call(path, Op::Stat, None, move || {
+                use std::os::windows::fs::OpenOptionsExt;
+                let mut options = std::fs::OpenOptions::new();
+                options.read(true).custom_flags(
+                    windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT
+                        | windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS,
+                );
+                Self::from_file(&options.open(&fs_path)?)
+            });
         }
         #[cfg(not(windows))]
         {
             // Do not follow a replacement symlink: the directory entry itself is
             // not the regular file this operation created.
-            Self::from_metadata(&std::fs::symlink_metadata(path)?)
+            Self::from_metadata(&volume_io::symlink_metadata(path)?)
         }
+    }
+
+    /// The identity of an open file on a user volume, read now.
+    pub fn of(file: &mut VolumeFile) -> io::Result<Self> {
+        file.with(Op::Stat, None, None, |file| Self::from_file(file))
     }
 
     #[cfg(not(windows))]
@@ -83,24 +96,26 @@ impl FileIdentity {
 /// are on the same filesystem exactly when these agree, however each is
 /// spelled (a mapped or `subst` drive, a symlinked root, a verbatim path).
 pub fn volume_of(path: &Path) -> io::Result<u64> {
-    let fs_path = crate::winpath::for_fs(path);
     #[cfg(windows)]
     {
-        use std::os::windows::fs::OpenOptionsExt;
-        let file = OpenOptions::new()
-            .access_mode(0)
-            .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS)
-            .open(fs_path.as_ref())?;
-        return Ok(u64::from(from_windows_file(&file)?.volume));
+        let fs_path = crate::winpath::for_fs(path).into_owned();
+        return volume_io::call(path, Op::Stat, None, move || {
+            use std::os::windows::fs::OpenOptionsExt;
+            let file = std::fs::OpenOptions::new()
+                .access_mode(0)
+                .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS)
+                .open(&fs_path)?;
+            Ok(u64::from(from_windows_file(&file)?.volume))
+        });
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        Ok(std::fs::metadata(fs_path.as_ref())?.dev())
+        Ok(volume_io::metadata(path)?.dev())
     }
     #[cfg(not(any(unix, windows)))]
     {
-        let _ = fs_path;
+        let _ = path;
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "volume identity is unsupported on this platform",
@@ -138,9 +153,16 @@ fn from_windows_file(file: &File) -> io::Result<FileIdentity> {
 /// point, then captures the physical identity of that exact descriptor. The
 /// open never waits on a special file: a FIFO put at the path is refused
 /// rather than blocking the operation that asked.
-pub fn open_regular_nofollow(path: &Path) -> io::Result<(File, FileIdentity)> {
+pub fn open_regular_nofollow(path: &Path) -> io::Result<(VolumeFile, FileIdentity)> {
+    let owned = path.to_path_buf();
+    let (file, identity) =
+        volume_io::call(path, Op::Open, None, move || open_regular_nofollow_raw(&owned))?;
+    Ok((VolumeFile::new(file, path.to_path_buf()), identity))
+}
+
+fn open_regular_nofollow_raw(path: &Path) -> io::Result<(File, FileIdentity)> {
     let fs_path = crate::winpath::for_fs(path);
-    let mut options = OpenOptions::new();
+    let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
     {
@@ -179,7 +201,8 @@ pub fn path_names(path: &Path, expected: FileIdentity) -> bool {
 /// Whether `path` currently names the file behind `file`. The identity is read
 /// from the open descriptor at the moment of the check, not remembered: FAT
 /// and exFAT derive an empty file's number from its directory entry, so a
-/// rename changes it, while the open descriptor follows the file.
+/// rename changes it, while the open descriptor follows the file. Runs on the
+/// `volume_io` worker holding `file`.
 pub fn path_names_file(path: &Path, file: &File) -> bool {
     FileIdentity::from_file(file).is_ok_and(|expected| path_names(path, expected))
 }
@@ -212,7 +235,7 @@ pub const INSTALLATION_ID_FILE_NAME: &str = "installation-id";
 /// (a fresh nanoid, written unrecorded) the first time this home is used.
 fn installation_id(root: &Path) -> io::Result<String> {
     let path = root.join(INSTALLATION_ID_FILE_NAME);
-    match std::fs::read_to_string(&path) {
+    match std::fs::read_to_string(&path) { // data root
         Ok(contents) => {
             let id = contents.trim();
             if id.is_empty() {
@@ -474,13 +497,13 @@ pub fn sweep_private_tmp_leftovers(dir: &Path) {
 /// single test binary's one process-global settled data root cannot supply
 /// per case.
 fn sweep_private_tmp_leftovers_against(dir: &Path, current_fingerprint: Option<&str>) {
-    let entries = match std::fs::read_dir(dir) {
+    let entries = match volume_io::read_dir(dir, false) {
         Ok(entries) => entries,
         Err(_) => return,
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if entry.file_type().is_ok_and(|file_type| file_type.is_file())
+    for entry in entries {
+        let path = entry.path;
+        if entry.file_type.is_some_and(|file_type| file_type.is_file())
             && is_private_tmp_name(&path)
             && is_abandoned_leftover_against(&path, current_fingerprint)
         {
@@ -493,7 +516,8 @@ fn sweep_private_tmp_leftovers_against(dir: &Path, current_fingerprint: Option<&
 /// physical file that actually moved against this operation's open
 /// descriptor. This is the operation-owned claim used by both publication and
 /// cleanup. A replacement is restored (or retained in the hold if its old name
-/// was occupied again), never treated as ours.
+/// was occupied again), never treated as ours. Runs on the `volume_io` worker
+/// holding `file`.
 pub fn claim_private(path: &Path, file: &File) -> io::Result<std::path::PathBuf> {
     let Some(parent) = path.parent() else {
         return Err(io::Error::new(
@@ -542,6 +566,7 @@ pub fn claim_private(path: &Path, file: &File) -> io::Result<std::path::PathBuf>
 
 /// Best-effort cleanup of a private staging pathname. Callers never use this
 /// for a public committed target; public targets are never unlinked as rollback.
+/// Runs on the `volume_io` worker holding `file`.
 pub fn remove_private_if_owned(path: &Path, file: &File) {
     match claim_private(path, file) {
         Ok(hold) => crate::fs_recovery::remove_file(&hold, "private staging cleanup"),
@@ -564,67 +589,110 @@ pub fn remove_private_if_owned(path: &Path, file: &File) {
 /// to the descriptor that wrote it. Until it is published, dropping it removes
 /// the private file, but only while that name still holds this file, so every
 /// early return, failure, and cancellation abandons its private output.
+///
+/// When a call on the file is given up on (its volume stopped answering), the
+/// descriptor stays with that call; once the call returns, the file settles on
+/// its worker: removed while still private, kept once published.
 #[derive(Debug)]
 pub struct PrivateFile {
-    path: std::path::PathBuf,
-    file: File,
-    published: bool,
+    path: Arc<Mutex<PathBuf>>,
+    file: VolumeFile,
+    published: Arc<AtomicBool>,
+}
+
+fn lock_path(path: &Mutex<PathBuf>) -> std::sync::MutexGuard<'_, PathBuf> {
+    path.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 impl PrivateFile {
-    pub fn new(path: std::path::PathBuf, file: File) -> Self {
+    pub fn new(path: PathBuf, mut file: VolumeFile) -> Self {
+        let path = Arc::new(Mutex::new(path));
+        let published = Arc::new(AtomicBool::new(false));
+        let (settle_path, settle_published) = (path.clone(), published.clone());
+        file.set_settle(Arc::new(move |file: File| {
+            let path = lock_path(&settle_path).clone();
+            if settle_published.load(Ordering::SeqCst) {
+                crate::logging::info(
+                    "a publication given up on completed later",
+                    serde_json::json!({ "path": path }),
+                );
+            } else {
+                remove_private_if_owned(&path, &file);
+            }
+        }));
         Self {
             path,
             file,
-            published: false,
+            published,
         }
     }
 
     /// The private name, or the final name once published.
-    pub fn path(&self) -> &Path {
-        &self.path
+    pub fn path(&self) -> PathBuf {
+        lock_path(&self.path).clone()
     }
 
-    pub fn file_mut(&mut self) -> &mut File {
+    pub fn file_mut(&mut self) -> &mut VolumeFile {
         &mut self.file
     }
 
     /// Whether `path` currently names this file.
-    pub fn is_named_by(&self, path: &Path) -> bool {
-        path_names_file(path, &self.file)
+    pub fn is_named_by(&mut self, path: &Path) -> bool {
+        let path = path.to_path_buf();
+        self.file
+            .with(Op::Stat, None, None, move |file| Ok(path_names_file(&path, file)))
+            .unwrap_or(false)
     }
 
     /// Moves the file to a fresh private hold so no other writer can have
     /// replaced the name between this check and publication.
     pub fn claim(&mut self) -> io::Result<()> {
-        self.path = claim_private(&self.path, &self.file)?;
-        Ok(())
+        let path = self.path.clone();
+        self.file.with(Op::Rename, None, None, move |file| {
+            let current = lock_path(&path).clone();
+            let hold = claim_private(&current, file)?;
+            *lock_path(&path) = hold;
+            Ok(())
+        })
     }
 
-    /// Publishes the file at `target` without replacing another entry. An
-    /// occupied target answers `AlreadyExists` and the file stays private.
+    /// Publishes the file at `target` without replacing another entry, in one
+    /// bounded call. An occupied target answers `AlreadyExists` and the file
+    /// stays private. A publication given up on has an unknown outcome
+    /// (`volume_io::outcome_unknown`): it settles on its worker.
     pub fn publish(&mut self, target: &Path) -> io::Result<()> {
-        crate::fs_publish::rename_no_replace(&self.path, target)?;
-        self.path = target.to_path_buf();
-        self.published = true;
-        if !path_names_file(target, &self.file) {
-            // Not `AlreadyExists`: the name was ours and is now someone
-            // else's, which is a failure, not an occupied target to review.
-            return Err(io::Error::other(
-                format!(
+        let (path, published) = (self.path.clone(), self.published.clone());
+        let target = target.to_path_buf();
+        self.file.with(Op::Rename, None, None, move |file| {
+            let current = lock_path(&path).clone();
+            crate::fs_publish::rename_no_replace(&current, &target)?;
+            *lock_path(&path) = target.clone();
+            published.store(true, Ordering::SeqCst);
+            if !path_names_file(&target, file) {
+                // Not `AlreadyExists`: the name was ours and is now someone
+                // else's, which is a failure, not an occupied target to review.
+                return Err(io::Error::other(format!(
                     "published output was replaced before completion: {}",
                     target.display()
                 )));
-        }
-        Ok(())
+            }
+            Ok(())
+        })
     }
 }
 
 impl Drop for PrivateFile {
     fn drop(&mut self) {
-        if !self.published {
-            remove_private_if_owned(&self.path, &self.file);
+        // A file whose descriptor went with a call given up on settles on
+        // that call's worker instead (see `new`).
+        if self.published.load(Ordering::SeqCst) || !self.file.is_open() {
+            return;
         }
+        let path = self.path();
+        let _ = self.file.with(Op::Remove, None, None, move |file| {
+            remove_private_if_owned(&path, file);
+            Ok(())
+        });
     }
 }
 

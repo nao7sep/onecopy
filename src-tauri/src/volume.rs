@@ -62,8 +62,20 @@ fn extract_plist_string(plist: &str, key: &str) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
+/// The serial is read in one bounded call: the query touches the volume, and
+/// an unanswered one is an unreadable identity.
 #[cfg(windows)]
 fn platform_identity(root: &Path) -> Option<String> {
+    let owned = root.to_path_buf();
+    crate::volume_io::call(root, crate::volume_io::Op::Stat, None, move || {
+        Ok(windows_serial(&owned))
+    })
+    .ok()
+    .flatten()
+}
+
+#[cfg(windows)]
+fn windows_serial(root: &Path) -> Option<String> {
     use std::os::windows::ffi::OsStrExt;
     #[link(name = "kernel32")]
     extern "system" {
@@ -143,7 +155,7 @@ fn store_lock() -> MutexGuard<'static, ()> {
 
 fn load_unlocked(root: &Path) -> Result<BTreeMap<String, SourceVolume>, String> {
     let file = root.join(paths::SOURCE_VOLUMES_FILE_NAME);
-    let bytes = match std::fs::read(&file) {
+    let bytes = match std::fs::read(&file) { // data root
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
         Err(error) => return Err(format!("could not read {}: {error}", file.display())),
@@ -198,16 +210,25 @@ pub fn check_identity(root: &Path, dir: &str, current: &str) -> Result<IdentityC
 /// because its filesystem had none to read, is not this gate's concern and is
 /// skipped.
 pub fn enforce_no_substitution(data_root: &Path, dirs: &[String]) -> Result<(), String> {
-    let _guard = store_lock();
-    let recorded = load_unlocked(data_root)?;
+    // The store lock covers only reading the record: the probes below touch
+    // volumes that can stall, and no lock is held across them.
+    let recorded = {
+        let _guard = store_lock();
+        load_unlocked(data_root)?
+    };
     for dir in dirs {
         let path = Path::new(dir);
-        if !path.is_dir() {
-            continue;
-        }
         let Some(known) = recorded.get(dir) else {
             continue;
         };
+        // A check that could not answer is never verified-safe.
+        match crate::volume_io::is_dir(path) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(error) => {
+                return Err(format!("could not verify the volume for {dir}: {error}"))
+            }
+        }
         let root = crate::trash::volume_root_of(path)
             .map_err(|error| format!("could not verify the volume for {dir}: {error}"))?;
         // A filesystem without a stable identity is never recorded, so a
@@ -271,7 +292,9 @@ pub fn verify_source_dirs(data_root: &Path) -> Result<SourceDirsStatus, String> 
     let mut status = SourceDirsStatus::default();
     for dir in &settings.source_dirs {
         let path = std::path::Path::new(dir);
-        if !path.is_dir() {
+        // A folder whose drive does not answer is as unavailable as a
+        // missing one.
+        if !crate::volume_io::is_dir(path).unwrap_or(false) {
             status.missing.push(dir.clone());
             continue;
         }

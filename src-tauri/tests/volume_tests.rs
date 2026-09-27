@@ -104,3 +104,27 @@ fn enforce_no_substitution_fails_closed_when_a_recorded_volume_cannot_be_identif
     let result = enforce_no_substitution(app_data.path(), &["/dev".to_string()]);
     assert!(result.is_err(), "an unreadable current identity must refuse admission");
 }
+
+// A recorded source whose drive stops answering is never verified-safe: the
+// gate refuses within the check's bound instead of waiting on the drive, and
+// holds no lock while it probes, so another gate check still answers.
+#[cfg(any(target_os = "macos", windows))]
+#[test]
+fn enforce_no_substitution_refuses_promptly_when_a_recorded_volume_does_not_answer() {
+    use onecopy_lib::volume_io::FakeStallingVolume;
+    let app_data = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let dir_str = dir.path().to_string_lossy().to_string();
+    check_identity(app_data.path(), &dir_str, "recorded-identity").unwrap();
+    let volume = FakeStallingVolume::mount(dir.path(), std::time::Duration::from_millis(300));
+    volume.stall(&[], None);
+
+    let started = std::time::Instant::now();
+    let refused = enforce_no_substitution(app_data.path(), std::slice::from_ref(&dir_str));
+    assert!(refused.is_err_and(|error| error.contains("could not verify")));
+    // The volume now fails fast; the gate answers again at once.
+    assert!(enforce_no_substitution(app_data.path(), &[dir_str]).is_err());
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    volume.release();
+    assert!(volume.wait_until_settled(std::time::Duration::from_secs(5)));
+}

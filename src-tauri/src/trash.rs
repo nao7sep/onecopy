@@ -20,7 +20,6 @@
 //! (`image1-2.jpg`, …); the manifest line records both the original path and
 //! the actual stored name, so restore mapping stays exact in the suffixed case.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde_json::json;
@@ -29,6 +28,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde::Serialize;
 
 use crate::logging;
+use crate::volume_io;
 
 pub const TRASH_DIR_NAME: &str = ".onecopy-trash";
 
@@ -52,12 +52,38 @@ pub struct TrashedRecord {
     pub deleted_at_utc: String,
 }
 
+/// Why a file was not moved to Deleted files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrashError {
+    pub message: String,
+    /// The move itself was given up on while its volume was not responding:
+    /// the file may be in Deleted files or still in place. Its manifest line
+    /// is already written, so it is recoverable either way, and the next
+    /// source check settles the index.
+    pub outcome_unknown: bool,
+}
+
+impl From<String> for TrashError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            outcome_unknown: false,
+        }
+    }
+}
+
+impl std::fmt::Display for TrashError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
 /// Moves one file beneath the frozen configured root that owns it.
 pub fn trash_file(
     file: &Path,
     owning_root: &Path,
     content_hash: Option<&str>,
-) -> Result<TrashedRecord, String> {
+) -> Result<TrashedRecord, TrashError> {
     trash_file_with_before_move(file, owning_root, content_hash, |_| {})
 }
 
@@ -66,20 +92,22 @@ fn trash_file_with_before_move(
     owning_root: &Path,
     content_hash: Option<&str>,
     before_move: impl FnOnce(&Path),
-) -> Result<TrashedRecord, String> {
+) -> Result<TrashedRecord, TrashError> {
     if !file.is_absolute() {
         return Err(format!(
             "trash requires an absolute path: {}",
             file.display()
-        ));
+        )
+        .into());
     }
-    let metadata = std::fs::symlink_metadata(crate::winpath::for_fs(file).as_ref())
+    let metadata = volume_io::symlink_metadata(file)
         .map_err(|error| format!("trash source is unavailable: {error}"))?;
     if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
         return Err(format!(
             "trash source is not a regular file: {}",
             file.display()
-        ));
+        )
+        .into());
     }
     let plan = prepare_trash(file, owning_root, content_hash)?;
     commit_trash(file, plan, before_move)
@@ -96,7 +124,7 @@ fn prepare_trash(
     owning_root: &Path,
     content_hash: Option<&str>,
 ) -> Result<TrashPlan, String> {
-    if !owning_root.is_absolute() || !owning_root.is_dir() {
+    if !owning_root.is_absolute() || !volume_io::is_dir(owning_root).unwrap_or(false) {
         return Err(format!(
             "deleted-file root is unavailable: {}",
             owning_root.display()
@@ -149,8 +177,8 @@ fn prepare_trash(
     // Hide the trash root on Windows exactly once, the moment this call is
     // the one that creates it — never per trashed file (R1-12, R6-04).
     #[cfg_attr(not(windows), allow(unused_variables))]
-    let trash_root_is_new = !trash_root.exists();
-    std::fs::create_dir_all(&day_dir).map_err(|e| e.to_string())?;
+    let trash_root_is_new = !volume_io::exists(&trash_root).map_err(|e| e.to_string())?;
+    volume_io::create_dir_all(&day_dir).map_err(|e| e.to_string())?;
     ensure_real_directory_if_present(&trash_root)?;
     ensure_real_directory_if_present(&day_dir)?;
     if !crate::path_identity::directory_is_within(&day_dir, owning_root)? {
@@ -187,10 +215,12 @@ fn commit_trash(
     source: &Path,
     plan: TrashPlan,
     before_move: impl FnOnce(&Path),
-) -> Result<TrashedRecord, String> {
+) -> Result<TrashedRecord, TrashError> {
     before_move(&plan.stored);
-    crate::fs_publish::rename_no_replace(source, &plan.stored)
-        .map_err(|e| format!("trash move failed for {}: {e}", source.display()))?;
+    crate::fs_publish::rename_no_replace(source, &plan.stored).map_err(|error| TrashError {
+        message: format!("trash move failed for {}: {error}", source.display()),
+        outcome_unknown: volume_io::outcome_unknown(&error),
+    })?;
     if let Err(error) = crate::fs_publish::sync_directory(&plan.day_dir) {
         crate::logging::warn(
             "trash directory sync failed after the move completed",
@@ -205,7 +235,7 @@ fn commit_trash(
 }
 
 fn ensure_real_directory_if_present(path: &Path) -> Result<(), String> {
-    match std::fs::symlink_metadata(crate::winpath::for_fs(path).as_ref()) {
+    match volume_io::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_dir() => Ok(()),
         Ok(_) => Err(format!(
             "deleted-file storage is not a real directory: {}",
@@ -223,7 +253,7 @@ fn available_stored_path(target: &Path) -> Result<PathBuf, String> {
     let mut candidate = target.to_path_buf();
     let mut counter = 2u32;
     loop {
-        match std::fs::symlink_metadata(&candidate) {
+        match volume_io::symlink_metadata(&candidate) {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(candidate),
             Ok(_) => {}
             Err(err) => return Err(err.to_string()),
@@ -260,16 +290,13 @@ fn suffixed_name(target: &Path, counter: u32) -> PathBuf {
 /// it describes, keeping the folder self-contained and hand-deletable.
 fn append_manifest(day_dir: &Path, record: &TrashedRecord) -> Result<(), String> {
     let line = serde_json::to_string(record).map_err(|e| e.to_string())?;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(day_dir.join(MANIFEST_FILE_NAME))
-        .map_err(|e| e.to_string())?;
     // not recorded: the manifest is trash-side audit data, append-mode by
     // construction, never managed text.
-    file.write_all(format!("{line}\n").as_bytes())
-        .map_err(|e| e.to_string())?;
-    file.sync_all().map_err(|e| e.to_string())
+    volume_io::append_synced(
+        &day_dir.join(MANIFEST_FILE_NAME),
+        format!("{line}\n").into_bytes(),
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -312,7 +339,7 @@ pub fn root_for_file(file: &Path, configured_roots: &[PathBuf]) -> Result<PathBu
 fn root_spellings(root: &Path) -> Vec<PathBuf> {
     let filesystem = crate::winpath::for_fs(root).into_owned();
     let mut spellings = vec![root.to_path_buf()];
-    if let Ok(resolved) = std::fs::canonicalize(&filesystem) {
+    if let Ok(resolved) = volume_io::canonicalize(&filesystem) {
         spellings.push(resolved);
     }
     spellings.push(filesystem);
@@ -369,9 +396,9 @@ pub fn ensure_root_for_reveal(
         .iter()
         .find(|root| root.join(TRASH_DIR_NAME) == requested)
         .ok_or_else(|| "not a known deleted-files location".to_string())?;
-    std::fs::create_dir_all(requested)
+    volume_io::create_dir_all(requested)
         .map_err(|error| format!("could not create deleted-files location: {error}"))?;
-    let metadata = std::fs::symlink_metadata(requested)
+    let metadata = volume_io::symlink_metadata(requested)
         .map_err(|error| format!("deleted-files location is unavailable: {error}"))?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Err("deleted-files location is not a real directory".to_string());
@@ -419,7 +446,7 @@ pub fn empty_root_with_progress(
     progress: &dyn Fn(EmptyProgress),
     record_failure: &dyn Fn(&Path, &str) -> Result<(), String>,
 ) -> Result<EmptyOutcome, String> {
-    match std::fs::symlink_metadata(root) {
+    match volume_io::symlink_metadata(root) {
         Ok(metadata) if metadata.file_type().is_dir() => {}
         Ok(_) => return Err("trash root is not a directory".to_string()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -437,29 +464,38 @@ pub fn empty_root_with_progress(
 
     let mut files: Vec<(PathBuf, u64, bool)> = Vec::new();
     let mut directories: Vec<PathBuf> = Vec::new();
-    for entry in walkdir::WalkDir::new(root).follow_links(false) {
-        if cancelled.load(Ordering::Relaxed) {
+    let is_cancelled = || cancelled.load(Ordering::Relaxed);
+    let mut walk = volume_io::walk(root, |_, _| true).map_err(|error| error.to_string())?;
+    while let Some(entry) = walk.next(Some(&is_cancelled)) {
+        if is_cancelled() {
             return Ok(EmptyOutcome {
                 cancelled: true,
                 ..EmptyOutcome::default()
             });
         }
-        let entry = entry.map_err(|error| error.to_string())?;
-        if entry.path() == root {
+        let entry = entry
+            .map_err(|error| error.to_string())?
+            .map_err(|error| error.message)?;
+        if entry.depth == 0 {
             continue;
         }
-        if entry.file_type().is_dir() {
-            directories.push(entry.path().to_path_buf());
+        if entry.file_type.is_dir() {
+            directories.push(entry.path);
         } else {
             // Symlinks and other stray non-directories are bookkeeping, never
             // followed and never counted as recoverable media, but Empty must
             // still remove their directory entries.
-            let recoverable =
-                entry.file_type().is_file() && entry.file_name() != MANIFEST_FILE_NAME;
+            let recoverable = entry.file_type.is_file()
+                && entry.path.file_name().is_none_or(|name| name != MANIFEST_FILE_NAME);
             let bytes = recoverable
-                .then(|| entry.metadata().map(|metadata| metadata.len()).unwrap_or(0))
+                .then(|| {
+                    entry
+                        .metadata
+                        .and_then(Result::ok)
+                        .map_or(0, |metadata| metadata.len())
+                })
                 .unwrap_or(0);
-            files.push((entry.path().to_path_buf(), bytes, recoverable));
+            files.push((entry.path, bytes, recoverable));
         }
     }
     directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
@@ -486,7 +522,7 @@ pub fn empty_root_with_progress(
                 plan_changed: false,
             });
         }
-        if let Err(error) = std::fs::remove_file(&path) {
+        if let Err(error) = volume_io::remove_file(&path) {
             snapshot.failures += 1;
             record_failure(&path, &error.to_string())?;
             crate::logging::warn(
@@ -496,6 +532,12 @@ pub fn empty_root_with_progress(
                     "error": { "message": error.to_string() },
                 }),
             );
+            // A volume that stopped answering ends the Empty here with its
+            // partial totals; removal is idempotent, so emptying again is
+            // safe once the drive answers.
+            if volume_io::wait_failure(&error).is_some() {
+                return Err(error.to_string());
+            }
         }
         if recoverable {
             snapshot.done += 1;
@@ -504,7 +546,7 @@ pub fn empty_root_with_progress(
         }
     }
     for directory in directories {
-        if let Err(error) = std::fs::remove_dir(&directory) {
+        if let Err(error) = volume_io::remove_dir(&directory) {
             if !matches!(
                 error.kind(),
                 std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty
@@ -587,7 +629,7 @@ fn measure_root(root: &Path) -> TrashMeasure {
     // A trash root is created lazily by the first delete. Until then its
     // absence is the ordinary empty state promised by `overview`, not a walk
     // failure worth surfacing in the application log.
-    let Ok(day_entries) = std::fs::read_dir(root) else {
+    let Ok(day_entries) = volume_io::read_dir(root, true) else {
         return TrashMeasure {
             bytes: 0,
             files: 0,
@@ -603,29 +645,23 @@ fn measure_root(root: &Path) -> TrashMeasure {
     let mut total_files = 0u64;
     let mut seen = std::collections::HashSet::new();
     for entry in day_entries {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(error) => {
-                crate::logging::warn(
-                    "trash day listing failed",
-                    json!({ "path": root, "error": { "message": error.to_string() } }),
-                );
-                continue;
-            }
-        };
-        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-            token_parts.push((entry.file_name(), None));
+        if !entry.file_type.is_some_and(|kind| kind.is_dir()) {
+            token_parts.push((entry.file_name, None));
             continue;
         }
-        let day_path = entry.path();
-        let modified = match entry.metadata().and_then(|metadata| metadata.modified()) {
+        let day_path = entry.path;
+        let modified = match entry
+            .metadata
+            .unwrap_or_else(|| Err(std::io::Error::other("no metadata listed")))
+            .and_then(|metadata| metadata.modified())
+        {
             Ok(modified) => modified,
             Err(error) => {
                 crate::logging::warn(
                     "trash day metadata read failed",
                     json!({ "path": day_path, "error": { "message": error.to_string() } }),
                 );
-                token_parts.push((entry.file_name(), None));
+                token_parts.push((entry.file_name, None));
                 continue;
             }
         };
@@ -639,7 +675,7 @@ fn measure_root(root: &Path) -> TrashMeasure {
                 total_bytes += cached.bytes;
                 total_files += cached.files;
                 token_parts.push((
-                    entry.file_name(),
+                    entry.file_name.clone(),
                     Some((modified_nanos, cached.bytes, cached.files)),
                 ));
                 continue;
@@ -649,7 +685,7 @@ fn measure_root(root: &Path) -> TrashMeasure {
         let (bytes, files) = day_dir_size(&day_path);
         total_bytes += bytes;
         total_files += files;
-        token_parts.push((entry.file_name(), Some((modified_nanos, bytes, files))));
+        token_parts.push((entry.file_name, Some((modified_nanos, bytes, files))));
         cache.insert(
             day_path,
             CachedDaySize {
@@ -700,25 +736,40 @@ struct TrashMeasure {
 fn day_dir_size(day_dir: &Path) -> (u64, u64) {
     let mut bytes = 0u64;
     let mut files = 0u64;
-    for entry in walkdir::WalkDir::new(day_dir).follow_links(false) {
+    let mut walk = match volume_io::walk(day_dir, |_, _| true) {
+        Ok(walk) => walk,
+        Err(error) => {
+            crate::logging::warn(
+                "trash size walk failed",
+                json!({ "path": day_dir, "error": { "message": error.to_string() } }),
+            );
+            return (bytes, files);
+        }
+    };
+    while let Some(entry) = walk.next(None) {
         let entry = match entry {
-            Ok(entry) => entry,
-            Err(error) => {
+            Ok(Ok(entry)) => entry,
+            Ok(Err(error)) => {
                 crate::logging::warn(
                     "trash size walk failed",
-                    json!({ "path": day_dir, "error": { "message": error.to_string() } }),
+                    json!({ "path": day_dir, "error": { "message": error.message } }),
                 );
                 continue;
             }
+            // Given up on: the volume stopped answering; count what was seen.
+            Err(_) => break,
         };
-        if entry.file_type().is_file() && entry.file_name() != MANIFEST_FILE_NAME {
+        if entry.file_type.is_file()
+            && entry.path.file_name().is_none_or(|name| name != MANIFEST_FILE_NAME)
+        {
             files += 1;
-            match entry.metadata() {
-                Ok(metadata) => bytes += metadata.len(),
-                Err(error) => crate::logging::warn(
+            match entry.metadata {
+                Some(Ok(metadata)) => bytes += metadata.len(),
+                Some(Err(error)) => crate::logging::warn(
                     "trash file metadata read failed",
-                    json!({ "path": entry.path(), "error": { "message": error.to_string() } }),
+                    json!({ "path": entry.path, "error": { "message": error.to_string() } }),
                 ),
+                None => {}
             }
         }
     }
@@ -729,14 +780,14 @@ fn day_dir_size(day_dir: &Path) -> (u64, u64) {
 #[cfg(unix)]
 pub fn volume_root_of(path: &Path) -> Result<PathBuf, String> {
     use std::os::unix::fs::MetadataExt;
-    let start = nearest_existing(path);
-    let dev = std::fs::metadata(&start).map_err(|e| e.to_string())?.dev();
+    let start = nearest_existing(path)?;
+    let dev = volume_io::metadata(&start).map_err(|e| e.to_string())?.dev();
     let mut current = start;
     loop {
         let Some(parent) = current.parent() else {
             return Ok(current); // reached `/`
         };
-        let parent_dev = std::fs::metadata(parent).map_err(|e| e.to_string())?.dev();
+        let parent_dev = volume_io::metadata(parent).map_err(|e| e.to_string())?.dev();
         if parent_dev != dev {
             return Ok(current); // crossing here changes device: current is the mount point
         }
@@ -768,15 +819,15 @@ pub fn volume_root_of(path: &Path) -> Result<PathBuf, String> {
 // not-yet-created leaf never breaks volume detection. Unix-only: the Windows
 // `volume_root_of` reads the path prefix and never touches the filesystem.
 #[cfg(unix)]
-fn nearest_existing(path: &Path) -> PathBuf {
+fn nearest_existing(path: &Path) -> Result<PathBuf, String> {
     let mut current = path.to_path_buf();
-    while !current.exists() {
+    while !volume_io::exists(&current).map_err(|error| error.to_string())? {
         match current.parent() {
             Some(parent) => current = parent.to_path_buf(),
             None => break,
         }
     }
-    current
+    Ok(current)
 }
 
 #[cfg(windows)]

@@ -8,34 +8,51 @@
 //! refuse `RENAME_EXCL` (exFAT) reserve the final name with an exclusive empty
 //! placeholder and replace only that placeholder. Private rebuildable
 //! cache entries also use an explicit atomic replacement path.
+//!
+//! Publication and directory flushes on user volumes are bounded calls
+//! (`volume_io`); the `*_raw` functions run on its worker.
 
 use std::io;
 use std::path::Path;
 
-#[cfg(unix)]
+use crate::volume_io::{self, Op};
+
+/// Flushes a directory's entries to the device, bounded. Windows' no-replace
+/// move is journaled by the filesystem and Rust has no portable directory
+/// handle, so there it does nothing.
 pub fn sync_directory(path: &Path) -> io::Result<()> {
-    std::fs::File::open(path)?.sync_all()
+    volume_io::sync_dir(path)
 }
 
-#[cfg(not(unix))]
-pub fn sync_directory(_path: &Path) -> io::Result<()> {
-    // The completed file was flushed before rename. Windows' no-replace move
-    // is journaled by the filesystem; Rust has no portable directory handle.
-    Ok(())
+/// Moves `source` to `target` in one atomic step that never replaces an
+/// existing `target`, as one bounded call. A call given up on has an unknown
+/// outcome (`volume_io::outcome_unknown`).
+pub fn rename_no_replace(source: &Path, target: &Path) -> io::Result<()> {
+    #[cfg(all(test, target_os = "macos"))]
+    let exclusive_unsupported = seam::EXCLUSIVE_RENAME_UNSUPPORTED.with(std::cell::Cell::get);
+    #[cfg(not(all(test, target_os = "macos")))]
+    let exclusive_unsupported = false;
+    let (from, to) = (source.to_path_buf(), target.to_path_buf());
+    volume_io::call(target, Op::Rename, None, move || {
+        rename_no_replace_raw(&from, &to, exclusive_unsupported)
+    })
 }
 
 #[cfg(target_os = "macos")]
-pub fn rename_no_replace(source: &Path, target: &Path) -> io::Result<()> {
-    #[cfg(test)]
-    if seam::EXCLUSIVE_RENAME_UNSUPPORTED.with(std::cell::Cell::get) {
-        return publish_without_exclusive_rename(source, target);
+fn rename_no_replace_raw(
+    source: &Path,
+    target: &Path,
+    exclusive_unsupported: bool,
+) -> io::Result<()> {
+    if exclusive_unsupported {
+        return publish_without_exclusive_rename_raw(source, target);
     }
     match rename_exclusive(source, target) {
         // exFAT (and other volumes macOS mounts without RENAME_EXCL) refuse
         // the exclusive rename outright rather than failing on an occupied
         // target, so they publish through an exclusive placeholder instead.
         Err(error) if error.raw_os_error() == Some(libc::ENOTSUP) => {
-            publish_without_exclusive_rename(source, target)
+            publish_without_exclusive_rename_raw(source, target)
         }
         result => result,
     }
@@ -69,7 +86,7 @@ fn rename_exclusive(source: &Path, target: &Path) -> io::Result<()> {
 /// complete file, never partial bytes. A placeholder that is no longer ours at
 /// the moment of replacement is left alone.
 #[cfg(target_os = "macos")]
-fn publish_without_exclusive_rename(source: &Path, target: &Path) -> io::Result<()> {
+fn publish_without_exclusive_rename_raw(source: &Path, target: &Path) -> io::Result<()> {
     std::fs::symlink_metadata(source)?;
     let placeholder = std::fs::OpenOptions::new()
         .write(true)
@@ -95,7 +112,7 @@ fn publish_without_exclusive_rename(source: &Path, target: &Path) -> io::Result<
 #[cfg(all(test, target_os = "macos"))]
 pub(crate) mod seam {
     thread_local! {
-        /// Makes this thread's publications behave as on a volume that
+        /// Makes publications this thread starts behave as on a volume that
         /// refuses `RENAME_EXCL` (exFAT).
         pub static EXCLUSIVE_RENAME_UNSUPPORTED: std::cell::Cell<bool> =
             const { std::cell::Cell::new(false) };
@@ -119,7 +136,7 @@ mod unsupported_exclusive_rename_tests;
 /// rebuildable cache artifact. Public user destinations never use this.
 #[cfg(not(windows))]
 pub fn replace_existing(source: &Path, target: &Path) -> io::Result<()> {
-    std::fs::rename(source, target)
+    std::fs::rename(source, target) // data root
 }
 
 #[cfg(windows)]
@@ -157,7 +174,7 @@ pub fn replace_existing(source: &Path, target: &Path) -> io::Result<()> {
 }
 
 #[cfg(windows)]
-pub fn rename_no_replace(source: &Path, target: &Path) -> io::Result<()> {
+fn rename_no_replace_raw(source: &Path, target: &Path, _exclusive_unsupported: bool) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
 
@@ -183,7 +200,7 @@ pub fn rename_no_replace(source: &Path, target: &Path) -> io::Result<()> {
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]
-pub fn rename_no_replace(source: &Path, target: &Path) -> io::Result<()> {
+fn rename_no_replace_raw(source: &Path, target: &Path, _exclusive_unsupported: bool) -> io::Result<()> {
     // Non-shipping test/development platforms: hard-link publication has the
     // same atomic no-clobber property. The source remains recovery authority
     // if removing the staging name fails.

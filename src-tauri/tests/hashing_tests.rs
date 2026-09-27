@@ -89,7 +89,7 @@ fn hash_while_copying_copies_exactly_and_hashes_the_stream() {
         .unwrap();
     let dst = dst_dir.path().join("out.bin");
 
-    let (hash, total, private) = hash_while_copying(&src, &dst).unwrap();
+    let (hash, total, mut private) = hash_while_copying(&src, &dst).unwrap();
     assert_eq!(total, bytes.len() as u64);
     assert!(private.is_named_by(&dst));
     assert_eq!(hash, blake3::hash(&bytes).to_hex().to_string());

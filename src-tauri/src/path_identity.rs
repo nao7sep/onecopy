@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 fn canonical(path: &Path) -> Result<PathBuf, String> {
-    std::fs::canonicalize(crate::winpath::for_fs(path).as_ref())
+    crate::volume_io::canonicalize(path)
         .map_err(|e| format!("could not resolve directory {}: {e}", path.display()))
 }
 

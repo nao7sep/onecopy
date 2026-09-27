@@ -21,6 +21,7 @@ use unicode_normalization::UnicodeNormalization;
 use crate::logging;
 use crate::preview::{self, CachePaths};
 use crate::trash;
+use crate::volume_io;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DeleteMode {
@@ -41,8 +42,13 @@ impl DeleteMode {
 #[serde(rename_all = "camelCase")]
 pub struct DeleteOutcome {
     pub deleted_files: u64,
+    /// Files not deleted, including `unknown_files`.
     pub failed_files: u64,
     pub removed_rows: u64,
+    /// Files whose removal was given up on while their volume was not
+    /// responding: each may be gone or still in place. Their rows stay until
+    /// the next source check settles them.
+    pub unknown_files: u64,
 }
 
 /// Identifies a logical item the way the grid does: by content hash, or by
@@ -103,6 +109,7 @@ pub struct DeleteItemResult {
     pub deleted_files: u64,
     pub failed_files: u64,
     pub removed_rows: u64,
+    pub unknown_files: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
@@ -114,6 +121,7 @@ pub struct DeleteBatchOutcome {
     pub deleted_files: u64,
     pub failed_files: u64,
     pub removed_rows: u64,
+    pub unknown_files: u64,
     pub files_total: u64,
     pub bytes_total: u64,
     pub items_started: u64,
@@ -270,7 +278,7 @@ fn delete_targets(
                     trash::trash_file(file, owning_root, target.content_hash.as_deref())
                         .map(|_| ())
                 }
-                Err(error) => Err(error.clone()),
+                Err(error) => Err(error.clone().into()),
             },
             DeleteMode::Permanent => permanently_delete_file(file),
         };
@@ -364,6 +372,27 @@ fn delete_targets(
                 }
                 on_attempt(target.bytes, false);
             }
+            Err(err) if err.outcome_unknown => {
+                // Given up on while the volume was not responding: the file
+                // may be gone or still in place. Its row stays; the next
+                // source check finds it present, or missing (and in Deleted
+                // files when it was trashed).
+                outcome.failed_files += 1;
+                outcome.unknown_files += 1;
+                logging::warn(
+                    "delete outcome unknown for one copy",
+                    json!({ "path": target.abs_path, "error": { "message": err.message } }),
+                );
+                crate::index_store::upsert_issue_with_descriptor(
+                    conn,
+                    Some(&target.abs_path),
+                    DELETE_OUTCOME_UNKNOWN,
+                    Some("notice.deleteOutcomeUnknown"),
+                    None,
+                    &err.message,
+                )?;
+                on_attempt(target.bytes, true);
+            }
             Err(err) => {
                 outcome.failed_files += 1;
                 // The issues table is the user surface; the session log is
@@ -371,7 +400,7 @@ fn delete_targets(
                 // raised, with its context intact.
                 logging::warn(
                     "delete failed for one copy",
-                    json!({ "path": target.abs_path, "error": { "message": err } }),
+                    json!({ "path": target.abs_path, "error": { "message": err.message } }),
                 );
                 crate::index_store::upsert_issue_with_descriptor(
                     conn,
@@ -379,7 +408,7 @@ fn delete_targets(
                     "delete-error",
                     Some("notice.deleteFailed"),
                     None,
-                    &err,
+                    &err.message,
                 )?;
                 on_attempt(target.bytes, true);
             }
@@ -393,6 +422,7 @@ fn delete_targets(
             "mode": mode.as_str(),
             "deletedFiles": outcome.deleted_files,
             "failedFiles": outcome.failed_files,
+            "unknownFiles": outcome.unknown_files,
         }),
     );
 
@@ -574,10 +604,12 @@ pub fn delete_accepted_batch(
             outcome.deleted_files = outcome.deleted_files.saturating_add(step.deleted_files);
             outcome.failed_files = outcome.failed_files.saturating_add(step.failed_files);
             outcome.removed_rows = outcome.removed_rows.saturating_add(step.removed_rows);
+            outcome.unknown_files = outcome.unknown_files.saturating_add(step.unknown_files);
         }
         batch.deleted_files = batch.deleted_files.saturating_add(outcome.deleted_files);
         batch.failed_files = batch.failed_files.saturating_add(outcome.failed_files);
         batch.removed_rows = batch.removed_rows.saturating_add(outcome.removed_rows);
+        batch.unknown_files = batch.unknown_files.saturating_add(outcome.unknown_files);
         if !completed_unit {
             break;
         }
@@ -586,6 +618,7 @@ pub fn delete_accepted_batch(
             deleted_files: outcome.deleted_files,
             failed_files: outcome.failed_files,
             removed_rows: outcome.removed_rows,
+            unknown_files: outcome.unknown_files,
         });
         items_done = items_done.saturating_add(1);
         on_progress(DeleteBatchProgress::Deleting {
@@ -602,16 +635,26 @@ pub fn delete_accepted_batch(
     Ok(batch)
 }
 
-fn permanently_delete_file(file: &Path) -> Result<(), String> {
+fn permanently_delete_file(file: &Path) -> Result<(), trash::TrashError> {
     // A missing file fails as that one file, exactly as recoverable deletion
     // does: nothing was deleted, so the receipt must not count it.
-    let metadata = std::fs::symlink_metadata(crate::winpath::for_fs(file).as_ref())
+    let metadata = volume_io::symlink_metadata(file)
         .map_err(|error| format!("file to delete is unavailable: {error}"))?;
     if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
-        return Err(format!("not a regular file: {}", file.display()));
+        return Err(format!("not a regular file: {}", file.display()).into());
     }
-    std::fs::remove_file(crate::winpath::for_fs(file).as_ref()).map_err(|error| error.to_string())
+    volume_io::remove_file(file).map_err(|error| trash::TrashError {
+        message: error.to_string(),
+        outcome_unknown: volume_io::outcome_unknown(&error),
+    })
 }
+
+/// Issue kind for a file whose delete or trash move was given up on while
+/// its volume was not responding.
+pub const DELETE_OUTCOME_UNKNOWN: &str = "delete-outcome-unknown";
+/// Issue kind for an output whose publication was given up on while the
+/// destination was not responding.
+pub const COPY_OUTCOME_UNKNOWN: &str = "copy-outcome-unknown";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize, serde::Serialize)]
 pub enum MoveOutMode {
@@ -677,6 +720,10 @@ pub struct MoveOutOutcome {
     /// holds different content; this failure leaves NOTHING at the target and
     /// previously had no way to be expressed at all.
     pub undelivered: Vec<String>,
+    /// Outputs whose publication was given up on while the destination was
+    /// not responding: each is either a complete file at its target or
+    /// nothing. Their sources stay in place either way.
+    pub unknown: Vec<String>,
     pub post_action: DeleteOutcome,
 }
 
@@ -721,6 +768,7 @@ pub struct MoveBatchOutcome {
     pub trashed_destination_files: u64,
     pub conflicts: Vec<String>,
     pub undelivered: Vec<String>,
+    pub unknown: Vec<String>,
     pub post_action: DeleteOutcome,
     pub files_total: u64,
     pub bytes_total: u64,
@@ -1088,9 +1136,14 @@ pub fn move_batch_reviewed(
                 });
             },
         );
+        let mut stopped = None;
         let (outcome, unit_cancelled) = match execution {
             Ok(MoveUnitResult::Completed(outcome)) => (outcome, false),
             Ok(MoveUnitResult::Cancelled(outcome)) => (outcome, true),
+            Ok(MoveUnitResult::Stopped(outcome, error)) => {
+                stopped = Some(error);
+                (outcome, false)
+            }
             Err(error) => {
                 logging::warn(
                     "destination batch stopped inside one logical item",
@@ -1115,6 +1168,11 @@ pub fn move_batch_reviewed(
         batch
             .undelivered
             .extend(outcome.undelivered.iter().cloned());
+        batch.unknown.extend(outcome.unknown.iter().cloned());
+        batch.post_action.unknown_files = batch
+            .post_action
+            .unknown_files
+            .saturating_add(outcome.post_action.unknown_files);
         batch.post_action.deleted_files = batch
             .post_action
             .deleted_files
@@ -1131,6 +1189,7 @@ pub fn move_batch_reviewed(
             || outcome.skipped_identical > 0
             || !outcome.conflicts.is_empty()
             || !outcome.undelivered.is_empty()
+            || !outcome.unknown.is_empty()
             || outcome.post_action.deleted_files > 0
             || outcome.post_action.failed_files > 0;
         let stopped_by_conflict = !outcome.conflicts.is_empty();
@@ -1139,6 +1198,14 @@ pub fn move_batch_reviewed(
                 item: unit.item,
                 outcome,
             });
+        }
+        if let Some(error) = stopped {
+            logging::warn(
+                "destination batch stopped: the destination is not responding",
+                json!({ "error": { "message": error } }),
+            );
+            batch.error = Some(error);
+            break;
         }
         if unit_cancelled {
             batch.cancelled = true;
@@ -1188,7 +1255,9 @@ pub fn admit_destination(
     dest_dir: &Path,
     configured: &crate::storage::ConfiguredRoots,
 ) -> Result<std::path::PathBuf, String> {
-    if !dest_dir.is_dir() {
+    if !volume_io::is_dir(dest_dir).map_err(|error| {
+        format!("could not inspect destination {}: {error}", dest_dir.display())
+    })? {
         return Err(format!(
             "destination is not a directory: {}",
             dest_dir.display()
@@ -1197,7 +1266,7 @@ pub fn admit_destination(
     let mut owner: Option<(usize, &std::path::PathBuf)> = None;
     for root in &configured.destinations {
         if crate::path_identity::directory_is_within(dest_dir, root)? {
-            let depth = std::fs::canonicalize(crate::winpath::for_fs(root).as_ref())
+            let depth = volume_io::canonicalize(root)
                 .map(|resolved| resolved.components().count())
                 .unwrap_or(0);
             if owner.is_none_or(|(deepest, _)| depth > deepest) {
@@ -1273,10 +1342,14 @@ fn directory_is_case_sensitive(directory: &Path) -> bool {
     let Ok(path) = std::ffi::CString::new(directory.as_os_str().as_bytes()) else {
         return false;
     };
-    // SAFETY: `path` is an owned NUL-terminated buffer alive for the call.
-    // An unanswerable query reads as case-insensitive, which only ever
-    // presents more names as conflicts, never fewer.
-    unsafe { libc::pathconf(path.as_ptr(), libc::_PC_CASE_SENSITIVE) == 1 }
+    // An unanswerable query (a volume not responding included) reads as
+    // case-insensitive, which only ever presents more names as conflicts,
+    // never fewer.
+    volume_io::call(directory, volume_io::Op::Stat, None, move || {
+        // SAFETY: `path` is an owned NUL-terminated buffer alive for the call.
+        Ok(unsafe { libc::pathconf(path.as_ptr(), libc::_PC_CASE_SENSITIVE) == 1 })
+    })
+    .unwrap_or(false)
 }
 
 #[cfg(windows)]
@@ -1408,7 +1481,7 @@ fn observe_destination(
     path: &Path,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<DestinationObservation, String> {
-    let metadata = match std::fs::symlink_metadata(crate::winpath::for_fs(path).as_ref()) {
+    let metadata = match volume_io::symlink_metadata(path) {
         Ok(metadata) => metadata,
         // A name the destination cannot hold holds nothing; publishing it
         // later fails as that one file.
@@ -1485,14 +1558,14 @@ fn reviewed_replacement_family(
         let stem = target
             .file_stem()
             .ok_or_else(|| format!("destination has no file name: {}", target.display()))?;
-        for entry in std::fs::read_dir(crate::winpath::for_fs(parent).as_ref())
+        for entry in volume_io::read_dir(parent, false)
             .map_err(|error| format!("could not inspect destination companions: {error}"))?
         {
             // `read_dir` preserves the `\\?\` filesystem prefix from its input
             // on Windows. Rebuild the child from the reviewed, user-facing
             // parent so recovery manifests and plan tokens keep one canonical
             // spelling while later filesystem calls can add the prefix again.
-            let path = parent.join(entry.map_err(|error| error.to_string())?.file_name());
+            let path = parent.join(entry.file_name);
             let same_stem = path
                 .file_stem()
                 .is_some_and(|candidate| names.same(Path::new(candidate), Path::new(stem)));
@@ -1573,7 +1646,7 @@ fn apply_conflict_renames(
             // that one file, like any other refused final name.
             let available = candidates.iter().all(|candidate| {
                 !reserved.contains(&names.key(candidate))
-                    && std::fs::symlink_metadata(crate::winpath::for_fs(candidate).as_ref())
+                    && volume_io::symlink_metadata(candidate)
                         .is_err_and(|error| {
                             error.kind() == std::io::ErrorKind::NotFound || is_name_error(&error)
                         })
@@ -1753,7 +1826,7 @@ fn delivery_sources(rows: Vec<PhysicalRow>, roots: &[std::path::PathBuf]) -> Vec
 /// A planned file's size for progress: its current size when it is a regular
 /// file now, otherwise the indexed size (an unavailable copy still counts).
 fn current_or_indexed_bytes(abs_path: &str, indexed_bytes: Option<i64>) -> u64 {
-    std::fs::symlink_metadata(crate::winpath::for_fs(Path::new(abs_path)).as_ref())
+    volume_io::symlink_metadata(Path::new(abs_path))
         .ok()
         .filter(|metadata| metadata.file_type().is_file())
         .map(|metadata| metadata.len())
@@ -1794,6 +1867,8 @@ enum StageResult {
 enum MoveUnitResult {
     Completed(MoveOutOutcome),
     Cancelled(MoveOutOutcome),
+    /// The destination stopped answering; nothing further is attempted.
+    Stopped(MoveOutOutcome, String),
 }
 
 /// Delivers one logical item. Every output is first written and verified
@@ -1876,13 +1951,17 @@ fn execute_move_unit(
             return Ok(MoveUnitResult::Cancelled(outcome));
         }
         // From publication through this output group's source cleanup,
-        // cancellation is deliberately deferred. The next output is the next
-        // safe boundary.
+        // cancellation is deliberately deferred: each of those short steps
+        // finishes within its own bound. The next output is the next safe
+        // boundary.
         output
             .private
             .claim()
             .map_err(|error| format!("private output changed before publication: {error}"))?;
         let delivered = match output.private.publish(&output.target) {
+            Err(error) if volume_io::wait_failure(&error).is_some() => {
+                return publication_given_up(conn, outcome, &output, &error, on_progress);
+            }
             Ok(()) => {
                 let durable = sync_published(conn, &output.target)?;
                 if durable {
@@ -1950,6 +2029,9 @@ fn execute_move_unit(
                             .saturating_add(delivery.replacement_family.len() as u64);
                         match output.private.publish(&output.target) {
                             Ok(()) => {}
+                            Err(error) if volume_io::wait_failure(&error).is_some() => {
+                                return publication_given_up(conn, outcome, &output, &error, on_progress);
+                            }
                             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                                 return Err(format!(
                                     "a new destination conflict appeared at {}",
@@ -2053,6 +2135,51 @@ fn execute_move_unit(
     }
 
     Ok(MoveUnitResult::Completed(outcome))
+}
+
+/// Ends a unit whose publication the destination did not answer. A call
+/// given up on while it ran leaves the output either complete at its target
+/// or nothing there (it settles on its worker); one refused at once because
+/// the destination was already stalled did nothing. Either way the sources
+/// stay in place and nothing further goes to this destination.
+fn publication_given_up(
+    conn: &Connection,
+    mut outcome: MoveOutOutcome,
+    output: &StagedOutput,
+    error: &std::io::Error,
+    on_progress: &mut dyn FnMut(MoveUnitProgress),
+) -> Result<MoveUnitResult, String> {
+    on_progress(MoveUnitProgress::Attempt {
+        bytes: output.bytes,
+        failed: true,
+    });
+    let target = output.target.to_string_lossy().into_owned();
+    if volume_io::outcome_unknown(error) {
+        logging::warn(
+            "copy-out publication outcome unknown",
+            json!({ "target": target, "error": { "message": error.to_string() } }),
+        );
+        crate::index_store::upsert_issue_with_descriptor(
+            conn,
+            Some(&target),
+            COPY_OUTCOME_UNKNOWN,
+            Some("notice.copyOutcomeUnknown"),
+            None,
+            &error.to_string(),
+        )?;
+        outcome.unknown.push(target);
+    } else {
+        crate::index_store::upsert_issue_with_descriptor(
+            conn,
+            Some(&target),
+            "copy-error",
+            Some("notice.copyPublishFailed"),
+            None,
+            &error.to_string(),
+        )?;
+        outcome.undelivered.push(target);
+    }
+    Ok(MoveUnitResult::Stopped(outcome, error.to_string()))
 }
 
 /// Makes a just-published output durable. An output whose directory could not

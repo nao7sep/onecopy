@@ -42,6 +42,8 @@ The Issues surface is one current-run inbox, without separate Active and Recent 
 
 Repeated background failures are combined with a count. Issue presentation must remain useful when many files fail; it summarizes the condition without hiding access to the affected files and technical context.
 
+A drive that stops answering (`file-operations.md`, `Drives that stop answering`) is a condition of that drive, not a failure of the app: the affected step fails as not responding, and a file whose rename or removal was given up on keeps an Issue stating that its outcome is unknown until a later check or operation settles it.
+
 Issue file paths provide in-app Reveal through Main's diagnostic-navigation contract. A failed or unavailable Reveal stays visible in the usable Issues surface without dismissing the record.
 
 Retained Issue records and existing notification history are not deleted when the inbox is simplified or the app restarts. They are reconstructible library diagnostics rather than a permanent operation ledger and follow the explicit rebuild lifetime defined by `library-maintenance.md`.

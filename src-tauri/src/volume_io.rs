@@ -449,8 +449,25 @@ pub fn call_bounded<T: Send + 'static>(
     cancel: Option<&dyn Fn() -> bool>,
     f: impl FnOnce() -> io::Result<T> + Send + 'static,
 ) -> io::Result<T> {
+    match call_with(path, op, bound, cancel, (), move |()| f()) {
+        Ok(result) => result,
+        Err((error, ())) => Err(error),
+    }
+}
+
+/// `call_bounded` over `data`, which comes back untouched (`Err`) when the
+/// call never started because its volume is stalled, so a resource it holds
+/// is neither lost nor released on the caller's thread.
+fn call_with<D: Send + 'static, T: Send + 'static>(
+    path: &Path,
+    op: Op,
+    bound: Duration,
+    cancel: Option<&dyn Fn() -> bool>,
+    data: D,
+    f: impl FnOnce(D) -> io::Result<T> + Send + 'static,
+) -> Result<io::Result<T>, (io::Error, D)> {
     if on_worker() {
-        return f();
+        return Ok(f(data));
     }
     let lane = lane_of(path);
     let wait = |failure| VolumeWait {
@@ -459,7 +476,7 @@ pub fn call_bounded<T: Send + 'static>(
         op,
     };
     if lane_stalled(&lane) {
-        return Err(wait(WaitFailure::Stalled).into_io());
+        return Err((wait(WaitFailure::Stalled).into_io(), data));
     }
     let bound = lane.fake.as_ref().map_or(bound, |fake| fake.bound);
     let (sender, receiver) = mpsc::sync_channel::<io::Result<T>>(1);
@@ -468,10 +485,10 @@ pub fn call_bounded<T: Send + 'static>(
     let job_key = lane.key.clone();
     let fake = lane.fake.clone();
     let job_path = path.to_path_buf();
-    submit(Box::new(move || {
+    if let Err(error) = submit(Box::new(move || {
         let result = match fake.and_then(|fake| fake.hold(op, &job_path)) {
             Some(failed) => Err(failed),
-            None => match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+            None => match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(data))) {
                 Ok(result) => result,
                 Err(_) => Err(io::Error::other("a filesystem call panicked")),
             },
@@ -488,16 +505,20 @@ pub fn call_bounded<T: Send + 'static>(
             drop(state);
             let _ = sender.send(result);
         }
-    }))?;
+    })) {
+        return Ok(Err(error));
+    }
 
     let started = Instant::now();
     let deadline = started + bound;
     let mut cancel_at: Option<Instant> = None;
     loop {
         match receiver.recv_timeout(POLL) {
-            Ok(result) => return result,
+            Ok(result) => return Ok(result),
             Err(RecvTimeoutError::Disconnected) => {
-                return Err(io::Error::other("a filesystem call ended without a result"))
+                return Ok(Err(io::Error::other(
+                    "a filesystem call ended without a result",
+                )))
             }
             Err(RecvTimeoutError::Timeout) => {}
         }
@@ -515,9 +536,9 @@ pub fn call_bounded<T: Send + 'static>(
         let mut call_state = state.lock().unwrap_or_else(|p| p.into_inner());
         if *call_state == CallState::Done {
             drop(call_state);
-            return receiver
-                .recv()
-                .unwrap_or_else(|_| Err(io::Error::other("a filesystem call ended without a result")));
+            return Ok(receiver.recv().unwrap_or_else(|_| {
+                Err(io::Error::other("a filesystem call ended without a result"))
+            }));
         }
         *call_state = CallState::Abandoned;
         // Counted while the call's state is still held, so its settle can
@@ -538,7 +559,7 @@ pub fn call_bounded<T: Send + 'static>(
                 "waitedMs": started.elapsed().as_millis() as u64,
             }),
         );
-        return Err(wait.into_io());
+        return Ok(Err(wait.into_io()));
     }
 }
 
@@ -663,6 +684,37 @@ pub fn open_read(path: &Path) -> io::Result<VolumeFile> {
     Ok(VolumeFile::new(file, path.to_path_buf()))
 }
 
+/// Creates `path` exclusively for reading and writing; an existing entry
+/// answers `AlreadyExists`.
+pub fn create_new(path: &Path) -> io::Result<VolumeFile> {
+    let target = fs_path(path);
+    let file = call(path, Op::Create, None, move || {
+        File::options()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(target)
+    })?;
+    Ok(VolumeFile::new(file, path.to_path_buf()))
+}
+
+/// Renames `from` to `to`, replacing an existing `to` where the platform
+/// does.
+pub fn rename(from: &Path, to: &Path) -> io::Result<()> {
+    let (source, target) = (fs_path(from), fs_path(to));
+    call(to, Op::Rename, None, move || std::fs::rename(source, target))
+}
+
+/// Appends `bytes` to `path` (creating it) and flushes, in one bounded call.
+pub fn append_synced(path: &Path, bytes: Vec<u8>) -> io::Result<()> {
+    let target = fs_path(path);
+    call(path, Op::Write, None, move || {
+        let mut file = File::options().create(true).append(true).open(target)?;
+        file.write_all(&bytes)?;
+        file.sync_all()
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Open files
 
@@ -718,6 +770,12 @@ impl VolumeFile {
         &self.path
     }
 
+    /// Whether this handle still holds its file (no call on it was given up
+    /// on).
+    pub fn is_open(&self) -> bool {
+        self.file.is_some()
+    }
+
     /// What to do with the file if a call on it is abandoned and later
     /// returns: runs on the worker, where calls run inline.
     pub fn set_settle(&mut self, settle: Arc<dyn Fn(File) + Send + Sync>) {
@@ -743,28 +801,32 @@ impl VolumeFile {
         cancel: Option<&dyn Fn() -> bool>,
         f: impl FnOnce(&mut File) -> io::Result<R> + Send + 'static,
     ) -> io::Result<R> {
-        let file = self.file.take().ok_or_else(|| self.lost())?;
         let carrier = Carrier {
-            file: Some(file),
+            file: Some(self.file.take().ok_or_else(|| self.lost())?),
             settle: self.settle.clone(),
         };
-        let result = call_bounded(
+        let result = call_with(
             &self.path,
             op,
             bound.unwrap_or_else(|| op.bound()),
             cancel,
-            move || {
-                let mut carrier = carrier;
+            carrier,
+            move |mut carrier| {
                 let result = f(carrier.file.as_mut().expect("carrier holds the file"));
                 Ok((carrier, result))
             },
         );
         match result {
-            Ok((mut carrier, result)) => {
+            Ok(Ok((mut carrier, result))) => {
                 self.file = carrier.file.take();
                 result
             }
-            Err(error) => Err(error),
+            Ok(Err(error)) => Err(error),
+            // Never started: the file is still ours.
+            Err((error, mut carrier)) => {
+                self.file = carrier.file.take();
+                Err(error)
+            }
         }
     }
 
@@ -838,15 +900,16 @@ impl Write for VolumeFile {
 
 impl Drop for VolumeFile {
     fn drop(&mut self) {
-        // Closing can wait on the device too; close on a pool thread.
+        // Closing can wait on the device too; close on a pool thread. On a
+        // stalled volume the close is left to a pool thread without waiting.
         if let Some(file) = self.file.take() {
-            if on_worker() {
-                drop(file);
-            } else {
-                let _ = call(&self.path, Op::Read, None, move || {
+            if let Err((_, file)) =
+                call_with(&self.path, Op::Read, IO_BOUND, None, file, |file| {
                     drop(file);
                     Ok(())
-                });
+                })
+            {
+                let _ = submit(Box::new(move || drop(file)));
             }
         }
     }
@@ -1078,8 +1141,9 @@ struct FakeState {
 
 #[derive(Default)]
 struct FakeGate {
-    /// Ops that stall (empty: every op) and an optional path prefix.
-    stalling: Option<(Vec<Op>, Option<PathBuf>)>,
+    /// Ops that stall (empty: every op), an optional path prefix, and how
+    /// many matching calls still pass before the stall begins.
+    stalling: Option<(Vec<Op>, Option<PathBuf>, usize)>,
     /// Bumped by each release; a held call leaves when it changes.
     generation: u64,
     /// How the last release let held calls go: run them, or fail them.
@@ -1090,11 +1154,16 @@ impl FakeState {
     /// Blocks a matching call until released. `Some`: the release failed it.
     fn hold(&self, op: Op, path: &Path) -> Option<io::Error> {
         let mut gate = self.gate.lock().unwrap_or_else(|p| p.into_inner());
-        let matches = gate.stalling.as_ref().is_some_and(|(ops, prefix)| {
-            (ops.is_empty() || ops.contains(&op))
-                && prefix.as_ref().is_none_or(|prefix| path.starts_with(prefix))
-        });
-        if !matches {
+        let Some((ops, prefix, passing)) = gate.stalling.as_mut() else {
+            return None;
+        };
+        if !(ops.is_empty() || ops.contains(&op))
+            || !prefix.as_ref().is_none_or(|prefix| path.starts_with(prefix))
+        {
+            return None;
+        }
+        if *passing > 0 {
+            *passing -= 1;
             return None;
         }
         let generation = gate.generation;
@@ -1141,8 +1210,13 @@ impl FakeStallingVolume {
     /// From now on, calls of `ops` (every op when empty) beneath `under`
     /// (anywhere on the volume when `None`) stall until released.
     pub fn stall(&self, ops: &[Op], under: Option<&Path>) {
+        self.stall_after(ops, under, 0);
+    }
+
+    /// Like `stall`, but the first `passing` matching calls still run.
+    pub fn stall_after(&self, ops: &[Op], under: Option<&Path>, passing: usize) {
         let mut gate = self.state.gate.lock().unwrap_or_else(|p| p.into_inner());
-        gate.stalling = Some((ops.to_vec(), under.map(Path::to_path_buf)));
+        gate.stalling = Some((ops.to_vec(), under.map(Path::to_path_buf), passing));
     }
 
     /// Stops stalling and runs every held call.

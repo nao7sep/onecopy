@@ -9,9 +9,10 @@
 //! source bytes while writing, then reads the private output back before the
 //! caller publishes it.
 
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Seek, SeekFrom};
 use std::path::Path;
+
+use crate::volume_io::{self, VolumeFile};
 
 /// Head/tail window for the prehash tier (public: the tests and any
 /// consumer reasoning about the tier need the exact spec value).
@@ -20,10 +21,14 @@ pub const PREHASH_WINDOW: u64 = 64 * 1024;
 /// Streaming buffer for full hashing and tee-copying.
 const BUF_SIZE: usize = 1024 * 1024;
 
+fn cancelled_error() -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled")
+}
+
 /// blake3 over the first and last 64 KB (whole file when ≤128 KB). Cheap
 /// same-size disambiguation only — never a collapse criterion.
 pub fn prehash(path: &Path) -> std::io::Result<String> {
-    let mut file = File::open(crate::winpath::for_fs(path).as_ref())?;
+    let mut file = volume_io::open_read(path)?;
     let size = file.metadata()?.len();
     let mut hasher = blake3::Hasher::new();
 
@@ -43,66 +48,51 @@ pub fn prehash(path: &Path) -> std::io::Result<String> {
 
 /// Full streaming blake3 of the file's bytes.
 pub fn full_hash(path: &Path) -> std::io::Result<String> {
-    let mut file = File::open(crate::winpath::for_fs(path).as_ref())?;
-    full_hash_file(&mut file)
+    let mut file = volume_io::open_read(path)?;
+    hash_from_current(&mut file, &|| false, &mut |_| {})
 }
 
-pub(crate) fn full_hash_file(file: &mut File) -> std::io::Result<String> {
-    file.seek(SeekFrom::Start(0))?;
-    let mut hasher = blake3::Hasher::new();
-    hasher.update_reader(file)?;
-    Ok(hasher.finalize().to_hex().to_string())
-}
-
-pub(crate) fn full_hash_file_cancellable(
-    file: &mut File,
-    total: u64,
-    cancelled: &dyn Fn() -> bool,
-    progress: &mut dyn FnMut(u64, u64),
+/// Hashes the rest of `file` in bounded 1 MiB reads. `cancel` is checked
+/// between reads and ends a read still waiting on a stalled volume.
+fn hash_from_current(
+    file: &mut VolumeFile,
+    cancel: &dyn Fn() -> bool,
+    progress: &mut dyn FnMut(u64),
 ) -> std::io::Result<String> {
-    file.seek(SeekFrom::Start(0))?;
     let mut hasher = blake3::Hasher::new();
     let mut buf = vec![0u8; BUF_SIZE];
     let mut done = 0u64;
-    progress(done, total);
     loop {
-        if cancelled() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Interrupted,
-                "cancelled",
-            ));
+        if cancel() {
+            return Err(cancelled_error());
         }
-        let read = file.read(&mut buf)?;
+        let read = file.read_cancellable(&mut buf, Some(cancel))?;
         if read == 0 {
             break;
         }
         hasher.update(&buf[..read]);
         done = done.saturating_add(read as u64);
-        progress(done, total);
+        progress(done);
     }
     Ok(hasher.finalize().to_hex().to_string())
+}
+
+pub(crate) fn full_hash_file_cancellable(
+    file: &mut VolumeFile,
+    total: u64,
+    cancelled: &dyn Fn() -> bool,
+    progress: &mut dyn FnMut(u64, u64),
+) -> std::io::Result<String> {
+    file.seek(SeekFrom::Start(0))?;
+    progress(0, total);
+    hash_from_current(file, cancelled, &mut |done| progress(done, total))
 }
 
 /// Full hash with caller-owned cancellation. Derived work uses its combined
 /// pause/preemption boundary; scanner work keeps using its atomic token.
 pub fn full_hash_with_cancel(path: &Path, cancel: &dyn Fn() -> bool) -> std::io::Result<String> {
-    let mut file = File::open(crate::winpath::for_fs(path).as_ref())?;
-    let mut hasher = blake3::Hasher::new();
-    let mut buf = vec![0u8; BUF_SIZE];
-    loop {
-        if cancel() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Interrupted,
-                "cancelled",
-            ));
-        }
-        let read = file.read(&mut buf)?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buf[..read]);
-    }
-    Ok(hasher.finalize().to_hex().to_string())
+    let mut file = volume_io::open_read(path)?;
+    hash_from_current(&mut file, cancel, &mut |_| {})
 }
 
 /// The scan-progress variant reports bytes after each bounded read. The
@@ -113,28 +103,14 @@ pub fn full_hash_cancellable_with_progress(
     cancel: &std::sync::atomic::AtomicBool,
     progress: &dyn Fn(u64, u64),
 ) -> std::io::Result<String> {
-    let mut file = File::open(crate::winpath::for_fs(path).as_ref())?;
+    let mut file = volume_io::open_read(path)?;
     let total = file.metadata()?.len();
-    let mut hasher = blake3::Hasher::new();
-    let mut buf = vec![0u8; BUF_SIZE];
-    let mut done = 0u64;
-    progress(done, total);
-    loop {
-        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Interrupted,
-                "cancelled",
-            ));
-        }
-        let n = file.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-        done += n as u64;
-        progress(done, total);
-    }
-    Ok(hasher.finalize().to_hex().to_string())
+    progress(0, total);
+    hash_from_current(
+        &mut file,
+        &|| cancel.load(std::sync::atomic::Ordering::Relaxed),
+        &mut |done| progress(done, total),
+    )
 }
 
 /// Copies `src` to `dst` while hashing the bytes read. Returns (hash, bytes
@@ -208,20 +184,28 @@ fn hash_while_copying_detailed(
     progress: &mut dyn FnMut(u64, u64),
     after_sync: impl FnOnce(&Path),
 ) -> Result<(String, u64, crate::file_identity::PrivateFile), CopyFailure> {
+    // A read or write given up on because Cancel was pressed is a
+    // cancellation, not a failure of either side.
+    let classify = |error: std::io::Error, side: fn(std::io::Error) -> CopyFailure| {
+        if cancelled()
+            && (error.kind() == std::io::ErrorKind::Interrupted
+                || volume_io::wait_failure(&error).is_some())
+        {
+            CopyFailure::Cancelled
+        } else {
+            side(error)
+        }
+    };
     // The source is the regular file currently at the recorded path: a
     // symlink put there is not followed and a FIFO is refused without waiting.
-    let (mut reader, _) =
-        crate::file_identity::open_regular_nofollow(src).map_err(CopyFailure::Source)?;
+    let (mut reader, _) = crate::file_identity::open_regular_nofollow(src)
+        .map_err(|error| classify(error, CopyFailure::Source))?;
     let expected_total = reader
         .metadata()
-        .map_err(CopyFailure::Source)?
+        .map_err(|error| classify(error, CopyFailure::Source))?
         .len();
-    let writer = File::options()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(crate::winpath::for_fs(dst).as_ref())
-        .map_err(CopyFailure::Destination)?;
+    let writer =
+        volume_io::create_new(dst).map_err(|error| classify(error, CopyFailure::Destination))?;
     // From here every failure or cancellation drops the private output, which
     // removes it while `dst` still names this descriptor's file.
     let mut private = crate::file_identity::PrivateFile::new(dst.to_path_buf(), writer);
@@ -235,18 +219,22 @@ fn hash_while_copying_detailed(
         if cancelled() {
             return Err(CopyFailure::Cancelled);
         }
-        let n = reader.read(&mut buf).map_err(CopyFailure::Source)?;
+        let n = reader
+            .read_cancellable(&mut buf, Some(cancelled))
+            .map_err(|error| classify(error, CopyFailure::Source))?;
         if n == 0 {
             break;
         }
         hasher.update(&buf[..n]);
         writer
-            .write_all(&buf[..n])
-            .map_err(CopyFailure::Destination)?;
+            .write_all_cancellable(&buf[..n], Some(cancelled))
+            .map_err(|error| classify(error, CopyFailure::Destination))?;
         total += n as u64;
         progress(total, expected_total);
     }
-    writer.sync_all().map_err(CopyFailure::Destination)?;
+    writer
+        .sync_all(total)
+        .map_err(|error| classify(error, CopyFailure::Destination))?;
     after_sync(dst);
     let streamed_hash = hasher.finalize().to_hex().to_string();
 
@@ -254,7 +242,7 @@ fn hash_while_copying_detailed(
     // `dst` would make a pathname replacement the object being verified.
     writer
         .seek(SeekFrom::Start(0))
-        .map_err(CopyFailure::Destination)?;
+        .map_err(|error| classify(error, CopyFailure::Destination))?;
     let mut read_back = blake3::Hasher::new();
     loop {
         // The output is still private, so a cancel here abandons it like
@@ -262,7 +250,9 @@ fn hash_while_copying_detailed(
         if cancelled() {
             return Err(CopyFailure::Cancelled);
         }
-        let n = writer.read(&mut buf).map_err(CopyFailure::Destination)?;
+        let n = writer
+            .read_cancellable(&mut buf, Some(cancelled))
+            .map_err(|error| classify(error, CopyFailure::Destination))?;
         if n == 0 {
             break;
         }
@@ -283,14 +273,14 @@ fn hash_while_copying_detailed(
 mod descriptor_tests;
 
 fn copy_exact_into(
-    file: &mut File,
+    file: &mut VolumeFile,
     hasher: &mut blake3::Hasher,
     mut remaining: u64,
 ) -> std::io::Result<()> {
     let mut buf = vec![0u8; BUF_SIZE.min(PREHASH_WINDOW as usize)];
     while remaining > 0 {
         let want = buf.len().min(remaining as usize);
-        let n = file.read(&mut buf[..want])?;
+        let n = file.read_cancellable(&mut buf[..want], None)?;
         if n == 0 {
             break; // size raced smaller since stat; hash what exists
         }

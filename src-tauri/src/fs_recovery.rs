@@ -3,13 +3,14 @@
 //! Cleanup of private staging and reconstructible cache files must never hide
 //! the primary failure or become an unbounded retry loop. It may continue when
 //! cleanup fails, but the secondary failure still belongs in the session log.
+//! Each step is a bounded `volume_io` call.
 
 use std::path::Path;
 
 use serde_json::json;
 
 pub fn remove_file(path: &Path, context: &str) {
-    match std::fs::remove_file(path) {
+    match crate::volume_io::remove_file(path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => crate::logging::warn(
@@ -25,7 +26,7 @@ pub fn remove_file(path: &Path, context: &str) {
 }
 
 pub fn create_dir_all(path: &Path, context: &str) -> bool {
-    match std::fs::create_dir_all(path) {
+    match crate::volume_io::create_dir_all(path) {
         Ok(()) => true,
         Err(error) => {
             crate::logging::warn(
@@ -43,7 +44,7 @@ pub fn create_dir_all(path: &Path, context: &str) -> bool {
 }
 
 pub fn rename(from: &Path, to: &Path, context: &str) {
-    if let Err(error) = std::fs::rename(from, to) {
+    if let Err(error) = crate::volume_io::rename(from, to) {
         crate::logging::warn(
             "filesystem recovery failed",
             json!({

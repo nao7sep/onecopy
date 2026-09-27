@@ -8,7 +8,7 @@ fn read_back_stays_bound_to_the_writer_when_its_path_is_replaced() {
     let held = dir.path().join("held.tmp");
     std::fs::write(&source, b"copied bytes").unwrap();
 
-    let (hash, bytes, private) =
+    let (hash, bytes, mut private) =
         hash_while_copying_with_after_sync(&source, &staged, |path| {
             std::fs::rename(path, &held).unwrap();
             std::fs::write(path, b"replacement").unwrap();

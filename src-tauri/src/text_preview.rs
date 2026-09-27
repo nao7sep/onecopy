@@ -139,7 +139,7 @@ pub fn preview_file(
     requested: Option<&str>,
 ) -> Result<PreviewBody, String> {
     let max_bytes = max_bytes.clamp(1, MAX_ALLOWED_BYTES);
-    let file = crate::file_identity::open_regular_nofollow(path)
+    let mut file = crate::file_identity::open_regular_nofollow(path)
         .map_err(|error| format!("could not open the indexed file: {error}"))?
         .0;
     let byte_size = file
