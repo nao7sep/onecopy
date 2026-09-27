@@ -993,6 +993,31 @@ pub(crate) fn cache_entry_hash(tree: &str, name: &str) -> Option<String> {
     Some(hash.to_string())
 }
 
+/// Serializes the startup sweep's cache-tree scan against an identity
+/// promotion's post-commit cache rename/removal (`scanner::promote_identity`).
+/// Both sides act on the same invariant — "a cache file's key names a live
+/// `contents` row" — from two different angles: the sweep deletes a file
+/// whose key is NOT in `contents`, while a promotion commits a key OUT of
+/// `contents` and then renames or removes the file that key still names.
+/// Without a shared lock, the sweep can run its existence check in the gap
+/// between a promotion's commit and its rename, see the just-vacated
+/// provisional key as orphaned, and delete the file out from under the
+/// rename that was about to move it — losing a derived thumb/preview that
+/// then has to be regenerated. Held for the sweep's entire pass (it runs
+/// once, at startup) and only around a single promotion's commit-to-rename
+/// step, so ordinary derivation is never blocked once the sweep has finished.
+static CACHE_IDENTITY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// `pub` (not `pub(crate)`) so the race this closes can be exercised directly
+/// from an integration test in `tests/`, per tests-folder-conventions,
+/// instead of an inline unit-test exception widening the module for testing
+/// alone.
+pub fn lock_cache_identity() -> std::sync::MutexGuard<'static, ()> {
+    CACHE_IDENTITY_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Moves one identity's cache entries to a new key (provisional→real
 /// promotion): thumb, preview, and any strip frames. Best-effort — a missing
 /// source has nothing to move, and the startup sweep collects strays.
@@ -1058,6 +1083,12 @@ pub fn startup_sweep(
     launched: std::time::SystemTime,
     cancel_when: &impl Fn() -> bool,
 ) -> Result<u64, String> {
+    // Held for the whole sweep (see `CACHE_IDENTITY_LOCK`): an identity
+    // promotion committing mid-sweep must wait for the sweep to finish
+    // before it renames or removes its provisional cache files, so the
+    // sweep's existence check is never answered against a key a promotion
+    // has already committed out of `contents` but not yet acted on.
+    let _identity_lock = lock_cache_identity();
     reconcile_orphan_contents(conn)?;
     let mut removed = 0u64;
     let mut exists = conn

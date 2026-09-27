@@ -333,6 +333,37 @@ fn a_requested_preview_runs_beside_a_transcription() {
 }
 
 #[test]
+fn preview_lane_reports_closed_while_a_requested_preview_holds_it() {
+    // Phase 10 fresh review of Phase 3: `derived_work::run_preview_pass` must
+    // not contend for the index admission's urgent share — which preempts a
+    // background index owner's turn (e.g. file-information completion) at
+    // its safe point — when the preview lane cannot actually admit automatic
+    // work anyway. A requested preview occupying the lane is exactly that
+    // case: preempting an owner's turn to then find no slot free wastes the
+    // turn for nothing.
+    let _serial = crate::scan_runtime::serial_test();
+    assert!(
+        preview_lane_open_for_automatic(),
+        "the lane starts open with nothing running"
+    );
+
+    let requested = requested_preview(None, "photo").unwrap();
+    assert!(
+        !preview_lane_open_for_automatic(),
+        "a requested preview fills the lane for automatic work"
+    );
+    // `ActiveGuard::begin` (what a preview pass would actually call once it
+    // held the urgent share) agrees: it also declines.
+    assert!(ActiveGuard::begin(None, WorkClass::Previews).unwrap().is_none());
+
+    drop(requested);
+    assert!(
+        preview_lane_open_for_automatic(),
+        "the lane reopens once the requested preview finishes"
+    );
+}
+
+#[test]
 fn requested_previews_share_the_lane_but_never_derive_the_same_item_at_once() {
     let mut running = job(WorkClass::Previews, true);
     running.hash = Some("photo".to_string());

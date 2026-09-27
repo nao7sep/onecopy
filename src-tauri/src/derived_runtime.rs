@@ -401,6 +401,29 @@ fn preview_capacity(class: WorkClass) -> usize {
     }
 }
 
+/// Whether the preview lane could actually admit automatic work right now —
+/// the same refusal conditions `ActiveGuard::begin` checks for the Previews
+/// class, minus the per-thread `urgent`/`Preemption` state that only exists
+/// once a share is already held. `derived_work::run_preview_pass` checks this
+/// before contending for the index admission's urgent share: without it, a
+/// preview pass whose visible/nearby tier has required work, but whose lane
+/// is entirely occupied by a requested preview (or its FIFO queue), still
+/// took the urgent share — preempting a background index owner's turn (e.g.
+/// file-information completion, at whatever it had done so far) only to find
+/// no slot free and do nothing (Phase 10 fresh review of Phase 3).
+pub(crate) fn preview_lane_open_for_automatic() -> bool {
+    let capacity = preview_capacity(WorkClass::Previews);
+    let Ok(runtime) = RUNTIME.0.lock() else {
+        return false;
+    };
+    !shutting_down()
+        && runtime.claim.is_none()
+        && !runtime.paused(WorkClass::Previews)
+        && runtime.previews.len() < capacity
+        && !runtime.previews.iter().any(|job| job.manual)
+        && runtime.preview_queue.is_empty()
+}
+
 pub(crate) fn with_active<T>(
     app: &AppHandle,
     class: WorkClass,

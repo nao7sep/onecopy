@@ -901,7 +901,7 @@ fn run_preview_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<b
         return Ok(false);
     }
     let pass = open_pass()?;
-    if urgent_preview_pending(&pass)? {
+    if crate::derived_runtime::preview_lane_open_for_automatic() && urgent_preview_pending(&pass)? {
         match crate::scan_runtime::with_derived_share(ShareRank::Urgent, || {
             run_urgent_previews(app, &pass)
         }) {
