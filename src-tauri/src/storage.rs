@@ -445,10 +445,12 @@ impl ConfiguredRoots {
 }
 
 pub fn load_configured_roots(data_root: &Path) -> Result<ConfiguredRoots, String> {
-    let config = read_config_for_setup(data_root)?;
+    Ok(configured_roots_in(read_config_for_setup(data_root)?.as_ref()))
+}
+
+fn configured_roots_in(config: Option<&JsonValue>) -> ConfiguredRoots {
     let list = |key: &str| {
         config
-            .as_ref()
             .and_then(|document| document.get(key))
             .and_then(JsonValue::as_array)
             .into_iter()
@@ -457,10 +459,16 @@ pub fn load_configured_roots(data_root: &Path) -> Result<ConfiguredRoots, String
             .map(PathBuf::from)
             .collect::<Vec<_>>()
     };
-    Ok(ConfiguredRoots {
+    ConfiguredRoots {
         sources: list("sourceDirs"),
         destinations: list("destinationRoots"),
-    })
+    }
+}
+
+/// Every read and write of `config.json` passes its roots to `volume_io`, so
+/// each configured root fails fast as its own drive before any call on it.
+fn register_volume_roots(config: Option<&JsonValue>) {
+    crate::volume_io::register_roots(&configured_roots_in(config).all());
 }
 
 /// Patch-merges into `config.json` and returns the merged document. The core
@@ -540,6 +548,7 @@ pub fn patch_json_store(target: &Path, patch: &JsonValue) -> Result<PatchOutcome
     atomic_write_json(target, &current)?;
     if target.file_name().is_some_and(|name| name == CONFIG_FILE_NAME) {
         crate::sleep_prevention::configure(&current);
+        register_volume_roots(Some(&current));
     }
     Ok(PatchOutcome {
         merged: current,
@@ -591,6 +600,7 @@ fn read_config_optional(path: &Path) -> Result<JsonRead, String> {
             fields.remove("verifyAfterCopy");
         }
     }
+    register_volume_roots(read.value.as_ref());
     Ok(read)
 }
 

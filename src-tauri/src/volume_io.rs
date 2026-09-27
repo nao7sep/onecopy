@@ -214,20 +214,32 @@ pub fn is_not_responding(error: &io::Error) -> bool {
 // ---------------------------------------------------------------------------
 // Volumes ("lanes")
 
-/// The volume a path is on, derived from its spelling alone so choosing it
-/// never touches the filesystem: a drive letter or `\\server\share` on
-/// Windows, `/Volumes/<name>` on macOS, otherwise the boot volume. A symlink
-/// into another volume is attributed to the volume it is spelled on; that only
-/// widens or narrows the fail-fast, never a bound.
+/// The drive a call fails fast with, chosen without touching the filesystem.
+///
+/// A path's spelling alone cannot tell a network share from the startup disk:
+/// SMB or NFS mounted under a home folder, an automount, or a folder reached
+/// through a link all spell like the boot volume, and one stalled share would
+/// then make every call on the startup disk fail fast. So each configured
+/// source and destination root is its own drive (`register_roots`), in its
+/// configured spelling and in the resolved spelling `canonicalize` finds for
+/// it. Within a root the spelled volume (a drive letter or `\\server\share` on
+/// Windows, `/Volumes/<name>` on macOS, otherwise the boot volume) still
+/// splits it, so a root above several volumes never merges them. A path
+/// outside every root falls back to its spelled volume. Two roots on one drive
+/// are two lanes: a stall on one costs the other one bound before it fails
+/// fast too, which is cheaper than any identification that could merge two
+/// drives.
 #[derive(Clone)]
 struct Lane {
     key: String,
+    /// The drive as the user knows it, for messages.
+    display: String,
     fake: Option<Arc<FakeState>>,
 }
 
 fn lane_of(path: &Path) -> Lane {
+    let registry = registry();
     if FAKES_MOUNTED.load(Ordering::Acquire) {
-        let registry = registry();
         if let Some((root, fake)) = registry
             .fakes
             .iter()
@@ -236,14 +248,70 @@ fn lane_of(path: &Path) -> Lane {
         {
             return Lane {
                 key: format!("fake:{}", root.display()),
+                display: root.display().to_string(),
                 fake: Some(fake.clone()),
             };
         }
     }
-    Lane {
-        key: volume_key(path),
-        fake: None,
+    let volume = volume_key(path);
+    match registry
+        .roots
+        .iter()
+        .filter(|(spelling, _)| path.starts_with(spelling))
+        .max_by_key(|(spelling, _)| spelling.components().count())
+    {
+        Some((spelling, root)) => Lane {
+            key: format!("root:{root}|{volume}"),
+            display: if spelling.starts_with(&volume) {
+                root.clone()
+            } else {
+                volume
+            },
+            fake: None,
+        },
+        None => Lane {
+            key: volume.clone(),
+            display: volume,
+            fake: None,
+        },
     }
+}
+
+/// Makes each configured root its own drive for fail-fast. Registration only
+/// adds: a root removed from the settings keeps its lane, which groups nothing
+/// wrongly. The settings owner calls it whenever it reads or writes them.
+pub fn register_roots(roots: &[PathBuf]) {
+    let mut registry = registry();
+    for root in roots {
+        if !registry.roots.iter().any(|(spelling, _)| spelling == root) {
+            registry
+                .roots
+                .push((root.clone(), root.display().to_string()));
+        }
+    }
+}
+
+/// Records `resolved` as another spelling of `path` when `path` is a
+/// registered root, so entries a walk reports in the resolved spelling stay on
+/// that root's lane.
+fn note_resolved(path: &Path, resolved: &Path) {
+    let mut registry = registry();
+    let Some(root) = registry
+        .roots
+        .iter()
+        .find(|(spelling, _)| spelling == path)
+        .map(|(_, root)| root.clone())
+    else {
+        return;
+    };
+    if !registry.roots.iter().any(|(spelling, _)| spelling == resolved) {
+        registry.roots.push((resolved.to_path_buf(), root));
+    }
+}
+
+/// The lane a call on `path` fails fast with, for diagnostics and tests.
+pub fn lane_name(path: &Path) -> String {
+    lane_of(path).key
 }
 
 fn volume_key(path: &Path) -> String {
@@ -278,15 +346,18 @@ fn volume_key(path: &Path) -> String {
 }
 
 struct Registry {
-    /// Abandoned calls still outstanding, per volume.
+    /// Abandoned calls still outstanding, per lane.
     abandoned: HashMap<String, usize>,
     fakes: Vec<(PathBuf, Arc<FakeState>)>,
+    /// Spellings of configured roots, each with the root it belongs to.
+    roots: Vec<(PathBuf, String)>,
 }
 
 static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(|| {
     Mutex::new(Registry {
         abandoned: HashMap::new(),
         fakes: Vec::new(),
+        roots: Vec::new(),
     })
 });
 static FAKES_MOUNTED: AtomicBool = AtomicBool::new(false);
@@ -308,14 +379,10 @@ fn lane_settled(key: &str) {
             drop(registry);
             crate::logging::info(
                 "volume answered again",
-                serde_json::json!({ "volume": display_volume(key) }),
+                serde_json::json!({ "lane": key }),
             );
         }
     }
-}
-
-fn display_volume(key: &str) -> String {
-    key.strip_prefix("fake:").unwrap_or(key).to_string()
 }
 
 /// Whether a call on `path`'s volume would fail fast right now.
@@ -472,7 +539,7 @@ fn call_with<D: Send + 'static, T: Send + 'static>(
     let lane = lane_of(path);
     let wait = |failure| VolumeWait {
         failure,
-        volume: display_volume(&lane.key),
+        volume: lane.display.clone(),
         op,
     };
     if lane_stalled(&lane) {
@@ -582,7 +649,9 @@ pub fn symlink_metadata(path: &Path) -> io::Result<Metadata> {
 
 pub fn canonicalize(path: &Path) -> io::Result<PathBuf> {
     let target = fs_path(path);
-    call(path, Op::Stat, None, move || std::fs::canonicalize(target))
+    let resolved = call(path, Op::Stat, None, move || std::fs::canonicalize(target))?;
+    note_resolved(path, &resolved);
+    Ok(resolved)
 }
 
 /// Whether `path` exists (following a final symlink). Only `NotFound` is
@@ -974,7 +1043,7 @@ pub fn walk(
     if lane_stalled(&lane) {
         return Err(VolumeWait {
             failure: WaitFailure::Stalled,
-            volume: display_volume(&lane.key),
+            volume: lane.display.clone(),
             op: Op::List,
         }
         .into_io());
@@ -1117,7 +1186,7 @@ impl Walk {
             drop(state);
             let wait = VolumeWait {
                 failure,
-                volume: display_volume(&self.lane.key),
+                volume: self.lane.display.clone(),
                 op: Op::List,
             };
             crate::logging::warn(
@@ -1154,7 +1223,7 @@ impl Walk {
                 self.finished = true;
                 Some(Err(VolumeWait {
                     failure: WaitFailure::Cancelled,
-                    volume: display_volume(&self.lane.key),
+                    volume: self.lane.display.clone(),
                     op: Op::List,
                 }
                 .into_io()))

@@ -224,10 +224,88 @@ fn a_real_blocking_open_is_abandoned_within_its_bound() {
 }
 
 #[test]
-fn volumes_are_told_apart_by_spelling_alone() {
-    // Two paths on the boot volume share its fail-fast; the key never touches
-    // the filesystem, so a path that does not exist still has a volume.
+fn a_lane_never_touches_the_filesystem() {
+    // A path that does not exist still has a lane.
     assert!(!volume_io::is_stalled(Path::new("/definitely/not/here")));
+}
+
+fn lane_test_base(name: &str) -> std::path::PathBuf {
+    if cfg!(windows) {
+        std::path::PathBuf::from(format!(r"C:\onecopy-lane-test-{name}"))
+    } else {
+        std::path::PathBuf::from(format!("/onecopy-lane-test-{name}"))
+    }
+}
+
+/// A share mounted under a home folder (or reached any other way that spells
+/// like the startup disk) is its own drive once configured, so its stall
+/// never makes a configured folder on the startup disk fail fast.
+#[test]
+fn each_configured_root_is_its_own_drive_wherever_it_is_mounted() {
+    let home = lane_test_base("roots").join("home");
+    let share = home.join("mnt").join("share");
+    let pictures = home.join("Pictures");
+    volume_io::register_roots(&[share.clone(), pictures.clone()]);
+
+    let on_share = volume_io::lane_name(&share.join("a.jpg"));
+    assert_eq!(on_share, volume_io::lane_name(&share.join("deep").join("b.jpg")));
+    assert_ne!(on_share, volume_io::lane_name(&pictures.join("c.jpg")));
+    assert_ne!(on_share, volume_io::lane_name(&home.join("elsewhere.jpg")));
+}
+
+/// Walk entries carry a root's resolved spelling; they stay on the root's
+/// lane instead of falling back to the startup disk.
+#[cfg(unix)]
+#[test]
+fn a_root_reached_through_a_link_keeps_its_lane_in_its_resolved_spelling() {
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("real");
+    std::fs::create_dir(&real).unwrap();
+    let link = dir.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    volume_io::register_roots(std::slice::from_ref(&link));
+    let resolved = volume_io::canonicalize(&link).unwrap();
+
+    let through_link = volume_io::lane_name(&link.join("a.jpg"));
+    assert_eq!(volume_io::lane_name(&resolved.join("a.jpg")), through_link);
+    assert_ne!(
+        through_link,
+        volume_io::lane_name(&lane_test_base("link").join("b.jpg"))
+    );
+}
+
+/// A root above several volumes still keeps them apart.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_root_above_several_volumes_never_merges_them() {
+    let volumes = Path::new("/Volumes");
+    volume_io::register_roots(&[volumes.to_path_buf()]);
+    assert_ne!(
+        volume_io::lane_name(&volumes.join("A").join("x.jpg")),
+        volume_io::lane_name(&volumes.join("B").join("x.jpg"))
+    );
+}
+
+/// Reading the settings registers their roots before any call on them.
+#[test]
+fn reading_the_settings_registers_each_configured_root() {
+    let data_root = tempfile::tempdir().unwrap();
+    let base = lane_test_base("settings");
+    let (source, destination) = (base.join("home").join("nas"), base.join("home").join("backup"));
+    std::fs::write(
+        data_root.path().join("config.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "sourceDirs": [source.to_string_lossy()],
+            "destinationRoots": [destination.to_string_lossy()],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    onecopy_lib::storage::load_configured_roots(data_root.path()).unwrap();
+
+    let elsewhere = volume_io::lane_name(&base.join("home").join("x.jpg"));
+    assert_ne!(volume_io::lane_name(&source.join("a.jpg")), elsewhere);
+    assert_ne!(volume_io::lane_name(&destination.join("a.jpg")), elsewhere);
 }
 
 /// Cancel while the walk waits: the walk stops at its next entry and says it
