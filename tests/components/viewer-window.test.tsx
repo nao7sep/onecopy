@@ -40,6 +40,21 @@ it("focuses the fullscreen command surface on entry and native-window reactivati
   expect(emitCalls).toContainEqual({ event: "viewer://key", payload: expect.objectContaining({ key: " " }) });
 });
 
+it("keeps the chrome hover- and focus-revealed, not permanently shown (D9)", async () => {
+  render(<ViewerWindow />);
+  await act(async () => deliver("viewer://state", state));
+  const surface = screen.getByLabelText("Fullscreen viewer");
+  const header = screen.getByRole("button", { name: "Previous item" }).closest("header");
+  expect(surface.className).toMatch(/(^|\s)group(\s|$)/);
+  expect(header?.className).toContain("opacity-0");
+  expect(header?.className).toContain("group-hover:opacity-100");
+  expect(header?.className).toContain("focus-within:opacity-100");
+  // Hidden by default does not mean unreachable: Tab still lands on its
+  // controls, which is what keeps focus-within able to reveal it.
+  screen.getByRole("button", { name: "Previous item" }).focus();
+  expect(document.activeElement?.getAttribute("aria-label")).toBe("Previous item");
+});
+
 it("does not steal confirmation focus on reactivation or forward its decision keys", async () => {
   const user = userEvent.setup();
   render(<ViewerWindow />);

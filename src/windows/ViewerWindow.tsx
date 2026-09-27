@@ -87,16 +87,15 @@ export default function ViewerWindow() {
   const item = state.item;
   const failure = commandFailure ?? state.failure;
   return (
-    <div ref={surface} tabIndex={-1} aria-label={t("viewer.window")} className="relative flex h-screen w-screen flex-col overflow-hidden bg-black text-white outline-none">
+    <div ref={surface} tabIndex={-1} aria-label={t("viewer.window")} className="group relative flex h-screen w-screen flex-col overflow-hidden bg-black text-white outline-none">
       {/* Main, always open, is the one window that owns timed-notice
           auto-dismiss (Finding C) — this copy still shows and dismisses
           notices, it just never runs a second, unpausable countdown. */}
       <NotificationHost ownsTimedDismissal={false} />
-      {/* Always visible, not hover-only: viewing-sessions.md's lightweight
-          chrome shows filename, position, and prev/next as a standing
-          contract, not a mouse-discoverable extra a keyboard-only or
-          screen-reader user would never see (D9). */}
-      <header className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 bg-black/65 px-3 py-2 backdrop-blur-sm">
+      {/* Hover- and focus-reveal (D9, reverted): the lightweight chrome
+          stays reachable by keyboard (Tab reaches it, focus-within keeps it
+          shown) without permanently overlaying the media beneath it. */}
+      <header className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 bg-black/65 px-3 py-2 opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100 focus-within:opacity-100">
         <span className="min-w-0 flex-1 truncate text-sm" title={item.fileName}>
           {item.fileName}
         </span>
