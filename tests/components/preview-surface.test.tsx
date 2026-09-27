@@ -437,7 +437,12 @@ describe("shared video presentation", () => {
       <PreviewSurface surface="preview-window" hash={null} pathId={8} detail={OTHER_DETAIL} />,
     );
     const restored = await screen.findByText(/first line/);
-    expect(restored.scrollTop).toBe(240);
+    // The restore itself runs in a `useEffect` keyed on the loaded body and
+    // the stored scroll position (`TextOrAttributesSurface`), which commits
+    // after the text node testing-library's `findByText` resolves on; assert
+    // through `waitFor` rather than immediately, or this flakes under load
+    // when the effect hasn't flushed yet.
+    await waitFor(() => expect(restored.scrollTop).toBe(240));
   });
 
   it("keeps a rejected session choice on the affected text preview and out of the copy", async () => {
