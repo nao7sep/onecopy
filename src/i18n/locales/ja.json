@@ -1062,6 +1062,7 @@
   "reason.waitingForIndexing": "インデックス処理またはファイル操作を待っています",
   "reason.previewTooLarge": "テキストプレビューは {bytes} バイトまでです。",
   "reason.previewBinary": "このファイルはテキストではなくバイナリのようです。",
+  "reason.previewNotResponding": "このファイルがあるドライブが応答していません。",
   "tool.ffmpeg": "ffmpeg",
   "tool.onnxruntimeWinX64": "顔スコアのランタイム（ONNX Runtime 1.28）",
   "tool.whisperLargeV3Turbo": "文字起こしモデル（Whisper large-v3-turbo）",

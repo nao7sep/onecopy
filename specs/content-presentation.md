@@ -5,6 +5,7 @@
 - A displayed file receives the richest truthful built-in body OneCopy can provide: supported image, video, audio, or another specialized presentation; bounded text only when the bytes are convincingly textual; otherwise attributes.
 - Presentation capability never changes the logical item's library section. Audio remains in Other files, and a fallback body does not reclassify an item.
 - A specialized decoder failure remains visible. Binary-looking data is not forced through a permissive legacy text decoder merely to avoid showing attributes.
+- Reading an original never waits on a drive that stops answering (`file-operations.md`, `Drives that stop answering`): within the read's time limit the body stops loading and shows the file as unavailable — text shows attributes saying the drive holding the file is not responding, and an image or media body shows its unavailable state — and showing the item again later retries.
 - Moving from a loading or attributes body to a later-prepared richer body for the same live item does not change Main selection, transient sequence, focus, or file-operation availability.
 - Filename, logical identity, known facts, and rendered content change as one truthful package. Rapid navigation may skip abandoned work but never shows old pixels or playback under a new item's name.
 

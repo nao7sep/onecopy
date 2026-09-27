@@ -54,6 +54,7 @@ function previewReason(
     return t("reason.previewTooLarge", { bytes: body.reasonBytes ?? 0 });
   }
   if (body.reasonCode === "preview-binary") return t("reason.previewBinary");
+  if (body.reasonCode === "preview-not-responding") return t("reason.previewNotResponding");
   return body.reason;
 }
 

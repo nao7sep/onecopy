@@ -1062,6 +1062,7 @@
   "reason.waitingForIndexing": "En attente de l’indexation ou d’une opération sur les fichiers",
   "reason.previewTooLarge": "L’aperçu texte est limité à {bytes} octets.",
   "reason.previewBinary": "Le fichier semble binaire plutôt que textuel.",
+  "reason.previewNotResponding": "Le disque contenant ce fichier ne répond pas.",
   "tool.ffmpeg": "ffmpeg",
   "tool.onnxruntimeWinX64": "Moteur d’exécution de la notation des visages (ONNX Runtime 1.28)",
   "tool.whisperLargeV3Turbo": "Modèle de transcription (Whisper large-v3-turbo)",

@@ -167,3 +167,29 @@ fn saved_limits_are_read_and_clamped_with_defaults_for_absent_keys() {
         1
     );
 }
+
+// A text file on a drive that does not answer shows that condition within
+// the read bound instead of a failed read or an endless wait.
+#[test]
+fn a_file_on_a_drive_that_does_not_answer_shows_as_not_responding() {
+    use crate::volume_io::{FakeStallingVolume, Op};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("notes.txt");
+    std::fs::write(&path, b"hello").unwrap();
+    let volume = FakeStallingVolume::mount(dir.path(), std::time::Duration::from_millis(200));
+    volume.stall(&[Op::Read], None);
+    let started = std::time::Instant::now();
+    match preview_file(&path, 1024, "utf-8", None).unwrap() {
+        PreviewBody::Attributes { reason_code, .. } => {
+            assert_eq!(reason_code, Some("preview-not-responding"))
+        }
+        _ => panic!("expected the not-responding attributes body"),
+    }
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    volume.release();
+    assert!(volume.wait_until_settled(std::time::Duration::from_secs(5)));
+    assert!(matches!(
+        preview_file(&path, 1024, "utf-8", None).unwrap(),
+        PreviewBody::Text { .. }
+    ));
+}

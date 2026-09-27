@@ -32,18 +32,17 @@ fn list_subdirs_at(
         return Ok(Vec::new());
     }
     let mut entries: Vec<DirEntry> = Vec::new();
-    let read = std::fs::read_dir(path).map_err(|e| e.to_string())?;
-    for entry in read {
-        let entry = entry.map_err(|error| error.to_string())?;
+    // Every listing is one bounded call; a drive that does not answer fails
+    // the request instead of leaving the tree waiting.
+    for entry in crate::volume_io::read_dir(path, true).map_err(|e| e.to_string())? {
         if !is_browsable_destination_child(&entry, policy, data_root)? {
             continue;
         }
-        let name = entry.file_name().to_string_lossy().to_string();
-        let child_path = entry.path();
-        let (has_children, is_empty) = child_directory_facts(&child_path, policy, data_root)?;
+        let name = entry.file_name.to_string_lossy().to_string();
+        let (has_children, is_empty) = child_directory_facts(&entry.path, policy, data_root)?;
         entries.push(DirEntry {
             name,
-            path: child_path.to_string_lossy().to_string(),
+            path: entry.path.to_string_lossy().to_string(),
             has_children,
             is_empty,
         });
@@ -53,33 +52,48 @@ fn list_subdirs_at(
 }
 
 fn is_browsable_destination_child(
-    entry: &std::fs::DirEntry,
+    entry: &crate::volume_io::DirEntryInfo,
     policy: &visibility::Policy,
     data_root: &Path,
 ) -> Result<bool, String> {
-    if trash::is_trash_path(&entry.path())
-        || paths::is_within_data_root(&entry.path(), data_root)
-        || !entry.file_type().map_err(|error| error.to_string())?.is_dir()
+    if trash::is_trash_path(&entry.path)
+        || paths::is_within_data_root(&entry.path, data_root)
+        || !entry
+            .file_type
+            .ok_or_else(|| format!("could not read {}", entry.path.display()))?
+            .is_dir()
     {
         return Ok(false);
     }
-    let metadata = entry.metadata().map_err(|error| error.to_string())?;
+    let metadata = match &entry.metadata {
+        Some(Ok(metadata)) => metadata,
+        Some(Err(error)) => return Err(error.to_string()),
+        None => return Err(format!("could not read {}", entry.path.display())),
+    };
     Ok(policy.visible(
-        &entry.file_name().to_string_lossy(),
+        &entry.file_name.to_string_lossy(),
         true,
-        visibility::entry_flags(&entry.path(), &metadata),
+        visibility::entry_flags(&entry.path, metadata),
     ))
 }
 
+/// Whether a child folder has browsable children, and whether it is empty. A
+/// child whose drive does not answer is shown as expandable and not empty:
+/// expanding it asks again, and nothing offers to delete it.
 fn child_directory_facts(
     path: &Path,
     policy: &visibility::Policy,
     data_root: &Path,
 ) -> Result<(bool, bool), String> {
-    let children = std::fs::read_dir(path).map_err(|error| error.to_string())?;
+    let children = match crate::volume_io::read_dir(path, true) {
+        Ok(children) => children,
+        Err(error) if crate::volume_io::wait_failure(&error).is_some() => {
+            return Ok((true, false))
+        }
+        Err(error) => return Err(error.to_string()),
+    };
     let mut is_empty = true;
     for child in children {
-        let child = child.map_err(|error| error.to_string())?;
         is_empty = false;
         if is_browsable_destination_child(&child, policy, data_root)? {
             return Ok((true, false));
@@ -106,16 +120,15 @@ fn folder_name(name: &str) -> Result<&str, String> {
 pub fn create_subdir(parent: &Path, name: &str) -> Result<String, String> {
     let name = folder_name(name)?;
     let lower = name.to_lowercase();
-    for entry in std::fs::read_dir(parent).map_err(|error| error.to_string())? {
-        let entry = entry.map_err(|error| error.to_string())?;
-        if entry.file_name().to_string_lossy().to_lowercase() == lower {
+    for entry in crate::volume_io::read_dir(parent, false).map_err(|error| error.to_string())? {
+        if entry.file_name.to_string_lossy().to_lowercase() == lower {
             return Err(format!(
                 "\"{name}\" already exists here (names are case-insensitively unique)"
             ));
         }
     }
     let target = parent.join(name);
-    std::fs::create_dir(&target).map_err(|e| e.to_string())?;
+    crate::volume_io::create_dir(&target).map_err(|e| e.to_string())?;
     Ok(target.to_string_lossy().to_string())
 }
 
@@ -123,7 +136,7 @@ pub fn create_subdir(parent: &Path, name: &str) -> Result<String, String> {
 /// which is the entire safety model (empty folders render distinctly in the
 /// tree).
 pub fn delete_empty_dir(path: &Path) -> Result<(), String> {
-    std::fs::remove_dir(path).map_err(|e| e.to_string())
+    crate::volume_io::remove_dir(path).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

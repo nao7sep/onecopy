@@ -1062,6 +1062,7 @@
   "reason.waitingForIndexing": "색인 작업이나 파일 작업을 기다리는 중",
   "reason.previewTooLarge": "텍스트 미리보기는 {bytes}바이트로 제한됩니다.",
   "reason.previewBinary": "이 파일은 텍스트가 아니라 바이너리로 보입니다.",
+  "reason.previewNotResponding": "이 파일이 있는 드라이브가 응답하지 않습니다.",
   "tool.ffmpeg": "ffmpeg",
   "tool.onnxruntimeWinX64": "얼굴 점수 런타임(ONNX Runtime 1.28)",
   "tool.whisperLargeV3Turbo": "음성 텍스트 변환 모델(Whisper large-v3-turbo)",

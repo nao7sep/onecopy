@@ -1062,6 +1062,7 @@
   "reason.waitingForIndexing": "In attesa dell’indicizzazione o di un’operazione sui file",
   "reason.previewTooLarge": "L’anteprima del testo è limitata a {bytes} byte.",
   "reason.previewBinary": "Il file sembra binario anziché testuale.",
+  "reason.previewNotResponding": "L’unità che contiene questo file non risponde.",
   "tool.ffmpeg": "ffmpeg",
   "tool.onnxruntimeWinX64": "Runtime per la valutazione dei volti (ONNX Runtime 1.28)",
   "tool.whisperLargeV3Turbo": "Modello di trascrizione (Whisper large-v3-turbo)",

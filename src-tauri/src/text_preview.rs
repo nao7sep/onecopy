@@ -139,13 +139,30 @@ pub fn preview_file(
     requested: Option<&str>,
 ) -> Result<PreviewBody, String> {
     let max_bytes = max_bytes.clamp(1, MAX_ALLOWED_BYTES);
-    let mut file = crate::file_identity::open_regular_nofollow(path)
-        .map_err(|error| format!("could not open the indexed file: {error}"))?
-        .0;
-    let byte_size = file
-        .metadata()
-        .map_err(|error| format!("could not read file attributes: {error}"))?
-        .len();
+    // A drive that does not answer within the read bound shows as that
+    // condition, not as a failed read and never as a wait without end.
+    let not_responding = |error: &std::io::Error| {
+        crate::volume_io::wait_failure(error).map(|_| PreviewBody::Attributes {
+            reason: "The drive holding this file is not responding.".to_string(),
+            reason_code: Some("preview-not-responding"),
+            reason_bytes: None,
+            byte_size: 0,
+        })
+    };
+    let mut file = match crate::file_identity::open_regular_nofollow(path) {
+        Ok((file, _)) => file,
+        Err(error) => {
+            return not_responding(&error)
+                .ok_or_else(|| format!("could not open the indexed file: {error}"))
+        }
+    };
+    let byte_size = match file.metadata() {
+        Ok(metadata) => metadata.len(),
+        Err(error) => {
+            return not_responding(&error)
+                .ok_or_else(|| format!("could not read file attributes: {error}"))
+        }
+    };
     if byte_size > max_bytes {
         return Ok(PreviewBody::Attributes {
             reason: format!("Text preview is limited to {max_bytes} bytes."),
@@ -160,9 +177,13 @@ pub fn preview_file(
     // file can never be decoded past the gate; the `+ 1` distinguishes an
     // exact-fit file from one that has since outgrown the limit (C-L2).
     let mut bytes = Vec::with_capacity(byte_size.min(max_bytes) as usize);
-    file.take(max_bytes + 1)
+    if let Err(error) = std::io::BufReader::with_capacity(1024 * 1024, file)
+        .take(max_bytes + 1)
         .read_to_end(&mut bytes)
-        .map_err(|error| format!("could not read the indexed file: {error}"))?;
+    {
+        return not_responding(&error)
+            .ok_or_else(|| format!("could not read the indexed file: {error}"));
+    }
     if bytes.len() as u64 > max_bytes {
         return Ok(PreviewBody::Attributes {
             reason: format!("Text preview is limited to {max_bytes} bytes."),

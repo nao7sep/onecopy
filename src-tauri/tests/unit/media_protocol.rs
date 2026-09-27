@@ -48,3 +48,29 @@ fn mediafile_refuses_a_key_that_would_escape_the_index_lookup() {
         .unwrap();
     assert_eq!(serve_original(&request).status(), tauri::http::StatusCode::NOT_FOUND);
 }
+
+// A drive that stops answering answers 504 for the request that gave up on
+// it and 503 while it has not answered, never a hang and never 404.
+#[test]
+fn an_original_on_a_drive_that_does_not_answer_is_504_then_503() {
+    use crate::volume_io::{FakeStallingVolume, Op};
+    let dir = tempfile::tempdir().unwrap();
+    let original = dir.path().join("clip.mp4");
+    std::fs::write(&original, vec![1u8; 4096]).unwrap();
+    let request = tauri::http::Request::builder()
+        .uri("mediafile://localhost/p1")
+        .header("Range", "bytes=0-99")
+        .body(Vec::new())
+        .unwrap();
+    assert_eq!(serve_path(&request, &original).status(), 206);
+
+    let volume = FakeStallingVolume::mount(dir.path(), std::time::Duration::from_millis(200));
+    volume.stall(&[Op::Open], None);
+    let started = std::time::Instant::now();
+    assert_eq!(serve_path(&request, &original).status(), 504);
+    assert_eq!(serve_path(&request, &original).status(), 503);
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    volume.release();
+    assert!(volume.wait_until_settled(std::time::Duration::from_secs(5)));
+    assert_eq!(serve_path(&request, &original).status(), 206);
+}

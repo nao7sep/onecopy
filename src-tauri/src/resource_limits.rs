@@ -49,9 +49,12 @@ fn image_limits() -> Limits {
     limits
 }
 
+/// Decodes the image at `path`, reading it through bounded `volume_io`
+/// reads: a drive that stops answering fails the decode within one read's
+/// bound instead of pinning the decoding thread.
 pub fn decode_file(path: &Path) -> Result<DynamicImage, String> {
-    let mut reader = ImageReader::open(path)
-        .map_err(|error| error.to_string())?
+    let file = crate::volume_io::open_read(path).map_err(|error| error.to_string())?;
+    let mut reader = ImageReader::new(std::io::BufReader::with_capacity(1024 * 1024, file))
         .with_guessed_format()
         .map_err(|error| error.to_string())?;
     reader.limits(image_limits());

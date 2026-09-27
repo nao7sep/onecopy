@@ -77,17 +77,64 @@ pub(crate) fn serve_original(
         Ok(path) => path,
         Err(error) => return warn_404("path lookup failed", error.to_string()),
     };
-    let path = path.to_string_lossy();
+    serve_path(request, &path)
+}
 
-    let mut file = match std::fs::File::open(path.as_ref()) {
+/// A drive that did not answer is not a missing file: 504 when this request
+/// gave up on it, 503 while the drive has not answered an earlier request,
+/// so the webview can tell it apart from 404 and retry later. Either way the
+/// request thread returns within the bound.
+fn unavailable(
+    reason: &str,
+    path: &str,
+    error: &std::io::Error,
+) -> Option<tauri::http::Response<Vec<u8>>> {
+    let wait = crate::volume_io::wait_failure(error)?;
+    let status = match wait.failure {
+        crate::volume_io::WaitFailure::Stalled => 503,
+        _ => 504,
+    };
+    crate::logging::warn(
+        "mediafile request failed",
+        json!({ "reason": reason, "detail": format!("{path}: {error}") }),
+    );
+    tauri::http::Response::builder()
+        .status(status)
+        .header("Retry-After", "30")
+        .body(Vec::new())
+        .ok()
+}
+
+/// Serves the requested range of the original at `path` through bounded
+/// reads.
+fn serve_path(
+    request: &tauri::http::Request<Vec<u8>>,
+    path: &std::path::Path,
+) -> tauri::http::Response<Vec<u8>> {
+    let warn_404 = |reason: &str, detail: String| {
+        crate::logging::warn(
+            "mediafile request failed",
+            json!({ "reason": reason, "detail": detail }),
+        );
+        not_found()
+    };
+    let shown = path.to_string_lossy();
+    let path = shown.as_ref();
+    let mut file = match crate::volume_io::open_read(std::path::Path::new(path)) {
         Ok(file) => file,
-        Err(error) => return warn_404("original unreadable", format!("{path}: {error}")),
+        Err(error) => {
+            return unavailable("original unreadable", path, &error)
+                .unwrap_or_else(|| warn_404("original unreadable", format!("{path}: {error}")))
+        }
     };
     let total = match file.metadata().map(|metadata| metadata.len()) {
         Ok(total) => total,
-        Err(error) => return warn_404("metadata failed", format!("{path}: {error}")),
+        Err(error) => {
+            return unavailable("metadata failed", path, &error)
+                .unwrap_or_else(|| warn_404("metadata failed", format!("{path}: {error}")))
+        }
     };
-    let content_type = content_type_for(&path);
+    let content_type = content_type_for(path);
     if request.method() == tauri::http::Method::HEAD {
         return tauri::http::Response::builder()
             .status(200)
@@ -123,7 +170,8 @@ pub(crate) fn serve_original(
             .seek(SeekFrom::Start(start))
             .and_then(|_| file.read_exact(&mut bytes))
         {
-            return warn_404("read failed", format!("{path}: {error}"));
+            return unavailable("read failed", path, &error)
+                .unwrap_or_else(|| warn_404("read failed", format!("{path}: {error}")));
         }
     }
 
@@ -180,7 +228,7 @@ pub(crate) fn serve_cache(
     } else {
         return not_found();
     };
-    match std::fs::read(file) {
+    match std::fs::read(file) { // data root
         Ok(bytes) => {
             let content_type = sniff_image_content_type(&bytes);
             tauri::http::Response::builder()

@@ -1062,6 +1062,7 @@
   "reason.waitingForIndexing": "Ожидание индексации или файловой операции",
   "reason.previewTooLarge": "Текстовый просмотр ограничен {bytes} Б.",
   "reason.previewBinary": "Файл выглядит двоичным, а не текстовым.",
+  "reason.previewNotResponding": "Диск с этим файлом не отвечает.",
   "tool.ffmpeg": "ffmpeg",
   "tool.onnxruntimeWinX64": "Среда выполнения оценки лиц (ONNX Runtime 1.28)",
   "tool.whisperLargeV3Turbo": "Модель расшифровки (Whisper large-v3-turbo)",

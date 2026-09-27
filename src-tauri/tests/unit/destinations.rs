@@ -74,3 +74,31 @@ fn only_an_empty_folder_is_removed() {
     delete_empty_dir(&root.path().join("empty")).unwrap();
     assert!(!root.path().join("empty").exists());
 }
+
+// The tree never waits on a drive that does not answer: listing it fails
+// within the bound, and a child on such a drive shows as expandable and not
+// empty (so nothing offers to delete it) while its siblings list normally.
+#[test]
+fn a_drive_that_does_not_answer_fails_the_listing_within_its_bound() {
+    use crate::volume_io::{FakeStallingVolume, Op};
+    let root = tempfile::Builder::new()
+        .prefix("onecopy-destinations-stall-")
+        .tempdir()
+        .unwrap();
+    std::fs::create_dir(root.path().join("away")).unwrap();
+    std::fs::create_dir(root.path().join("here")).unwrap();
+    let policy = visibility::Policy::from_config(&json!({})).unwrap();
+    let data_root = root.path().join("never-used-app-data");
+
+    let away = FakeStallingVolume::mount(&root.path().join("away"), std::time::Duration::from_millis(200));
+    away.stall(&[Op::List], None);
+    let started = std::time::Instant::now();
+    let rows = list_subdirs_at(root.path(), &policy, &data_root).unwrap();
+    let row = |name: &str| rows.iter().find(|row| row.name == name).map(|row| (row.has_children, row.is_empty));
+    assert_eq!(row("away"), Some((true, false)));
+    assert_eq!(row("here"), Some((false, true)));
+    assert!(list_subdirs_at(&root.path().join("away"), &policy, &data_root).is_err());
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    away.release();
+    assert!(away.wait_until_settled(std::time::Duration::from_secs(5)));
+}

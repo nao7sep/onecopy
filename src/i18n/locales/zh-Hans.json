@@ -1062,6 +1062,7 @@
   "reason.waitingForIndexing": "正在等待建立索引或某个文件操作",
   "reason.previewTooLarge": "文本预览上限为 {bytes} 字节。",
   "reason.previewBinary": "该文件看起来是二进制文件，而不是文本文件。",
+  "reason.previewNotResponding": "存放此文件的驱动器没有响应。",
   "tool.ffmpeg": "ffmpeg",
   "tool.onnxruntimeWinX64": "人脸评分运行时（ONNX Runtime 1.28）",
   "tool.whisperLargeV3Turbo": "转录模型（Whisper large-v3-turbo）",

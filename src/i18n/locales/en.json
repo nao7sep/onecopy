@@ -1062,6 +1062,7 @@
   "reason.waitingForIndexing": "Waiting for indexing or a file operation",
   "reason.previewTooLarge": "Text preview is limited to {bytes} bytes.",
   "reason.previewBinary": "The file looks binary rather than textual.",
+  "reason.previewNotResponding": "The drive holding this file is not responding.",
   "tool.ffmpeg": "ffmpeg",
   "tool.onnxruntimeWinX64": "Face-scoring runtime (ONNX Runtime 1.28)",
   "tool.whisperLargeV3Turbo": "Transcription model (Whisper large-v3-turbo)",

@@ -339,10 +339,25 @@ fn copy_file_atomic(src: &Path, target: &Path) -> Result<(), String> {
         .and_then(|s| s.to_str())
         .unwrap_or("cache");
     let tmp = parent.join(format!("{stem}-{}.tmp", nanoid::generate()?));
-    std::fs::copy(src, &tmp).map_err(|e| {
-        crate::fs_recovery::remove_file(&tmp, "preview copy staging cleanup");
-        crate::resource_limits::cache_write_error("preview copy staging write", e)
-    })?;
+    // The original is read through bounded reads; only the cache side is a
+    // cache write whose failure may mean the cache itself is unavailable.
+    let mut source = crate::volume_io::open_read(src)
+        .map_err(|e| format!("could not read the original: {e}"))?;
+    let mut staged = std::fs::File::create(&tmp) // data root
+        .map_err(|e| crate::resource_limits::cache_write_error("preview copy staging write", e))?;
+    let mut buffer = vec![0u8; 1024 * 1024];
+    let copied = loop {
+        let read = match source.read_cancellable(&mut buffer, None) {
+            Ok(0) => break Ok(()),
+            Ok(read) => read,
+            Err(e) => break Err(format!("could not read the original: {e}")),
+        };
+        if let Err(e) = std::io::Write::write_all(&mut staged, &buffer[..read]) {
+            break Err(crate::resource_limits::cache_write_error("preview copy staging write", e));
+        }
+    };
+    drop(staged);
+    copied.inspect_err(|_| crate::fs_recovery::remove_file(&tmp, "preview copy staging cleanup"))?;
     std::fs::rename(&tmp, target).map_err(|e| {
         crate::fs_recovery::remove_file(&tmp, "preview copy publication cleanup");
         crate::resource_limits::cache_write_error("preview copy publication", e)
@@ -1236,7 +1251,7 @@ fn fit_long_edge(img: &DynamicImage, long_edge: u32, filter: image::imageops::Fi
 
 /// EXIF orientation (1–8) via nom-exif; 1 (or unreadable) means as-stored.
 fn read_orientation(src: &Path) -> u16 {
-    match nom_exif::read_exif(src) {
+    match crate::metadata::read_exif(src) {
         Ok(exif) => match exif.get(nom_exif::ExifTag::Orientation) {
             Some(nom_exif::EntryValue::U16(v)) => *v,
             Some(nom_exif::EntryValue::U32(v)) => *v as u16,
