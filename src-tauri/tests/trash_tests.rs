@@ -825,3 +825,162 @@ fn a_restored_line_hides_its_record_and_leaves_the_totals_alone() {
     assert_eq!(listing.records.len(), 1);
     assert_eq!(listing.restored, 0);
 }
+
+// ---------------------------------------------------------------------------
+// Browsing one root
+
+fn statuses(listing: &TrashListing) -> Vec<(String, EntryStatus)> {
+    let mut statuses: Vec<_> = listing
+        .entries
+        .iter()
+        .map(|entry| (entry.stored_name.clone(), entry.status))
+        .collect();
+    statuses.sort_by(|left, right| left.0.cmp(&right.0));
+    statuses
+}
+
+fn v2_line(stored: &str, relative: &str, size: u64, mtime_ms: i64) -> String {
+    serde_json::json!({
+        "originalPath": format!("/old/{relative}"),
+        "storedPath": format!("/old/.onecopy-trash/20260901-utc/{stored}"),
+        "contentHash": null,
+        "deletedAtUtc": "2026-09-01T10:00:00.000Z",
+        "v": 2,
+        "storedName": stored,
+        "originalRelative": relative,
+        "kind": "delete",
+        "operation": "op",
+        "item": "item",
+        "role": "main",
+        "size": size,
+        "mtimeMs": mtime_ms,
+    })
+    .to_string()
+}
+
+fn mtime_of(path: &Path) -> i64 {
+    std::fs::metadata(path)
+        .unwrap()
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
+}
+
+#[test]
+fn each_entry_says_whether_it_can_be_restored() {
+    let f = fixture("statuses");
+    let data_root = f._dir.path().join("apphome");
+    let day = f.source.join(TRASH_DIR_NAME).join("20260901-utc");
+    std::fs::create_dir_all(&day).unwrap();
+    for (name, bytes) in [
+        ("ok.jpg", &b"ok"[..]),
+        ("edited.jpg", b"edited later"),
+        ("lossy.jpg", b"l"),
+        ("into-trash.jpg", b"t"),
+        ("legacy.jpg", b"legacy"),
+        ("outside.jpg", b"o"),
+    ] {
+        std::fs::write(day.join(name), bytes).unwrap();
+    }
+    std::fs::create_dir(day.join("now-a-folder.jpg")).unwrap();
+    let mtime = |name: &str| mtime_of(&day.join(name));
+    let lines = vec![
+        v2_line("ok.jpg", "a/ok.jpg", 2, mtime("ok.jpg")),
+        v2_line("edited.jpg", "a/edited.jpg", 3, mtime("edited.jpg")),
+        v2_line("now-a-folder.jpg", "a/now-a-folder.jpg", 1, 0),
+        v2_line("lossy.jpg", "a/\u{FFFD}.jpg", 1, mtime("lossy.jpg")),
+        v2_line("into-trash.jpg", ".onecopy-trash/x/into-trash.jpg", 1, mtime("into-trash.jpg")),
+        legacy_line(&f.source.join("b").join("legacy.jpg"), &day.join("legacy.jpg")),
+        legacy_line(Path::new("/somewhere/else/outside.jpg"), &day.join("outside.jpg")),
+    ];
+    std::fs::write(day.join("manifest.jsonl"), lines.join("\n") + "\n").unwrap();
+
+    let listing = list_root(&f.source, &data_root).unwrap();
+    assert_eq!(
+        statuses(&listing),
+        [
+            ("edited.jpg".to_string(), EntryStatus::Changed),
+            ("into-trash.jpg".to_string(), EntryStatus::Excluded),
+            ("legacy.jpg".to_string(), EntryStatus::Unverified),
+            ("lossy.jpg".to_string(), EntryStatus::Unrepresentable),
+            ("now-a-folder.jpg".to_string(), EntryStatus::Changed),
+            ("ok.jpg".to_string(), EntryStatus::Restorable),
+            ("outside.jpg".to_string(), EntryStatus::OutsideRoot),
+        ]
+    );
+    let ok = listing.entries.iter().find(|entry| entry.stored_name == "ok.jpg").unwrap();
+    assert_eq!(ok.id, "20260901-utc/ok.jpg");
+    assert_eq!(ok.original_relative.as_deref(), Some("a/ok.jpg"));
+    assert_eq!(ok.size, 2);
+}
+
+#[test]
+fn a_target_inside_the_data_folder_is_excluded() {
+    let f = fixture("data-root");
+    // The data folder happens to live inside this configured root.
+    let data_root = f.source.join("apphome");
+    let day = f.source.join(TRASH_DIR_NAME).join("20260901-utc");
+    std::fs::create_dir_all(&day).unwrap();
+    std::fs::write(day.join("index.sqlite3"), b"x").unwrap();
+    let line = v2_line("index.sqlite3", "apphome/index.sqlite3", 1, mtime_of(&day.join("index.sqlite3")));
+    std::fs::write(day.join("manifest.jsonl"), line + "\n").unwrap();
+
+    let listing = list_root(&f.source, &data_root).unwrap();
+    assert_eq!(listing.entries[0].status, EntryStatus::Excluded);
+}
+
+#[test]
+fn version_2_records_still_restore_after_the_root_moves_and_older_ones_do_not() {
+    let f = fixture("root-renamed");
+    let data_root = f._dir.path().join("apphome");
+    let file = f.source.join("trip").join("a.jpg");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, b"a").unwrap();
+    let record = trash_file(&file, &f.source, None, &ctx()).unwrap();
+    let day_name = day_of(&record).file_name().unwrap().to_string_lossy().into_owned();
+    let legacy_day = f.source.join(TRASH_DIR_NAME).join(&day_name);
+    std::fs::write(legacy_day.join("old.jpg"), b"o").unwrap();
+    let mut manifest = std::fs::read_to_string(legacy_day.join("manifest.jsonl")).unwrap();
+    manifest.push_str(&legacy_line(&f.source.join("old.jpg"), &legacy_day.join("old.jpg")));
+    manifest.push('\n');
+    std::fs::write(legacy_day.join("manifest.jsonl"), manifest).unwrap();
+
+    let moved = f._dir.path().join("renamed-photos");
+    std::fs::rename(&f.source, &moved).unwrap();
+    let listing = list_root(&moved, &data_root).unwrap();
+    assert_eq!(
+        statuses(&listing),
+        [
+            ("a.jpg".to_string(), EntryStatus::Restorable),
+            ("old.jpg".to_string(), EntryStatus::OutsideRoot),
+        ]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_day_folder_replaced_by_a_link_is_refused_not_followed() {
+    let f = fixture("day-link");
+    let elsewhere = f._dir.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::create_dir_all(f.source.join(TRASH_DIR_NAME)).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, f.source.join(TRASH_DIR_NAME).join("20260901-utc"))
+        .unwrap();
+    assert!(list_root(&f.source, f._dir.path()).is_err());
+
+    let g = fixture("location-link");
+    std::os::unix::fs::symlink(&elsewhere, g.source.join(TRASH_DIR_NAME)).unwrap();
+    assert!(list_root(&g.source, g._dir.path()).is_err());
+}
+
+#[test]
+fn a_root_with_no_location_lists_nothing_and_an_absent_root_is_unavailable() {
+    let f = fixture("no-location");
+    assert_eq!(list_root(&f.source, f._dir.path()).unwrap(), TrashListing::default());
+    let absent = f._dir.path().join("unplugged");
+    let rows = overview(&[f.source.clone(), absent]);
+    assert!(rows[0].available);
+    assert!(!rows[1].available, "a root that is not there cannot be browsed");
+}

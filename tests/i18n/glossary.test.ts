@@ -68,3 +68,40 @@ describe("glossary: one concept keeps one term per language", () => {
     }
   });
 });
+
+// "Deleted files" names OneCopy's recoverable storage in the Trash surface's
+// title; everything Browse and Restore say about that storage reuses the same
+// word (a stem, where the language inflects it), so a reader never meets a
+// second name for one place.
+const DELETED_FILES_TERM: Record<Language, string> = {
+  en: "deleted files",
+  ja: "削除済みファイル",
+  "zh-Hans": "已删除的文件",
+  ko: "삭제된 파일",
+  es: "eliminad",
+  "pt-BR": "apagad",
+  fr: "supprimé",
+  de: "gelöscht",
+  it: "eliminat",
+  ru: "удалённ",
+};
+
+const DELETED_FILES_CONCEPT_KEYS = [
+  "trash.title",
+  "deletedFiles.title",
+  "deletedFiles.loadFailed",
+  "deletedFiles.loading",
+  "deletedFiles.empty",
+  "deletedFiles.noMatches",
+  "deletedFiles.searchLabel",
+];
+
+describe("glossary: Deleted files keeps its name", () => {
+  it.each(LANGUAGES)("%s names deleted-file storage one way", (language) => {
+    const term = DELETED_FILES_TERM[language].toLowerCase();
+    for (const key of DELETED_FILES_CONCEPT_KEYS) {
+      const value = text(catalogues[language][key]).toLowerCase();
+      expect(value.includes(term), `${language} ${key}: expected "${term}" in ${JSON.stringify(catalogues[language][key])}`).toBe(true);
+    }
+  });
+});

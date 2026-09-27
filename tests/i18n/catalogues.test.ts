@@ -56,6 +56,7 @@ const SAME_AS_ENGLISH: Partial<Record<Language, readonly string[]>> = {
     "activity.durationSeconds",
   ],
   fr: [
+    "deletedFiles.copies",
     "nativeMenu.services",
     "app.zoom",
     "app.destinationsTab",

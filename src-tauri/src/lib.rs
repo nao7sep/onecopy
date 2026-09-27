@@ -1069,6 +1069,32 @@ async fn trash_reveal(app: AppHandle, root: String) -> Result<(), String> {
     .await
 }
 
+// One configured root's deleted files, for Browse. Read only; the location
+// must be one `trash_overview` reports for the current settings.
+#[tauri::command]
+async fn trash_entries(root: String) -> Result<trash::TrashListing, String> {
+    dispatch(move || {
+        logging::boundary(
+            "trash_entries",
+            json!({ "root": root }),
+            || {
+                let data_root = paths::data_root()?;
+                let roots = storage::load_config_file_roots(&data_root)?;
+                let owning = trash::owning_root_of(&roots, std::path::Path::new(&root))?;
+                trash::list_root(&owning, &data_root)
+            },
+            |listing| {
+                json!({
+                    "entries": listing.entries.len(),
+                    "unrecorded": listing.unrecorded_files,
+                    "malformed": listing.malformed_lines,
+                })
+            },
+        )
+    })
+    .await
+}
+
 // Emptying is PERMANENT (the trash is the safety net; emptying it removes
 // the net for everything inside). The frontend confirms with the totals
 // before calling; the root path must be one `trash_overview` reported —
@@ -1560,6 +1586,7 @@ pub fn run() {
             transcribe_cancel,
             trash_overview,
             trash_reveal,
+            trash_entries,
             trash_empty,
             trash_empty_cancel,
             dismiss_issue,

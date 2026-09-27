@@ -11,8 +11,8 @@ import TrashModal from "../../src/components/TrashModal";
 import { fireEvent, invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
 const ROWS = [
-  { root: "/Users/nao7sep/Photos/.onecopy-trash", bytes: 5_242_880, files: 42, planToken: "measured-42" },
-  { root: "/Volumes/HDD-1/Photos/.onecopy-trash", bytes: 0, files: 0, planToken: "measured-0" },
+  { root: "/Users/nao7sep/Photos/.onecopy-trash", available: true, bytes: 5_242_880, files: 42, planToken: "measured-42" },
+  { root: "/Volumes/HDD-1/Photos/.onecopy-trash", available: true, bytes: 0, files: 0, planToken: "measured-0" },
 ];
 
 beforeEach(() => {
@@ -233,5 +233,26 @@ describe("reveal", () => {
     });
     expect(document.body.textContent).toContain("nothing was removed");
     expect(document.body.textContent).toContain("1,020 files");
+  });
+});
+
+describe("browsing a root", () => {
+  it("opens Browse for an available root and refuses an unavailable one", async () => {
+    mockCommands({
+      trash_overview: () => [
+        { ...ROWS[0] },
+        { ...ROWS[0], root: "/Volumes/Gone/.onecopy-trash", available: false },
+      ],
+      trash_entries: () => ({ entries: [], unrecordedFiles: 0, malformedLines: 0 }),
+    });
+    render(<TrashModal open onClose={() => {}} />);
+    await act(async () => {});
+    expect(document.body.textContent).toContain("Unavailable — this folder is not connected right now");
+    const browse = [...document.querySelectorAll("button")].filter((b) => b.textContent === "Browse…");
+    expect(browse).toHaveLength(2);
+    expect(browse[1].hasAttribute("disabled")).toBe(true);
+    await act(async () => browse[0].click());
+    expect(invokeCalls.some((c) => c.command === "trash_entries" && c.args.root === ROWS[0].root)).toBe(true);
+    expect(document.body.textContent).toContain("Browse deleted files");
   });
 });

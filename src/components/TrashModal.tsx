@@ -5,6 +5,7 @@ import { formatBytes } from "../models/items";
 import { log, toErrorFields } from "../repositories";
 import ModalShell from "./ModalShell";
 import ConfirmModal from "./ConfirmModal";
+import DeletedFilesModal from "./DeletedFilesModal";
 import Button from "./ui/Button";
 import { recordActionFailure } from "../state/notifications-store";
 import OperationResult from "./ui/OperationResult";
@@ -20,6 +21,9 @@ import { message, type Message } from "../i18n/translate";
 
 interface TrashRootInfo {
   root: string;
+  /** Whether the configured root answers now; an unavailable one cannot be
+   * browsed. */
+  available: boolean;
   bytes: number;
   files: number;
   /** Names exactly what these totals measured; Empty sends it back and
@@ -51,6 +55,7 @@ export default function TrashModal({
   const { t, text, number } = useI18n();
   const [rows, setRows] = useState<TrashRootInfo[] | null>(null);
   const [confirm, setConfirm] = useState<TrashRootInfo | null>(null);
+  const [browsing, setBrowsing] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [activeRoot, setActiveRoot] = useState<string | null>(null);
@@ -186,6 +191,9 @@ export default function TrashModal({
         ) : undefined
       }
     >
+      {browsing !== null ? (
+        <DeletedFilesModal location={browsing} onClose={() => setBrowsing(null)} />
+      ) : null}
       {confirm !== null ? (
         <ConfirmModal
           title={t("trash.confirmTitle")}
@@ -227,10 +235,12 @@ export default function TrashModal({
               <div className="min-w-0 flex-1">
                 <p className="select-text break-all text-sm text-ink">{row.root}</p>
                 <p className="text-xs tabular-nums text-ink-muted">
-                  {t("trash.rootSummary", {
-                    count: row.files,
-                    size: formatBytes(row.bytes, number),
-                  })}
+                  {row.available
+                    ? t("trash.rootSummary", {
+                        count: row.files,
+                        size: formatBytes(row.bytes, number),
+                      })
+                    : t("trash.unavailable")}
                 </p>
                 {activeRoot === row.root ? (
                   <p className="mt-1 text-xs tabular-nums text-primary">
@@ -252,6 +262,12 @@ export default function TrashModal({
                   </p>
                 ) : null}
               </div>
+              <Button
+                disabled={busy || !row.available || row.files === 0}
+                onClick={() => setBrowsing(row.root)}
+              >
+                {t("trash.browse")}
+              </Button>
               <Button
                 onClick={() => {
                   void invoke("trash_reveal", { root: row.root }).catch((error) => {

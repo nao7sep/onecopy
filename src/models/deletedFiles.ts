@@ -1,0 +1,269 @@
+// Deleted files, as Browse shows one root's listing: pure grouping, date
+// bucketing, search and selection over the entries `trash_entries` returns.
+// The backend decides what each stored file is (its status); this module only
+// arranges and selects, so every rule here is testable without a window.
+
+export type TrashKind = "delete" | "move-cleanup" | "overwrite-displaced";
+export type TrashRole = "main" | "companion";
+export type EntryStatus =
+  | "restorable"
+  | "unverified"
+  | "changed"
+  | "outside-root"
+  | "unrepresentable"
+  | "excluded";
+
+export interface TrashEntry {
+  /** `<day folder>/<stored name>`, unique within one root. `role` is always
+ * present in a listing: an older record's is derived from its extension. */
+  id: string;
+  day: string;
+  storedName: string;
+  storedPath: string;
+  originalRelative: string | null;
+  deletedAtUtc: string;
+  size: number;
+  version: number;
+  kind: TrashKind | null;
+  operation: string | null;
+  item: string | null;
+  role: TrashRole | null;
+  movedTo: string | null;
+  status: EntryStatus;
+}
+
+export interface TrashListing {
+  entries: TrashEntry[];
+  unrecordedFiles: number;
+  malformedLines: number;
+}
+
+/** One logical item removed by one operation: its main copies, the
+ * companions paired with them, and duplicate copies. */
+export interface DeletionGroup {
+  key: string;
+  /** Main copies first, then companions, each by folder and name. */
+  entries: TrashEntry[];
+  representative: TrashEntry;
+  /** The latest deletion time among the group's files. */
+  deletedAtUtc: string;
+  size: number;
+  mains: number;
+  companions: number;
+  kind: TrashKind | null;
+  movedTo: string | null;
+}
+
+export interface DayBucket {
+  /** The local calendar day, `yyyy-mm-dd`. */
+  day: string;
+  groups: DeletionGroup[];
+}
+
+export function isRestorable(entry: TrashEntry): boolean {
+  return entry.status === "restorable" || entry.status === "unverified";
+}
+
+/** The original file name, or the stored name when the original is unknown. */
+export function entryName(entry: TrashEntry): string {
+  const relative = entry.originalRelative;
+  if (relative === null) return entry.storedName;
+  const cut = relative.lastIndexOf("/");
+  return cut < 0 ? relative : relative.slice(cut + 1);
+}
+
+/** The original folder relative to the root; "" for the root itself. */
+export function entryFolder(entry: TrashEntry): string {
+  const relative = entry.originalRelative;
+  if (relative === null) return "";
+  const cut = relative.lastIndexOf("/");
+  return cut < 0 ? "" : relative.slice(0, cut);
+}
+
+function stem(name: string): string {
+  const dot = name.lastIndexOf(".");
+  return (dot <= 0 ? name : name.slice(0, dot)).normalize("NFC").toLowerCase();
+}
+
+/** Which deletion group an entry belongs to. Version 2 records group by
+ * operation and logical item. A displaced destination file has no item, and
+ * older records have no operation: those group by folder and stem, which is
+ * the companion rule, so duplicates in other folders stay separate. */
+export function groupKey(entry: TrashEntry): string {
+  if (entry.operation !== null && entry.item !== null) {
+    return `item\u0000${entry.operation}\u0000${entry.item}`;
+  }
+  const place = `${entryFolder(entry)}\u0000${stem(entryName(entry))}`;
+  return entry.operation !== null
+    ? `stem\u0000${entry.operation}\u0000${place}`
+    : `legacy\u0000${entry.day}\u0000${place}`;
+}
+
+function byPlace(left: TrashEntry, right: TrashEntry): number {
+  const leftMain = left.role === "companion" ? 1 : 0;
+  const rightMain = right.role === "companion" ? 1 : 0;
+  if (leftMain !== rightMain) return leftMain - rightMain;
+  const folder = entryFolder(left).localeCompare(entryFolder(right));
+  if (folder !== 0) return folder;
+  const name = entryName(left).localeCompare(entryName(right));
+  return name !== 0 ? name : left.id.localeCompare(right.id);
+}
+
+function isCompanion(entry: TrashEntry): boolean {
+  return entry.role === "companion";
+}
+
+export function groupEntries(entries: readonly TrashEntry[]): DeletionGroup[] {
+  const groups = new Map<string, TrashEntry[]>();
+  for (const entry of entries) {
+    const key = groupKey(entry);
+    const members = groups.get(key);
+    if (members === undefined) groups.set(key, [entry]);
+    else members.push(entry);
+  }
+  return [...groups.entries()].map(([key, members]) => {
+    const sorted = [...members].sort(byPlace);
+    const companions = sorted.filter(isCompanion).length;
+    const deletedAtUtc = sorted.reduce(
+      (latest, entry) => (entry.deletedAtUtc > latest ? entry.deletedAtUtc : latest),
+      sorted[0].deletedAtUtc,
+    );
+    const representative = sorted.find((entry) => !isCompanion(entry)) ?? sorted[0];
+    return {
+      key,
+      entries: sorted,
+      representative,
+      deletedAtUtc,
+      size: sorted.reduce((total, entry) => total + entry.size, 0),
+      mains: sorted.length - companions,
+      companions,
+      kind: representative.kind,
+      movedTo: representative.role === "companion" ? null : representative.movedTo,
+    };
+  });
+}
+
+/** The local calendar day of an instant in `timeZone` (the computer's zone
+ * when omitted). A UTC day folder can span two local days, so the list is
+ * bucketed by this, never by the folder's name. */
+export function localDay(iso: string, timeZone?: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const part = (type: string) => parts.find((candidate) => candidate.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+/** Groups bucketed by local day of deletion, newest day and group first. */
+export function bucketByDay(
+  groups: readonly DeletionGroup[],
+  timeZone?: string,
+): DayBucket[] {
+  const buckets = new Map<string, DeletionGroup[]>();
+  for (const group of groups) {
+    const day = localDay(group.deletedAtUtc, timeZone);
+    const members = buckets.get(day);
+    if (members === undefined) buckets.set(day, [group]);
+    else members.push(group);
+  }
+  return [...buckets.entries()]
+    .sort(([left], [right]) => right.localeCompare(left))
+    .map(([day, members]) => ({
+      day,
+      groups: [...members].sort(
+        (left, right) =>
+          right.deletedAtUtc.localeCompare(left.deletedAtUtc) ||
+          entryName(left.representative).localeCompare(entryName(right.representative)),
+      ),
+    }));
+}
+
+/** Case-insensitive, Unicode-normalized form for search on both sides. */
+export function searchKey(text: string): string {
+  return text.normalize("NFC").toLowerCase();
+}
+
+/** Groups with at least one file whose name or original folder matches. */
+export function filterGroups(
+  groups: readonly DeletionGroup[],
+  query: string,
+): DeletionGroup[] {
+  const needle = searchKey(query.trim());
+  if (needle === "") return [...groups];
+  return groups.filter((group) =>
+    group.entries.some(
+      (entry) =>
+        searchKey(entryName(entry)).includes(needle) ||
+        searchKey(entryFolder(entry)).includes(needle),
+    ),
+  );
+}
+
+/** Whether every restorable file of the group is selected (and it has one). */
+export function groupSelected(group: DeletionGroup, selected: ReadonlySet<string>): boolean {
+  const restorable = group.entries.filter(isRestorable);
+  return restorable.length > 0 && restorable.every((entry) => selected.has(entry.id));
+}
+
+/** Checking a group selects all of its restorable files; checking it again
+ * when all are selected clears them. */
+export function toggleGroup(
+  group: DeletionGroup,
+  selected: ReadonlySet<string>,
+): Set<string> {
+  const next = new Set(selected);
+  const restorable = group.entries.filter(isRestorable);
+  if (groupSelected(group, selected)) {
+    for (const entry of restorable) next.delete(entry.id);
+  } else {
+    for (const entry of restorable) next.add(entry.id);
+  }
+  return next;
+}
+
+export function toggleEntry(entry: TrashEntry, selected: ReadonlySet<string>): Set<string> {
+  const next = new Set(selected);
+  if (!isRestorable(entry)) return next;
+  if (next.has(entry.id)) next.delete(entry.id);
+  else next.add(entry.id);
+  return next;
+}
+
+/** Keeps only selected ids a fresh listing still offers as restorable. */
+export function reconcileSelection(
+  selected: ReadonlySet<string>,
+  entries: readonly TrashEntry[],
+): Set<string> {
+  const restorable = new Set(entries.filter(isRestorable).map((entry) => entry.id));
+  return new Set([...selected].filter((id) => restorable.has(id)));
+}
+
+/** One row of the virtualized list. */
+export type BrowseRow =
+  | { type: "day"; key: string; day: string }
+  | { type: "group"; key: string; group: DeletionGroup; expanded: boolean }
+  | { type: "entry"; key: string; group: DeletionGroup; entry: TrashEntry };
+
+export function browseRows(
+  buckets: readonly DayBucket[],
+  expanded: ReadonlySet<string>,
+): BrowseRow[] {
+  const rows: BrowseRow[] = [];
+  for (const bucket of buckets) {
+    rows.push({ type: "day", key: `day:${bucket.day}`, day: bucket.day });
+    for (const group of bucket.groups) {
+      const open = expanded.has(group.key);
+      rows.push({ type: "group", key: `group:${group.key}`, group, expanded: open });
+      if (!open) continue;
+      for (const entry of group.entries) {
+        rows.push({ type: "entry", key: `entry:${entry.id}`, group, entry });
+      }
+    }
+  }
+  return rows;
+}

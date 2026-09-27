@@ -36,6 +36,9 @@ export type Translator = {
   dateTime: (date: Date, timeZone?: string | null) => string;
   // A month section's heading, such as "March 2016".
   monthYear: (year: number, month: number) => string;
+  // A calendar day with no time of day (`yyyy-mm-dd`), such as "Sunday,
+  // September 27, 2026", formatted without any time-zone shift.
+  calendarDay: (day: string) => string;
   // Names run together the way the language lists them ("a, b, c").
   list: (items: readonly string[]) => string;
 };
@@ -46,6 +49,7 @@ export function createTranslator(language: Language, locale: string = language):
   const percentFormat = new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 0 });
   const dateTimeFormats = new Map<string, Intl.DateTimeFormat>();
   const monthYearFormat = new Intl.DateTimeFormat(locale, { year: "numeric", month: "long", timeZone: "UTC" });
+  const calendarDayFormat = new Intl.DateTimeFormat(locale, { dateStyle: "full", timeZone: "UTC" });
   const listFormat = new Intl.ListFormat(locale, { type: "conjunction", style: "narrow" });
   const pluralRules = new Intl.PluralRules(language);
 
@@ -111,6 +115,11 @@ export function createTranslator(language: Language, locale: string = language):
       return format.format(date);
     },
     monthYear: (year, month) => monthYearFormat.format(new Date(Date.UTC(year, month - 1, 1))),
+    calendarDay: (day) => {
+      const [year, month, date] = day.split("-").map(Number);
+      const value = new Date(Date.UTC(year, month - 1, date));
+      return Number.isNaN(value.getTime()) ? day : calendarDayFormat.format(value);
+    },
     list: (items) => listFormat.format(items),
   };
 }

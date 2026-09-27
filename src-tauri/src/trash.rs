@@ -708,6 +708,230 @@ pub fn append_restored(day_dir: &Path, stored_name: &str, restored_to: &str) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Browsing one root's deleted files
+
+/// Whether a listed entry can be restored, and if not, why.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EntryStatus {
+    /// A version 2 record whose stored file still has the recorded size and
+    /// modification time.
+    Restorable,
+    /// An original four-field record: restorable, but nothing proves the
+    /// stored file is the one it describes.
+    Unverified,
+    /// The stored entry changed since it was deleted, or is not a regular
+    /// file. Reveal only.
+    Changed,
+    /// The original location is not inside this root. Reveal only.
+    OutsideRoot,
+    /// The original name cannot be rebuilt on this system. Reveal only.
+    Unrepresentable,
+    /// The original location lies inside deleted-file storage or OneCopy's
+    /// own data folder. Reveal only.
+    Excluded,
+}
+
+impl EntryStatus {
+    pub fn restorable(self) -> bool {
+        matches!(self, Self::Restorable | Self::Unverified)
+    }
+}
+
+/// One stored file with a record, as Deleted files lists it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrashEntry {
+    /// `<day folder>/<stored name>`: unique within one root's listing.
+    pub id: String,
+    pub day: String,
+    pub stored_name: String,
+    pub stored_path: String,
+    pub original_relative: Option<String>,
+    pub deleted_at_utc: String,
+    /// The stored file's current size.
+    pub size: u64,
+    pub version: u32,
+    pub kind: Option<TrashKind>,
+    pub operation: Option<String>,
+    pub item: Option<String>,
+    pub role: Option<TrashRole>,
+    pub moved_to: Option<String>,
+    pub status: EntryStatus,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrashListing {
+    pub entries: Vec<TrashEntry>,
+    /// Stored files that no record names.
+    pub unrecorded_files: u64,
+    /// Manifest lines that could not be read.
+    pub malformed_lines: u64,
+}
+
+/// Why a recorded original path cannot become a target inside its root.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnfitPath {
+    Unrepresentable,
+    Excluded,
+}
+
+/// The components of a recorded root-relative path, when they can be placed
+/// inside a root on this system: never empty, never `.` or `..`, never a
+/// lossy replacement character, never through deleted-file storage, and on
+/// Windows never a component Windows would read as a separator or a drive.
+pub fn relative_components(relative: &str) -> Result<Vec<&str>, UnfitPath> {
+    if relative.contains('\u{FFFD}') || relative.contains('\0') {
+        return Err(UnfitPath::Unrepresentable);
+    }
+    let components: Vec<&str> = relative.split('/').collect();
+    for component in &components {
+        if component.is_empty() || *component == "." || *component == ".." {
+            return Err(UnfitPath::Unrepresentable);
+        }
+        if cfg!(windows) && component.contains(['\\', ':']) {
+            return Err(UnfitPath::Unrepresentable);
+        }
+    }
+    if components
+        .iter()
+        .any(|component| component.eq_ignore_ascii_case(TRASH_DIR_NAME))
+    {
+        return Err(UnfitPath::Excluded);
+    }
+    Ok(components)
+}
+
+/// The target a recorded relative path names inside `root`.
+pub fn target_in_root(root: &Path, relative: &str) -> Result<PathBuf, UnfitPath> {
+    Ok(relative_components(relative)?
+        .into_iter()
+        .fold(root.to_path_buf(), |path, component| path.join(component)))
+}
+
+/// Decides one record's status from the record and what is stored under its
+/// name. Pure: the caller supplies `in_data_root` for the target.
+pub fn entry_status(
+    record: &DayRecord,
+    stored: StoredState,
+    root: &Path,
+    data_root: &Path,
+) -> EntryStatus {
+    let StoredState::Regular { size, mtime_ms } = stored else {
+        return EntryStatus::Changed;
+    };
+    if record.version >= 2 && (record.size != Some(size) || record.mtime_ms != Some(mtime_ms)) {
+        return EntryStatus::Changed;
+    }
+    let Some(relative) = record.original_relative.as_deref() else {
+        return EntryStatus::OutsideRoot;
+    };
+    match target_in_root(root, relative) {
+        Err(UnfitPath::Unrepresentable) => EntryStatus::Unrepresentable,
+        Err(UnfitPath::Excluded) => EntryStatus::Excluded,
+        Ok(target) if crate::paths::is_within_data_root(&target, data_root) => {
+            EntryStatus::Excluded
+        }
+        Ok(_) if record.version >= 2 => EntryStatus::Restorable,
+        Ok(_) => EntryStatus::Unverified,
+    }
+}
+
+fn is_companion_name(name: &str) -> bool {
+    Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            crate::extensions::COMPANION_EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str())
+        })
+}
+
+/// The configured root that owns a deleted-files location the interface
+/// names (`<configured root>/.onecopy-trash`), from the current settings.
+pub fn owning_root_of(configured_roots: &[PathBuf], location: &Path) -> Result<PathBuf, String> {
+    configured_roots
+        .iter()
+        .find(|root| root.join(TRASH_DIR_NAME) == location)
+        .cloned()
+        .ok_or_else(|| "not a known deleted-files location".to_string())
+}
+
+/// Lists every stored file with a record beneath one configured root. The
+/// location must be a real directory; a day folder replaced by a link is
+/// refused, never followed. A root with no location yet lists nothing.
+pub fn list_root(root: &Path, data_root: &Path) -> Result<TrashListing, String> {
+    let location = root.join(TRASH_DIR_NAME);
+    match volume_io::symlink_metadata(&location) {
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => {
+            return Err(format!(
+                "deleted-file storage is not a real directory: {}",
+                location.display()
+            ))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(TrashListing::default())
+        }
+        Err(error) => return Err(format!("deleted-file storage is unavailable: {error}")),
+    }
+    let spellings = root_spellings(root);
+    let mut listing = TrashListing::default();
+    let mut days = volume_io::read_dir(&location, false)
+        .map_err(|error| format!("could not list deleted files: {error}"))?;
+    days.sort_by(|left, right| left.file_name.cmp(&right.file_name));
+    for day in days {
+        match day.file_type {
+            Some(kind) if kind.is_dir() => {}
+            Some(kind) if kind.is_symlink() => {
+                return Err(format!(
+                    "deleted-file storage is not a real directory: {}",
+                    day.path.display()
+                ))
+            }
+            _ => continue,
+        }
+        let day_name = day.file_name.to_string_lossy().into_owned();
+        let read = read_day(&day.path, &spellings)?;
+        listing.unrecorded_files += read.unrecorded_files;
+        listing.malformed_lines += read.malformed_lines;
+        for (record, stored) in read.records {
+            let status = entry_status(&record, stored, root, data_root);
+            let companion = is_companion_name(&record.stored_name);
+            let size = match stored {
+                StoredState::Regular { size, .. } => size,
+                StoredState::Other => 0,
+            };
+            listing.entries.push(TrashEntry {
+                id: format!("{day_name}/{}", record.stored_name),
+                day: day_name.clone(),
+                stored_path: day.path.join(&record.stored_name).to_string_lossy().into_owned(),
+                stored_name: record.stored_name,
+                original_relative: record.original_relative,
+                deleted_at_utc: record.deleted_at_utc,
+                size,
+                version: record.version,
+                kind: record.kind,
+                operation: record.operation,
+                item: record.item,
+                // An older record has no role; the file's extension tells a
+                // companion the way the library tells one.
+                role: record.role.or_else(|| {
+                    Some(if companion {
+                        TrashRole::Companion
+                    } else {
+                        TrashRole::Main
+                    })
+                }),
+                moved_to: record.moved_to,
+                status,
+            });
+        }
+    }
+    Ok(listing)
+}
+
 #[cfg(test)]
 // EXCEPTION to tests-folder conventions: the callback is a private
 // exact-boundary seam and must not widen the shipped Trash API.
@@ -762,6 +986,9 @@ pub fn root_spellings(root: &Path) -> Vec<PathBuf> {
 #[serde(rename_all = "camelCase")]
 pub struct TrashRootInfo {
     pub root: String,
+    /// Whether the configured root answers as a directory now. An
+    /// unavailable root cannot be browsed or restored into.
+    pub available: bool,
     pub bytes: u64,
     pub files: u64,
     /// Names exactly what these totals measured. Emptying requires it back
@@ -773,19 +1000,20 @@ pub struct TrashRootInfo {
 /// directory. Missing directories report zero and are created only when the
 /// user deletes a file or explicitly reveals that location.
 pub fn overview(configured_roots: &[PathBuf]) -> Vec<TrashRootInfo> {
-    let mut roots: Vec<PathBuf> = Vec::new();
+    let mut roots: Vec<(PathBuf, &PathBuf)> = Vec::new();
     for configured in configured_roots {
         let root = configured.join(TRASH_DIR_NAME);
-        if !roots.contains(&root) {
-            roots.push(root);
+        if !roots.iter().any(|(known, _)| *known == root) {
+            roots.push((root, configured));
         }
     }
     roots
         .into_iter()
-        .map(|root| {
+        .map(|(root, configured)| {
             let measure = measure_root(&root);
             TrashRootInfo {
                 root: root.to_string_lossy().to_string(),
+                available: volume_io::is_dir(configured).unwrap_or(false),
                 bytes: measure.bytes,
                 files: measure.files,
                 plan_token: measure.token,
