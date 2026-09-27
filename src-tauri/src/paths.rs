@@ -66,11 +66,31 @@ pub fn resolve_data_root(app: &AppHandle) -> Result<PathBuf, String> {
         .home_dir()
         .map_err(|e| format!("could not resolve home directory: {e}"))?;
     let root = resolve_root(&home, std::env::var(HOME_ENV_VAR).ok())?;
-    std::fs::create_dir_all(&root)
+    create_data_root(&root)
         .map_err(|e| format!("could not create storage root {}: {e}", root.display()))?;
     #[cfg(unix)]
     ensure_private(&root);
     Ok(root)
+}
+
+// Creates the root (and any missing parents) owner-only from the start on
+// POSIX, rather than creating it under the default umask and relying solely
+// on `ensure_private` to tighten it afterward — that sequence leaves a window
+// where a freshly created root is briefly world-readable. `ensure_private`
+// still runs after this (R6-03) to tighten a root an earlier build left
+// broader than 0700; this only narrows the mode a *new* root is born with.
+#[cfg(unix)]
+fn create_data_root(root: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(root)
+}
+
+#[cfg(not(unix))]
+fn create_data_root(root: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(root)
 }
 
 /// Restricts the data root to the owner (0700) so previews, transcripts, the
