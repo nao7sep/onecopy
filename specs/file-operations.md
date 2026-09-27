@@ -14,7 +14,7 @@ File operations remain available while background work runs. Background work yie
 
 A planned source identifies a recorded path, not an immutable reviewed snapshot. OneCopy acts on the regular file currently present at that path and does not promise to prove that its bytes still match what was shown before confirmation. A missing, unreadable, locked, or unsuitable path fails independently.
 
-A Move main output covers the item's other copies only when the delivered bytes match the logical item's recorded content. A planned copy whose bytes no longer match is neither delivered nor removed: it stays in place with an Issue, and the next planned copy is tried. When no planned copy still matches, the output is undelivered and every copy remains. Copy delivers the file as it currently exists, and an item whose content has not yet been identified delivers its current bytes.
+A Move main output covers the item's other copies only when the delivered bytes match the logical item's recorded content. A planned copy whose bytes no longer match is neither delivered nor removed: it stays in place with an Issue, together with the companions paired with it, and the next planned copy is tried. When no planned copy still matches, the output is undelivered and every copy remains. Copy delivers the file as it currently exists, and an item whose content has not yet been identified delivers its current bytes.
 
 Unavailable source directories or drives do not disable the application or invalidate every available copy. An operation uses the available planned sources, records unavailable paths, and leaves their handling to later reconciliation or a newly confirmed operation.
 

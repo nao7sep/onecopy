@@ -176,7 +176,11 @@ impl AcceptedFiles {
     }
 
     fn retain_accepted(&self, rows: &mut Vec<PhysicalRow>) {
-        rows.retain(|(path_id, abs_path, _, _)| self.files.contains(&(*path_id, abs_path.clone())));
+        rows.retain(|(path_id, abs_path, _, _)| self.accepts(*path_id, abs_path));
+    }
+
+    fn accepts(&self, path_id: i64, abs_path: &str) -> bool {
+        self.files.contains(&(path_id, abs_path.to_string()))
     }
 }
 
@@ -721,6 +725,8 @@ struct DeliverySource {
     content_hash: Option<String>,
     bytes: u64,
     owning_root: Result<std::path::PathBuf, String>,
+    /// For a companion source, the main copy it is paired with.
+    beside: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
@@ -1607,9 +1613,9 @@ fn collect_move_unit(
                           abs_path COLLATE onecopy_nocase, abs_path",
                 params![hash],
             )?,
-            collect4(
+            collect_companions(
                 conn,
-                "SELECT comp.id, comp.abs_path, comp.content_hash, comp.size \
+                "SELECT comp.id, comp.abs_path, comp.content_hash, comp.size, comp.companion_of \
                  FROM paths comp JOIN paths pri ON comp.companion_of = pri.id \
                  WHERE pri.content_hash = ?1 AND pri.missing = 0 \
                    AND pri.companion_of IS NULL AND comp.missing = 0 \
@@ -1626,16 +1632,16 @@ fn collect_move_unit(
                  WHERE id = ?1 AND missing = 0 AND companion_of IS NULL",
                 params![path_id],
             )?,
-            collect4(
+            collect_companions(
                 conn,
-                "SELECT id, abs_path, content_hash, size FROM paths \
+                "SELECT id, abs_path, content_hash, size, companion_of FROM paths \
                  WHERE companion_of = ?1 AND missing = 0 ORDER BY id",
                 params![path_id],
             )?,
         ),
     };
     accepted.retain_accepted(&mut primary_rows);
-    accepted.retain_accepted(&mut companion_rows);
+    companion_rows.retain(|((path_id, abs_path, _, _), _)| accepted.accepts(*path_id, abs_path));
     let primary_sources = delivery_sources(primary_rows, roots);
     let provisional_hash = item
         .hash
@@ -1659,7 +1665,15 @@ fn collect_move_unit(
     // output: on a case-insensitive destination `x.xmp` and `x.XMP` are one
     // name, and the companion beside the highest-ranked main copy supplies it.
     let mut companions = Vec::<(String, Vec<DeliverySource>)>::new();
-    for source in delivery_sources(companion_rows, roots) {
+    let (companion_rows, companion_mains): (Vec<_>, Vec<_>) = companion_rows.into_iter().unzip();
+    let companion_sources = delivery_sources(companion_rows, roots)
+        .into_iter()
+        .zip(companion_mains)
+        .map(|(source, main)| DeliverySource {
+            beside: Some(main),
+            ..source
+        });
+    for source in companion_sources {
         let name = file_name(&source.abs_path)?;
         if let Some((_, sources)) = companions
             .iter_mut()
@@ -1699,6 +1713,7 @@ fn delivery_sources(rows: Vec<PhysicalRow>, roots: &[std::path::PathBuf]) -> Vec
                 content_hash,
                 bytes,
                 owning_root,
+                beside: None,
             }
         })
         .collect()
@@ -1736,11 +1751,13 @@ enum MoveUnitProgress {
 }
 
 enum StageResult {
-    /// The staged output and the planned sources skipped because their bytes
-    /// no longer matched the item's recorded content.
+    /// The staged output and the planned sources it does not cover: main
+    /// copies whose bytes no longer matched the item's recorded content, and
+    /// companions paired with such a copy.
     Ready(StagedOutput, Vec<i64>),
     Cancelled,
-    Failed,
+    /// No output; the planned sources left uncovered as in `Ready`.
+    Failed(Vec<i64>),
 }
 
 enum MoveUnitResult {
@@ -1767,6 +1784,10 @@ fn execute_move_unit(
     let mut outcome = MoveOutOutcome::default();
     let mut staged = Vec::<(&DeliveryPlan, StagedOutput, Vec<i64>)>::new();
     let mut replacement_prepared = true;
+    // Main copies whose bytes no longer match stay in place, and so do the
+    // companions paired with them: no output covers that copy's family. The
+    // main delivery is planned, and so staged, before every companion.
+    let mut changed_mains = Vec::<i64>::new();
     for delivery in &unit.deliveries {
         if cancelled() {
             return Ok(MoveUnitResult::Cancelled(outcome));
@@ -1783,12 +1804,25 @@ fn execute_move_unit(
                     && mode != MoveOutMode::CopyKeepAll
                     && !crate::scanner::is_provisional(hash)
             });
-        match stage_delivery(conn, delivery, recorded_hash, cancelled, on_progress)? {
-            StageResult::Ready(output, changed_sources) => {
-                staged.push((delivery, output, changed_sources))
+        match stage_delivery(
+            conn,
+            delivery,
+            recorded_hash,
+            &changed_mains,
+            cancelled,
+            on_progress,
+        )? {
+            StageResult::Ready(output, uncovered) => {
+                if delivery.primary {
+                    changed_mains.extend(&uncovered);
+                }
+                staged.push((delivery, output, uncovered))
             }
             StageResult::Cancelled => return Ok(MoveUnitResult::Cancelled(outcome)),
-            StageResult::Failed => {
+            StageResult::Failed(uncovered) => {
+                if delivery.primary {
+                    changed_mains.extend(&uncovered);
+                }
                 replacement_prepared = false;
                 outcome
                     .undelivered
@@ -2056,11 +2090,17 @@ fn stage_delivery(
     conn: &Connection,
     delivery: &DeliveryPlan,
     recorded_hash: Option<&str>,
+    changed_mains: &[i64],
     cancelled: &dyn Fn() -> bool,
     on_progress: &mut dyn FnMut(MoveUnitProgress),
 ) -> Result<StageResult, String> {
     let mut changed_sources = Vec::new();
     for source in &delivery.sources {
+        if source.beside.is_some_and(|main| changed_mains.contains(&main)) {
+            // Paired with a main copy left in place because it changed.
+            changed_sources.push(source.path_id);
+            continue;
+        }
         let staged = output_stage_path(&delivery.target)?;
         let copied = crate::hashing::hash_while_copying_cancellable_detailed(
             Path::new(&source.abs_path),
@@ -2136,7 +2176,7 @@ fn stage_delivery(
             }
         }
     }
-    Ok(StageResult::Failed)
+    Ok(StageResult::Failed(changed_sources))
 }
 
 /// A private name beside the final target with a short fixed length. It never
@@ -2148,6 +2188,24 @@ fn output_stage_path(target: &Path) -> Result<std::path::PathBuf, String> {
         ".onecopy-stage-{}.tmp",
         crate::nanoid::generate()?
     )))
+}
+
+/// Companion rows, each with the main copy it is paired with (the query's
+/// fifth column).
+fn collect_companions(
+    conn: &Connection,
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> Result<Vec<(PhysicalRow, i64)>, String> {
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params, |r| {
+            Ok(((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?), r.get(4)?))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
 }
 
 fn collect4(

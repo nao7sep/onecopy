@@ -2143,3 +2143,48 @@ fn move_out_modes_have_one_wire_name() {
         assert_eq!(serde_json::from_value::<MoveOutMode>(serde_json::json!(wire)).unwrap(), mode);
     }
 }
+
+#[test]
+fn move_keeps_a_changed_copys_companion_beside_it() {
+    for mode in [MoveOutMode::MoveTrashRest, MoveOutMode::MoveDeleteRest] {
+        let (f, _, dest) = rotten_copy_fixture("rot-companion");
+        for sub in ["a", "b"] {
+            std::fs::write(
+                f.root.join(sub).join("r.xmp"),
+                format!("{sub}-sidecar").as_bytes(),
+            )
+            .unwrap();
+        }
+        scan(&f);
+        let hash: String = f
+            .conn
+            .query_row(
+                "SELECT content_hash FROM paths WHERE file_name = 'r.jpg' LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // The representative copy a changes after indexing; it is skipped and
+        // stays in place, so its own sidecar must stay beside it.
+        std::fs::write(f.root.join("a").join("r.jpg"), b"rotten!-bytes").unwrap();
+
+        let outcome =
+            move_out(&f.conn, &f.app_root, &f.cache, ItemRef::Hash(&hash), &dest, mode).unwrap();
+
+        assert_eq!(std::fs::read(dest.join("r.jpg")).unwrap(), b"healthy-bytes");
+        assert_eq!(
+            std::fs::read(dest.join("r.xmp")).unwrap(),
+            b"b-sidecar",
+            "the delivered main copy's own sidecar is the companion output"
+        );
+        assert_eq!(
+            std::fs::read(f.root.join("a").join("r.xmp")).unwrap(),
+            b"a-sidecar",
+            "the changed copy's sidecar stays beside it"
+        );
+        assert!(f.root.join("a").join("r.jpg").exists());
+        assert!(!f.root.join("b").join("r.jpg").exists());
+        assert!(!f.root.join("b").join("r.xmp").exists());
+        assert_eq!(outcome.exported, 2);
+    }
+}
