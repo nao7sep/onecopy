@@ -205,6 +205,7 @@ struct TestRestoreHost {
     waiting_shown: std::sync::Arc<AtomicBool>,
     phases: Vec<Phase>,
     finished: Vec<(bool, Option<ResultSummary>)>,
+    media: Vec<Option<Vec<String>>>,
 }
 
 impl RestoreHost for TestRestoreHost {
@@ -218,8 +219,10 @@ impl RestoreHost for TestRestoreHost {
         &mut self,
         mutation: &Claim,
         _root: &str,
+        media: Option<&[String]>,
         waiting: &Progress,
     ) -> Result<Option<Self::Admitted>, String> {
+        self.media.push(media.map(<[String]>::to_vec));
         let (phases, shown) = (&mut self.phases, &self.waiting_shown);
         match crate::scan_runtime::admit_foreground(None, None, &|| mutation.cancelled(), &mut || {
             phases.push(waiting.phase);
@@ -325,6 +328,7 @@ fn test_host(data_root: &std::path::Path) -> TestRestoreHost {
         waiting_shown: Default::default(),
         phases: Vec::new(),
         finished: Vec::new(),
+        media: Vec::new(),
     }
 }
 
@@ -380,5 +384,9 @@ fn a_restore_that_waited_for_background_work_runs_once_it_is_admitted() {
     drop(mutation);
     assert_eq!(confirmed.restored.len(), 1);
     assert!(!std::path::Path::new(&stored).exists());
+    // Restore changes no indexed file: no reader is paused and no derived
+    // job, a requested one included, is stopped for it (an empty key list
+    // would stop every item's).
+    assert_eq!(host.media, [None, None]);
     assert_eq!(std::fs::read(root.join("trip").join("a.jpg")).unwrap(), b"bytes");
 }

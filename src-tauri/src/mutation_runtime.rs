@@ -426,12 +426,13 @@ fn result_summary(
     }
 }
 
-/// The index claim, then the media boundary on the operation's files. Both
-/// wait as long as background work needs to reach its safe point; the
-/// operation shows that it is waiting, and its Cancel ends the wait with no
-/// filesystem work. Fields drop in order: media first, then the index.
+/// The index claim, then the media boundary on the operation's files when it
+/// changes indexed files. Both wait as long as background work needs to reach
+/// its safe point; the operation shows that it is waiting, and its Cancel ends
+/// the wait with no filesystem work. Fields drop in order: media first, then
+/// the index.
 struct Admitted {
-    _media: crate::media_use::Guard,
+    _media: Option<crate::media_use::Guard>,
     _index: crate::scan_runtime::ForegroundGuard,
 }
 
@@ -468,7 +469,7 @@ fn touched_source_dirs(source_dirs: &[String], touches: &Touches) -> Vec<String>
 fn admit(
     app: &AppHandle,
     mutation: &Claim,
-    keys: &[String],
+    media: Option<&[String]>,
     touches: &Touches,
     on_wait: &mut dyn FnMut(),
 ) -> Result<Option<Admitted>, String> {
@@ -489,9 +490,17 @@ fn admit(
     else {
         return Ok(None);
     };
+    // `None`: the operation changes no indexed file, so no reader or derived
+    // job is stopped for it (an empty key list would mean every item).
+    let Some(keys) = media else {
+        return Ok(Some(Admitted {
+            _media: None,
+            _index: index,
+        }));
+    };
     match crate::media_use::begin(app, keys, &cancelled) {
         Ok(media) => Ok(Some(Admitted {
-            _media: media,
+            _media: Some(media),
             _index: index,
         })),
         Err(_) if mutation.cancelled() => Ok(None),
@@ -551,7 +560,7 @@ pub(crate) fn delete_items(
                 ..last_progress.clone()
             };
             let Some(_admitted) =
-                admit(app, &mutation, &keys, &Touches::Files(&accepted), &mut || publisher.progress(&waiting))?
+                admit(app, &mutation, Some(&keys), &Touches::Files(&accepted), &mut || publisher.progress(&waiting))?
             else {
                 return Ok(crate::operations::DeleteBatchOutcome {
                     cancelled: true,
@@ -742,7 +751,7 @@ pub(crate) fn move_items_out(
                 ..last_progress.clone()
             };
             let Some(_admitted) =
-                admit(app, &mutation, &keys, &Touches::Files(&accepted), &mut || publisher.progress(&waiting))?
+                admit(app, &mutation, Some(&keys), &Touches::Files(&accepted), &mut || publisher.progress(&waiting))?
             else {
                 return Ok(crate::operations::MoveBatchOutcome {
                     cancelled: true,
@@ -1056,10 +1065,13 @@ pub(crate) fn restore_entries(
 trait RestoreHost {
     type Admitted;
     fn data_root(&self) -> Result<std::path::PathBuf, String>;
+    /// `media`: the files whose readers and derived jobs must stop first,
+    /// `None` for an operation that changes no indexed file.
     fn admit(
         &mut self,
         mutation: &Claim,
         root: &str,
+        media: Option<&[String]>,
         waiting: &Progress,
     ) -> Result<Option<Self::Admitted>, String>;
     fn progress(&mut self, progress: &Progress);
@@ -1084,12 +1096,11 @@ impl RestoreHost for AppRestoreHost<'_> {
         &mut self,
         mutation: &Claim,
         root: &str,
+        media: Option<&[String]>,
         waiting: &Progress,
     ) -> Result<Option<Admitted>, String> {
         let publisher = &mut self.publisher;
-        // Restore changes no indexed file (its targets are absent, and an
-        // identical target is only read), so no media reader is paused.
-        admit(self.app, mutation, &[], &Touches::Root(root), &mut || {
+        admit(self.app, mutation, media, &Touches::Root(root), &mut || {
             publisher.progress(waiting)
         })
     }
@@ -1154,7 +1165,11 @@ fn restore_claimed<H: RestoreHost>(
                 next_phase: Some(Phase::Planning),
                 ..last_progress.clone()
             };
-            let Some(_admitted) = host.admit(mutation, &root_text, &waiting)? else {
+            // Restore changes no indexed file (its targets are absent, and an
+            // identical target is only read), so it takes no media boundary:
+            // no reader is paused and no derived job, a requested one
+            // included, is stopped for it.
+            let Some(_admitted) = host.admit(mutation, &root_text, None, &waiting)? else {
                 return Ok(crate::restore::RestoreOutcome {
                     cancelled: true,
                     files_total,
