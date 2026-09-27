@@ -253,13 +253,12 @@ fn run(app: &AppHandle) -> Result<crate::scanner::ScanSummary, String> {
             || {
                 let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::SourceCheck, None, None);
                 let report = trace.progress_reporter();
-                // The volume-substitution gate runs before the walk starts,
-                // not only through the frontend's own recheck (R1-14): a
-                // backup drive swapped mid-session at the same mount path
-                // must not be walked under the original drive's rows. A
-                // failed check keeps the gate closed (R3-07).
-                let result = crate::volume::enforce_no_substitution(&data_root, &settings.source_dirs)
-                    .and_then(|()| crate::index_store::open(&db_file))
+                // The volume-substitution gate (R1-14, R3-07) is enforced per
+                // root inside `run_source_check`'s own walk loop, so a
+                // substituted or unverifiable root is skipped with a
+                // recorded issue while every other configured root is still
+                // checked.
+                let result = crate::index_store::open(&db_file)
                     .and_then(|conn| crate::scanner::run_source_check(&conn, &settings, &|value| {
                         report(value.done, value.total);
                         progress(value);

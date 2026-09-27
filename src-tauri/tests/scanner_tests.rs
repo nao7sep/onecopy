@@ -750,6 +750,59 @@ fn source_check_continues_after_an_unavailable_root() {
 }
 
 #[test]
+fn source_check_skips_only_a_substituted_root() {
+    // R3-07, R1-14: the volume-substitution gate is scoped per root inside
+    // the walk loop, so a substituted (or unverifiable) root is refused with
+    // an Issue while every other configured root still completes normally.
+    let f = fixture("substituted-root-skips");
+    let healthy = f.root.join("Healthy");
+    let substituted = f.root.join("Substituted");
+    std::fs::create_dir_all(&healthy).unwrap();
+    std::fs::create_dir_all(&substituted).unwrap();
+    std::fs::write(healthy.join("IMG.JPG"), b"jpeg").unwrap();
+    std::fs::write(substituted.join("IMG2.JPG"), b"jpeg2").unwrap();
+    let settings = ScanSettings {
+        source_dirs: vec![
+            healthy.to_string_lossy().to_string(),
+            substituted.to_string_lossy().to_string(),
+        ],
+        lists: lists(),
+        resolution: resolution_config(),
+        pairing_enabled: true,
+        cache_root: f._dir.path().join("apphome").join("cache"),
+    };
+    let data_root = settings.data_root().to_path_buf();
+    std::fs::create_dir_all(&data_root).unwrap();
+    // A recorded identity nothing on this machine can produce, exactly as
+    // the direct volume.rs tests simulate a substituted drive.
+    onecopy_lib::volume::check_identity(
+        &data_root,
+        &substituted.to_string_lossy(),
+        "not-the-real-volume-identity",
+    )
+    .unwrap();
+
+    let summary = run_source_check(&f.conn, &settings, &|_| {}).unwrap();
+
+    assert_eq!(summary.roots, 1, "only the healthy root completes its walk");
+    assert_eq!(summary.failures, 1, "the substituted root is refused, not silently skipped");
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM paths"),
+        1,
+        "only the healthy root's file is indexed"
+    );
+    let path = f
+        .conn
+        .query_row(
+            "SELECT path FROM issues WHERE kind = 'walk-error'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap();
+    assert_eq!(path, substituted.to_string_lossy());
+}
+
+#[test]
 fn a_source_containing_the_data_root_never_indexes_the_apps_own_storage() {
     // R6-02: a source root that happens to contain the app's data root (the
     // whole home directory, say) must not index or churn the app's own

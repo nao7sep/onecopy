@@ -128,3 +128,35 @@ fn enforce_no_substitution_refuses_promptly_when_a_recorded_volume_does_not_answ
     volume.release();
     assert!(volume.wait_until_settled(std::time::Duration::from_secs(5)));
 }
+
+// A batch spanning several configured roots is not all-or-nothing: a
+// substituted root's failure names only that root, and a caller that scopes
+// the check to a different, healthy root sees no refusal at all (R3-07,
+// R1-14 — work touching an unaffected drive keeps working).
+#[cfg(any(target_os = "macos", windows))]
+#[test]
+fn enforce_no_substitution_refuses_only_the_affected_root_in_a_multi_root_batch() {
+    let app_data = tempfile::tempdir().unwrap();
+    let healthy = tempfile::tempdir().unwrap();
+    let healthy_str = healthy.path().to_string_lossy().to_string();
+    let healthy_identity = volume_identity(healthy.path()).expect("identity for temp dir");
+    check_identity(app_data.path(), &healthy_str, &healthy_identity).unwrap();
+
+    let substituted = tempfile::tempdir().unwrap();
+    let substituted_str = substituted.path().to_string_lossy().to_string();
+    check_identity(app_data.path(), &substituted_str, "not-the-real-volume-identity").unwrap();
+
+    // Scoped to only the healthy root: no refusal, even though the store
+    // also records a substituted one elsewhere.
+    assert!(enforce_no_substitution(app_data.path(), &[healthy_str.clone()]).is_ok());
+
+    // A batch touching both roots names the substituted one and still
+    // reports the healthy one as fine by not mentioning it.
+    let result = enforce_no_substitution(
+        app_data.path(),
+        &[healthy_str.clone(), substituted_str.clone()],
+    );
+    let error = result.expect_err("a substituted root in the batch must refuse it");
+    assert!(error.contains(&substituted_str), "names the affected root: {error}");
+    assert!(!error.contains(&healthy_str), "does not implicate the healthy root: {error}");
+}

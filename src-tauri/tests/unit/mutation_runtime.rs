@@ -107,6 +107,33 @@ fn wait_for_idle_returns_as_soon_as_the_claim_drops_before_the_deadline() {
     );
 }
 
+// R3-07, R1-14: the volume-substitution gate at mutation admission is scoped
+// to the configured roots the accepted batch actually sits under, so a
+// substituted or unverifiable source never blocks a batch that touches only
+// another, unaffected root.
+#[test]
+fn touched_source_dirs_scopes_to_roots_the_accepted_batch_actually_sits_under() {
+    let source_dirs = vec![
+        "/Volumes/A".to_string(),
+        "/Volumes/B".to_string(),
+        "/Volumes/C".to_string(),
+    ];
+    let accepted = crate::operations::AcceptedFiles::for_test_paths([
+        "/Volumes/A/2024/IMG_0001.jpg",
+        "/Volumes/A/2024/IMG_0001.xmp",
+    ]);
+    let touched = touched_source_dirs(&source_dirs, &accepted);
+    assert_eq!(touched, vec!["/Volumes/A".to_string()]);
+}
+
+#[test]
+fn touched_source_dirs_is_empty_when_the_batch_touches_no_configured_source() {
+    let source_dirs = vec!["/Volumes/A".to_string()];
+    let accepted =
+        crate::operations::AcceptedFiles::for_test_paths(["/Volumes/Elsewhere/photo.jpg"]);
+    assert!(touched_source_dirs(&source_dirs, &accepted).is_empty());
+}
+
 #[test]
 fn a_rebuild_requested_during_a_file_operation_is_refused_at_once_and_never_queued() {
     // `begin_rebuild` takes this same claim, reporting only state failures.

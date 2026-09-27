@@ -361,7 +361,7 @@ fn relationship_path_key(path: &str) -> String {
     key
 }
 
-fn directory_belongs_to_root(directory: &str, root: &str) -> bool {
+pub(crate) fn directory_belongs_to_root(directory: &str, root: &str) -> bool {
     let directory = relationship_path_key(directory);
     let root = relationship_path_key(root);
     (root == "/" && directory.starts_with('/'))
@@ -750,6 +750,26 @@ pub fn run_source_check(
     let mut walk_failures = 0u64;
     progress(ScanProgress::phase(ScanPhase::Walk, root_total, None));
     for (root_index, root) in settings.source_dirs.iter().enumerate() {
+        // The volume-substitution gate is per root, not per source pass
+        // (R3-07, R1-14): a backup drive swapped mid-session at one
+        // configured path must not be walked under the original drive's
+        // rows, but every other independent root still checks normally.
+        if let Err(error) =
+            crate::volume::enforce_no_substitution(settings.data_root(), std::slice::from_ref(root))
+        {
+            check_cancel()?;
+            record_issue(conn, Some(root.clone()), WALK_ERROR, &error)?;
+            walk_failures += 1;
+            summary.failures += 1;
+            progress(ScanProgress::walk(
+                root_index as u64 + 1,
+                root_total,
+                root,
+                0,
+                walk_failures,
+            ));
+            continue;
+        }
         // One settled spelling per root, so a re-typed capitalisation cannot
         // index the same files a second time. Failure belongs to this root,
         // not the whole source pass: record it durably and continue with every

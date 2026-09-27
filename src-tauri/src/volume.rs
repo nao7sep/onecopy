@@ -202,15 +202,20 @@ pub fn check_identity(root: &Path, dir: &str, current: &str) -> Result<IdentityC
 }
 
 /// The volume-substitution gate itself, enforced in the backend rather than
-/// left to a frontend check the caller might skip (R1-14): `Err` when a
-/// configured directory's current volume identity differs from the one
-/// recorded for it, or when the recorded identities cannot even be read. A
-/// read failure keeps the gate CLOSED rather than reading as "nothing
+/// left to a frontend check the caller might skip (R1-14): `Err` naming every
+/// directory in `dirs` whose current volume identity differs from the one
+/// recorded for it, or whose recorded identity cannot even be read. A read
+/// failure keeps that directory's gate CLOSED rather than reading as "nothing
 /// recorded" (R3-07) — the opposite of `verify_source_dirs`'s own frontend
 /// status, which must still answer something for every directory even when
 /// this fails. A directory that is absent, or that has no recorded identity
 /// because its filesystem had none to read, is not this gate's concern and is
-/// skipped.
+/// skipped. Callers scope `dirs` to the configured roots the work at hand
+/// actually touches, so a source that failed verification blocks only work
+/// on that source; every other configured root is unaffected (R3-07, R1-14).
+/// A failure reading the whole record is the one case that closes the gate
+/// for every directory passed in, because then nothing about any of them can
+/// be verified.
 pub fn enforce_no_substitution(data_root: &Path, dirs: &[String]) -> Result<(), String> {
     // The store lock covers only reading the record: the probes below touch
     // volumes that can stall, and no lock is held across them.
@@ -218,6 +223,7 @@ pub fn enforce_no_substitution(data_root: &Path, dirs: &[String]) -> Result<(), 
         let _guard = store_lock();
         load_unlocked(data_root)?
     };
+    let mut affected = Vec::new();
     for dir in dirs {
         let path = Path::new(dir);
         let Some(known) = recorded.get(dir) else {
@@ -228,27 +234,37 @@ pub fn enforce_no_substitution(data_root: &Path, dirs: &[String]) -> Result<(), 
             Ok(true) => {}
             Ok(false) => continue,
             Err(error) => {
-                return Err(format!("could not verify the volume for {dir}: {error}"))
+                affected.push(format!("{dir} (could not verify the volume: {error})"));
+                continue;
             }
         }
-        let root = crate::trash::volume_root_of(path)
-            .map_err(|error| format!("could not verify the volume for {dir}: {error}"))?;
+        let root = match crate::trash::volume_root_of(path) {
+            Ok(root) => root,
+            Err(error) => {
+                affected.push(format!("{dir} (could not verify the volume: {error})"));
+                continue;
+            }
+        };
         // A filesystem without a stable identity is never recorded, so a
         // recorded directory whose identity cannot be read now is either a
         // different volume without one or a check that failed: neither is
         // verified-safe.
         let Some(current) = platform_identity(&root) else {
-            return Err(format!(
-                "could not verify the volume for {dir}; recheck source folders before continuing"
-            ));
+            affected.push(format!("{dir} (could not verify the volume)"));
+            continue;
         };
         if current != known.identity {
-            return Err(format!(
-                "{dir} is a different volume than the one OneCopy recorded there; recheck source folders before continuing"
-            ));
+            affected.push(format!("{dir} (a different volume now answers there)"));
         }
     }
-    Ok(())
+    if affected.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "recheck source folders before continuing; affected: {}",
+            affected.join(", ")
+        ))
+    }
 }
 
 /// Drops recorded identities for directories that are no longer configured,

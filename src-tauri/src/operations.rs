@@ -188,6 +188,28 @@ impl AcceptedFiles {
         rows.retain(|(path_id, abs_path, _, _)| self.accepts(*path_id, abs_path));
     }
 
+    /// The absolute paths this accepted batch covers, so admission can scope
+    /// the volume-substitution gate to only the configured roots the batch
+    /// actually touches (R3-07, R1-14): a source that failed verification
+    /// never blocks a batch that never reads or writes under it.
+    pub fn abs_paths(&self) -> impl Iterator<Item = &str> {
+        self.files.iter().map(|(_, abs_path)| abs_path.as_str())
+    }
+
+    /// Test-only construction from bare paths, without a database: the
+    /// volume-scoping decision only reads `abs_paths()`, so mutation_runtime's
+    /// unit tests do not need a real index to exercise it.
+    #[cfg(test)]
+    pub(crate) fn for_test_paths(paths: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self {
+            files: paths
+                .into_iter()
+                .enumerate()
+                .map(|(id, path)| (id as i64, path.into()))
+                .collect(),
+        }
+    }
+
     fn accepts(&self, path_id: i64, abs_path: &str) -> bool {
         self.files.contains(&(path_id, abs_path.to_string()))
     }

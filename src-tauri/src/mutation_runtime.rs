@@ -423,10 +423,30 @@ struct Admitted {
     _index: crate::scan_runtime::ForegroundGuard,
 }
 
+/// The configured source directories an accepted batch's files actually sit
+/// under, so the volume-substitution gate can be scoped to only the roots a
+/// mutation touches (R3-07, R1-14): a source that failed verification never
+/// blocks a batch that never reads or writes under it.
+fn touched_source_dirs(
+    source_dirs: &[String],
+    accepted: &crate::operations::AcceptedFiles,
+) -> Vec<String> {
+    source_dirs
+        .iter()
+        .filter(|dir| {
+            accepted
+                .abs_paths()
+                .any(|path| crate::scanner::directory_belongs_to_root(path, dir))
+        })
+        .cloned()
+        .collect()
+}
+
 fn admit(
     app: &AppHandle,
     mutation: &Claim,
     keys: &[String],
+    accepted: &crate::operations::AcceptedFiles,
     on_wait: &mut dyn FnMut(),
 ) -> Result<Option<Admitted>, String> {
     // The volume-substitution gate guards every destructive path it is
@@ -434,10 +454,13 @@ fn admit(
     // drive swapped mid-session at the same mount path must not be walked or
     // mutated under the original drive's rows. A failed check keeps this gate
     // closed (R3-07) — the `?` below refuses admission rather than treating
-    // an unreadable check as "nothing recorded".
+    // an unreadable check as "nothing recorded". Scoped to the configured
+    // roots this batch's accepted files actually sit under, so a source that
+    // failed verification never blocks a batch that never touches it.
     let data_root = crate::paths::data_root()?;
     let source_dirs = crate::storage::load_config_source_dirs(&data_root)?;
-    crate::volume::enforce_no_substitution(&data_root, &source_dirs)?;
+    let touched_dirs = touched_source_dirs(&source_dirs, accepted);
+    crate::volume::enforce_no_substitution(&data_root, &touched_dirs)?;
     let cancelled = || mutation.cancelled();
     let Some(index) = crate::scan_runtime::begin_admitted_mutation(app, &cancelled, on_wait)?
     else {
@@ -505,7 +528,7 @@ pub(crate) fn delete_items(
                 ..last_progress.clone()
             };
             let Some(_admitted) =
-                admit(app, &mutation, &keys, &mut || publisher.progress(&waiting))?
+                admit(app, &mutation, &keys, &accepted, &mut || publisher.progress(&waiting))?
             else {
                 return Ok(crate::operations::DeleteBatchOutcome {
                     cancelled: true,
@@ -696,7 +719,7 @@ pub(crate) fn move_items_out(
                 ..last_progress.clone()
             };
             let Some(_admitted) =
-                admit(app, &mutation, &keys, &mut || publisher.progress(&waiting))?
+                admit(app, &mutation, &keys, &accepted, &mut || publisher.progress(&waiting))?
             else {
                 return Ok(crate::operations::MoveBatchOutcome {
                     cancelled: true,
@@ -873,8 +896,10 @@ pub(crate) fn empty_trash(
         json!({ "root": root, "operationId": operation_id }),
         || {
             let data_root = crate::paths::data_root()?;
-            let source_dirs = crate::storage::load_config_source_dirs(&data_root)?;
-            crate::volume::enforce_no_substitution(&data_root, &source_dirs)?;
+            // Scoped to the root being emptied, not every configured source:
+            // a different source that failed verification never blocks
+            // emptying deleted files under an unaffected root (R3-07, R1-14).
+            crate::volume::enforce_no_substitution(&data_root, std::slice::from_ref(&root))?;
             let roots = crate::storage::load_config_file_roots(&data_root)?;
             let known = crate::trash::overview(&roots);
             if !known.iter().any(|candidate| candidate.root == root) {
