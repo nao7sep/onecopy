@@ -15,6 +15,12 @@
 //! - `cache/`            — derived thumbnails/previews/strips.  not recorded (binary, reconstructible)
 //! - `dependencies.json` — managed-binaries facts.              not recorded (re-derivable dependency/update facts)
 //! - `bin/`, `temp/`     — managed binaries + download staging. not recorded (binary; staging is wiped at launch; the version sidecar in `bin/` rides along, written via write_atomic_unrecorded)
+//! - `installation-id`   — this data root's random identity fact, used only to
+//!                          fingerprint private staging/claim names so two
+//!                          application homes never sweep each other's leftovers
+//!                          (`file_identity.rs`). not recorded (re-derivable on
+//!                          loss; regenerated if missing; written via
+//!                          write_atomic_unrecorded)
 //! Recoverable deleted files live below their configured roots, outside this
 //! application-data directory.
 //!

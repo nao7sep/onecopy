@@ -47,8 +47,13 @@ fn nofollow_regular_open_rejects_a_symlink() {
 // `.onecopy-stage-<16 hex home fingerprint>-<10 digit pid>-<nanoid>.tmp`; see
 // `file_identity::private_stage_file_name`. This test binary never settles
 // `paths::data_root`, so every name this process mints carries the fixed
-// "unsettled" placeholder fingerprint (16 zeros) — which is still "this
-// application home" as far as the sweep is concerned.
+// "unsettled" placeholder fingerprint (16 zeros) — and, because this process's
+// own fingerprint is unproven, `is_abandoned_leftover` never treats anything
+// as abandoned here, not even a file carrying that same placeholder and a
+// dead pid (see `unsettled_process_never_sweeps_even_its_own_dead_pid_file`
+// below). The settled-home sweep decision itself is exercised at the unit
+// level in `tests/unit/file_identity.rs`, which is not pinned to one
+// process-global data root.
 const STAGE_PREFIX_LEN: usize = ".onecopy-stage-".len();
 const HOME_FIELD_LEN: usize = 16;
 const PID_FIELD_LEN: usize = 10;
@@ -86,21 +91,22 @@ fn exited_pid() -> u32 {
 }
 
 #[test]
-fn abandoned_leftover_requires_this_home_and_a_dead_process() {
+fn unsettled_process_never_sweeps_even_its_own_dead_pid_file() {
     let base = private_stage_file_name().unwrap();
     assert!(is_private_tmp_name(std::path::Path::new(&base)));
 
     let live = with_pid(&base, std::process::id());
     assert!(
         !is_abandoned_leftover(std::path::Path::new(&live)),
-        "this home's own live process must never look abandoned"
+        "a live process's file must never look abandoned"
     );
 
     let dead_pid = exited_pid();
     let dead = with_pid(&base, dead_pid);
     assert!(
-        is_abandoned_leftover(std::path::Path::new(&dead)),
-        "this home's leftover from a process that has exited is provably abandoned"
+        !is_abandoned_leftover(std::path::Path::new(&dead)),
+        "an unsettled process has no proven identity yet, so it sweeps nothing, \
+         not even a dead-pid file carrying its own unsettled placeholder"
     );
 
     let foreign_home_dead = with_foreign_home(&dead);
@@ -111,7 +117,7 @@ fn abandoned_leftover_requires_this_home_and_a_dead_process() {
 }
 
 #[test]
-fn sweep_removes_only_this_homes_dead_leftover() {
+fn sweep_removes_nothing_while_unsettled() {
     let dir = tempfile::tempdir().unwrap();
     let base = private_stage_file_name().unwrap();
     let dead_pid = exited_pid();
@@ -127,7 +133,11 @@ fn sweep_removes_only_this_homes_dead_leftover() {
     sweep_private_tmp_leftovers(dir.path());
 
     assert!(live_path.exists(), "a live process's file survives the sweep");
-    assert!(!dead_path.exists(), "this home's dead-process leftover is swept");
+    assert!(
+        dead_path.exists(),
+        "this unsettled process's own dead-pid-looking file survives too: \
+         it has no proven fingerprint to sweep with"
+    );
     assert!(foreign_path.exists(), "a different home's file survives the sweep");
     assert!(ordinary_path.exists(), "ordinary content is never touched");
 }

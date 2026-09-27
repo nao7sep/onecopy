@@ -891,7 +891,17 @@ fn leftover_private_staging_from_this_homes_dead_process_is_removed() {
     // at the mutation-quiescence deadline (`app_lifecycle::MUTATION_QUIESCE_DEADLINE`,
     // `specs/file-operations.md` "Normal exit and abnormal termination"). It
     // must never be indexed as library content, and this host's own walk
-    // sweeps it away rather than leaking it forever.
+    // sweeps it away rather than leaking it forever — but only once this
+    // process's own identity is actually proven (a settled data root with a
+    // readable installation id; `file_identity::is_abandoned_leftover`). This
+    // test binary never settles `paths::data_root`, so it cannot exercise the
+    // real "swept" outcome end-to-end without a live Tauri startup; that
+    // decision is proven directly, with an injected fingerprint, by
+    // `file_identity`'s own `this_installations_dead_pid_file_is_swept` unit
+    // test (`tests/unit/file_identity.rs`). What this test proves at the
+    // walker level is the other, equally load-bearing half: while unsettled,
+    // this home's own dead-pid-looking leftover is never indexed AND never
+    // removed, exactly like a live or foreign one.
     let f = fixture("private-staging-leftover-dead");
     std::fs::write(f.root.join("IMG_0002.jpg"), b"photo").unwrap();
     let name = with_pid(
@@ -901,18 +911,22 @@ fn leftover_private_staging_from_this_homes_dead_process_is_removed() {
     let leftover = f.root.join(&name);
     std::fs::write(&leftover, b"partial bytes from a killed process").unwrap();
     assert!(onecopy_lib::file_identity::is_private_tmp_name(&leftover));
-    assert!(onecopy_lib::file_identity::is_abandoned_leftover(&leftover));
+    assert!(
+        !onecopy_lib::file_identity::is_abandoned_leftover(&leftover),
+        "this unsettled test process has no proven identity, so nothing looks abandoned to it"
+    );
 
     let stats = walk_root(&f.conn, &f.root, &lists()).unwrap();
 
     assert_eq!(stats.added, 1, "only the real file is indexed");
     assert_eq!(
         count(&f.conn, "SELECT COUNT(*) FROM paths WHERE file_name LIKE '.onecopy-stage-%'"),
-        0
+        0,
+        "still never indexed as library content, proven or not"
     );
     assert!(
-        !leftover.exists(),
-        "this home's dead-process leftover is removed, not merely hidden from the index"
+        leftover.exists(),
+        "an unproven leftover is left alone rather than guessed at"
     );
 }
 

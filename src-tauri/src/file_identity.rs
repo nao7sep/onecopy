@@ -201,34 +201,114 @@ const CLAIM_PREFIX: &str = ".onecopy-claim-";
 const HOME_FINGERPRINT_HEX_LEN: usize = 16;
 const PID_DECIMAL_LEN: usize = 10; // u32::MAX is 10 decimal digits.
 
-/// A 16-hex-character fingerprint of this process's application home
-/// (`paths::data_root`). It carries no meaning beyond telling "this
-/// application home" apart from a different one when two OneCopy homes are
-/// configured to see the same shared root (`file-operations.md`, "Recoverable
-/// storage and manual recovery"): each embeds its own fingerprint in every
-/// private name it writes, so neither ever sweeps the other's leftover.
-/// Before the data root settles (or where none exists, such as in a unit
-/// test), it falls back to a fixed placeholder that only ever matches this
-/// same unsettled process's own files.
-fn this_application_home_fingerprint() -> &'static str {
-    static FINGERPRINT: OnceLock<String> = OnceLock::new();
-    FINGERPRINT.get_or_init(|| match crate::paths::data_root() {
-        Ok(root) => {
-            let hash = blake3::hash(root.to_string_lossy().as_bytes());
-            hex::encode(&hash.as_bytes()[..HOME_FINGERPRINT_HEX_LEN / 2])
+/// File under the data root holding this application home's installation id:
+/// a random value generated once, when the root is first used, and never
+/// regenerated afterward except when the file is missing. Not recorded: it is
+/// a re-derivable-on-loss identity fact, not managed text a user edits or
+/// needs restored (`storage.rs`'s write-site table).
+pub const INSTALLATION_ID_FILE_NAME: &str = "installation-id";
+
+/// Reads this application home's installation id from `root`, creating it
+/// (a fresh nanoid, written unrecorded) the first time this home is used.
+fn installation_id(root: &Path) -> io::Result<String> {
+    let path = root.join(INSTALLATION_ID_FILE_NAME);
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => {
+            let id = contents.trim();
+            if id.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "installation id file is empty",
+                ));
+            }
+            Ok(id.to_string())
         }
-        Err(_) => "0".repeat(HOME_FINGERPRINT_HEX_LEN),
-    })
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let id = crate::nanoid::generate().map_err(io::Error::other)?;
+            crate::storage::write_atomic_unrecorded(&path, id.as_bytes())
+                .map_err(io::Error::other)?;
+            Ok(id)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// This computer's host name, best-effort: empty (never an error) when it
+/// cannot be read, since it only narrows a fingerprint that already carries a
+/// per-installation random id.
+#[cfg(unix)]
+fn host_name() -> String {
+    let mut buffer = [0u8; 256];
+    // SAFETY: `buffer` is valid writable memory of the given length for the
+    // whole call.
+    let result =
+        unsafe { libc::gethostname(buffer.as_mut_ptr() as *mut libc::c_char, buffer.len()) };
+    if result != 0 {
+        return String::new();
+    }
+    let len = buffer.iter().position(|&byte| byte == 0).unwrap_or(buffer.len());
+    String::from_utf8_lossy(&buffer[..len]).into_owned()
+}
+
+#[cfg(windows)]
+fn host_name() -> String {
+    std::env::var("COMPUTERNAME").unwrap_or_default()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn host_name() -> String {
+    String::new()
+}
+
+/// A 16-hex-character digest combining an application home's installation id
+/// with a short hash of this computer's host name.
+fn fingerprint_for(installation_id: &str, host_name: &str) -> String {
+    let hash = blake3::hash(format!("{installation_id}\0{host_name}").as_bytes());
+    hex::encode(&hash.as_bytes()[..HOME_FINGERPRINT_HEX_LEN / 2])
+}
+
+/// This process's application-home identity fingerprint, `None` until the
+/// data root settles. It carries no meaning beyond telling "this application
+/// home, on this computer" apart from every other one, including a different
+/// application home that happens to be configured to the exact same path on a
+/// different computer (`file-operations.md`, "Recoverable storage and manual
+/// recovery"): it combines this home's installation id (`installation_id`, a
+/// random value generated once per data root and stored inside it, not the
+/// data-root *path*) with a short hash of the host name, so a home is never
+/// confused with another home, another computer's home at the same path, or
+/// an application home reached over a different network share.
+///
+/// Before the data root settles (or where none exists, such as most unit
+/// tests) this is `None`, on purpose: with no proven identity yet, this
+/// process must never claim to own — or match — any private name
+/// (`is_abandoned_leftover`), unlike the old fixed placeholder fingerprint
+/// that let every unsettled process match every other one.
+fn this_application_home_fingerprint() -> Option<&'static str> {
+    static FINGERPRINT: OnceLock<Option<String>> = OnceLock::new();
+    FINGERPRINT
+        .get_or_init(|| {
+            let root = crate::paths::data_root().ok()?;
+            let installation_id = installation_id(&root).ok()?;
+            Some(fingerprint_for(&installation_id, &host_name()))
+        })
+        .as_ref()
+        .map(String::as_str)
 }
 
 /// The `<home>-<pid>` owner tag this process embeds in every private staging
-/// or claim name it creates.
+/// or claim name it creates. Before the data root settles there is no proven
+/// fingerprint yet (`this_application_home_fingerprint`), so this uses a
+/// fixed placeholder purely to keep the name well-formed; it is never treated
+/// as a match by `is_abandoned_leftover`, which refuses to sweep anything
+/// while this process itself is unsettled.
 fn this_process_owner_tag() -> &'static str {
     static TAG: OnceLock<String> = OnceLock::new();
     TAG.get_or_init(|| {
+        let fingerprint = this_application_home_fingerprint()
+            .map(str::to_string)
+            .unwrap_or_else(|| "0".repeat(HOME_FINGERPRINT_HEX_LEN));
         format!(
-            "{}-{:0width$}",
-            this_application_home_fingerprint(),
+            "{fingerprint}-{:0width$}",
             std::process::id(),
             width = PID_DECIMAL_LEN
         )
@@ -351,15 +431,29 @@ fn process_is_running(_pid: u32) -> bool {
 /// alone. There is deliberately no age-based fallback: unlike a bounded
 /// managed-dependency download, a file operation has no whole-operation
 /// deadline, so a large in-progress copy staying open for a long time must
-/// never be mistaken for abandoned.
+/// never be mistaken for abandoned. Likewise, while this process's own
+/// fingerprint is not yet settled it proves nothing, so it sweeps nothing.
 pub fn is_abandoned_leftover(path: &Path) -> bool {
+    is_abandoned_leftover_against(path, this_application_home_fingerprint())
+}
+
+/// The pure decision behind `is_abandoned_leftover`, taking the current
+/// process's fingerprint explicitly so it can be exercised for every case
+/// (unsettled, this home, a different home) without depending on process
+/// globals. `current_fingerprint` is `None` exactly when this process itself
+/// has not settled its own identity yet, in which case nothing is ever
+/// abandoned as far as it can prove.
+fn is_abandoned_leftover_against(path: &Path, current_fingerprint: Option<&str>) -> bool {
+    let Some(current_fingerprint) = current_fingerprint else {
+        return false;
+    };
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
     let Some(owner) = parse_private_tmp_owner(name) else {
         return false;
     };
-    owner.home_fingerprint == this_application_home_fingerprint() && !process_is_running(owner.pid)
+    owner.home_fingerprint == current_fingerprint && !process_is_running(owner.pid)
 }
 
 /// Removes this application home's abandoned private staging/claim leftovers
@@ -523,3 +617,14 @@ impl Drop for PrivateFile {
         }
     }
 }
+
+#[cfg(test)]
+// EXCEPTION to tests-folder conventions: `fingerprint_for` and
+// `is_abandoned_leftover_against` are private helpers behind
+// `is_abandoned_leftover`'s process-global public surface (one process-wide
+// settled data root and one process-wide fingerprint). Exercising every case
+// — two homes, a cloned home on a different host, an unsettled process — from
+// the public API alone would need settling that process global differently
+// per case, which a single test binary cannot do.
+#[path = "../tests/unit/file_identity.rs"]
+mod tests;
