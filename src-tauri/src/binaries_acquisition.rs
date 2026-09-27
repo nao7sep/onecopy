@@ -15,7 +15,20 @@ use crate::binaries;
 
 const MARTIN_REDIRECT_URL: &str =
     "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip";
-const BTBN_LATEST_API: &str = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest";
+/// The BtbN autobuild release this app is pinned to. Never point this at
+/// `releases/latest`: BtbN republishes its `ffmpeg-master-latest-*` assets
+/// under a NEW build every day while keeping the same file names, so a
+/// pinned integrity check against that endpoint would silently start
+/// verifying different bytes tomorrow — the opposite of the immutable,
+/// independently anchored digest an executable pin requires
+/// (managed-runtime-dependencies-conventions: "resolved to its immutable
+/// per-build release (`autobuild-…` tag), never the rolling `latest`").
+/// A specific `autobuild-…` tag's assets and `checksums.sha256` never change
+/// once published. Bump this, and `binaries::BTBN_WIN64_ASSET` to match, when
+/// the fleet moves to a newer BtbN build — verify the new tag's asset name
+/// and checksum by hand first (e.g. `gh release view <tag> --repo
+/// BtbN/FFmpeg-Builds --json assets` and its `checksums.sha256` asset).
+const BTBN_PINNED_TAG: &str = "autobuild-2026-09-26-13-03";
 const METADATA_TIMEOUT: Duration = Duration::from_secs(60);
 const DOWNLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const DOWNLOAD_CANCEL_POLL: Duration = Duration::from_millis(50);
@@ -212,7 +225,10 @@ pub(crate) fn resolve_latest(
             download_url: final_uri,
         })
     } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        let (_, body) = fetch_metadata(BTBN_LATEST_API, true, cancelled, deadline)?;
+        let btbn_api = format!(
+            "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/{BTBN_PINNED_TAG}"
+        );
+        let (_, body) = fetch_metadata(&btbn_api, true, cancelled, deadline)?;
         let body = String::from_utf8(body).map_err(|e| e.to_string())?;
         let release: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
         // The release NAME, not the tag: BtbN's tag is the constant `latest`, a

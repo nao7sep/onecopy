@@ -23,9 +23,9 @@
 //!                    numbered upstream release and the binary names that same
 //!                    release, so one namespace covers both sides.
 //!   ffmpeg, Windows  read `bin/ffmpeg.json`, written beside the binary at
-//!                    install. BtbN ships rolling master builds (`N-119123-g…`)
-//!                    under a release named by build time — two namespaces, so
-//!                    probing would report a phantom update forever.
+//!                    install. BtbN's build id (`N-119123-g…`) and its release
+//!                    name (by build time) are two namespaces, so probing the
+//!                    binary would report a phantom update forever.
 //!   a model          read a verified-install identity beside the model. File
 //!                    size establishes usable presence, while the identity
 //!                    records which digest was verified before publication.
@@ -36,9 +36,11 @@
 //!   macOS arm64  https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip
 //!                → 307 to /download/macos/arm64/<epoch>_<version>/ffmpeg.zip,
 //!                with a `<url>.sha256` sidecar (`<hex>  ffmpeg.zip`).
-//!   Windows x64  GitHub latest release of BtbN/FFmpeg-Builds: the
-//!                `ffmpeg-master-latest-win64-gpl.zip` asset plus a
-//!                `checksums.sha256` asset; the release name is the version.
+//!   Windows x64  A pinned `autobuild-…` release of BtbN/FFmpeg-Builds (never
+//!                the rolling `latest`, whose fixed-named assets are silently
+//!                replaced by a new build every day): its immutable asset
+//!                plus a `checksums.sha256` asset; the release name is the
+//!                version.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};

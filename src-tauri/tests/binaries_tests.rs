@@ -78,10 +78,12 @@ fn martin_version_parses_the_epoch_version_segment() {
 
 #[test]
 fn sums_parsing_matches_exact_names_with_optional_star() {
-    let sums = "\
-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  ffmpeg-master-latest-win64-gpl.zip
-fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210 *other.zip
-not-a-digest  whatever.zip";
+    let sums = format!(
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  {BTBN_WIN64_ASSET}\n\
+         fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210 *other.zip\n\
+         not-a-digest  whatever.zip"
+    );
+    let sums = sums.as_str();
     assert_eq!(
         parse_sums(sums, BTBN_WIN64_ASSET).as_deref(),
         Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")

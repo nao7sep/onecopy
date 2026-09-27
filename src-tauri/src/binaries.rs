@@ -162,5 +162,10 @@ pub fn parse_sums(sums_text: &str, asset_name: &str) -> Option<String> {
     None
 }
 
-/// The BtbN Windows asset name the registry pins (master rolling builds).
-pub const BTBN_WIN64_ASSET: &str = "ffmpeg-master-latest-win64-gpl.zip";
+/// The exact asset name published under the pinned autobuild release
+/// (`BTBN_PINNED_TAG` in `binaries_acquisition.rs`) this app resolves
+/// Windows ffmpeg from. Unlike `ffmpeg-master-latest-win64-gpl.zip` on the
+/// rolling `latest` release, a specific autobuild tag's asset carries the
+/// build's own git-describe id and never changes once published — bump this
+/// together with the pinned tag, never independently.
+pub const BTBN_WIN64_ASSET: &str = "ffmpeg-N-126889-gb139ba11d8-win64-gpl.zip";
