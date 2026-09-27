@@ -35,6 +35,7 @@ const ACTION_KEYS: Record<string, MessageKey> = {
   transcript: "activity.actionTranscript", backgroundWork: "work.title",
   copyFiles: "activity.actionCopyFiles", moveFiles: "activity.actionMoveFiles",
   deleteFiles: "activity.actionDeleteFiles", emptyDeletedFiles: "activity.actionEmptyDeletedFiles",
+  restoreFiles: "activity.actionRestoreFiles",
   installTools: "activity.actionInstallTools", checkToolUpdates: "activity.actionCheckToolUpdates",
 };
 

@@ -94,12 +94,75 @@ const DELETED_FILES_CONCEPT_KEYS = [
   "deletedFiles.empty",
   "deletedFiles.noMatches",
   "deletedFiles.searchLabel",
+  "restoreReview.changed",
+  "restoreReview.companionsLeft",
+  "restoreReview.skipAlreadyThere",
+  "restoreReview.skipMissing",
+  "activity.actionRestoreFiles",
+  "notice.restoreFailed",
+  "notice.restoreOccupied",
+  "notice.restoreChanged",
+  "notice.restoreMissing",
+  "notice.restoreOtherDrive",
+  "notice.restoreFolderBlocked",
+  "notice.restoreUnplaceable",
+  "notice.restoreOutcomeUnknown",
 ];
 
 describe("glossary: Deleted files keeps its name", () => {
   it.each(LANGUAGES)("%s names deleted-file storage one way", (language) => {
     const term = DELETED_FILES_TERM[language].toLowerCase();
     for (const key of DELETED_FILES_CONCEPT_KEYS) {
+      const value = text(catalogues[language][key]).toLowerCase();
+      expect(value.includes(term), `${language} ${key}: expected "${term}" in ${JSON.stringify(catalogues[language][key])}`).toBe(true);
+    }
+  });
+});
+
+// "Restore" is one word per language everywhere OneCopy offers, reports or
+// explains bringing a file back from Deleted files (a stem where the
+// language inflects it), so it never reads as a second action.
+const RESTORE_TERM: Record<Language, string> = {
+  en: "restor",
+  ja: "復元",
+  "zh-Hans": "恢复",
+  ko: "복원",
+  es: "restaur",
+  "pt-BR": "restaur",
+  fr: "restaur",
+  de: "wiederher",
+  it: "ripristin",
+  ru: "восстан",
+};
+
+const RESTORE_CONCEPT_KEYS = [
+  "deletedFiles.restore",
+  "deletedFiles.restoreFailed",
+  "deletedFiles.revealRestored",
+  "deletedFiles.unrecorded",
+  "restoreReview.title",
+  "restoreReview.renameAndRestore",
+  "restoreReview.renamed",
+  "restoreReview.target",
+  "mutation.restoreComplete",
+  "mutation.restoreCancelled",
+  "mutation.restoreWithFailures",
+  "mutation.restoreStopped",
+  "mutation.planningRestore",
+  "mutation.restoring",
+  "mutation.factRestored",
+  "activity.actionRestoreFiles",
+  "notice.restoreFailed",
+  "notice.restoreOccupied",
+  "notice.restoreChanged",
+  "notice.restoreMissing",
+  "notice.restoreOutcomeUnknown",
+];
+
+describe("glossary: Restore keeps its name", () => {
+  it.each(LANGUAGES)("%s names Restore one way", (language) => {
+    const term = RESTORE_TERM[language].toLowerCase();
+    for (const key of RESTORE_CONCEPT_KEYS) {
       const value = text(catalogues[language][key]).toLowerCase();
       expect(value.includes(term), `${language} ${key}: expected "${term}" in ${JSON.stringify(catalogues[language][key])}`).toBe(true);
     }

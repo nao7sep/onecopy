@@ -6,13 +6,15 @@ export type MutationKind =
   | "delete"
   | "destination-copy"
   | "destination-move"
-  | "trash-empty";
+  | "trash-empty"
+  | "restore";
 export type MutationPhase =
   | "waiting"
   | "planning"
   | "deleting"
   | "delivering"
   | "emptying"
+  | "restoring"
   | "complete";
 
 export interface MutationProgress {
@@ -41,6 +43,9 @@ export interface MutationResultSummary {
    * responding: each may or may not have happened. */
   filesUnknown: number;
   filesUnstarted: number;
+  /** Restore only: files left in Deleted files because their original path
+   * already holds the same bytes. */
+  filesAlreadyPresent?: number;
   trashAvailable: boolean;
   error: string | null;
 }
@@ -82,6 +87,12 @@ const OUTCOME_HEADLINES: Record<MutationKind, Record<Outcome, MessageKey>> = {
     failures: "mutation.emptyWithFailures",
     stopped: "mutation.emptyStopped",
   },
+  restore: {
+    complete: "mutation.restoreComplete",
+    cancelled: "mutation.restoreCancelled",
+    failures: "mutation.restoreWithFailures",
+    stopped: "mutation.restoreStopped",
+  },
 };
 
 const PLANNING_HEADLINES: Record<MutationKind, MessageKey> = {
@@ -89,6 +100,7 @@ const PLANNING_HEADLINES: Record<MutationKind, MessageKey> = {
   "destination-copy": "mutation.planningCopy",
   "destination-move": "mutation.planningMove",
   "trash-empty": "mutation.planningEmpty",
+  restore: "mutation.planningRestore",
 };
 
 const RUNNING_HEADLINES: Record<MutationKind, MessageKey> = {
@@ -96,6 +108,7 @@ const RUNNING_HEADLINES: Record<MutationKind, MessageKey> = {
   "destination-copy": "mutation.copying",
   "destination-move": "mutation.moving",
   "trash-empty": "mutation.emptyingTrash",
+  restore: "mutation.restoring",
 };
 
 function outcome(result: MutationResult): Outcome {
@@ -117,10 +130,33 @@ function currentFilePercent(progress: MutationProgress): number | null {
 /** The receipt's words. The facts are a variable join of independently
  * translated counts — which of them appear depends on the outcome — so this
  * composes them with the translator instead of returning one descriptor. */
+/** A restore's receipt: each selected file is its own unit, so the facts are
+ * files restored, already at their original location, failed, of unknown
+ * outcome and unstarted. */
+function restoreResultLine(result: MutationResult, t: Translator["t"]): string {
+  const { summary } = result;
+  const facts = [t("mutation.factRestored", { count: summary.filesCompleted })];
+  const already = summary.filesAlreadyPresent ?? 0;
+  if (already > 0) facts.push(t("mutation.factAlreadyThere", { count: already }));
+  if (summary.filesFailed > 0) facts.push(t("trash.failedCount", { count: summary.filesFailed }));
+  if (summary.filesUnknown > 0) {
+    facts.push(t("mutation.factOutcomeUnknown", { count: summary.filesUnknown }));
+  }
+  if (summary.filesUnstarted > 0) {
+    facts.push(t("mutation.factFileStepsUnstarted", { count: summary.filesUnstarted }));
+  }
+  if (summary.error !== null) facts.push(t("mutation.factStopped"));
+  return t("mutation.line", {
+    headline: t(OUTCOME_HEADLINES.restore[outcome(result)]),
+    facts: facts.join(" · "),
+  });
+}
+
 export function mutationResultLine(
   result: MutationResult,
   t: Translator["t"],
 ): string {
+  if (result.kind === "restore") return restoreResultLine(result, t);
   const { summary } = result;
   const facts = [t("mutation.factCompleted", { count: summary.itemsCompleted })];
   if (summary.itemsPartial > 0) {
@@ -172,15 +208,25 @@ export function mutationProgressLine(
     return t(OUTCOME_HEADLINES[progress.kind].complete);
   }
   // `count` drives the plural form of each fact; `done`/`total` are the numbers
-  // the sentence shows.
-  const facts = [
-    t("mutation.factItems", {
-      count: progress.itemsTotal,
-      done: progress.itemsDone,
-      total: progress.itemsTotal,
-    }),
-  ];
-  if (progress.phase !== "planning") {
+  // the sentence shows. A restore counts files only: each is its own unit and
+  // no bytes are copied.
+  const facts =
+    progress.kind === "restore"
+      ? [
+          t("mutation.factFiles", {
+            count: progress.filesTotal,
+            done: progress.filesDone,
+            total: progress.filesTotal,
+          }),
+        ]
+      : [
+          t("mutation.factItems", {
+            count: progress.itemsTotal,
+            done: progress.itemsDone,
+            total: progress.itemsTotal,
+          }),
+        ];
+  if (progress.phase !== "planning" && progress.kind !== "restore") {
     facts.push(
       t("mutation.factFiles", {
         count: progress.filesTotal,

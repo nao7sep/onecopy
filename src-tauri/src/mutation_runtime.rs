@@ -257,6 +257,7 @@ enum Kind {
     DestinationCopy,
     DestinationMove,
     TrashEmpty,
+    Restore,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -269,6 +270,7 @@ enum Phase {
     Deleting,
     Delivering,
     Emptying,
+    Restoring,
     Complete,
 }
 
@@ -303,8 +305,16 @@ struct ResultSummary {
     /// not responding: done or not, the next check settles them.
     files_unknown: u64,
     files_unstarted: u64,
+    /// Restore only: files left in Deleted files because their original
+    /// path already holds the same bytes.
+    #[serde(skip_serializing_if = "is_zero")]
+    files_already_present: u64,
     trash_available: bool,
     error: Option<String>,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 struct Publisher {
@@ -330,6 +340,7 @@ impl Publisher {
                 Kind::DestinationCopy => ActivitySubject::CopyFiles,
                 Kind::DestinationMove => ActivitySubject::MoveFiles,
                 Kind::TrashEmpty => ActivitySubject::EmptyDeletedFiles,
+                Kind::Restore => ActivitySubject::RestoreFiles,
             }), None));
         }
         if let Some(trace) = &self.trace { trace.progress(progress.files_done, progress.files_total); }
@@ -409,6 +420,7 @@ fn result_summary(
         files_failed: files_failed.saturating_sub(files_unknown),
         files_unknown,
         files_unstarted: files_total.saturating_sub(files_done),
+        files_already_present: 0,
         trash_available,
         error,
     }
@@ -423,21 +435,32 @@ struct Admitted {
     _index: crate::scan_runtime::ForegroundGuard,
 }
 
-/// The configured source directories an accepted batch's files actually sit
-/// under, so the volume-substitution gate can be scoped to only the roots a
-/// mutation touches (R3-07, R1-14): a source that failed verification never
-/// blocks a batch that never reads or writes under it.
-fn touched_source_dirs(
-    source_dirs: &[String],
-    accepted: &crate::operations::AcceptedFiles,
-) -> Vec<String> {
+/// What a mutation reads or writes under: the files an accepted batch
+/// captured, or (Restore) one configured root.
+enum Touches<'a> {
+    Files(&'a crate::operations::AcceptedFiles),
+    Root(&'a str),
+}
+
+impl Touches<'_> {
+    fn source(&self, dir: &str) -> bool {
+        match self {
+            Touches::Files(accepted) => accepted
+                .abs_paths()
+                .any(|path| crate::scanner::directory_belongs_to_root(path, dir)),
+            Touches::Root(root) => crate::scanner::directory_belongs_to_root(root, dir),
+        }
+    }
+}
+
+/// The configured source directories a mutation actually touches, so the
+/// volume-substitution gate can be scoped to only those roots (R3-07,
+/// R1-14): a source that failed verification never blocks work that never
+/// reads or writes under it, and a destination root is never gated.
+fn touched_source_dirs(source_dirs: &[String], touches: &Touches) -> Vec<String> {
     source_dirs
         .iter()
-        .filter(|dir| {
-            accepted
-                .abs_paths()
-                .any(|path| crate::scanner::directory_belongs_to_root(path, dir))
-        })
+        .filter(|dir| touches.source(dir))
         .cloned()
         .collect()
 }
@@ -446,7 +469,7 @@ fn admit(
     app: &AppHandle,
     mutation: &Claim,
     keys: &[String],
-    accepted: &crate::operations::AcceptedFiles,
+    touches: &Touches,
     on_wait: &mut dyn FnMut(),
 ) -> Result<Option<Admitted>, String> {
     // The volume-substitution gate guards every destructive path it is
@@ -459,7 +482,7 @@ fn admit(
     // failed verification never blocks a batch that never touches it.
     let data_root = crate::paths::data_root()?;
     let source_dirs = crate::storage::load_config_source_dirs(&data_root)?;
-    let touched_dirs = touched_source_dirs(&source_dirs, accepted);
+    let touched_dirs = touched_source_dirs(&source_dirs, touches);
     crate::volume::enforce_no_substitution(&data_root, &touched_dirs)?;
     let cancelled = || mutation.cancelled();
     let Some(index) = crate::scan_runtime::begin_admitted_mutation(app, &cancelled, on_wait)?
@@ -528,7 +551,7 @@ pub(crate) fn delete_items(
                 ..last_progress.clone()
             };
             let Some(_admitted) =
-                admit(app, &mutation, &keys, &accepted, &mut || publisher.progress(&waiting))?
+                admit(app, &mutation, &keys, &Touches::Files(&accepted), &mut || publisher.progress(&waiting))?
             else {
                 return Ok(crate::operations::DeleteBatchOutcome {
                     cancelled: true,
@@ -719,7 +742,7 @@ pub(crate) fn move_items_out(
                 ..last_progress.clone()
             };
             let Some(_admitted) =
-                admit(app, &mutation, &keys, &accepted, &mut || publisher.progress(&waiting))?
+                admit(app, &mutation, &keys, &Touches::Files(&accepted), &mut || publisher.progress(&waiting))?
             else {
                 return Ok(crate::operations::MoveBatchOutcome {
                     cancelled: true,
@@ -983,6 +1006,193 @@ pub(crate) fn empty_trash(
             );
         }
         Err(error) => publisher.borrow_mut().error(&progress.borrow(), error),
+    }
+    result
+}
+
+/// A restore's receipt: files restored, already there, failed, of unknown
+/// outcome and unstarted. Each selected file is its own item.
+fn restore_summary(outcome: &crate::restore::RestoreOutcome) -> ResultSummary {
+    let restored = outcome.restored.len() as u64;
+    ResultSummary {
+        items_completed: restored,
+        items_partial: 0,
+        items_unstarted: outcome.unstarted,
+        files_completed: restored,
+        files_failed: outcome.failed.saturating_sub(outcome.unknown),
+        files_unknown: outcome.unknown,
+        files_unstarted: outcome.unstarted,
+        files_already_present: outcome.already_present,
+        trash_available: false,
+        error: outcome.error.clone(),
+    }
+}
+
+/// Restores selected files from one configured root's deleted files. The
+/// first call plans; when the plan needs a review it returns it with its
+/// token and changes nothing. Confirming sends the token back: the plan is
+/// made again from what is on disk now and runs only when it is the same.
+/// A plan that needs no review runs at once.
+pub(crate) fn restore_entries(
+    app: &AppHandle,
+    location: String,
+    ids: Vec<String>,
+    plan_token: Option<String>,
+) -> Result<crate::restore::RestoreOutcome, String> {
+    let mutation = begin_reported(app)?;
+    let operation_id = mutation.id();
+    let mut publisher = Publisher::new(app);
+    let files_total = ids.len() as u64;
+    let mut last_progress = Progress {
+        operation_id,
+        kind: Kind::Restore,
+        phase: Phase::Planning,
+        items_done: 0,
+        items_total: files_total,
+        files_done: 0,
+        files_total,
+        bytes_done: 0,
+        bytes_total: 0,
+        failures: 0,
+        current_file_bytes_done: None,
+        current_file_bytes_total: None,
+        next_phase: Some(Phase::Restoring),
+    };
+    let result = crate::logging::boundary(
+        "restore_entries",
+        json!({ "location": location, "entries": ids.len(), "operationId": operation_id }),
+        || {
+            let data_root = crate::paths::data_root()?;
+            let roots = crate::storage::load_config_file_roots(&data_root)?;
+            let root = crate::trash::owning_root_of(&roots, std::path::Path::new(&location))?;
+            if !crate::volume_io::is_dir(&root).unwrap_or(false) {
+                return Err(format!("{} is not available", root.display()));
+            }
+            let conn =
+                crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
+            let root_text = root.to_string_lossy().into_owned();
+            let waiting = Progress {
+                phase: Phase::Waiting,
+                next_phase: Some(Phase::Planning),
+                ..last_progress.clone()
+            };
+            // Restore changes no indexed file (its targets are absent, and an
+            // identical target is only read), so no media reader is paused.
+            let Some(_admitted) = admit(app, &mutation, &[], &Touches::Root(&root_text), &mut || {
+                publisher.progress(&waiting)
+            })?
+            else {
+                return Ok(crate::restore::RestoreOutcome {
+                    cancelled: true,
+                    files_total,
+                    unstarted: files_total,
+                    ..Default::default()
+                });
+            };
+            publisher.progress(&last_progress);
+            let config = crate::storage::read_config_for_setup(&data_root)?;
+            let style = crate::file_names::RenameStyle::from_config(config.as_ref());
+            let settings = crate::scanner::settings_from_config(
+                config.as_ref(),
+                &data_root,
+                chrono::Utc::now().timestamp_millis(),
+            );
+            let listing = crate::trash::list_root(&root, &data_root)?;
+            let cancelled = || mutation.cancelled();
+            let candidates = match crate::restore::candidates(
+                &root,
+                &listing,
+                &ids,
+                &crate::file_identity::volume_of,
+                &cancelled,
+            ) {
+                Ok(candidates) => candidates,
+                Err(error) if error == crate::scanner::CANCELLED && mutation.cancelled() => {
+                    return Ok(crate::restore::RestoreOutcome {
+                        cancelled: true,
+                        files_total,
+                        unstarted: files_total,
+                        ..Default::default()
+                    })
+                }
+                Err(error) => return Err(error),
+            };
+            let plan = crate::restore::plan_restore(
+                &candidates,
+                crate::file_names::FolderNames::for_directory(&root),
+                style,
+                &mut |path| crate::restore::name_available(path),
+            );
+            let token = crate::restore::plan_token(&root, &plan);
+            let review = crate::restore::review_of(&plan, &root, &listing.entries);
+            let changed = plan_token.as_deref().is_some_and(|expected| expected != token);
+            if changed || (plan_token.is_none() && review.needed()) {
+                return Ok(crate::restore::RestoreOutcome {
+                    files_total: plan.steps.len() as u64,
+                    plan_token: Some(token),
+                    requires_review: true,
+                    plan_changed: changed,
+                    review: Some(review),
+                    ..Default::default()
+                });
+            }
+            let (mut outcome, reindexed) = crate::restore::execute(
+                &conn,
+                &root,
+                &plan,
+                &settings,
+                &crate::file_identity::volume_of,
+                &cancelled,
+                &mut |progress| {
+                    last_progress = Progress {
+                        operation_id,
+                        kind: Kind::Restore,
+                        phase: Phase::Restoring,
+                        items_done: progress.files_done,
+                        items_total: progress.files_total,
+                        files_done: progress.files_done,
+                        files_total: progress.files_total,
+                        bytes_done: 0,
+                        bytes_total: 0,
+                        failures: progress.failures,
+                        current_file_bytes_done: None,
+                        current_file_bytes_total: None,
+                        next_phase: Some(Phase::Complete),
+                    };
+                    publisher.progress(&last_progress);
+                },
+            )?;
+            if reindexed > 0 {
+                crate::file_information_runtime::wake(app.clone());
+            }
+            outcome.plan_token = Some(token);
+            Ok(outcome)
+        },
+        |outcome| {
+            json!({
+                "cancelled": outcome.cancelled,
+                "restored": outcome.restored.len(),
+                "alreadyPresent": outcome.already_present,
+                "failed": outcome.failed,
+                "requiresReview": outcome.requires_review,
+                "planChanged": outcome.plan_changed,
+            })
+        },
+    );
+    match &result {
+        Ok(outcome) => {
+            let terminal = Progress {
+                phase: Phase::Complete,
+                next_phase: None,
+                ..last_progress.clone()
+            };
+            publisher.done(
+                &terminal,
+                outcome.cancelled,
+                (!outcome.requires_review).then(|| restore_summary(outcome)),
+            );
+        }
+        Err(error) => publisher.error(&last_progress, error),
     }
     result
 }

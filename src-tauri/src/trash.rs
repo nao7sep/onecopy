@@ -27,6 +27,7 @@ use serde_json::json;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
+use unicode_normalization::UnicodeNormalization;
 
 use crate::logging;
 use crate::volume_io;
@@ -752,6 +753,14 @@ pub struct TrashEntry {
     pub deleted_at_utc: String,
     /// The stored file's current size.
     pub size: u64,
+    /// The modification time the record promises (version 2), which Restore
+    /// checks again before moving the file.
+    pub mtime_ms: Option<i64>,
+    /// The deleted item this file belongs to: one operation's logical item,
+    /// or for records without one (older records, displaced destination
+    /// files) the day or operation, folder and stem, which is the companion
+    /// rule.
+    pub group: String,
     pub version: u32,
     pub kind: Option<TrashKind>,
     pub operation: Option<String>,
@@ -839,6 +848,26 @@ pub fn entry_status(
     }
 }
 
+/// Which deleted item a record belongs to (`TrashEntry::group`).
+fn group_key(record: &DayRecord, day: &str) -> String {
+    if let (Some(operation), Some(item)) = (&record.operation, &record.item) {
+        return format!("item:{operation}:{item}");
+    }
+    let relative = record
+        .original_relative
+        .as_deref()
+        .unwrap_or(&record.stored_name);
+    let (folder, name) = relative.rsplit_once('/').unwrap_or(("", relative));
+    let stem = Path::new(name)
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().nfc().collect::<String>().to_lowercase())
+        .unwrap_or_default();
+    match &record.operation {
+        Some(operation) => format!("stem:{operation}:{folder}/{stem}"),
+        None => format!("day:{day}:{folder}/{stem}"),
+    }
+}
+
 fn is_companion_name(name: &str) -> bool {
     Path::new(name)
         .extension()
@@ -899,6 +928,7 @@ pub fn list_root(root: &Path, data_root: &Path) -> Result<TrashListing, String> 
         for (record, stored) in read.records {
             let status = entry_status(&record, stored, root, data_root);
             let companion = is_companion_name(&record.stored_name);
+            let group = group_key(&record, &day_name);
             let size = match stored {
                 StoredState::Regular { size, .. } => size,
                 StoredState::Other => 0,
@@ -911,6 +941,8 @@ pub fn list_root(root: &Path, data_root: &Path) -> Result<TrashListing, String> 
                 original_relative: record.original_relative,
                 deleted_at_utc: record.deleted_at_utc,
                 size,
+                mtime_ms: record.mtime_ms,
+                group,
                 version: record.version,
                 kind: record.kind,
                 operation: record.operation,

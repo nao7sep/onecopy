@@ -70,6 +70,7 @@ pub mod text_preview;
 pub mod theme;
 pub mod timestamps;
 pub mod transcription;
+pub mod restore;
 pub mod trash;
 pub mod video;
 pub mod viewer_sequence;
@@ -1096,6 +1097,20 @@ async fn trash_entries(root: String) -> Result<trash::TrashListing, String> {
     .await
 }
 
+// Restores selected files from one root's deleted files back to their
+// original paths (see `mutation_runtime::restore_entries`). Runs inline under
+// the mutation claim, so it goes through dispatch(); cancel is
+// `mutation_cancel`.
+#[tauri::command]
+async fn trash_restore(
+    app: AppHandle,
+    root: String,
+    entries: Vec<String>,
+    plan_token: Option<String>,
+) -> Result<restore::RestoreOutcome, String> {
+    dispatch(move || mutation_runtime::restore_entries(&app, root, entries, plan_token)).await
+}
+
 // Emptying is PERMANENT (the trash is the safety net; emptying it removes
 // the net for everything inside). The frontend confirms with the totals
 // before calling; the root path must be one `trash_overview` reported —
@@ -1588,6 +1603,7 @@ pub fn run() {
             trash_overview,
             trash_reveal,
             trash_entries,
+            trash_restore,
             trash_empty,
             trash_empty_cancel,
             dismiss_issue,

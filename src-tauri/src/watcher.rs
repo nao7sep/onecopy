@@ -572,6 +572,11 @@ pub(crate) struct WatchPass {
 }
 
 impl WatchPass {
+    /// How many index rows the pass changed.
+    pub(crate) fn changed(&self) -> u64 {
+        self.changed
+    }
+
     fn failure(&self) -> Option<String> {
         let (dir, error) = self.failed.first()?;
         Some(format!(

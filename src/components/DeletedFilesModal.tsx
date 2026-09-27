@@ -32,11 +32,20 @@ import {
   type TrashEntry,
   type TrashListing,
 } from "../models/deletedFiles";
+import {
+  restoreReceipt,
+  type RestoreOutcome,
+  type RestoreReview,
+} from "../models/deletedFiles";
+import { mutationProgressLine, mutationResultLine } from "../models/mutation";
+import { useMutationStore } from "../state/mutation-store";
+import { recordActionFailure } from "../state/notifications-store";
 import { log, toErrorFields } from "../repositories";
 import { revealInFileManager } from "../workflows/external-open";
 import { fileManagerWord } from "../utils/shortcuts";
 import { visibleWindow } from "../utils/virtualize";
 import ModalShell from "./ModalShell";
+import RestoreReviewModal from "./RestoreReviewModal";
 import Button from "./ui/Button";
 import { TextInput } from "./ui/Field";
 import OperationResult from "./ui/OperationResult";
@@ -80,6 +89,17 @@ export default function DeletedFilesModal({
   const listRef = useRef<HTMLDivElement>(null);
   const request = useRef(0);
   const { handlers: composingHandlers } = useComposing();
+  const [restoring, setRestoring] = useState(false);
+  const restoringRef = useRef(false);
+  const [pendingReview, setPendingReview] = useState<{
+    review: RestoreReview;
+    token: string | null;
+    changed: boolean;
+    ids: string[];
+  } | null>(null);
+  const [outcome, setOutcome] = useState<RestoreOutcome | null>(null);
+  const progress = useMutationStore((state) => state.progress);
+  const cancelling = useMutationStore((state) => state.cancelling);
 
   const load = () => {
     // A late answer for a superseded request (or a closed modal) is dropped.
@@ -215,6 +235,58 @@ export default function DeletedFilesModal({
   };
 
   const selectedCount = selected.size;
+
+  // Restore: a clean selection runs at once; one that needs a review comes
+  // back with it and its token, and confirming sends exactly the reviewed ids
+  // and token. A plan that changed since comes back as a new review.
+  const restore = async (ids: string[], token: string | null) => {
+    // The busy claim is taken before the first await.
+    if (restoringRef.current || ids.length === 0) return;
+    restoringRef.current = true;
+    setRestoring(true);
+    setError(null);
+    setOutcome(null);
+    try {
+      const result = await invoke<RestoreOutcome>("trash_restore", {
+        root: location,
+        entries: ids,
+        planToken: token,
+      });
+      if (result.requiresReview && result.review !== null) {
+        setPendingReview({
+          review: result.review,
+          token: result.planToken,
+          changed: result.planChanged,
+          ids,
+        });
+        return;
+      }
+      setPendingReview(null);
+      setOutcome(result);
+      setSelected(new Set());
+      load();
+    } catch (failure) {
+      log.error("restore failed", { location, ...toErrorFields(failure) });
+      setPendingReview(null);
+      setError(message("deletedFiles.restoreFailed"));
+      recordActionFailure("restore-failed", message("deletedFiles.restoreFailed"), failure);
+    } finally {
+      restoringRef.current = false;
+      setRestoring(false);
+    }
+  };
+
+  const revealRestored = () => {
+    const path = outcome?.restored[0];
+    if (path === undefined) return;
+    setError(null);
+    void revealInFileManager(path).catch((failure) => {
+      log.warn("restored file reveal failed", { path, ...toErrorFields(failure) });
+      setError(message("reveal.revealFailed", { manager }));
+    });
+  };
+
+  const liveProgress = restoring && progress?.kind === "restore" ? progress : null;
   const optionId = (row: BrowseRow) => `deleted-${encodeURIComponent(row.key)}`;
 
   const reasonOf = (entries: readonly TrashEntry[]): string | null => {
@@ -367,6 +439,7 @@ export default function DeletedFilesModal({
     <ModalShell
       title={t("deletedFiles.title")}
       onClose={onClose}
+      closeDisabled={restoring}
       widthClass="w-[min(1100px,calc(100vw-3rem))]"
       footerStart={
         <span className="text-xs text-ink-muted">
@@ -374,17 +447,64 @@ export default function DeletedFilesModal({
         </span>
       }
       footerResult={
-        error === null ? undefined : <OperationResult level="error">{text(error)}</OperationResult>
+        liveProgress !== null ? (
+          <span className="flex items-center gap-3 text-xs tabular-nums text-primary">
+            <span className="min-w-0 flex-1">
+              {mutationProgressLine(liveProgress, cancelling, t, number)}
+            </span>
+            <Button
+              disabled={cancelling}
+              onClick={() => void useMutationStore.getState().cancel()}
+            >
+              {cancelling ? t("common.cancelling") : t("common.cancel")}
+            </Button>
+          </span>
+        ) : error !== null ? (
+          <OperationResult level="error">{text(error)}</OperationResult>
+        ) : outcome !== null ? (
+          <OperationResult
+            level={outcome.failed > 0 || outcome.error !== null ? "warning" : "info"}
+            actions={
+              outcome.restored.length > 0 ? (
+                <Button onClick={revealRestored}>
+                  {t("deletedFiles.revealRestored", { manager })}
+                </Button>
+              ) : undefined
+            }
+          >
+            {mutationResultLine(restoreReceipt(outcome), t)}
+          </OperationResult>
+        ) : undefined
       }
       primaryAction={
-        <Button
-          disabled={activeRow === null || activeRow.type === "day"}
-          onClick={revealActive}
-        >
-          {t("reveal.showIn", { manager })}
-        </Button>
+        <>
+          <Button
+            disabled={activeRow === null || activeRow.type === "day"}
+            onClick={revealActive}
+          >
+            {t("reveal.showIn", { manager })}
+          </Button>
+          <Button
+            variant="primary"
+            disabled={restoring || selectedCount === 0}
+            onClick={() => void restore([...selected], null)}
+          >
+            {t("deletedFiles.restore")}
+          </Button>
+        </>
       }
     >
+      {pendingReview !== null ? (
+        <RestoreReviewModal
+          review={pendingReview.review}
+          changed={pendingReview.changed}
+          onCancel={() => setPendingReview(null)}
+          onConfirm={() => {
+            const { ids, token } = pendingReview;
+            void restore(ids, token);
+          }}
+        />
+      ) : null}
       <p className="mb-2 select-text break-all text-xs text-ink-muted">{location}</p>
       <TextInput
         type="search"

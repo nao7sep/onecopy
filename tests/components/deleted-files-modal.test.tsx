@@ -21,6 +21,8 @@ function entry(overrides: Partial<TrashEntry> & { id: string }): TrashEntry {
     originalRelative: `trips/${storedName}`,
     deletedAtUtc: "2026-09-27T10:00:00.000Z",
     size: 1024,
+    mtimeMs: 1,
+    group: `item:op:${overrides.item ?? "item"}`,
     version: 2,
     kind: "delete",
     operation: "op",
@@ -119,5 +121,115 @@ describe("Deleted files browse", () => {
     render(<DeletedFilesModal location={LOCATION} onClose={() => {}} />);
     await act(async () => {});
     expect(document.body.textContent).toContain("Couldn’t read the deleted files in this location.");
+  });
+});
+
+describe("Restore", () => {
+  const outcome = (overrides: Record<string, unknown>) => ({
+    cancelled: false,
+    error: null,
+    restored: [],
+    alreadyPresent: 0,
+    failed: 0,
+    unknown: 0,
+    unstarted: 0,
+    filesTotal: 2,
+    planToken: "token-1",
+    requiresReview: false,
+    planChanged: false,
+    review: null,
+    ...overrides,
+  });
+
+  async function selectFirstItem() {
+    render(<DeletedFilesModal location={LOCATION} onClose={() => {}} />);
+    await act(async () => {});
+    const listbox = list();
+    await act(async () => fire.focus(listbox));
+    await act(async () => fire.keyDown(listbox, { key: " " }));
+  }
+
+  function button(label: string): HTMLButtonElement {
+    return [...document.querySelectorAll("button")].find((b) => b.textContent === label) as HTMLButtonElement;
+  }
+
+  it("restores a clean selection at once and shows the receipt", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    mockCommands({
+      trash_entries: () => LISTING,
+      trash_restore: (args) => {
+        calls.push(args);
+        return outcome({ restored: ["/Photos/trips/beach.jpg", "/Photos/trips/beach.xmp"] });
+      },
+    });
+    await selectFirstItem();
+    expect(button("Restore").disabled).toBe(false);
+    await act(async () => button("Restore").click());
+    expect(calls).toEqual([
+      {
+        root: LOCATION,
+        entries: ["20260927-utc/beach.jpg", "20260927-utc/beach.xmp"],
+        planToken: null,
+      },
+    ]);
+    expect(document.body.textContent).toContain("Restore complete — 2 restored");
+    expect(document.body.textContent).toContain("0 files selected");
+  });
+
+  it("asks for review only when needed and confirms with the reviewed token", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    mockCommands({
+      trash_entries: () => LISTING,
+      trash_restore: (args) => {
+        calls.push(args);
+        return args.planToken === null
+          ? outcome({
+              requiresReview: true,
+              review: {
+                files: [
+                  { id: "20260927-utc/beach.jpg", original: "trips/beach.jpg", target: "trips/beach 2.jpg", renamed: true, unverified: false, skip: null },
+                  { id: "20260927-utc/beach.xmp", original: "trips/beach.xmp", target: "trips/beach 2.xmp", renamed: true, unverified: false, skip: null },
+                ],
+                folders: ["trips"],
+                companionsLeft: [],
+              },
+            })
+          : outcome({ restored: ["/Photos/trips/beach 2.jpg", "/Photos/trips/beach 2.xmp"] });
+      },
+    });
+    await selectFirstItem();
+    await act(async () => button("Restore").click());
+    expect(document.body.textContent).toContain("Review restore");
+    expect(document.body.textContent).toContain("Original name is taken — restored as trips/beach 2.jpg");
+    expect(document.body.textContent).toContain("These folders will be recreated:");
+    await act(async () => button("Rename and Restore").click());
+    expect(calls[1]).toEqual({ ...calls[0], planToken: "token-1" });
+    expect(document.body.textContent).not.toContain("Review restore");
+    expect(document.body.textContent).toContain("2 restored");
+  });
+
+  it("cancelling the review restores nothing", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    mockCommands({
+      trash_entries: () => LISTING,
+      trash_restore: (args) => {
+        calls.push(args);
+        return outcome({
+          requiresReview: true,
+          review: { files: [{ id: "x", original: "x.jpg", target: null, renamed: false, unverified: false, skip: "already-there" }], folders: [], companionsLeft: [] },
+        });
+      },
+    });
+    await selectFirstItem();
+    await act(async () => button("Restore").click());
+    expect(document.body.textContent).toContain("Already at its original location — stays in Deleted files");
+    const dialogs = document.querySelectorAll('[role="dialog"]');
+    const review = dialogs[dialogs.length - 1];
+    const primary = [...review.querySelectorAll("button")].find((b) => b.textContent === "Restore")!;
+    expect(primary.disabled).toBe(true);
+    const cancel = [...review.querySelectorAll("button")].find((b) => b.textContent === "Cancel")!;
+    await act(async () => cancel.click());
+    expect(calls).toHaveLength(1);
+    expect(document.body.textContent).not.toContain("Review restore");
   });
 });

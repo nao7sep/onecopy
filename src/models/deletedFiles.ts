@@ -3,6 +3,8 @@
 // The backend decides what each stored file is (its status); this module only
 // arranges and selects, so every rule here is testable without a window.
 
+import type { MutationResult } from "./mutation";
+
 export type TrashKind = "delete" | "move-cleanup" | "overwrite-displaced";
 export type TrashRole = "main" | "companion";
 export type EntryStatus =
@@ -23,6 +25,10 @@ export interface TrashEntry {
   originalRelative: string | null;
   deletedAtUtc: string;
   size: number;
+  /** The modification time the record promises; null for an older record. */
+  mtimeMs: number | null;
+  /** The deleted item this file belongs to (see `groupKey`). */
+  group: string;
   version: number;
   kind: TrashKind | null;
   operation: string | null;
@@ -80,23 +86,12 @@ export function entryFolder(entry: TrashEntry): string {
   return cut < 0 ? "" : relative.slice(0, cut);
 }
 
-function stem(name: string): string {
-  const dot = name.lastIndexOf(".");
-  return (dot <= 0 ? name : name.slice(0, dot)).normalize("NFC").toLowerCase();
-}
-
-/** Which deletion group an entry belongs to. Version 2 records group by
- * operation and logical item. A displaced destination file has no item, and
- * older records have no operation: those group by folder and stem, which is
- * the companion rule, so duplicates in other folders stay separate. */
+/** Which deletion group an entry belongs to, as the backend decides it: one
+ * operation's logical item, or for records without one the day or operation,
+ * folder and stem (the companion rule), so duplicates in other folders stay
+ * separate. */
 export function groupKey(entry: TrashEntry): string {
-  if (entry.operation !== null && entry.item !== null) {
-    return `item\u0000${entry.operation}\u0000${entry.item}`;
-  }
-  const place = `${entryFolder(entry)}\u0000${stem(entryName(entry))}`;
-  return entry.operation !== null
-    ? `stem\u0000${entry.operation}\u0000${place}`
-    : `legacy\u0000${entry.day}\u0000${place}`;
+  return entry.group;
 }
 
 function byPlace(left: TrashEntry, right: TrashEntry): number {
@@ -266,4 +261,80 @@ export function browseRows(
     }
   }
   return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Restore
+
+export type RestoreSkip =
+  | "already-there"
+  | "changed"
+  | "missing"
+  | "outside-root"
+  | "unrepresentable"
+  | "excluded"
+  | "folder-is-link"
+  | "file-in-the-way"
+  | "other-drive";
+
+export interface RestoreReviewFile {
+  id: string;
+  original: string | null;
+  /** Where the file goes, relative to the root; null when it is skipped. */
+  target: string | null;
+  renamed: boolean;
+  unverified: boolean;
+  skip: RestoreSkip | null;
+}
+
+export interface RestoreReview {
+  files: RestoreReviewFile[];
+  /** Folders the restore recreates, relative to the root. */
+  folders: string[];
+  /** Companions of a restored main file that stay in Deleted files. */
+  companionsLeft: string[];
+}
+
+export interface RestoreOutcome {
+  cancelled: boolean;
+  error: string | null;
+  restored: string[];
+  alreadyPresent: number;
+  failed: number;
+  unknown: number;
+  unstarted: number;
+  filesTotal: number;
+  planToken: string | null;
+  requiresReview: boolean;
+  planChanged: boolean;
+  review: RestoreReview | null;
+}
+
+/** The restore's receipt in the shape every file operation's receipt takes. */
+export function restoreReceipt(outcome: RestoreOutcome): MutationResult {
+  return {
+    operationId: 0,
+    kind: "restore",
+    cancelled: outcome.cancelled,
+    summary: {
+      itemsCompleted: outcome.restored.length,
+      itemsPartial: 0,
+      itemsUnstarted: outcome.unstarted,
+      filesCompleted: outcome.restored.length,
+      filesFailed: Math.max(0, outcome.failed - outcome.unknown),
+      filesUnknown: outcome.unknown,
+      filesUnstarted: outcome.unstarted,
+      filesAlreadyPresent: outcome.alreadyPresent,
+      trashAvailable: false,
+      error: outcome.error,
+    },
+  };
+}
+
+/** The review's primary action restores anything at all, and renames when any
+ * file takes a new name. */
+export function reviewAction(review: RestoreReview): "none" | "restore" | "rename-and-restore" {
+  const moving = review.files.filter((file) => file.target !== null);
+  if (moving.length === 0) return "none";
+  return moving.some((file) => file.renamed) ? "rename-and-restore" : "restore";
 }

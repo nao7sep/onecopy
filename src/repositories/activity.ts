@@ -46,7 +46,7 @@ export type ActivityOwner =
 
 export type ActivitySubject =
   | "installTools" | "checkToolUpdates"
-  | "copyFiles" | "moveFiles" | "deleteFiles" | "emptyDeletedFiles"
+  | "copyFiles" | "moveFiles" | "deleteFiles" | "emptyDeletedFiles" | "restoreFiles"
   | "previews"
   | "snapshots"
   | "similarity"

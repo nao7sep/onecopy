@@ -9,10 +9,14 @@ import {
   groupSelected,
   localDay,
   reconcileSelection,
+  restoreReceipt,
+  reviewAction,
   toggleEntry,
   toggleGroup,
   type TrashEntry,
 } from "../../src/models/deletedFiles";
+import { mutationProgressLine, mutationResultLine } from "../../src/models/mutation";
+import { createTranslator } from "../../src/i18n/translate";
 
 function entry(overrides: Partial<TrashEntry> & { id: string }): TrashEntry {
   const storedName = overrides.id.split("/").pop() ?? overrides.id;
@@ -23,6 +27,8 @@ function entry(overrides: Partial<TrashEntry> & { id: string }): TrashEntry {
     originalRelative: `photos/${storedName}`,
     deletedAtUtc: "2026-09-27T10:00:00.000Z",
     size: 10,
+    mtimeMs: 1,
+    group: `item:${overrides.operation ?? "op-1"}:${overrides.item ?? "hash-1"}`,
     version: 2,
     kind: "delete",
     operation: "op-1",
@@ -51,18 +57,18 @@ describe("grouping", () => {
     expect(entryName(first.representative)).toBe("x.jpg");
   });
 
-  it("groups older records by day, folder and stem, keeping other folders apart", () => {
+  it("groups older records by the backend's day, folder and stem key", () => {
     const legacy = { version: 1, operation: null, item: null, kind: null, status: "unverified" as const };
     const groups = groupEntries([
-      entry({ ...legacy, id: "d/IMG.JPG", originalRelative: "a/IMG.JPG" }),
-      entry({ ...legacy, id: "d/img.xmp", role: "companion", originalRelative: "a/img.xmp" }),
-      entry({ ...legacy, id: "d/IMG-2.JPG", originalRelative: "b/IMG.JPG" }),
+      entry({ ...legacy, id: "d/IMG.JPG", originalRelative: "a/IMG.JPG", group: "day:d:a/img" }),
+      entry({ ...legacy, id: "d/img.xmp", role: "companion", originalRelative: "a/img.xmp", group: "day:d:a/img" }),
+      entry({ ...legacy, id: "d/IMG-2.JPG", originalRelative: "b/IMG.JPG", group: "day:d:b/img" }),
     ]);
     expect(groups.map((group) => group.entries.length).sort()).toEqual([1, 2]);
   });
 
   it("groups a displaced destination family by operation, folder and stem", () => {
-    const displaced = { kind: "overwrite-displaced" as const, item: null };
+    const displaced = { kind: "overwrite-displaced" as const, item: null, group: "stem:op-1:out/x" };
     const groups = groupEntries([
       entry({ ...displaced, id: "d/x.jpg", originalRelative: "out/x.jpg" }),
       entry({ ...displaced, id: "d/x.xmp", role: "companion", originalRelative: "out/x.xmp" }),
@@ -154,5 +160,69 @@ describe("selection", () => {
       "entry",
       "entry",
     ]);
+  });
+});
+
+describe("the restore receipt", () => {
+  const base = {
+    cancelled: false,
+    error: null,
+    restored: ["/r/a.jpg", "/r/b.jpg"],
+    alreadyPresent: 1,
+    failed: 2,
+    unknown: 1,
+    unstarted: 3,
+    filesTotal: 8,
+    planToken: null,
+    requiresReview: false,
+    planChanged: false,
+    review: null,
+  };
+
+  it("counts restored, already there, failed, unknown and unstarted files apart", () => {
+    const line = mutationResultLine(restoreReceipt(base), createTranslator("en").t);
+    expect(line).toBe(
+      "Restore finished with failures — 2 restored · 1 already at its original location · 1 failed · 1 outcome unknown · 3 file steps unstarted",
+    );
+    const clean = mutationResultLine(
+      restoreReceipt({ ...base, alreadyPresent: 0, failed: 0, unknown: 0, unstarted: 0 }),
+      createTranslator("en").t,
+    );
+    expect(clean).toBe("Restore complete — 2 restored");
+  });
+
+  it("shows restoring progress in files, never bytes", () => {
+    const line = mutationProgressLine(
+      {
+        operationId: 1,
+        kind: "restore",
+        phase: "restoring",
+        itemsDone: 1,
+        itemsTotal: 3,
+        filesDone: 1,
+        filesTotal: 3,
+        bytesDone: 0,
+        bytesTotal: 0,
+        failures: 0,
+        currentFileBytesDone: null,
+        currentFileBytesTotal: null,
+        nextPhase: "complete",
+      },
+      false,
+      createTranslator("en").t,
+      createTranslator("en").number,
+    );
+    expect(line).toBe("Restoring — 1/3 files");
+  });
+
+  it("offers Rename and Restore only when a file is renamed, and nothing when all are skipped", () => {
+    const file = { id: "a", original: "a.jpg", target: "a.jpg", renamed: false, unverified: true, skip: null };
+    expect(reviewAction({ files: [file], folders: [], companionsLeft: [] })).toBe("restore");
+    expect(reviewAction({ files: [{ ...file, renamed: true }], folders: [], companionsLeft: [] })).toBe(
+      "rename-and-restore",
+    );
+    expect(
+      reviewAction({ files: [{ ...file, target: null, skip: "changed" as const }], folders: [], companionsLeft: [] }),
+    ).toBe("none");
   });
 });

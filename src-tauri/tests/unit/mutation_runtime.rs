@@ -31,6 +31,7 @@ fn result_accounting_separates_complete_partial_and_unstarted_work() {
             files_failed: 2,
             files_unknown: 0,
             files_unstarted: 5,
+            files_already_present: 0,
             trash_available: true,
             error: None,
         }
@@ -51,6 +52,7 @@ fn result_accounting_reports_unknown_outcomes_apart_from_failures() {
             files_failed: 1,
             files_unknown: 2,
             files_unstarted: 0,
+            files_already_present: 0,
             trash_available: false,
             error: None,
         }
@@ -122,7 +124,7 @@ fn touched_source_dirs_scopes_to_roots_the_accepted_batch_actually_sits_under() 
         "/Volumes/A/2024/IMG_0001.jpg",
         "/Volumes/A/2024/IMG_0001.xmp",
     ]);
-    let touched = touched_source_dirs(&source_dirs, &accepted);
+    let touched = touched_source_dirs(&source_dirs, &Touches::Files(&accepted));
     assert_eq!(touched, vec!["/Volumes/A".to_string()]);
 }
 
@@ -131,7 +133,54 @@ fn touched_source_dirs_is_empty_when_the_batch_touches_no_configured_source() {
     let source_dirs = vec!["/Volumes/A".to_string()];
     let accepted =
         crate::operations::AcceptedFiles::for_test_paths(["/Volumes/Elsewhere/photo.jpg"]);
-    assert!(touched_source_dirs(&source_dirs, &accepted).is_empty());
+    assert!(touched_source_dirs(&source_dirs, &Touches::Files(&accepted)).is_empty());
+}
+
+// A restore's receipt keeps "already there" apart from failures and from
+// outcome-unknown renames.
+#[test]
+fn a_restore_receipt_counts_restored_already_there_failed_unknown_and_unstarted() {
+    let outcome = crate::restore::RestoreOutcome {
+        restored: vec!["/r/a.jpg".to_string(), "/r/b.jpg".to_string()],
+        already_present: 1,
+        failed: 2,
+        unknown: 1,
+        unstarted: 3,
+        files_total: 8,
+        ..Default::default()
+    };
+    assert_eq!(
+        restore_summary(&outcome),
+        ResultSummary {
+            items_completed: 2,
+            items_partial: 0,
+            items_unstarted: 3,
+            files_completed: 2,
+            files_failed: 1,
+            files_unknown: 1,
+            files_unstarted: 3,
+            files_already_present: 1,
+            trash_available: false,
+            error: None,
+        }
+    );
+}
+
+// Restore touches one configured root: a source containing it is gated, a
+// destination root never is (blueprint case 8: the manifest travels with its
+// own drive).
+#[test]
+fn a_restore_gates_only_the_source_its_root_lies_in() {
+    let source_dirs = vec!["/Volumes/A".to_string(), "/Volumes/B".to_string()];
+    assert_eq!(
+        touched_source_dirs(&source_dirs, &Touches::Root("/Volumes/B")),
+        vec!["/Volumes/B".to_string()]
+    );
+    assert_eq!(
+        touched_source_dirs(&source_dirs, &Touches::Root("/Volumes/A/nested")),
+        vec!["/Volumes/A".to_string()]
+    );
+    assert!(touched_source_dirs(&source_dirs, &Touches::Root("/Volumes/Backup")).is_empty());
 }
 
 #[test]

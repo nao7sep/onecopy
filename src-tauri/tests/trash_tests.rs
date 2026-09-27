@@ -912,6 +912,10 @@ fn each_entry_says_whether_it_can_be_restored() {
     );
     let ok = listing.entries.iter().find(|entry| entry.stored_name == "ok.jpg").unwrap();
     assert_eq!(ok.id, "20260901-utc/ok.jpg");
+    assert_eq!(ok.group, "item:op:item", "one operation's item is one deleted item");
+    let legacy = listing.entries.iter().find(|entry| entry.stored_name == "legacy.jpg").unwrap();
+    assert_eq!(legacy.group, "day:20260901-utc:b/legacy", "older records group by folder and stem");
+    assert_eq!(legacy.role, Some(TrashRole::Main));
     assert_eq!(ok.original_relative.as_deref(), Some("a/ok.jpg"));
     assert_eq!(ok.size, 2);
 }

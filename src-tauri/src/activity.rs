@@ -73,6 +73,7 @@ pub enum ActivitySubject {
     MoveFiles,
     DeleteFiles,
     EmptyDeletedFiles,
+    RestoreFiles,
     Previews,
     Snapshots,
     Similarity,
