@@ -2234,3 +2234,85 @@ fn deleting_the_last_live_copy_forgets_missing_siblings_that_carry_evidence() {
         .unwrap();
     assert_eq!(remaining, (0, 0, 0));
 }
+
+// `.onecopy-stage-<16 hex home fingerprint>-<10 digit pid>-<nanoid>.tmp`; see
+// `file_identity::private_stage_file_name`.
+const STAGE_PREFIX_LEN: usize = ".onecopy-stage-".len();
+const HOME_FIELD_LEN: usize = 16;
+const PID_FIELD_LEN: usize = 10;
+
+fn with_pid(name: &str, pid: u32) -> String {
+    let pid_start = STAGE_PREFIX_LEN + HOME_FIELD_LEN + 1;
+    let pid_end = pid_start + PID_FIELD_LEN;
+    format!("{}{pid:0width$}{}", &name[..pid_start], &name[pid_end..], width = PID_FIELD_LEN)
+}
+
+fn with_foreign_home(name: &str) -> String {
+    let home_start = STAGE_PREFIX_LEN;
+    let home_end = home_start + HOME_FIELD_LEN;
+    let foreign = "f".repeat(HOME_FIELD_LEN);
+    format!("{}{foreign}{}", &name[..home_start], &name[home_end..])
+}
+
+/// A pid guaranteed not to be running any more.
+fn exited_pid() -> u32 {
+    let mut child = if cfg!(windows) {
+        std::process::Command::new("cmd")
+            .args(["/C", "exit", "0"])
+            .spawn()
+            .unwrap()
+    } else {
+        std::process::Command::new("true").spawn().unwrap()
+    };
+    let pid = child.id();
+    child.wait().unwrap();
+    pid
+}
+
+#[test]
+fn an_operation_sweeps_only_its_own_dead_leftover_from_the_destination_folder() {
+    // Ordinary Copy/Move staging lands flat in the destination folder, which
+    // the library's source walk never visits (it is outside every configured
+    // source). `move_batch` is therefore the one place a crash's leftover
+    // staging there ever gets cleaned up. This proves it sweeps only what it
+    // can prove is this application home's own now-dead leftover, never a
+    // live process's file or a different application home's file sharing
+    // the same destination folder.
+    let f = fixture("destination-sweep");
+    std::fs::write(f.root.join("keep.jpg"), b"bytes").unwrap();
+    scan(&f);
+    let dest = f._dir.path().join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    write_config(&f, &[&f.root], &[dest.as_path()]);
+
+    let base = onecopy_lib::file_identity::private_stage_file_name().unwrap();
+    let dead = dest.join(with_pid(&base, exited_pid()));
+    let live = dest.join(with_pid(&base, std::process::id()));
+    let foreign = dest.join(with_foreign_home(&with_pid(&base, exited_pid())));
+    for path in [&dead, &live, &foreign] {
+        std::fs::write(path, b"leftover").unwrap();
+    }
+
+    let outcome = move_batch(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        &[item_named(&f, "keep.jpg")],
+        &dest,
+        MoveOutMode::CopyKeepAll,
+        &|| false,
+        |_| {},
+    )
+    .unwrap();
+
+    assert_eq!(outcome.error, None);
+    assert_eq!(outcome.exported, 1);
+    assert!(!dead.exists(), "this home's dead-process leftover is swept before writing");
+    assert!(live.exists(), "a live process's own file is never removed");
+    assert!(foreign.exists(), "a different application home's file is never removed");
+    let remaining = private_leftovers(&dest);
+    assert!(
+        remaining.iter().any(|name| name == live.file_name().unwrap().to_str().unwrap()),
+        "expected the live leftover to remain: {remaining:?}"
+    );
+}

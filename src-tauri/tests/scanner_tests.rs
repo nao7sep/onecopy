@@ -849,19 +849,59 @@ fn apple_double_sidecars_beside_their_real_file_are_never_indexed() {
     let _ = stats;
 }
 
+// `.onecopy-stage-<16 hex home fingerprint>-<10 digit pid>-<nanoid>.tmp`; see
+// `file_identity::private_stage_file_name`.
+const STAGE_PREFIX_LEN: usize = ".onecopy-stage-".len();
+const HOME_FIELD_LEN: usize = 16;
+const PID_FIELD_LEN: usize = 10;
+
+fn with_pid(name: &str, pid: u32) -> String {
+    let pid_start = STAGE_PREFIX_LEN + HOME_FIELD_LEN + 1;
+    let pid_end = pid_start + PID_FIELD_LEN;
+    format!("{}{pid:0width$}{}", &name[..pid_start], &name[pid_end..], width = PID_FIELD_LEN)
+}
+
+fn with_foreign_home(name: &str) -> String {
+    let home_start = STAGE_PREFIX_LEN;
+    let home_end = home_start + HOME_FIELD_LEN;
+    let foreign = "f".repeat(HOME_FIELD_LEN);
+    format!("{}{foreign}{}", &name[..home_start], &name[home_end..])
+}
+
+/// A pid guaranteed not to be running any more.
+fn exited_pid() -> u32 {
+    let mut child = if cfg!(windows) {
+        std::process::Command::new("cmd")
+            .args(["/C", "exit", "0"])
+            .spawn()
+            .unwrap()
+    } else {
+        std::process::Command::new("true").spawn().unwrap()
+    };
+    let pid = child.id();
+    child.wait().unwrap();
+    pid
+}
+
 #[test]
-fn leftover_private_staging_files_are_never_indexed_and_are_removed() {
-    // A `.onecopy-stage-*.tmp` (or `.onecopy-claim-*.tmp`) leftover can only
-    // be launch-time garbage from a previous process that quitting gave up
-    // on at the mutation-quiescence deadline (`app_lifecycle::MUTATION_QUIESCE_DEADLINE`,
+fn leftover_private_staging_from_this_homes_dead_process_is_removed() {
+    // A `.onecopy-stage-*.tmp` (or `.onecopy-claim-*.tmp`) leftover naming
+    // this application home and a process that has since exited can only be
+    // launch-time garbage from a previous process that quitting gave up on
+    // at the mutation-quiescence deadline (`app_lifecycle::MUTATION_QUIESCE_DEADLINE`,
     // `specs/file-operations.md` "Normal exit and abnormal termination"). It
-    // must never be indexed as library content, and it is swept away outright
-    // rather than left to leak forever.
-    let f = fixture("private-staging-leftover");
+    // must never be indexed as library content, and this host's own walk
+    // sweeps it away rather than leaking it forever.
+    let f = fixture("private-staging-leftover-dead");
     std::fs::write(f.root.join("IMG_0002.jpg"), b"photo").unwrap();
-    let leftover = f.root.join(".onecopy-stage-abandoned.tmp");
+    let name = with_pid(
+        &onecopy_lib::file_identity::private_stage_file_name().unwrap(),
+        exited_pid(),
+    );
+    let leftover = f.root.join(&name);
     std::fs::write(&leftover, b"partial bytes from a killed process").unwrap();
     assert!(onecopy_lib::file_identity::is_private_tmp_name(&leftover));
+    assert!(onecopy_lib::file_identity::is_abandoned_leftover(&leftover));
 
     let stats = walk_root(&f.conn, &f.root, &lists()).unwrap();
 
@@ -872,8 +912,37 @@ fn leftover_private_staging_files_are_never_indexed_and_are_removed() {
     );
     assert!(
         !leftover.exists(),
-        "the leftover private staging file is removed, not merely hidden from the index"
+        "this home's dead-process leftover is removed, not merely hidden from the index"
     );
+}
+
+#[test]
+fn leftover_private_staging_from_a_live_or_foreign_process_is_never_removed() {
+    // Two application homes may be configured to see the same shared root
+    // (`specs/file-operations.md`, "Recoverable storage and manual
+    // recovery"). A live process's own staging file, or a different home's
+    // file sitting in a folder this walk also happens to visit, must never
+    // be deleted merely because the walk saw its name — 896c22f's
+    // unconditional deletion was exactly this defect. Both stay excluded
+    // from the index (never library content) but stay on disk.
+    let f = fixture("private-staging-leftover-live");
+    std::fs::write(f.root.join("IMG_0003.jpg"), b"photo").unwrap();
+    let base = onecopy_lib::file_identity::private_stage_file_name().unwrap();
+    let live = f.root.join(with_pid(&base, std::process::id()));
+    let foreign = f.root.join(with_foreign_home(&with_pid(&base, exited_pid())));
+    std::fs::write(&live, b"still being written").unwrap();
+    std::fs::write(&foreign, b"another application home's in-progress output").unwrap();
+
+    let stats = walk_root(&f.conn, &f.root, &lists()).unwrap();
+
+    assert_eq!(stats.added, 1, "only the real file is indexed");
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM paths WHERE file_name LIKE '.onecopy-stage-%'"),
+        0,
+        "neither leftover is ever indexed as library content"
+    );
+    assert!(live.exists(), "a live process's own file is never removed");
+    assert!(foreign.exists(), "a different application home's file is never removed");
 }
 
 #[test]

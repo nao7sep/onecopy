@@ -902,6 +902,12 @@ pub fn move_batch_reviewed(
 ) -> Result<MoveBatchOutcome, String> {
     let configured = crate::storage::load_configured_roots(app_root)?;
     let destination_root = admit_destination(dest_dir, &configured)?;
+    // Ordinary Copy/Move staging lands flat in `dest_dir` (every delivery
+    // target is `dest_dir.join(name)`), a folder the source walk never visits
+    // unless it also happens to be a configured source. This is the one
+    // place that sweeps it, so a crash's leftover staging does not linger
+    // forever in a destination outside every source.
+    crate::file_identity::sweep_private_tmp_leftovers(dest_dir);
     let roots = configured.all();
     let names = DestinationNames::for_directory(dest_dir);
     let mut seen = HashSet::new();
@@ -2197,10 +2203,7 @@ fn stage_delivery(
 /// can always be staged, and a name it refuses fails at publication as that
 /// one file.
 fn output_stage_path(target: &Path) -> Result<std::path::PathBuf, String> {
-    Ok(target.with_file_name(format!(
-        ".onecopy-stage-{}.tmp",
-        crate::nanoid::generate()?
-    )))
+    Ok(target.with_file_name(crate::file_identity::private_stage_file_name()?))
 }
 
 /// Companion rows, each with the main copy it is paired with (the query's

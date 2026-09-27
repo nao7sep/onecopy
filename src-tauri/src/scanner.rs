@@ -1221,9 +1221,17 @@ fn walk_root_with_progress(
         .into_iter()
         .filter_entry(|entry| {
             let path = entry.path();
-            if entry.file_type().is_file() && crate::file_identity::is_private_tmp_name(path) {
-                // Launch-time garbage from a previous process that quitting
-                // gave up on; see `file_identity::is_private_tmp_name`.
+            if entry.file_type().is_file()
+                && crate::file_identity::is_private_tmp_name(path)
+                && crate::file_identity::is_abandoned_leftover(path)
+            {
+                // This application home's own launch-time garbage, left by a
+                // previous process that quitting gave up on; see
+                // `file_identity::is_abandoned_leftover`. A different
+                // application home's in-progress file in a folder two homes
+                // share, or a still-running process's own file, is proven not
+                // ours and is left untouched — a live private file must never
+                // be deleted merely because a walk happened to visit it.
                 crate::fs_recovery::remove_file(path, "private staging leftover cleanup");
             }
             !is_excluded_from_discovery(path, data_root)
