@@ -781,11 +781,30 @@ pub fn rename(from: &Path, to: &Path) -> io::Result<()> {
     call(to, Op::Rename, None, move || std::fs::rename(source, target))
 }
 
-/// Appends `bytes` to `path` (creating it) and flushes, in one bounded call.
-pub fn append_synced(path: &Path, bytes: Vec<u8>) -> io::Result<()> {
+/// Appends `line` and a line break to `path` (creating it) and flushes, in
+/// one bounded call. When the file does not end with a line break (its last
+/// line was torn by a crash or by a write given up on), the fragment is ended
+/// first, so the new line is never glued onto it and lost with it.
+pub fn append_line_synced(path: &Path, line: String) -> io::Result<()> {
     let target = fs_path(path);
     call(path, Op::Write, None, move || {
-        let mut file = File::options().create(true).append(true).open(target)?;
+        let mut file = File::options()
+            .read(true)
+            .create(true)
+            .append(true)
+            .open(target)?;
+        let length = file.metadata()?.len();
+        let mut bytes = Vec::with_capacity(line.len() + 2);
+        if length > 0 {
+            let mut last = [0u8; 1];
+            file.seek(SeekFrom::Start(length - 1))?;
+            file.read_exact(&mut last)?;
+            if last[0] != b'\n' {
+                bytes.push(b'\n');
+            }
+        }
+        bytes.extend_from_slice(line.as_bytes());
+        bytes.push(b'\n');
         file.write_all(&bytes)?;
         file.sync_all()
     })

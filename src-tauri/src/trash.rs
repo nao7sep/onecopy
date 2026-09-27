@@ -441,11 +441,8 @@ fn append_manifest(day_dir: &Path, record: &TrashedRecord) -> Result<(), String>
     let line = serde_json::to_string(record).map_err(|e| e.to_string())?;
     // not recorded: the manifest is trash-side audit data, append-mode by
     // construction, never managed text.
-    volume_io::append_synced(
-        &day_dir.join(MANIFEST_FILE_NAME),
-        format!("{line}\n").into_bytes(),
-    )
-    .map_err(|e| e.to_string())
+    volume_io::append_line_synced(&day_dir.join(MANIFEST_FILE_NAME), line)
+        .map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -698,10 +695,9 @@ pub fn append_restored(day_dir: &Path, stored_name: &str, restored_to: &str) {
         "restoredTo": restored_to,
         "restoredAtUtc": logging::now_iso_millis(),
     });
-    if let Err(error) = volume_io::append_synced(
-        &day_dir.join(MANIFEST_FILE_NAME),
-        format!("{line}\n").into_bytes(),
-    ) {
+    if let Err(error) =
+        volume_io::append_line_synced(&day_dir.join(MANIFEST_FILE_NAME), line.to_string())
+    {
         crate::logging::warn(
             "restored record could not be written",
             json!({ "path": day_dir, "storedName": stored_name, "error": { "message": error.to_string() } }),

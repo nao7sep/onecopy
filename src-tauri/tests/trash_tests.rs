@@ -777,6 +777,35 @@ fn malformed_and_torn_lines_are_skipped_and_counted_without_rewriting() {
 }
 
 #[test]
+fn a_line_appended_after_a_torn_one_starts_a_line_of_its_own() {
+    // 37: a crash (or a write given up on) tore the last line; the records
+    // and restored lines written after it are not lost to it.
+    let f = fixture("torn-then-append");
+    let first = f.source.join("one.jpg");
+    std::fs::write(&first, b"one").unwrap();
+    let record = trash_file(&first, &f.source, None, &ctx()).unwrap();
+    let day = day_of(&record);
+    let manifest = day.join("manifest.jsonl");
+    let mut torn = std::fs::read_to_string(&manifest).unwrap();
+    torn.push_str("{\"originalPath\":\"/x/three.jpg\",\"stor");
+    std::fs::write(&manifest, &torn).unwrap();
+
+    let second = f.source.join("two.jpg");
+    std::fs::write(&second, b"two").unwrap();
+    trash_file(&second, &f.source, None, &ctx()).unwrap();
+    std::fs::rename(&record.stored_path, &first).unwrap();
+    std::fs::write(&manifest, std::fs::read_to_string(&manifest).unwrap() + "{\"v\":2,\"ev").unwrap();
+    append_restored(&day, &record.stored_name, "one.jpg");
+
+    let listing = read_day(&day, &root_spellings(&f.source)).unwrap();
+    let names: Vec<_> = listing.records.iter().map(|(r, _)| r.stored_name.as_str()).collect();
+    assert_eq!(names, ["two.jpg"], "the record after the torn line is read");
+    assert_eq!(listing.restored, 1, "the restored line after the torn one is read");
+    assert_eq!(listing.malformed_lines, 2, "only the torn fragments are lost");
+    assert!(std::fs::read_to_string(&manifest).unwrap().starts_with(&torn), "appended, never rewritten");
+}
+
+#[test]
 fn files_without_a_record_are_counted_not_listed() {
     let f = fixture("unrecorded");
     // No manifest at all: every file is unrecorded.
