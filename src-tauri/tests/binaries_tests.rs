@@ -78,14 +78,18 @@ fn martin_version_parses_the_epoch_version_segment() {
 
 #[test]
 fn sums_parsing_matches_exact_names_with_optional_star() {
+    // A representative BtbN win64 GPL asset name: its git-describe id changes
+    // on every autobuild release, so `parse_sums` must match by the exact
+    // (dynamically resolved) name rather than any pinned constant.
+    const WIN64_GPL_ASSET: &str = "ffmpeg-N-126889-gb139ba11d8-win64-gpl.zip";
     let sums = format!(
-        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  {BTBN_WIN64_ASSET}\n\
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  {WIN64_GPL_ASSET}\n\
          fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210 *other.zip\n\
          not-a-digest  whatever.zip"
     );
     let sums = sums.as_str();
     assert_eq!(
-        parse_sums(sums, BTBN_WIN64_ASSET).as_deref(),
+        parse_sums(sums, WIN64_GPL_ASSET).as_deref(),
         Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
     );
     assert_eq!(

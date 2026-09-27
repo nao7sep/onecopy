@@ -15,20 +15,20 @@ use crate::binaries;
 
 const MARTIN_REDIRECT_URL: &str =
     "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip";
-/// The BtbN autobuild release this app is pinned to. Never point this at
-/// `releases/latest`: BtbN republishes its `ffmpeg-master-latest-*` assets
-/// under a NEW build every day while keeping the same file names, so a
-/// pinned integrity check against that endpoint would silently start
-/// verifying different bytes tomorrow — the opposite of the immutable,
-/// independently anchored digest an executable pin requires
-/// (managed-runtime-dependencies-conventions: "resolved to its immutable
-/// per-build release (`autobuild-…` tag), never the rolling `latest`").
-/// A specific `autobuild-…` tag's assets and `checksums.sha256` never change
-/// once published. Bump this, and `binaries::BTBN_WIN64_ASSET` to match, when
-/// the fleet moves to a newer BtbN build — verify the new tag's asset name
-/// and checksum by hand first (e.g. `gh release view <tag> --repo
-/// BtbN/FFmpeg-Builds --json assets` and its `checksums.sha256` asset).
-const BTBN_PINNED_TAG: &str = "autobuild-2026-09-26-13-03";
+/// BtbN publishes a rolling `latest` release whose fixed-named assets
+/// (`ffmpeg-master-latest-*`) are silently replaced by a NEW build every day —
+/// a pinned integrity check against that endpoint would verify different
+/// bytes tomorrow, the opposite of the immutable, independently anchored
+/// digest an executable pin requires (managed-runtime-dependencies-
+/// conventions: "resolved to its immutable per-build release (`autobuild-…`
+/// tag), never the rolling `latest`"). `resolve_latest` below never reads
+/// `releases/latest`: GitHub's "latest release" for this repo can itself BE
+/// that rolling `latest` tag, since it is a real, frequently republished
+/// release. Instead it lists releases and picks the newest whose tag starts
+/// with `autobuild-` — a specific autobuild tag's assets and
+/// `checksums.sha256` never change once published, so that tag and its
+/// win64 GPL asset name are resolved fresh on every install and update check.
+const BTBN_RELEASES_URL: &str = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=10";
 const METADATA_TIMEOUT: Duration = Duration::from_secs(60);
 const DOWNLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const DOWNLOAD_CANCEL_POLL: Duration = Duration::from_millis(50);
@@ -81,6 +81,7 @@ impl OperationDeadline {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct Resolved {
     pub version: String,
     pub download_url: String,
@@ -225,41 +226,78 @@ pub(crate) fn resolve_latest(
             download_url: final_uri,
         })
     } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        let btbn_api = format!(
-            "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/{BTBN_PINNED_TAG}"
-        );
-        let (_, body) = fetch_metadata(&btbn_api, true, cancelled, deadline)?;
+        let (_, body) = fetch_metadata(BTBN_RELEASES_URL, true, cancelled, deadline)?;
         let body = String::from_utf8(body).map_err(|e| e.to_string())?;
-        let release: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
-        // The release NAME, not the tag: BtbN's tag is the constant `latest`, a
-        // rolling pointer that would compare equal to itself forever and never
-        // offer an update. The name carries the build moment and does change.
-        let version = release
-            .get("name")
-            .and_then(|name| name.as_str())
-            .filter(|name| !name.trim().is_empty())
-            .map(binaries::normalize_version)
-            .ok_or_else(|| "release has no name".to_string())?;
-        let asset_url = |name: &str| -> Option<String> {
-            release.get("assets")?.as_array()?.iter().find_map(|a| {
-                (a.get("name")?.as_str()? == name)
-                    .then(|| a.get("browser_download_url")?.as_str().map(String::from))?
-            })
-        };
-        let resolved = Resolved {
-            version,
-            download_url: asset_url(binaries::BTBN_WIN64_ASSET)
-                .ok_or_else(|| format!("release has no {}", binaries::BTBN_WIN64_ASSET))?,
-            sums_url: asset_url("checksums.sha256")
-                .ok_or_else(|| "release has no checksums.sha256".to_string())?,
-            sums_asset: binaries::BTBN_WIN64_ASSET.to_string(),
-        };
+        let releases: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+        let resolved = resolve_btbn_windows_release(&releases)?;
         assert_https(&resolved.download_url)?;
         assert_https(&resolved.sums_url)?;
         Ok(resolved)
     } else {
         Err("no managed ffmpeg build for this platform; install ffmpeg manually".to_string())
     }
+}
+
+/// Pure over an already-parsed BtbN `GET /releases` response (newest-first,
+/// per GitHub's default order): picks the newest `autobuild-…` tag and its
+/// win64 GPL asset, independent of network and platform so it is directly
+/// exercisable with a local fixture.
+fn resolve_btbn_windows_release(releases: &serde_json::Value) -> Result<Resolved, String> {
+    let releases = releases
+        .as_array()
+        .ok_or_else(|| "BtbN releases response is not a list".to_string())?;
+    // The FIRST tag that starts with `autobuild-` is the newest immutable
+    // per-build release; this skips over BtbN's rolling `latest` release (a
+    // real, frequently republished release object that is NOT tagged
+    // `autobuild-…`) without ever treating it as a candidate.
+    let release = releases
+        .iter()
+        .find(|release| {
+            release
+                .get("tag_name")
+                .and_then(|tag| tag.as_str())
+                .is_some_and(|tag| tag.starts_with("autobuild-"))
+        })
+        .ok_or_else(|| "no autobuild-* release found for BtbN/FFmpeg-Builds".to_string())?;
+    // The TAG, not the release name: the tag is the immutable identity this
+    // app resolves and downloads from, and the sidecar records it so a later
+    // check compares tags directly, with no separate namespace.
+    let tag = release
+        .get("tag_name")
+        .and_then(|tag| tag.as_str())
+        .filter(|tag| !tag.trim().is_empty())
+        .ok_or_else(|| "release has no tag_name".to_string())?;
+    let version = binaries::normalize_version(tag);
+    let assets = release
+        .get("assets")
+        .and_then(|assets| assets.as_array())
+        .ok_or_else(|| format!("release {tag} has no assets"))?;
+    let asset_url = |name: &str| -> Option<String> {
+        assets.iter().find_map(|a| {
+            (a.get("name")?.as_str()? == name)
+                .then(|| a.get("browser_download_url")?.as_str().map(String::from))?
+        })
+    };
+    // The win64 GPL asset's own name embeds this build's git-describe id
+    // (e.g. `ffmpeg-N-126889-gb139ba11d8-win64-gpl.zip`) and so changes on
+    // every autobuild release; it is matched by shape, not pinned as a
+    // constant, and re-resolved together with the tag on every call. This
+    // excludes the `-win64-gpl-shared.zip` variant, which does not end in
+    // `-gpl.zip`.
+    let asset_name = assets
+        .iter()
+        .filter_map(|a| a.get("name")?.as_str())
+        .find(|name| name.starts_with("ffmpeg-") && name.ends_with("-win64-gpl.zip"))
+        .ok_or_else(|| format!("release {tag} has no win64 GPL asset"))?
+        .to_string();
+    Ok(Resolved {
+        version,
+        download_url: asset_url(&asset_name)
+            .ok_or_else(|| format!("release {tag} has no download url for {asset_name}"))?,
+        sums_url: asset_url("checksums.sha256")
+            .ok_or_else(|| format!("release {tag} has no checksums.sha256"))?,
+        sums_asset: asset_name,
+    })
 }
 
 // not recorded: download staging — binary bytes into temp/, verified then

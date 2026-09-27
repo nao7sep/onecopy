@@ -189,6 +189,93 @@ fn publishing_replaces_an_existing_artifact() {
     assert!(!staged.exists());
 }
 
+fn btbn_asset(name: &str) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "browser_download_url": format!("https://example.test/{name}"),
+    })
+}
+
+#[test]
+fn btbn_resolution_skips_rolling_latest_and_picks_the_newest_autobuild_tag() {
+    // Newest-first, as GitHub's releases endpoint returns them: a rolling
+    // `latest` release ahead of two autobuild releases. The rolling release
+    // must never be treated as a candidate even though it sorts first.
+    let releases = serde_json::json!([
+        {
+            "tag_name": "latest",
+            "assets": [
+                btbn_asset("ffmpeg-master-latest-win64-gpl.zip"),
+                btbn_asset("checksums.sha256"),
+            ],
+        },
+        {
+            "tag_name": "autobuild-2026-09-27-00-00",
+            "assets": [
+                btbn_asset("ffmpeg-N-999999-gnewbuild00-win64-gpl.zip"),
+                btbn_asset("ffmpeg-N-999999-gnewbuild00-win64-gpl-shared.zip"),
+                btbn_asset("checksums.sha256"),
+            ],
+        },
+        {
+            "tag_name": "autobuild-2026-09-26-13-03",
+            "assets": [
+                btbn_asset("ffmpeg-N-126889-gb139ba11d8-win64-gpl.zip"),
+                btbn_asset("checksums.sha256"),
+            ],
+        },
+    ]);
+    let resolved = resolve_btbn_windows_release(&releases).unwrap();
+    assert_eq!(resolved.version, "autobuild-2026-09-27-00-00");
+    assert_eq!(
+        resolved.sums_asset,
+        "ffmpeg-N-999999-gnewbuild00-win64-gpl.zip"
+    );
+    assert!(resolved
+        .download_url
+        .ends_with("ffmpeg-N-999999-gnewbuild00-win64-gpl.zip"));
+    assert!(resolved.sums_url.ends_with("checksums.sha256"));
+}
+
+#[test]
+fn btbn_resolution_rejects_a_release_list_with_no_autobuild_tag() {
+    let releases = serde_json::json!([
+        {
+            "tag_name": "latest",
+            "assets": [btbn_asset("ffmpeg-master-latest-win64-gpl.zip")],
+        }
+    ]);
+    assert!(resolve_btbn_windows_release(&releases)
+        .unwrap_err()
+        .contains("no autobuild-* release"));
+}
+
+#[test]
+fn btbn_resolution_requires_the_win64_gpl_asset_and_checksums() {
+    let missing_gpl_asset = serde_json::json!([
+        {
+            "tag_name": "autobuild-2026-09-26-13-03",
+            "assets": [
+                btbn_asset("ffmpeg-N-126889-gb139ba11d8-win64-gpl-shared.zip"),
+                btbn_asset("checksums.sha256"),
+            ],
+        }
+    ]);
+    assert!(resolve_btbn_windows_release(&missing_gpl_asset)
+        .unwrap_err()
+        .contains("no win64 GPL asset"));
+
+    let missing_checksums = serde_json::json!([
+        {
+            "tag_name": "autobuild-2026-09-26-13-03",
+            "assets": [btbn_asset("ffmpeg-N-126889-gb139ba11d8-win64-gpl.zip")],
+        }
+    ]);
+    assert!(resolve_btbn_windows_release(&missing_checksums)
+        .unwrap_err()
+        .contains("no checksums.sha256"));
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn macho_arm64_detection_covers_thin_fat_and_foreign() {
