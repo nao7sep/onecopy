@@ -2416,3 +2416,38 @@ fn walk_owed(conn: &rusqlite::Connection, roots: &[String]) -> Result<bool, Stri
     }
     Ok(false)
 }
+
+// The walk joins every entry onto the root's resolved spelling (verbatim
+// `\\?\C:\…` on Windows, symlinks resolved everywhere), so the data root it
+// excludes must be compared in that same spelling, not as configured.
+#[cfg(unix)]
+#[test]
+fn the_walk_excludes_the_data_root_however_it_is_spelled() {
+    let f = fixture("data-root-spelling");
+    let link = f._dir.path().join("link-to-root");
+    std::os::unix::fs::symlink(&f.root, &link).unwrap();
+    let data_root = f.root.join("apphome");
+    std::fs::create_dir_all(data_root.join("cache")).unwrap();
+    std::fs::write(data_root.join("cache").join("thumb.jpg"), b"cache").unwrap();
+    std::fs::write(f.root.join("photo.jpg"), b"photo").unwrap();
+    let settings = ScanSettings {
+        source_dirs: vec![f.root.to_string_lossy().to_string()],
+        lists: lists(),
+        resolution: resolution_config(),
+        pairing_enabled: true,
+        // The app knows its data root by another spelling of the same folder.
+        cache_root: link.join("apphome").join("cache"),
+    };
+
+    run_source_check(&f.conn, &settings, &|_| {}).unwrap();
+
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM paths WHERE file_name = 'thumb.jpg'"),
+        0,
+        "the app's own storage is never source content"
+    );
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM paths WHERE file_name = 'photo.jpg'"),
+        1
+    );
+}

@@ -1174,6 +1174,13 @@ fn walk_root_with_progress(
 
     // The walk root carries the long-path form so every entry beneath it
     // inherits it; without this a deep tree is simply invisible on Windows.
+    // Entries carry the root's resolved spelling (verbatim on Windows, links
+    // resolved), so the data root is excluded in that same spelling.
+    let resolved_data_root = data_root.map(|root| {
+        std::fs::canonicalize(crate::winpath::for_fs(root).as_ref())
+            .unwrap_or_else(|_| root.to_path_buf())
+    });
+    let data_root = resolved_data_root.as_deref();
     for entry in walkdir::WalkDir::new(fs_root.as_ref())
         .follow_links(false)
         .into_iter()
