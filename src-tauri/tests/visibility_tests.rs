@@ -124,7 +124,8 @@ fn explicitly_configured_nested_dot_root_is_visible_in_either_scan_order() {
             vec![&outer, &inner]
         };
         let config = json!({"sourceDirs": roots});
-        let settings = scanner::settings_from_config(Some(&config), temp.path(), 0);
+        // The data root sits beside the sources, never around them.
+        let settings = scanner::settings_from_config(Some(&config), &temp.path().join("apphome"), 0);
         let conn = index_store::open(&temp.path().join("index.sqlite3")).unwrap();
         scanner::run_source_check(&conn, &settings, &|_| {}).unwrap();
         assert_eq!(

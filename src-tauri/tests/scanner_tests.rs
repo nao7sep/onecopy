@@ -701,7 +701,7 @@ fn source_check_leaves_relationship_work_for_the_independent_tail() {
         lists: lists(),
         resolution: resolution_config(),
         pairing_enabled: true,
-        cache_root: f._dir.path().join("cache"),
+        cache_root: f._dir.path().join("apphome").join("cache"),
     };
 
     run_source_check(&f.conn, &settings, &|_| {}).unwrap();
@@ -729,7 +729,7 @@ fn source_check_continues_after_an_unavailable_root() {
         lists: lists(),
         resolution: resolution_config(),
         pairing_enabled: true,
-        cache_root: f._dir.path().join("cache"),
+        cache_root: f._dir.path().join("apphome").join("cache"),
     };
 
     let summary = run_source_check(&f.conn, &settings, &|_| {}).unwrap();
@@ -2374,7 +2374,7 @@ fn an_unavailable_root_known_by_another_spelling_is_kept_and_a_removed_one_is_no
         lists: lists(),
         resolution: resolution_config(),
         pairing_enabled: true,
-        cache_root: f._dir.path().join("cache"),
+        cache_root: f._dir.path().join("apphome").join("cache"),
     };
     run_source_check(&f.conn, &settings(&[&link, &removed]), &|_| {}).unwrap();
     assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths"), 2);

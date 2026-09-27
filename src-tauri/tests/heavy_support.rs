@@ -127,6 +127,9 @@ fn link_tree(from: &Path, to: &Path) {
 /// An indexed library inside a disposable app home.
 pub struct Library {
     pub home: tempfile::TempDir,
+    /// Beside the home, never inside it: the app never indexes its own data
+    /// root.
+    _sources: tempfile::TempDir,
     pub source: PathBuf,
     pub conn: Connection,
     pub cache: CachePaths,
@@ -137,7 +140,11 @@ pub struct Library {
 /// the app would be with `config` merged into the settings.
 pub fn library(label: &str, files: &[PathBuf], config: serde_json::Value) -> Library {
     let home = app_home(label);
-    let source = home.path().join("source");
+    let sources = tempfile::Builder::new()
+        .prefix(&format!("heavy-{label}-sources-"))
+        .tempdir_in(env!("CARGO_TARGET_TMPDIR"))
+        .unwrap();
+    let source = sources.path().join("source");
     std::fs::create_dir_all(&source).unwrap();
     for file in files {
         std::fs::copy(file, source.join(file.file_name().unwrap()))
@@ -158,6 +165,7 @@ pub fn library(label: &str, files: &[PathBuf], config: serde_json::Value) -> Lib
     let cache = CachePaths::new(settings.cache_root.clone());
     Library {
         home,
+        _sources: sources,
         source,
         conn,
         cache,
