@@ -1040,8 +1040,86 @@ pub(crate) fn restore_entries(
     plan_token: Option<String>,
 ) -> Result<crate::restore::RestoreOutcome, String> {
     let mutation = begin_reported(app)?;
+    let mut host = AppRestoreHost {
+        app,
+        publisher: Publisher::new(app),
+    };
+    restore_claimed(&mutation, &mut host, location, ids, plan_token)
+}
+
+/// What a restore asks of the running application: its data folder, the
+/// admission that waits for background work (`None` when the restore was
+/// cancelled while waiting), progress and terminal publication, and a wake
+/// for the file-information work a re-read leaves owed. The application
+/// provides it over its handle (`AppRestoreHost`); the orchestration in
+/// `restore_claimed` depends only on this.
+trait RestoreHost {
+    type Admitted;
+    fn data_root(&self) -> Result<std::path::PathBuf, String>;
+    fn admit(
+        &mut self,
+        mutation: &Claim,
+        root: &str,
+        waiting: &Progress,
+    ) -> Result<Option<Self::Admitted>, String>;
+    fn progress(&mut self, progress: &Progress);
+    fn done(&mut self, progress: &Progress, cancelled: bool, summary: Option<ResultSummary>);
+    fn error(&mut self, progress: &Progress, error: &str);
+    fn information_owed(&mut self);
+}
+
+struct AppRestoreHost<'a> {
+    app: &'a AppHandle,
+    publisher: Publisher,
+}
+
+impl RestoreHost for AppRestoreHost<'_> {
+    type Admitted = Admitted;
+
+    fn data_root(&self) -> Result<std::path::PathBuf, String> {
+        crate::paths::data_root()
+    }
+
+    fn admit(
+        &mut self,
+        mutation: &Claim,
+        root: &str,
+        waiting: &Progress,
+    ) -> Result<Option<Admitted>, String> {
+        let publisher = &mut self.publisher;
+        // Restore changes no indexed file (its targets are absent, and an
+        // identical target is only read), so no media reader is paused.
+        admit(self.app, mutation, &[], &Touches::Root(root), &mut || {
+            publisher.progress(waiting)
+        })
+    }
+
+    fn progress(&mut self, progress: &Progress) {
+        self.publisher.progress(progress);
+    }
+
+    fn done(&mut self, progress: &Progress, cancelled: bool, summary: Option<ResultSummary>) {
+        self.publisher.done(progress, cancelled, summary);
+    }
+
+    fn error(&mut self, progress: &Progress, error: &str) {
+        self.publisher.error(progress, error);
+    }
+
+    fn information_owed(&mut self) {
+        crate::file_information_runtime::wake(self.app.clone());
+    }
+}
+
+/// `restore_entries` once the mutation claim is held.
+fn restore_claimed<H: RestoreHost>(
+    mutation: &Claim,
+    host: &mut H,
+    location: String,
+    ids: Vec<String>,
+    plan_token: Option<String>,
+) -> Result<crate::restore::RestoreOutcome, String> {
     let operation_id = mutation.id();
-    let mut publisher = Publisher::new(app);
     let files_total = ids.len() as u64;
     let mut last_progress = Progress {
         operation_id,
@@ -1062,7 +1140,7 @@ pub(crate) fn restore_entries(
         "restore_entries",
         json!({ "location": location, "entries": ids.len(), "operationId": operation_id }),
         || {
-            let data_root = crate::paths::data_root()?;
+            let data_root = host.data_root()?;
             let roots = crate::storage::load_config_file_roots(&data_root)?;
             let root = crate::trash::owning_root_of(&roots, std::path::Path::new(&location))?;
             if !crate::volume_io::is_dir(&root).unwrap_or(false) {
@@ -1076,12 +1154,7 @@ pub(crate) fn restore_entries(
                 next_phase: Some(Phase::Planning),
                 ..last_progress.clone()
             };
-            // Restore changes no indexed file (its targets are absent, and an
-            // identical target is only read), so no media reader is paused.
-            let Some(_admitted) = admit(app, &mutation, &[], &Touches::Root(&root_text), &mut || {
-                publisher.progress(&waiting)
-            })?
-            else {
+            let Some(_admitted) = host.admit(mutation, &root_text, &waiting)? else {
                 return Ok(crate::restore::RestoreOutcome {
                     cancelled: true,
                     files_total,
@@ -1089,7 +1162,7 @@ pub(crate) fn restore_entries(
                     ..Default::default()
                 });
             };
-            publisher.progress(&last_progress);
+            host.progress(&last_progress);
             let config = crate::storage::read_config_for_setup(&data_root)?;
             let style = crate::file_names::RenameStyle::from_config(config.as_ref());
             let settings = crate::scanner::settings_from_config(
@@ -1159,11 +1232,11 @@ pub(crate) fn restore_entries(
                         current_file_bytes_total: None,
                         next_phase: Some(Phase::Complete),
                     };
-                    publisher.progress(&last_progress);
+                    host.progress(&last_progress);
                 },
             )?;
             if reindexed > 0 {
-                crate::file_information_runtime::wake(app.clone());
+                host.information_owed();
             }
             outcome.plan_token = Some(token);
             Ok(outcome)
@@ -1186,13 +1259,13 @@ pub(crate) fn restore_entries(
                 next_phase: None,
                 ..last_progress.clone()
             };
-            publisher.done(
+            host.done(
                 &terminal,
                 outcome.cancelled,
                 (!outcome.requires_review).then(|| restore_summary(outcome)),
             );
         }
-        Err(error) => publisher.error(&last_progress, error),
+        Err(error) => host.error(&last_progress, error),
     }
     result
 }

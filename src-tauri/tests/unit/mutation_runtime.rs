@@ -196,3 +196,189 @@ fn a_rebuild_requested_during_a_file_operation_is_refused_at_once_and_never_queu
     // Nothing waited to run once the operation ended.
     assert!(!active());
 }
+
+// ---------------------------------------------------------------------------
+// Restore through its orchestration, with a host standing in for the app
+
+struct TestRestoreHost {
+    data_root: std::path::PathBuf,
+    waiting_shown: std::sync::Arc<AtomicBool>,
+    phases: Vec<Phase>,
+    finished: Vec<(bool, Option<ResultSummary>)>,
+}
+
+impl RestoreHost for TestRestoreHost {
+    type Admitted = crate::scan_runtime::ForegroundGuard;
+
+    fn data_root(&self) -> Result<std::path::PathBuf, String> {
+        Ok(self.data_root.clone())
+    }
+
+    fn admit(
+        &mut self,
+        mutation: &Claim,
+        _root: &str,
+        waiting: &Progress,
+    ) -> Result<Option<Self::Admitted>, String> {
+        let (phases, shown) = (&mut self.phases, &self.waiting_shown);
+        match crate::scan_runtime::admit_foreground(None, None, &|| mutation.cancelled(), &mut || {
+            phases.push(waiting.phase);
+            shown.store(true, Ordering::SeqCst);
+        }) {
+            Ok(guard) => Ok(Some(guard)),
+            Err(crate::scan_runtime::Refusal::Cancelled) => Ok(None),
+            Err(refusal) => Err(format!("{refusal:?}")),
+        }
+    }
+
+    fn progress(&mut self, progress: &Progress) {
+        self.phases.push(progress.phase);
+    }
+
+    fn done(&mut self, _progress: &Progress, cancelled: bool, summary: Option<ResultSummary>) {
+        self.finished.push((cancelled, summary));
+    }
+
+    fn error(&mut self, _progress: &Progress, error: &str) {
+        panic!("the restore failed: {error}");
+    }
+
+    fn information_owed(&mut self) {}
+}
+
+/// One source root with one deleted file whose folder is gone, and the
+/// restore's data folder. Returns (dir, root, data root, stored path, id).
+fn restore_fixture() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf, String, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("photos");
+    let data_root = dir.path().join("apphome");
+    std::fs::create_dir_all(root.join("trip")).unwrap();
+    std::fs::create_dir_all(&data_root).unwrap();
+    std::fs::write(
+        data_root.join(crate::storage::CONFIG_FILE_NAME),
+        json!({ "sourceDirs": [root.to_string_lossy()] }).to_string(),
+    )
+    .unwrap();
+    let original = root.join("trip").join("a.jpg");
+    std::fs::write(&original, b"bytes").unwrap();
+    let record = crate::trash::trash_file(
+        &original,
+        &root,
+        None,
+        &crate::trash::TrashContext::new(crate::trash::TrashKind::Delete, "op"),
+    )
+    .unwrap();
+    std::fs::remove_dir(root.join("trip")).unwrap();
+    let stored = std::path::Path::new(&record.stored_path);
+    let id = format!(
+        "{}/{}",
+        stored.parent().unwrap().file_name().unwrap().to_string_lossy(),
+        record.stored_name
+    );
+    (dir, root, data_root, record.stored_path, id)
+}
+
+/// Runs a restore of `id` while background work holds the index; once the
+/// restore shows that it waits, `while_waiting` runs and then the background
+/// work finishes.
+fn restore_behind_background_work(
+    root: &std::path::Path,
+    host: &mut TestRestoreHost,
+    id: String,
+    while_waiting: impl FnOnce(),
+) -> crate::restore::RestoreOutcome {
+    let mutation = begin().unwrap();
+    let shown = host.waiting_shown.clone();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let outcome = std::thread::scope(|scope| {
+        // Background work holds the index and has not reached a safe point.
+        let (held, holding) = std::sync::mpsc::channel::<()>();
+        let background = scope.spawn(move || {
+            crate::scan_runtime::with_owner(crate::scan_runtime::Owner::Watcher, || false, || {
+                held.send(()).unwrap();
+                released.recv().unwrap();
+                Ok(())
+            })
+        });
+        holding.recv().unwrap();
+        let location = root.join(crate::trash::TRASH_DIR_NAME).to_string_lossy().into_owned();
+        let mutation = &mutation;
+        let restore = scope.spawn(move || restore_claimed(mutation, host, location, vec![id], None));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !shown.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "the restore never showed that it waits");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        while_waiting();
+        release.send(()).unwrap();
+        let outcome = restore.join().unwrap().unwrap();
+        background.join().unwrap().unwrap();
+        outcome
+    });
+    drop(mutation);
+    outcome
+}
+
+fn test_host(data_root: &std::path::Path) -> TestRestoreHost {
+    TestRestoreHost {
+        data_root: data_root.to_path_buf(),
+        waiting_shown: Default::default(),
+        phases: Vec::new(),
+        finished: Vec::new(),
+    }
+}
+
+// Blueprint case 58: Cancel while the restore waits for background work ends
+// the wait, and nothing is observed, created, moved or recorded.
+#[test]
+fn cancelling_a_restore_while_it_waits_for_background_work_changes_nothing() {
+    let _serial = crate::scan_runtime::serial_test();
+    let (_dir, root, data_root, stored, id) = restore_fixture();
+    let manifest = std::path::Path::new(&stored)
+        .parent()
+        .unwrap()
+        .join(crate::trash::MANIFEST_FILE_NAME);
+    let manifest_before = std::fs::read(&manifest).unwrap();
+    let mut host = test_host(&data_root);
+
+    let outcome = restore_behind_background_work(&root, &mut host, id, || {
+        assert!(request_active_cancel().unwrap());
+    });
+
+    assert!(outcome.cancelled);
+    assert_eq!((outcome.restored.len(), outcome.unstarted, outcome.failed), (0, 1, 0));
+    assert_eq!(host.phases, [Phase::Waiting], "never planned, never restored");
+    assert_eq!(host.finished.len(), 1);
+    let (cancelled, summary) = host.finished[0].clone();
+    assert!(cancelled);
+    assert_eq!(summary.map(|summary| summary.files_unstarted), Some(1));
+    assert!(std::path::Path::new(&stored).exists(), "still in Deleted files");
+    assert!(!root.join("trip").exists(), "no folder recreated");
+    assert_eq!(std::fs::read(&manifest).unwrap(), manifest_before, "no restored line");
+    let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME)).unwrap();
+    let issues: i64 = conn.query_row("SELECT COUNT(*) FROM issues", [], |row| row.get(0)).unwrap();
+    assert_eq!(issues, 0, "no Issue recorded");
+}
+
+// The same wait without Cancel: the restore runs once background work
+// reaches its safe point.
+#[test]
+fn a_restore_that_waited_for_background_work_runs_once_it_is_admitted() {
+    let _serial = crate::scan_runtime::serial_test();
+    let (_dir, root, data_root, stored, id) = restore_fixture();
+    let mut host = test_host(&data_root);
+
+    let outcome = restore_behind_background_work(&root, &mut host, id, || {});
+
+    assert!(!outcome.cancelled);
+    assert!(outcome.requires_review, "the recreated folder is reviewed first");
+    let token = outcome.plan_token.clone();
+    let location = root.join(crate::trash::TRASH_DIR_NAME).to_string_lossy().into_owned();
+    let mutation = begin().unwrap();
+    let ids = vec![outcome.review.unwrap().files[0].id.clone()];
+    let confirmed = restore_claimed(&mutation, &mut host, location, ids, token).unwrap();
+    drop(mutation);
+    assert_eq!(confirmed.restored.len(), 1);
+    assert!(!std::path::Path::new(&stored).exists());
+    assert_eq!(std::fs::read(root.join("trip").join("a.jpg")).unwrap(), b"bytes");
+}
