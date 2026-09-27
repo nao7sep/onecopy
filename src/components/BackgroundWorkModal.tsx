@@ -36,6 +36,7 @@ function stateText(row: BackgroundClassSnapshot, t: Translator["t"]): string {
     case "paused":
       return t("work.queuedCountPaused", { count: row.queued });
     case "failed":
+      return t("work.itemsFailed");
     case "up-to-date":
       return t("work.noWork");
   }
@@ -215,7 +216,7 @@ export default function BackgroundWorkModal({
                   </span>
                   <span
                     className={`mt-1 block text-xs ${
-                      row.state === "unavailable" ? "text-warning" : "text-ink"
+                      row.state === "unavailable" || row.state === "failed" ? "text-warning" : "text-ink"
                     }`}
                   >
                     {!snapshot.workerRunning && row.state === "queued"
@@ -234,6 +235,14 @@ export default function BackgroundWorkModal({
                     {reasonRemedy(row.reason) === "settings"
                       ? t("settings.title")
                       : t("app.openManagedTools")}
+                  </Button>
+                ) : row.state === "failed" ? (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => useAppShellStore.getState().openUtility("issues")}
+                  >
+                    {t("issues.title")}
                   </Button>
                 ) : null}
                 <Button

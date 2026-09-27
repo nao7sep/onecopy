@@ -219,6 +219,7 @@ export function backgroundWorkLine(
     const key = workReasonKey(waiting.reason);
     return key === null ? (waiting.reason ?? t("work.waiting")) : t(key);
   }
+  if (rows.some((row) => row.state === "failed")) return t("work.someFailed");
   return t("work.noWorkRunning");
 }
 

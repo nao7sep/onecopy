@@ -323,13 +323,16 @@ describe("Background work", () => {
     }
   });
 
-  it("keeps failed output facts without duplicating the Issues surface", async () => {
+  it("states that a settled class's outputs failed and points to Issues", async () => {
     current = snapshot({}, { previews: { state: "failed", failed: 2 } });
     useDerivedWorkStore.setState({ snapshot: current });
-    render(<BackgroundWorkModal open onClose={() => {}} />);
-    expect(backgroundWorkLine(current, t)).toBe("Background work: no work running");
-    expect(document.body.textContent).not.toMatch(/failed|Issues|up to date|could not be prepared/i);
-    expect(document.body.textContent).toContain("No work running");
+    const view = render(<BackgroundWorkModal open onClose={() => {}} />);
+    expect(backgroundWorkLine(current, t)).toBe("Background work: some items failed — see Issues");
+    const previews = [...view.container.querySelectorAll("li")].find((row) => row.textContent?.includes("Thumbnails, previews, and posters"))!;
+    expect(previews.textContent).toContain("Some items failed. See Issues.");
+    const issues = [...previews.querySelectorAll("button")].find((button) => button.textContent === "Issues")!;
+    await act(async () => issues.click());
+    expect(useAppShellStore.getState().utilitySurface).toBe("issues");
     expect(useDerivedWorkStore.getState().snapshot?.classes[0].failed).toBe(2);
   });
 
