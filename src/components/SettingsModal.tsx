@@ -18,6 +18,7 @@ import {
 } from "../utils/screens";
 import ModalShell from "./ModalShell";
 import ConfirmModal from "./ConfirmModal";
+import RebuildIndexModal from "./RebuildIndexModal";
 import DirectoryRow from "./DirectoryRow";
 import Button from "./ui/Button";
 import { Row, Select, TextInput, Toggle } from "./ui/Field";
@@ -424,18 +425,15 @@ export default function SettingsModal({
         />
       ) : null}
       {confirmRebuild ? (
-        <ConfirmModal
-          title={t("settings.rebuildTitle")}
-          message={t("settings.rebuildMessage")}
-          confirmLabel={t("settings.rebuildConfirm")}
-          onConfirm={() => {
+        <RebuildIndexModal
+          onConfirm={({ discardPreviews, discardTranscripts }) => {
             setConfirmRebuild(false);
             setRebuilding(true);
             useSettingsStore.setState({
               message: message("settings.rebuildingIndex"),
               messageLevel: "info",
             });
-            void invoke("rebuild_library_index")
+            void invoke("rebuild_library_index", { discardPreviews, discardTranscripts })
               .then(async () => {
                 await Promise.all([
                   useSectionsStore.getState().loadCounts(),

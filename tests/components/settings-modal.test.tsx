@@ -360,16 +360,43 @@ describe("Settings categories", () => {
     });
   });
 
-  it("confirms library reconstruction from Settings", async () => {
+  it("confirms library reconstruction from Settings, keeping previews and transcripts by default", async () => {
     render(<SettingsModal open onClose={() => {}} />);
 
     fireEvent.click(screen.getByRole("button", { name: /Rebuild library index/ }));
     expect(screen.getByText(/Your files, settings, managed tools, and choices/)).toBeTruthy();
+    // Both discard options render unchecked, and the transcript one carries
+    // its highlighted caution note (Phase 9 developer decision).
+    const previews = screen.getByLabelText("Previews and posters") as HTMLInputElement;
+    const transcripts = screen.getByLabelText("Transcripts") as HTMLInputElement;
+    expect(previews.checked).toBe(false);
+    expect(transcripts.checked).toBe(false);
+    expect(
+      screen.getByText(/Regenerating transcripts can take a long time/),
+    ).toBeTruthy();
+
     fireEvent.click(screen.getByRole("button", { name: "Rebuild" }));
 
     await waitFor(() =>
       expect(invokeCalls.some((call) => call.command === "rebuild_library_index")).toBe(true),
     );
+    const call = invokeCalls.find((call) => call.command === "rebuild_library_index");
+    expect(call?.args).toEqual({ discardPreviews: false, discardTranscripts: false });
+  });
+
+  it("passes the chosen rebuild options through to the backend command", async () => {
+    render(<SettingsModal open onClose={() => {}} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Rebuild library index/ }));
+    fireEvent.click(screen.getByLabelText("Previews and posters"));
+    fireEvent.click(screen.getByLabelText("Transcripts"));
+    fireEvent.click(screen.getByRole("button", { name: "Rebuild" }));
+
+    await waitFor(() =>
+      expect(invokeCalls.some((call) => call.command === "rebuild_library_index")).toBe(true),
+    );
+    const call = invokeCalls.find((call) => call.command === "rebuild_library_index");
+    expect(call?.args).toEqual({ discardPreviews: true, discardTranscripts: true });
   });
 
   it("groups related controls without changing any draft value on tab changes", () => {

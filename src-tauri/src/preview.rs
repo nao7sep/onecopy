@@ -1173,12 +1173,20 @@ pub fn startup_sweep(
 }
 
 /// What an index rebuild discards from the cache. Entries under a real
-/// content hash depend only on those bytes and are reused. Entries under a
-/// provisional key (`p<path id>`) are not content-addressed: path ids restart
-/// after a rebuild, so another file would inherit them. They live in the `p?`
-/// shards, which no content hash names. Transcripts are discarded outright so
-/// they are generated again.
-pub fn purge_for_rebuild(cache: &CachePaths) -> Result<(), String> {
+/// content hash depend only on those bytes and are reused; the caller
+/// (Settings' rebuild dialog) decides whether previews/posters and
+/// transcripts are worth reusing this time or should be regenerated anyway.
+/// Entries under a provisional key (`p<path id>`) are never content-addressed
+/// — path ids restart after a rebuild, so another file would inherit them —
+/// so they are always discarded regardless of those choices. They live in the
+/// `p?` shards, which no content hash names; transcripts have no provisional
+/// form (transcription resolves the real hash first), so this only applies to
+/// thumbs/previews/fullres/strips.
+pub fn purge_for_rebuild(
+    cache: &CachePaths,
+    discard_previews: bool,
+    discard_transcripts: bool,
+) -> Result<(), String> {
     let remove = |path: &Path| match std::fs::remove_dir_all(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -1187,9 +1195,15 @@ pub fn purge_for_rebuild(cache: &CachePaths) -> Result<(), String> {
             path.display()
         )),
     };
-    remove(&cache.root.join("transcripts"))?;
+    if discard_transcripts {
+        remove(&cache.root.join("transcripts"))?;
+    }
     for tree in ["thumbs", "previews", "fullres", "strips"] {
         let tree = cache.root.join(tree);
+        if discard_previews {
+            remove(&tree)?;
+            continue;
+        }
         let shards = match std::fs::read_dir(&tree) {
             Ok(shards) => shards,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,

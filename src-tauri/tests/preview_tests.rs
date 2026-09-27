@@ -832,41 +832,91 @@ fn an_unwritable_cache_pauses_the_pass_instead_of_failing_every_item() {
     assert_eq!((recovered.derived, recovered.failed), (1, 0));
 }
 
-#[test]
-fn a_rebuild_discards_provisional_entries_and_transcripts_but_reuses_content_addressed_ones() {
-    let dir = tempfile::Builder::new()
-        .prefix("onecopy-rebuild-cache-")
-        .tempdir()
-        .unwrap();
-    let cache = CachePaths::new(dir.path().join("cache"));
+/// Builds one fresh cache with an exact-hash entry and a provisional-key
+/// entry in every purged tree (thumbs, previews, fullres, strips,
+/// transcripts), returning the two path lists for assertions.
+fn seeded_rebuild_cache(dir: &Path) -> (CachePaths, Vec<PathBuf>, Vec<PathBuf>) {
+    let cache = CachePaths::new(dir.join("cache"));
     let exact = "3f2a9c0d";
     let provisional = "p17";
-    let mut kept = vec![cache.thumb(exact), cache.preview(exact), cache.fullres(exact)];
-    kept.push(onecopy_lib::video::strip_path(&cache, exact, 0));
-    let mut purged = vec![
+    let mut exact_paths = vec![
+        cache.thumb(exact),
+        cache.preview(exact),
+        cache.fullres(exact),
+        cache.transcript(exact),
+    ];
+    exact_paths.push(onecopy_lib::video::strip_path(&cache, exact, 0));
+    let mut provisional_paths = vec![
         cache.thumb(provisional),
         cache.preview(provisional),
         cache.fullres(provisional),
-        cache.transcript(exact),
-        cache.transcript(provisional),
     ];
-    purged.push(onecopy_lib::video::strip_path(&cache, provisional, 2));
-    for path in kept.iter().chain(&purged) {
+    provisional_paths.push(onecopy_lib::video::strip_path(&cache, provisional, 2));
+    for path in exact_paths.iter().chain(&provisional_paths) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, b"bytes").unwrap();
     }
+    (cache, exact_paths, provisional_paths)
+}
 
-    purge_for_rebuild(&cache).unwrap();
+#[test]
+fn a_default_rebuild_discards_only_provisional_entries_and_keeps_content_addressed_previews_and_transcripts(
+) {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-rebuild-cache-default-")
+        .tempdir()
+        .unwrap();
+    let (cache, exact_paths, provisional_paths) = seeded_rebuild_cache(dir.path());
 
-    for path in &kept {
-        assert!(path.exists(), "{} was discarded", path.display());
+    purge_for_rebuild(&cache, false, false).unwrap();
+
+    for path in &exact_paths {
+        assert!(path.exists(), "{} was discarded by default", path.display());
     }
-    for path in &purged {
+    for path in &provisional_paths {
         assert!(!path.exists(), "{} survived the rebuild", path.display());
     }
     // An empty or never-created cache is not an error.
-    purge_for_rebuild(&cache).unwrap();
-    purge_for_rebuild(&CachePaths::new(dir.path().join("absent"))).unwrap();
+    purge_for_rebuild(&cache, false, false).unwrap();
+    purge_for_rebuild(&CachePaths::new(dir.path().join("absent")), false, false).unwrap();
+}
+
+#[test]
+fn discarding_previews_also_removes_the_content_addressed_ones_but_keeps_transcripts() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-rebuild-cache-previews-")
+        .tempdir()
+        .unwrap();
+    let (cache, exact_paths, provisional_paths) = seeded_rebuild_cache(dir.path());
+
+    purge_for_rebuild(&cache, true, false).unwrap();
+
+    assert!(cache.transcript("3f2a9c0d").exists(), "transcripts must survive a previews-only discard");
+    for path in exact_paths.iter().filter(|path| *path != &cache.transcript("3f2a9c0d")) {
+        assert!(!path.exists(), "{} survived discarding previews", path.display());
+    }
+    for path in &provisional_paths {
+        assert!(!path.exists(), "{} survived the rebuild", path.display());
+    }
+}
+
+#[test]
+fn discarding_transcripts_removes_every_transcript_but_keeps_content_addressed_previews() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-rebuild-cache-transcripts-")
+        .tempdir()
+        .unwrap();
+    let (cache, exact_paths, provisional_paths) = seeded_rebuild_cache(dir.path());
+
+    purge_for_rebuild(&cache, false, true).unwrap();
+
+    assert!(!cache.transcript("3f2a9c0d").exists(), "the exact transcript must be discarded");
+    for path in exact_paths.iter().filter(|path| *path != &cache.transcript("3f2a9c0d")) {
+        assert!(path.exists(), "{} was discarded by a transcripts-only rebuild", path.display());
+    }
+    for path in &provisional_paths {
+        assert!(!path.exists(), "{} survived the rebuild", path.display());
+    }
 }
 
 #[test]

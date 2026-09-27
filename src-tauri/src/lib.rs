@@ -262,12 +262,16 @@ fn index_work_snapshot() -> IndexWorkSnapshot {
 }
 
 #[tauri::command]
-async fn rebuild_library_index(app: AppHandle) -> Result<(), String> {
+async fn rebuild_library_index(
+    app: AppHandle,
+    discard_previews: bool,
+    discard_transcripts: bool,
+) -> Result<(), String> {
     dispatch(move || {
         logging::boundary(
             "rebuild_library_index",
-            json!({}),
-            || mutation_runtime::rebuild_index(&app),
+            json!({ "discardPreviews": discard_previews, "discardTranscripts": discard_transcripts }),
+            || mutation_runtime::rebuild_index(&app, discard_previews, discard_transcripts),
             |_| json!({}),
         )
     })

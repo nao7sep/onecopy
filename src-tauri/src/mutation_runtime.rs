@@ -105,7 +105,11 @@ fn begin_reported(app: &AppHandle) -> Result<Claim, String> {
 /// background work does not stop within the foreground deadline, like other
 /// Settings actions, and no source file is touched, so the volume-substitution
 /// gate does not apply.
-pub(crate) fn rebuild_index(app: &AppHandle) -> Result<(), String> {
+pub(crate) fn rebuild_index(
+    app: &AppHandle,
+    discard_previews: bool,
+    discard_transcripts: bool,
+) -> Result<(), String> {
     let _rebuild = begin_reported(app)?;
     crate::scan_runtime::run_foreground(app, || {
         let deadline = Instant::now() + crate::scan_runtime::FOREGROUND_DEADLINE;
@@ -120,9 +124,11 @@ pub(crate) fn rebuild_index(app: &AppHandle) -> Result<(), String> {
         )?;
         crate::scan_runtime::restart_source_walks();
         let data_root = crate::paths::data_root()?;
-        crate::preview::purge_for_rebuild(&crate::preview::CachePaths::new(
-            data_root.join(crate::storage::CACHE_DIR_NAME),
-        ))?;
+        crate::preview::purge_for_rebuild(
+            &crate::preview::CachePaths::new(data_root.join(crate::storage::CACHE_DIR_NAME)),
+            discard_previews,
+            discard_transcripts,
+        )?;
         let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
         crate::index_store::clear_reconstructible(&conn)?;
         crate::notifications::clear_active(app)
