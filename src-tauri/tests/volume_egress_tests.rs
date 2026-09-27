@@ -42,8 +42,10 @@ const DATA_ROOT_MODULES: &[(&str, &str)] = &[
 
 const MARKERS: &[&str] = &["// data root", "// volume_io worker"];
 
-/// A raw filesystem primitive, as it appears in source.
-fn raw_primitive(code: &str) -> Option<&'static str> {
+/// A raw filesystem primitive, as it appears in source. `prev` is the
+/// previous line's code, used when a chained call's receiver sits at the end
+/// of the line above (`reader\n    .metadata()`).
+fn raw_primitive(code: &str, prev: &str) -> Option<&'static str> {
     const NEEDLES: &[&str] = &[
         "File::open(",
         "File::create(",
@@ -54,8 +56,10 @@ fn raw_primitive(code: &str) -> Option<&'static str> {
         "ImageReader::open(",
         "image::open(",
         "nom_exif::read_exif(",
+        "nom_exif::read_exif_iter(",
         "nom_exif::read_track(",
         "nom_exif::read_metadata(",
+        "MediaSource::open(",
         "recommended_watcher(",
         ".canonicalize()",
         ".exists()",
@@ -120,6 +124,31 @@ fn raw_primitive(code: &str) -> Option<&'static str> {
             rest = &rest[index + probe.len()..];
         }
     }
+    // `Path::metadata()`/`symlink_metadata()`-shaped stats, as opposed to the
+    // same-named call on a file handle already open through `volume_io`.
+    {
+        const SAFE_FILE_RECEIVERS: &[&str] = &["file", "reader", "writer", "source_file"];
+        let mut rest = code;
+        while let Some(index) = rest.find(".metadata()") {
+            let mut receiver = rest[..index]
+                .trim_end()
+                .rsplit(|c: char| !(c.is_alphanumeric() || c == '_' || c == '(' || c == ')' || c == '.'))
+                .next()
+                .unwrap_or("");
+            if receiver.is_empty() {
+                receiver = prev
+                    .trim_end()
+                    .rsplit(|c: char| !(c.is_alphanumeric() || c == '_' || c == '(' || c == ')' || c == '.'))
+                    .next()
+                    .unwrap_or("");
+            }
+            let last = receiver.rsplit('.').next().unwrap_or(receiver);
+            if !SAFE_FILE_RECEIVERS.contains(&last) {
+                return Some("Path::metadata()");
+            }
+            rest = &rest[index + ".metadata()".len()..];
+        }
+    }
     None
 }
 
@@ -149,7 +178,12 @@ fn only_the_bounded_owner_touches_user_volumes() {
                 continue;
             }
             let code = line.split("//").next().unwrap_or("");
-            let Some(primitive) = raw_primitive(code) else {
+            let prev = if index > 0 {
+                lines[index - 1].split("//").next().unwrap_or("")
+            } else {
+                ""
+            };
+            let Some(primitive) = raw_primitive(code, prev) else {
                 continue;
             };
             let marked = MARKERS.iter().any(|marker| {
@@ -184,18 +218,31 @@ fn the_lint_recognizes_raw_calls_and_ignores_accessors() {
         "let file = File::open(path)?;",
         "if !target.exists() {",
         "let exif = nom_exif::read_exif(path)?;",
+        "let source = nom_exif::MediaSource::open(path)?;",
         "let existing = unsafe { GetFileAttributesW(wide.as_ptr()) };",
         "let moved = unsafe { libc::renamex_np(from, to, libc::RENAME_EXCL) };",
+        "let meta = path.metadata()?;",
+        "let meta = entry.metadata()?;",
     ] {
-        assert!(raw_primitive(raw).is_some(), "{raw}");
+        assert!(raw_primitive(raw, "").is_some(), "{raw}");
     }
+    assert!(
+        raw_primitive(".metadata()", "let total = tree").is_some(),
+        "a chained call on a receiver from the line above must still be seen"
+    );
     for accessor in [
         "if entry.file_type().is_file() {",
         "if metadata.is_dir() {",
         "fn check(meta: &std::fs::Metadata) {",
         "use std::os::unix::fs::MetadataExt;",
         "crate::volume_io::metadata(path)?",
+        "let len = file.metadata()?.len();",
+        "let len = reader.metadata()?.len();",
     ] {
-        assert!(raw_primitive(accessor).is_none(), "{accessor}");
+        assert!(raw_primitive(accessor, "").is_none(), "{accessor}");
     }
+    assert!(
+        raw_primitive(".metadata()", "let expected_total = reader").is_none(),
+        "a chained call on a known-safe receiver from the line above is not flagged"
+    );
 }

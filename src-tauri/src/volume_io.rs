@@ -997,8 +997,12 @@ impl Write for VolumeFile {
 
 impl Drop for VolumeFile {
     fn drop(&mut self) {
-        // Closing can wait on the device too; close on a pool thread. On a
-        // stalled volume the close is left to a pool thread without waiting.
+        // Closing can wait on the device too; close on a pool thread. A
+        // drive already known stalled skips the wait here — repeating the
+        // same timeout would learn nothing new — but the close still runs
+        // and still counts as one of the lane's outstanding calls, so
+        // "answered again" waits for it exactly like any other abandoned
+        // call.
         if let Some(file) = self.file.take() {
             if let Err((_, file)) =
                 call_with(&self.path, Op::Read, IO_BOUND, None, file, |file| {
@@ -1006,9 +1010,38 @@ impl Drop for VolumeFile {
                     Ok(())
                 })
             {
-                let _ = submit(Box::new(move || drop(file)));
+                abandon_now(&self.path, Op::Read, file, |file| drop(file));
             }
         }
+    }
+}
+
+/// Submits `f` as a call already counted abandoned, for a lane already known
+/// stalled: waiting again through `call_with`'s full bound would just repeat
+/// the same timeout for no purpose. The call still runs, through the same
+/// fake gate as any other call, and still settles the lane when it returns.
+fn abandon_now<D: Send + 'static>(
+    path: &Path,
+    op: Op,
+    data: D,
+    f: impl FnOnce(D) + Send + 'static,
+) {
+    let lane = lane_of(path);
+    *registry().abandoned.entry(lane.key.clone()).or_insert(0) += 1;
+    let job_path = path.to_path_buf();
+    let settle_key = lane.key.clone();
+    let fake = lane.fake.clone();
+    let submitted = submit(Box::new(move || {
+        if let Some(fake) = fake {
+            fake.hold(op, &job_path);
+        }
+        f(data);
+        lane_settled(&settle_key);
+    }));
+    if submitted.is_err() {
+        // Never ran (no worker to take it): settle now so the lane's
+        // outstanding count does not leak.
+        lane_settled(&lane.key);
     }
 }
 

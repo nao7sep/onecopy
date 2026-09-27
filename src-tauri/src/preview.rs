@@ -1153,7 +1153,7 @@ pub fn startup_sweep(
             }
             // Coarse filesystem clocks round a fresh write down by up to two
             // seconds; anything that recent is left for the next launch.
-            let written_this_run = entry.metadata().ok().and_then(|meta| meta.modified().ok())
+            let written_this_run = entry.metadata().ok().and_then(|meta| meta.modified().ok()) // data root
                 .is_none_or(|modified| {
                     modified + std::time::Duration::from_secs(2) >= launched
                 });

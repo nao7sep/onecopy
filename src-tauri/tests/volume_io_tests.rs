@@ -149,6 +149,34 @@ fn an_abandoned_open_file_settles_on_its_worker_when_the_call_returns() {
 }
 
 #[test]
+fn closing_a_file_on_an_already_stalled_volume_counts_as_outstanding_without_its_own_timeout() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a"), b"abc").unwrap();
+    let other = dir.path().join("b");
+    std::fs::write(&other, b"x").unwrap();
+    let file = volume_io::open_read(&dir.path().join("a")).unwrap();
+    let volume = FakeStallingVolume::mount(dir.path(), BOUND);
+    volume.stall(&[], None);
+
+    // One call abandons first, so the lane is already known stalled before
+    // the file is closed.
+    assert!(volume_io::metadata(&other).is_err());
+    assert!(volume.is_stalled());
+    assert_eq!(volume.held(), 1);
+
+    let started = Instant::now();
+    drop(file);
+    assert!(started.elapsed() < Duration::from_millis(100), "closing must not wait out a fresh bound");
+
+    // The close is a second outstanding call on the same lane, gated by the
+    // same fake, not a fire-and-forget one the registry never counted.
+    assert!(volume.wait_until_held(2, Duration::from_secs(5)));
+
+    volume.release();
+    assert!(volume.wait_until_settled(Duration::from_secs(5)));
+}
+
+#[test]
 fn a_walk_that_goes_quiet_is_abandoned_after_the_entries_it_produced() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join("fine")).unwrap();
