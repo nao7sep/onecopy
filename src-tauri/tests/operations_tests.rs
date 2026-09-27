@@ -231,6 +231,37 @@ fn deleting_a_logical_item_trashes_every_copy_and_companion() {
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
     assert_eq!(manifest.len(), 3, "one manifest line per trashed file");
+    // Version 2: every line names its operation, item, role and relative
+    // location, plus the size and time a restore verifies.
+    let operation = manifest[0]["operation"].as_str().expect("operation id").to_string();
+    for line in &manifest {
+        let original = line["originalPath"].as_str().unwrap();
+        assert_eq!(line["v"], 2);
+        assert_eq!(line["kind"], "delete");
+        assert_eq!(line["operation"], operation.as_str(), "one operation id per batch");
+        assert_eq!(line["item"], hash.as_str());
+        let companion = original.ends_with("x.arw");
+        assert_eq!(line["role"], if companion { "companion" } else { "main" });
+        let relative = line["originalRelative"].as_str().unwrap();
+        assert!(["a/x.jpg", "b/x.jpg", "a/x.arw"].contains(&relative), "{relative}");
+        assert!(original.ends_with(&relative.replace('/', std::path::MAIN_SEPARATOR_STR)));
+        assert_eq!(
+            line["storedName"].as_str().unwrap(),
+            std::path::Path::new(line["storedPath"].as_str().unwrap())
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+        );
+        let stored_meta = std::fs::metadata(line["storedPath"].as_str().unwrap()).unwrap();
+        assert_eq!(line["size"], stored_meta.len());
+        let mtime = stored_meta
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        assert_eq!(line["mtimeMs"], mtime, "a rename keeps the modification time");
+    }
     for line in &manifest {
         let stored = line["storedPath"].as_str().expect("storedPath");
         let original = line["originalPath"].as_str().expect("originalPath");
@@ -545,6 +576,16 @@ fn move_out_delivers_primary_and_companion_then_trashes_the_rest() {
         4,
         "every trashed original has a manifest line"
     );
+    for line in &manifest {
+        assert_eq!(line["v"], 2);
+        assert_eq!(line["kind"], "move-cleanup");
+        assert_eq!(line["item"], hash.as_str());
+        let companion = line["originalPath"].as_str().unwrap().ends_with("x.arw");
+        assert_eq!(line["role"], if companion { "companion" } else { "main" });
+        let moved_to = line["movedTo"].as_str().expect("the output that replaced it");
+        let expected = dest.join(if companion { "x.arw" } else { "x.jpg" });
+        assert_eq!(moved_to, expected.to_string_lossy());
+    }
     for line in &manifest {
         let stored = line["storedPath"].as_str().expect("storedPath");
         assert!(
@@ -1033,15 +1074,26 @@ fn overwrite_preserves_the_reviewed_destination_family_before_publication() {
         .map(|entry| entry.unwrap().path())
         .find(|path| path.is_dir())
         .expect("destination replacements are recoverable");
-    let originals = std::fs::read_to_string(day_dir.join("manifest.jsonl"))
+    let lines = std::fs::read_to_string(day_dir.join("manifest.jsonl"))
         .unwrap()
         .lines()
-        .map(|line| {
-            serde_json::from_str::<serde_json::Value>(line).unwrap()["originalPath"]
-                .as_str()
-                .unwrap()
-                .to_string()
-        })
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    // Overwrite records what it displaced with the hash the user reviewed.
+    for line in &lines {
+        assert_eq!(line["kind"], "overwrite-displaced");
+        assert_eq!(line["item"], serde_json::Value::Null);
+        let stored = std::fs::read(line["storedPath"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            line["contentHash"].as_str().expect("the reviewed hash"),
+            blake3::hash(&stored).to_hex().as_str()
+        );
+        let main = line["originalPath"].as_str().unwrap().ends_with("x.jpg");
+        assert_eq!(line["role"], if main { "main" } else { "companion" });
+    }
+    let originals = lines
+        .iter()
+        .map(|line| line["originalPath"].as_str().unwrap().to_string())
         .collect::<Vec<_>>();
     assert!(originals.contains(&dest.join("x.jpg").to_string_lossy().into_owned()));
     assert!(

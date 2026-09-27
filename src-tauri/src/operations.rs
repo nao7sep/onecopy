@@ -137,6 +137,10 @@ struct DeleteTarget {
     /// cannot be established (its drive is away, or its source was removed)
     /// fails as that one file; it never stops planning.
     owning_root: Result<std::path::PathBuf, String>,
+    /// The logical item's key and the file's role in it, for the
+    /// deleted-file record.
+    item: Option<String>,
+    role: trash::TrashRole,
 }
 
 #[derive(Clone, Debug)]
@@ -280,14 +284,25 @@ pub fn delete_item(
     };
     let accepted = AcceptedFiles::capture(conn, std::slice::from_ref(&identity))?;
     let targets = collect_delete_targets(conn, item, &roots, &accepted)?;
-    delete_targets(conn, cache, &targets, mode, &mut |_, _| {})
+    let operation = crate::nanoid::generate()?;
+    delete_targets(
+        conn,
+        cache,
+        &targets,
+        mode,
+        &trash::TrashContext::new(trash::TrashKind::Delete, &operation),
+        &mut |_, _| {},
+    )
 }
 
+/// `trash` names the operation for the deleted-file records; each target
+/// supplies its own item and role.
 fn delete_targets(
     conn: &Connection,
     cache: &CachePaths,
     targets: &[DeleteTarget],
     mode: DeleteMode,
+    trash: &trash::TrashContext,
     on_attempt: &mut (impl FnMut(u64, bool) + ?Sized),
 ) -> Result<DeleteOutcome, String> {
     let mut outcome = DeleteOutcome::default();
@@ -296,10 +311,13 @@ fn delete_targets(
         let file = Path::new(&target.abs_path);
         let result = match mode {
             DeleteMode::Trash => match &target.owning_root {
-                Ok(owning_root) => {
-                    trash::trash_file(file, owning_root, target.content_hash.as_deref())
-                        .map(|_| ())
-                }
+                Ok(owning_root) => trash::trash_file(
+                    file,
+                    owning_root,
+                    target.content_hash.as_deref(),
+                    &trash.clone().item(target.item.clone()).role(target.role),
+                )
+                .map(|_| ()),
                 Err(error) => Err(error.clone().into()),
             },
             DeleteMode::Permanent => permanently_delete_file(file),
@@ -459,6 +477,10 @@ fn collect_delete_targets(
 ) -> Result<Vec<DeleteTarget>, String> {
     // Target rows: the item's own copies plus companions attached to any of
     // them, limited to the files the accepted batch captured.
+    let item_key = match &item {
+        ItemRef::Hash(hash) => hash.to_string(),
+        ItemRef::PathId(path_id) => crate::indexed_file::item_key(None, *path_id),
+    };
     let (mut targets, mut companions) = item_physical_rows(conn, item)?;
     accepted.retain_accepted(&mut targets);
     accepted.retain_accepted(&mut companions);
@@ -467,10 +489,14 @@ fn collect_delete_targets(
     }
     // Companions delete FIRST: their rows hold a foreign key to the primary
     // (`companion_of`), so the primary's row must outlive them.
+    let roles = std::iter::repeat_n(trash::TrashRole::Companion, companions.len())
+        .chain(std::iter::repeat_n(trash::TrashRole::Main, targets.len()))
+        .collect::<Vec<_>>();
     companions.extend(targets);
     Ok(companions
         .into_iter()
-        .map(|(path_id, abs_path, content_hash, indexed_bytes)| {
+        .zip(roles)
+        .map(|((path_id, abs_path, content_hash, indexed_bytes), role)| {
             let owning_root = trash::root_for_file(Path::new(&abs_path), roots);
             let bytes = current_or_indexed_bytes(&abs_path, indexed_bytes);
             DeleteTarget {
@@ -479,6 +505,8 @@ fn collect_delete_targets(
                 content_hash,
                 bytes,
                 owning_root,
+                item: Some(item_key.clone()),
+                role,
             }
         })
         .collect())
@@ -516,6 +544,8 @@ pub fn delete_accepted_batch(
     mut on_progress: impl FnMut(DeleteBatchProgress),
 ) -> Result<DeleteBatchOutcome, String> {
     let roots = crate::storage::load_config_file_roots(app_root)?;
+    let trash_context =
+        trash::TrashContext::new(trash::TrashKind::Delete, &crate::nanoid::generate()?);
     let mut unique = HashSet::new();
     let mut ordered = Vec::new();
     for item in items {
@@ -597,6 +627,7 @@ pub fn delete_accepted_batch(
                 cache,
                 std::slice::from_ref(target),
                 mode,
+                &trash_context,
                 &mut |bytes, failed| {
                     files_done = files_done.saturating_add(1);
                     bytes_done = bytes_done.saturating_add(bytes);
@@ -980,6 +1011,7 @@ pub fn move_batch_reviewed(
     // forever in a destination outside every source.
     crate::file_identity::sweep_private_tmp_leftovers(dest_dir);
     let roots = configured.all();
+    let operation = crate::nanoid::generate()?;
     let names = DestinationNames::for_directory(dest_dir);
     let mut seen = HashSet::new();
     let mut ordered = Vec::new();
@@ -1127,6 +1159,7 @@ pub fn move_batch_reviewed(
             cache,
             &unit,
             &destination_root,
+            &operation,
             mode,
             conflict_policy,
             cancelled,
@@ -1904,6 +1937,7 @@ fn execute_move_unit(
     cache: &CachePaths,
     unit: &MoveUnit,
     destination_root: &Path,
+    operation: &str,
     mode: MoveOutMode,
     conflict_policy: Option<DestinationConflictPolicy>,
     cancelled: &dyn Fn() -> bool,
@@ -2044,7 +2078,9 @@ fn execute_move_unit(
                         preserve_reviewed_destination_family(
                             conn,
                             &delivery.replacement_family,
+                            &output.target,
                             destination_root,
+                            operation,
                         )?;
                         outcome.trashed_destination_files = outcome
                             .trashed_destination_files
@@ -2109,6 +2145,7 @@ fn execute_move_unit(
         if delivered && mode != MoveOutMode::CopyKeepAll {
             // A source whose bytes no longer matched was not delivered, so
             // this output does not cover it; it stays in place.
+            let item_key = unit.item.key()?;
             let targets = delivery
                 .sources
                 .iter()
@@ -2119,8 +2156,16 @@ fn execute_move_unit(
                     content_hash: source.content_hash.clone(),
                     bytes: source.bytes,
                     owning_root: source.owning_root.clone(),
+                    item: Some(item_key.clone()),
+                    role: if source.beside.is_some() {
+                        trash::TrashRole::Companion
+                    } else {
+                        trash::TrashRole::Main
+                    },
                 })
                 .collect::<Vec<_>>();
+            let cleanup_context = trash::TrashContext::new(trash::TrashKind::MoveCleanup, operation)
+                .moved_to(Some(output.target.to_string_lossy().into_owned()));
             let delete_mode = if mode == MoveOutMode::MoveTrashRest {
                 DeleteMode::Trash
             } else {
@@ -2135,6 +2180,7 @@ fn execute_move_unit(
                     cache,
                     std::slice::from_ref(target),
                     delete_mode,
+                    &cleanup_context,
                     &mut |bytes, failed| on_progress(MoveUnitProgress::Attempt { bytes, failed }),
                 )?;
                 outcome.post_action.deleted_files = outcome
@@ -2233,7 +2279,9 @@ fn sync_published(conn: &Connection, target: &Path) -> Result<bool, String> {
 fn preserve_reviewed_destination_family(
     conn: &Connection,
     family: &[ReviewedDestinationFile],
+    replaced: &Path,
     destination_root: &Path,
+    operation: &str,
 ) -> Result<(), String> {
     if family.is_empty() {
         return Err("a new unreviewed destination conflict appeared".to_string());
@@ -2250,8 +2298,23 @@ fn preserve_reviewed_destination_family(
             }
         }
     }
+    // The replaced file is the main one; the rest are its companions. The
+    // reviewed hash travels into the record: it is what the user saw
+    // replaced, and the stored file was just re-proven to hold it.
+    let context = trash::TrashContext::new(trash::TrashKind::OverwriteDisplaced, operation);
     for member in family {
-        crate::trash::trash_file(&member.path, destination_root, None).map_err(|error| {
+        let role = if member.path == replaced {
+            trash::TrashRole::Main
+        } else {
+            trash::TrashRole::Companion
+        };
+        crate::trash::trash_file(
+            &member.path,
+            destination_root,
+            Some(&member.hash),
+            &context.clone().role(role),
+        )
+        .map_err(|error| {
             let message = format!(
                 "could not preserve the existing destination {} in Deleted files: {error}",
                 member.path.display()

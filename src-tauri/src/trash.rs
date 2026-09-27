@@ -1,7 +1,8 @@
 //! Recoverable deleted-file storage: root-local, day-foldered, and
-//! write-only from the app's perspective (the app never purges; deleting any
-//! day folder by hand is safe because nothing outside it references its
-//! contents — the invariant the design states).
+//! append-only (the app never purges or rewrites it; deleting any day folder
+//! by hand is safe because nothing outside it references its contents — the
+//! invariant the design states). This module owns the manifest format, its
+//! writer and its reader (`read_day`), which Restore builds on.
 //!
 //! Layout beneath each configured source or destination root:
 //!
@@ -43,6 +44,74 @@ pub fn is_trash_path(path: &Path) -> bool {
 /// exclude its own bookkeeping (see `measure_root`).
 pub const MANIFEST_FILE_NAME: &str = "manifest.jsonl";
 
+/// The current manifest line format. Lines without `v` are the original
+/// four-field format and stay readable (`read_day`).
+pub const MANIFEST_VERSION: u32 = 2;
+
+/// Why a file went to Deleted files.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TrashKind {
+    Delete,
+    MoveCleanup,
+    OverwriteDisplaced,
+}
+
+/// Whether a stored file was a main copy or a companion of its item.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TrashRole {
+    Main,
+    Companion,
+}
+
+/// What the caller knows about one file it sends to Deleted files: the kind
+/// of operation, that operation's id, the logical item the file belonged to
+/// (none for a displaced destination file, which was never indexed), whether
+/// it was a main copy or a companion, and for Move cleanup the output that
+/// replaced it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrashContext {
+    pub kind: TrashKind,
+    pub operation: String,
+    pub item: Option<String>,
+    pub role: TrashRole,
+    pub moved_to: Option<String>,
+}
+
+impl TrashContext {
+    pub fn new(kind: TrashKind, operation: &str) -> Self {
+        Self {
+            kind,
+            operation: operation.to_string(),
+            item: None,
+            role: TrashRole::Main,
+            moved_to: None,
+        }
+    }
+
+    pub fn item(mut self, item: Option<String>) -> Self {
+        self.item = item;
+        self
+    }
+
+    pub fn role(mut self, role: TrashRole) -> Self {
+        self.role = role;
+        self
+    }
+
+    pub fn moved_to(mut self, moved_to: Option<String>) -> Self {
+        self.moved_to = moved_to;
+        self
+    }
+}
+
+/// One manifest line (version 2). The four original fields stay first and
+/// unchanged, so every older reader and line keeps its meaning; the rest are
+/// additive. `storedName` and `originalRelative` are relative, so a record
+/// still resolves after the root is renamed or its drive is mounted
+/// elsewhere; `size` and `mtimeMs` let a reader prove the stored file is the
+/// one the record describes.
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct TrashedRecord {
@@ -50,6 +119,19 @@ pub struct TrashedRecord {
     pub stored_path: String,
     pub content_hash: Option<String>,
     pub deleted_at_utc: String,
+    pub v: u32,
+    pub stored_name: String,
+    /// `/`-joined components of the original path relative to the owning
+    /// root.
+    pub original_relative: String,
+    pub kind: TrashKind,
+    pub operation: String,
+    pub item: Option<String>,
+    pub role: TrashRole,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub moved_to: Option<String>,
+    pub size: u64,
+    pub mtime_ms: i64,
 }
 
 /// Why a file was not moved to Deleted files.
@@ -83,14 +165,16 @@ pub fn trash_file(
     file: &Path,
     owning_root: &Path,
     content_hash: Option<&str>,
+    context: &TrashContext,
 ) -> Result<TrashedRecord, TrashError> {
-    trash_file_with_before_move(file, owning_root, content_hash, |_| {})
+    trash_file_with_before_move(file, owning_root, content_hash, context, |_| {})
 }
 
 fn trash_file_with_before_move(
     file: &Path,
     owning_root: &Path,
     content_hash: Option<&str>,
+    context: &TrashContext,
     before_move: impl FnOnce(&Path),
 ) -> Result<TrashedRecord, TrashError> {
     if !file.is_absolute() {
@@ -109,7 +193,7 @@ fn trash_file_with_before_move(
         )
         .into());
     }
-    let plan = prepare_trash(file, owning_root, content_hash)?;
+    let plan = prepare_trash(file, owning_root, content_hash, context, &metadata)?;
     commit_trash(file, plan, before_move)
 }
 
@@ -123,6 +207,8 @@ fn prepare_trash(
     original: &Path,
     owning_root: &Path,
     content_hash: Option<&str>,
+    context: &TrashContext,
+    metadata: &std::fs::Metadata,
 ) -> Result<TrashPlan, String> {
     if !owning_root.is_absolute() || !volume_io::is_dir(owning_root).unwrap_or(false) {
         return Err(format!(
@@ -147,6 +233,7 @@ fn prepare_trash(
     if original_volume != root_volume {
         return Err("recoverable deletion must stay on the same filesystem".to_string());
     }
+    let original_relative = relative_to_root(original, owning_root)?;
     let trash_root = owning_root.join(TRASH_DIR_NAME);
     if crate::path_identity::directory_is_within(original, &trash_root).unwrap_or(false) {
         return Err(
@@ -196,6 +283,19 @@ fn prepare_trash(
         stored_path: stored.to_string_lossy().to_string(),
         content_hash: content_hash.map(|h| h.to_string()),
         deleted_at_utc: logging::now_iso_millis(),
+        v: MANIFEST_VERSION,
+        stored_name: stored
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        original_relative,
+        kind: context.kind,
+        operation: context.operation.clone(),
+        item: context.item.clone(),
+        role: context.role,
+        moved_to: context.moved_to.clone(),
+        size: metadata.len(),
+        mtime_ms: mtime_ms(metadata),
     };
     // Provenance commits FIRST. If append/fsync fails, the indexed source has
     // not moved and remains authoritative. A crash or an exact-boundary target
@@ -232,6 +332,54 @@ fn commit_trash(
     }
 
     Ok(plan.record)
+}
+
+/// A file's modification time in whole milliseconds since the Unix epoch,
+/// the precision a manifest records and a reader compares.
+pub(crate) fn mtime_ms(metadata: &std::fs::Metadata) -> i64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|modified| {
+            match modified.duration_since(std::time::UNIX_EPOCH) {
+                Ok(after) => i64::try_from(after.as_millis()).ok(),
+                Err(before) => i64::try_from(before.duration().as_millis()).ok().map(|ms| -ms),
+            }
+        })
+        .unwrap_or(0)
+}
+
+/// `file`'s path below `root` as `/`-joined components, resolved physically
+/// so a root reached through a link or another spelling still yields the
+/// path as it lies inside the root.
+fn relative_to_root(file: &Path, root: &Path) -> Result<String, String> {
+    let name = file
+        .file_name()
+        .ok_or_else(|| format!("{} has no file name", file.display()))?;
+    let parent = file
+        .parent()
+        .ok_or_else(|| format!("{} has no parent folder", file.display()))?;
+    let resolved_parent = volume_io::canonicalize(parent)
+        .map_err(|error| format!("trash source is unavailable: {error}"))?;
+    let root_identity = volume_io::canonicalize(root)
+        .and_then(|resolved| crate::file_identity::FileIdentity::from_path(&resolved))
+        .map_err(|error| format!("deleted-file root is unavailable: {error}"))?;
+    // The ancestor that IS the root, found by identity rather than spelling,
+    // so a differently cased or linked spelling still finds it.
+    let below = resolved_parent
+        .ancestors()
+        .find(|ancestor| {
+            crate::file_identity::FileIdentity::from_path(ancestor)
+                .is_ok_and(|identity| identity == root_identity)
+        })
+        .and_then(|ancestor| resolved_parent.strip_prefix(ancestor).ok())
+        .ok_or_else(|| format!("{} is outside its frozen configured root {}", file.display(), root.display()))?;
+    let mut components: Vec<String> = below
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    components.push(name.to_string_lossy().into_owned());
+    Ok(components.join("/"))
 }
 
 fn ensure_real_directory_if_present(path: &Path) -> Result<(), String> {
@@ -299,6 +447,267 @@ fn append_manifest(day_dir: &Path, record: &TrashedRecord) -> Result<(), String>
     .map_err(|e| e.to_string())
 }
 
+// ---------------------------------------------------------------------------
+// Reading manifests
+
+/// One record as a reader sees it: a version 2 line, or an original
+/// four-field line with what can be derived from it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DayRecord {
+    /// 1 for an original four-field line, otherwise the line's `v`.
+    pub version: u32,
+    pub stored_name: String,
+    /// The original path below the root as `/`-joined components; `None`
+    /// when an original line's absolute path does not start with any
+    /// spelling of the current root.
+    pub original_relative: Option<String>,
+    pub deleted_at_utc: String,
+    pub content_hash: Option<String>,
+    pub kind: Option<TrashKind>,
+    pub operation: Option<String>,
+    pub item: Option<String>,
+    pub role: Option<TrashRole>,
+    pub moved_to: Option<String>,
+    pub size: Option<u64>,
+    pub mtime_ms: Option<i64>,
+}
+
+/// What the day folder holds under a record's stored name right now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StoredState {
+    Regular { size: u64, mtime_ms: i64 },
+    /// A symlink, directory or other non-regular entry.
+    Other,
+}
+
+/// One day folder as its manifest and its entries describe it.
+#[derive(Debug, Default)]
+pub struct DayListing {
+    /// Authoritative records whose stored entry is present, in manifest
+    /// order, each with what is stored under its name.
+    pub records: Vec<(DayRecord, StoredState)>,
+    /// Authoritative records whose stored file is gone and a `restored`
+    /// line names after them.
+    pub restored: u64,
+    /// Lines that are not a record or event this reader understands (a torn
+    /// last line after a crash included). They are skipped, never repaired.
+    pub malformed_lines: u64,
+    /// Entries in the day folder that no authoritative record names.
+    pub unrecorded_files: u64,
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct RawLine {
+    v: Option<u32>,
+    event: Option<String>,
+    original_path: Option<String>,
+    stored_path: Option<String>,
+    content_hash: Option<String>,
+    deleted_at_utc: Option<String>,
+    stored_name: Option<String>,
+    original_relative: Option<String>,
+    kind: Option<TrashKind>,
+    operation: Option<String>,
+    item: Option<String>,
+    role: Option<TrashRole>,
+    moved_to: Option<String>,
+    size: Option<u64>,
+    mtime_ms: Option<i64>,
+}
+
+enum ParsedLine {
+    Record(DayRecord),
+    Restored(String),
+}
+
+/// A bare stored name: one component, never the manifest itself.
+fn valid_stored_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && name != MANIFEST_FILE_NAME
+        && !name.contains(['/', '\\', '\0'])
+}
+
+/// The stored name of an original line, only when its stored path is a flat
+/// entry of this very day folder (`…/.onecopy-trash/<day>/<name>`). Nested
+/// layouts and paths into other folders never resolve here. Both separators
+/// are accepted, because the drive may have been written on the other OS.
+fn legacy_stored_name(stored_path: &str, day: &str) -> Option<String> {
+    let mut parts = stored_path.rsplit(['/', '\\']);
+    let name = parts.next()?;
+    let folder = parts.next()?;
+    let trash = parts.next()?;
+    (folder == day && trash.eq_ignore_ascii_case(TRASH_DIR_NAME) && valid_stored_name(name))
+        .then(|| name.to_string())
+}
+
+/// An original line's absolute path below one of the root's spellings.
+fn legacy_relative(original_path: &str, root_spellings: &[PathBuf]) -> Option<String> {
+    let original = Path::new(original_path);
+    root_spellings.iter().find_map(|spelling| {
+        let below = original.strip_prefix(spelling).ok()?;
+        let components = below
+            .components()
+            .map(|component| match component {
+                std::path::Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()?;
+        (!components.is_empty()).then(|| components.join("/"))
+    })
+}
+
+fn parse_line(line: &str, day: &str, root_spellings: &[PathBuf]) -> Option<ParsedLine> {
+    let raw: RawLine = serde_json::from_str(line).ok()?;
+    if let Some(event) = raw.event.as_deref() {
+        return (event == "restored")
+            .then_some(raw.stored_name)
+            .flatten()
+            .filter(|name| valid_stored_name(name))
+            .map(ParsedLine::Restored);
+    }
+    let deleted_at_utc = raw.deleted_at_utc?;
+    match raw.v {
+        None => {
+            let stored_name = legacy_stored_name(raw.stored_path.as_deref()?, day)?;
+            let original_relative = legacy_relative(raw.original_path.as_deref()?, root_spellings);
+            Some(ParsedLine::Record(DayRecord {
+                version: 1,
+                stored_name,
+                original_relative,
+                deleted_at_utc,
+                content_hash: raw.content_hash,
+                kind: None,
+                operation: None,
+                item: None,
+                role: None,
+                moved_to: None,
+                size: None,
+                mtime_ms: None,
+            }))
+        }
+        Some(version) if version >= 2 => {
+            let stored_name = raw.stored_name.filter(|name| valid_stored_name(name))?;
+            Some(ParsedLine::Record(DayRecord {
+                version,
+                stored_name,
+                original_relative: Some(raw.original_relative?),
+                deleted_at_utc,
+                content_hash: raw.content_hash,
+                kind: raw.kind,
+                operation: raw.operation,
+                item: raw.item,
+                role: raw.role,
+                moved_to: raw.moved_to,
+                size: Some(raw.size?),
+                mtime_ms: Some(raw.mtime_ms?),
+            }))
+        }
+        Some(_) => None,
+    }
+}
+
+/// Reads one day folder: its manifest, line by line, and its entries. For a
+/// stored name the LATEST record naming it is authoritative: a name is only
+/// handed out while it is free, so a later record always describes the file
+/// now stored there, and an earlier one (a stale line whose move failed, or a
+/// file restored since) describes nothing. Only entries directly inside this
+/// day folder resolve. A missing manifest is an empty one.
+pub fn read_day(day_dir: &Path, root_spellings: &[PathBuf]) -> Result<DayListing, String> {
+    let day = day_dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let manifest = match volume_io::read(&day_dir.join(MANIFEST_FILE_NAME)) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(format!("could not read deleted-file records: {error}")),
+    };
+    let entries = volume_io::read_dir(day_dir, true)
+        .map_err(|error| format!("could not list deleted files: {error}"))?;
+
+    let mut listing = DayListing::default();
+    // name -> (line index of the latest record, record)
+    let mut latest: std::collections::HashMap<String, (usize, DayRecord)> =
+        std::collections::HashMap::new();
+    let mut restored_lines: Vec<(usize, String)> = Vec::new();
+    for (index, line) in String::from_utf8_lossy(&manifest).lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        match parse_line(line, &day, root_spellings) {
+            Some(ParsedLine::Record(record)) => {
+                latest.insert(record.stored_name.clone(), (index, record));
+            }
+            Some(ParsedLine::Restored(name)) => restored_lines.push((index, name)),
+            None => listing.malformed_lines += 1,
+        }
+    }
+
+    let mut stored: std::collections::HashMap<String, StoredState> =
+        std::collections::HashMap::new();
+    for entry in entries {
+        let name = entry.file_name.to_string_lossy().into_owned();
+        if name == MANIFEST_FILE_NAME {
+            continue;
+        }
+        let state = match (entry.file_type, entry.metadata) {
+            (Some(kind), Some(Ok(metadata))) if kind.is_file() => StoredState::Regular {
+                size: metadata.len(),
+                mtime_ms: mtime_ms(&metadata),
+            },
+            _ => StoredState::Other,
+        };
+        if latest.contains_key(&name) {
+            stored.insert(name, state);
+        } else {
+            listing.unrecorded_files += 1;
+        }
+    }
+
+    let mut records: Vec<(usize, DayRecord)> = latest.into_values().collect();
+    records.sort_by_key(|(index, _)| *index);
+    for (index, record) in records {
+        match stored.get(&record.stored_name) {
+            Some(state) => listing.records.push((record, *state)),
+            None => {
+                if restored_lines
+                    .iter()
+                    .any(|(line, name)| *line > index && *name == record.stored_name)
+                {
+                    listing.restored += 1;
+                }
+            }
+        }
+    }
+    Ok(listing)
+}
+
+/// Appends a `restored` line for one stored file. Best-effort: the file is
+/// already back in place, so a failure only means the record keeps no
+/// trace of it, and is logged.
+pub fn append_restored(day_dir: &Path, stored_name: &str, restored_to: &str) {
+    let line = json!({
+        "v": MANIFEST_VERSION,
+        "event": "restored",
+        "storedName": stored_name,
+        "restoredTo": restored_to,
+        "restoredAtUtc": logging::now_iso_millis(),
+    });
+    if let Err(error) = volume_io::append_synced(
+        &day_dir.join(MANIFEST_FILE_NAME),
+        format!("{line}\n").into_bytes(),
+    ) {
+        crate::logging::warn(
+            "restored record could not be written",
+            json!({ "path": day_dir, "storedName": stored_name, "error": { "message": error.to_string() } }),
+        );
+    }
+}
+
 #[cfg(test)]
 // EXCEPTION to tests-folder conventions: the callback is a private
 // exact-boundary seam and must not widen the shipped Trash API.
@@ -336,7 +745,7 @@ pub fn root_for_file(file: &Path, configured_roots: &[PathBuf]) -> Result<PathBu
         .ok_or_else(|| format!("{} is outside every configured root", file.display()))
 }
 
-fn root_spellings(root: &Path) -> Vec<PathBuf> {
+pub fn root_spellings(root: &Path) -> Vec<PathBuf> {
     let filesystem = crate::winpath::for_fs(root).into_owned();
     let mut spellings = vec![root.to_path_buf()];
     if let Ok(resolved) = volume_io::canonicalize(&filesystem) {

@@ -8,7 +8,7 @@ fn exact_boundary_winner_survives_and_source_remains_authoritative() {
     let source = source_dir.join("photo.jpg");
     std::fs::write(&source, b"source").unwrap();
 
-    let result = trash_file_with_before_move(&source, &source_dir, None, |target| {
+    let result = trash_file_with_before_move(&source, &source_dir, None, &ctx(), |target| {
         std::fs::write(target, b"winner").unwrap()
     });
 
@@ -32,7 +32,7 @@ fn replacement_before_the_move_is_the_file_that_gets_trashed() {
     let held = source_dir.join("held.jpg");
     std::fs::write(&source, b"original").unwrap();
 
-    let result = trash_file_with_before_move(&source, &source_dir, None, |_| {
+    let result = trash_file_with_before_move(&source, &source_dir, None, &ctx(), |_| {
         std::fs::rename(&source, &held).unwrap();
         std::fs::write(&source, b"replacement").unwrap();
     })
@@ -56,7 +56,7 @@ fn overview_reuses_a_day_folders_size_while_its_mtime_is_unchanged() {
     std::fs::create_dir_all(&source).unwrap();
     let a = source.join("one.jpg");
     std::fs::write(&a, vec![1u8; 100]).unwrap();
-    trash_file(&a, &source, Some("h1")).unwrap();
+    trash_file(&a, &source, Some("h1"), &ctx()).unwrap();
 
     let root = source.join(TRASH_DIR_NAME);
     let first = measure_root(&root);
@@ -104,7 +104,7 @@ fn overview_notices_a_file_added_directly_into_an_existing_day_folder() {
     std::fs::create_dir_all(&source).unwrap();
     let a = source.join("one.jpg");
     std::fs::write(&a, vec![1u8; 100]).unwrap();
-    trash_file(&a, &source, Some("h1")).unwrap();
+    trash_file(&a, &source, Some("h1"), &ctx()).unwrap();
 
     let root = source.join(TRASH_DIR_NAME);
     assert_eq!(size_of(&root), (100, 1));
@@ -140,17 +140,60 @@ fn recoverable_deletion_works_on_a_volume_without_exclusive_rename() {
     let source = source_dir.join("photo.jpg");
     std::fs::write(&source, b"source").unwrap();
 
-    let record = without_exclusive_rename(|| trash_file(&source, &source_dir, None)).unwrap();
+    let record = without_exclusive_rename(|| trash_file(&source, &source_dir, None, &ctx())).unwrap();
     assert!(!source.exists());
     assert_eq!(std::fs::read(&record.stored_path).unwrap(), b"source");
 
     // An exact-boundary winner at the stored name still survives.
     std::fs::write(&source, b"second").unwrap();
     let result = without_exclusive_rename(|| {
-        trash_file_with_before_move(&source, &source_dir, None, |target| {
+        trash_file_with_before_move(&source, &source_dir, None, &ctx(), |target| {
             std::fs::write(target, b"winner").unwrap()
         })
     });
     assert!(result.is_err());
     assert_eq!(std::fs::read(&source).unwrap(), b"second");
+}
+
+fn ctx() -> TrashContext {
+    TrashContext::new(TrashKind::Delete, "test-operation")
+}
+
+#[test]
+fn the_latest_record_names_a_stored_file_reused_after_a_failed_move() {
+    // Blueprint 1.4: a line is written before the move; when the move fails
+    // the stored name stays free, and a later deletion the same day is given
+    // it. Two lines then name one stored file, and only the later is true.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("source");
+    std::fs::create_dir_all(root.join("first")).unwrap();
+    std::fs::create_dir_all(root.join("second")).unwrap();
+    let failed = root.join("first").join("photo.jpg");
+    std::fs::write(&failed, b"first version").unwrap();
+    let result = trash_file_with_before_move(&failed, &root, None, &ctx(), |_| {
+        std::fs::remove_file(&failed).unwrap();
+    });
+    assert!(result.is_err(), "the move of a vanished source fails");
+
+    let reused = root.join("second").join("photo.jpg");
+    std::fs::write(&reused, b"second").unwrap();
+    let record = trash_file(&reused, &root, None, &ctx()).unwrap();
+    assert_eq!(record.stored_name, "photo.jpg", "the free name was handed out again");
+
+    let day = Path::new(&record.stored_path).parent().unwrap();
+    let raw = std::fs::read_to_string(day.join(MANIFEST_FILE_NAME)).unwrap();
+    assert_eq!(raw.lines().count(), 2, "both lines stay: manifests are append-only");
+    let listing = read_day(day, &root_spellings(&root)).unwrap();
+    assert_eq!(listing.records.len(), 1);
+    let (latest, stored) = &listing.records[0];
+    assert_eq!(latest.original_relative.as_deref(), Some("second/photo.jpg"));
+    assert_eq!(
+        *stored,
+        StoredState::Regular {
+            size: 6,
+            mtime_ms: latest.mtime_ms.unwrap()
+        }
+    );
+    assert_eq!(listing.unrecorded_files, 0);
+    assert_eq!(listing.malformed_lines, 0);
 }

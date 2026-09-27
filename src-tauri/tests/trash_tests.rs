@@ -55,7 +55,7 @@ fn trashing_moves_the_file_and_writes_a_manifest_line() {
     let file = f.source.join("img.jpg");
     std::fs::write(&file, b"bytes").unwrap();
 
-    let record = trash_file(&file, &f.source, Some("hash123")).unwrap();
+    let record = trash_file(&file, &f.source, Some("hash123"), &ctx()).unwrap();
     assert!(!file.exists(), "the original must be gone");
     let stored = PathBuf::from(&record.stored_path);
     assert!(stored.exists(), "the stored file must exist");
@@ -90,7 +90,7 @@ fn files_are_stored_flat_with_provenance_in_the_manifest() {
     let file = nested.join("beach.jpg");
     std::fs::write(&file, b"x").unwrap();
 
-    let record = trash_file(&file, &f.source, None).unwrap();
+    let record = trash_file(&file, &f.source, None, &ctx()).unwrap();
     let stored = PathBuf::from(&record.stored_path);
 
     assert_eq!(
@@ -133,7 +133,7 @@ fn same_day_same_path_collisions_get_suffixes_and_exact_manifest_lines() {
     let mut last_record = None;
     for content in [b"first" as &[u8], b"second", b"third"] {
         std::fs::write(&file, content).unwrap();
-        let record = trash_file(&file, &f.source, None).unwrap();
+        let record = trash_file(&file, &f.source, None, &ctx()).unwrap();
         stored_names.push(
             PathBuf::from(&record.stored_path)
                 .file_name()
@@ -194,7 +194,7 @@ fn same_day_same_path_collisions_get_suffixes_and_exact_manifest_lines() {
 #[test]
 fn relative_paths_are_rejected() {
     let f = fixture("relative");
-    assert!(trash_file(Path::new("relative.jpg"), &f.source, None).is_err());
+    assert!(trash_file(Path::new("relative.jpg"), &f.source, None, &ctx()).is_err());
 }
 
 #[test]
@@ -210,7 +210,7 @@ fn manifest_failure_leaves_the_indexed_source_authoritative() {
         .join("manifest.jsonl");
     std::fs::create_dir_all(&manifest_path).unwrap();
 
-    assert!(trash_file(&file, &f.source, None).is_err());
+    assert!(trash_file(&file, &f.source, None, &ctx()).is_err());
     assert_eq!(std::fs::read(&file).unwrap(), b"source-bytes");
 }
 
@@ -267,8 +267,8 @@ fn each_configured_root_owns_its_deleted_files() {
     std::fs::write(&bob_file, b"bob").unwrap();
     std::fs::write(&ann_file, b"ann").unwrap();
 
-    let bob_record = trash_file(&bob_file, &bob, None).unwrap();
-    let ann_record = trash_file(&ann_file, &ann, None).unwrap();
+    let bob_record = trash_file(&bob_file, &bob, None, &ctx()).unwrap();
+    let ann_record = trash_file(&ann_file, &ann, None, &ctx()).unwrap();
 
     assert!(Path::new(&bob_record.stored_path).starts_with(bob.join(TRASH_DIR_NAME)));
     assert!(Path::new(&ann_record.stored_path).starts_with(ann.join(TRASH_DIR_NAME)));
@@ -326,8 +326,8 @@ fn overview_reports_sizes_and_empty_leaves_the_root_standing() {
     let b = source.join("two.jpg");
     std::fs::write(&a, vec![1u8; 1000]).unwrap();
     std::fs::write(&b, vec![2u8; 500]).unwrap();
-    trash_file(&a, &source, Some("h1")).unwrap();
-    trash_file(&b, &source, Some("h2")).unwrap();
+    trash_file(&a, &source, Some("h1"), &ctx()).unwrap();
+    trash_file(&b, &source, Some("h2"), &ctx()).unwrap();
 
     let rows = overview(std::slice::from_ref(&source));
     let row = rows
@@ -501,7 +501,7 @@ fn empty_removes_nothing_when_the_location_changed_after_its_totals_were_confirm
     std::fs::create_dir_all(&source).unwrap();
     let first = source.join("reviewed.jpg");
     std::fs::write(&first, vec![1u8; 100]).unwrap();
-    trash_file(&first, &source, Some("h1")).unwrap();
+    trash_file(&first, &source, Some("h1"), &ctx()).unwrap();
     let reviewed = overview(std::slice::from_ref(&source)).remove(0);
     assert_eq!(reviewed.files, 1);
 
@@ -509,7 +509,7 @@ fn empty_removes_nothing_when_the_location_changed_after_its_totals_were_confirm
     std::thread::sleep(std::time::Duration::from_millis(20));
     let later = source.join("later.jpg");
     std::fs::write(&later, vec![2u8; 900]).unwrap();
-    trash_file(&later, &source, Some("h2")).unwrap();
+    trash_file(&later, &source, Some("h2"), &ctx()).unwrap();
 
     let cancelled = std::sync::atomic::AtomicBool::new(false);
     let outcome = empty_root_with_progress(
@@ -554,7 +554,7 @@ fn a_root_configured_through_a_symlink_keeps_recoverable_deletion() {
         link,
         "a missing file under the resolved spelling keeps its configured owner"
     );
-    let record = trash_file(&file, &link, None).unwrap();
+    let record = trash_file(&file, &link, None, &ctx()).unwrap();
 
     assert!(!file.exists());
     assert_eq!(std::fs::read(&record.stored_path).unwrap(), b"bytes");
@@ -571,13 +571,13 @@ fn a_deleted_files_folder_that_is_not_a_real_directory_is_never_used() {
     let file = f.source.join("a.jpg");
     std::fs::write(&file, b"bytes").unwrap();
 
-    assert!(trash_file(&file, &f.source, None).is_err());
+    assert!(trash_file(&file, &f.source, None, &ctx()).is_err());
     assert_eq!(std::fs::read(&file).unwrap(), b"bytes");
     assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
 
     std::fs::remove_file(f.source.join(TRASH_DIR_NAME)).unwrap();
     std::fs::write(f.source.join(TRASH_DIR_NAME), b"a file").unwrap();
-    assert!(trash_file(&file, &f.source, None).is_err());
+    assert!(trash_file(&file, &f.source, None, &ctx()).is_err());
     assert_eq!(std::fs::read(&file).unwrap(), b"bytes");
 }
 
@@ -591,7 +591,7 @@ fn empty_notices_a_file_added_within_the_same_mtime_granule() {
     std::fs::create_dir_all(&source).unwrap();
     let first = source.join("reviewed.jpg");
     std::fs::write(&first, vec![1u8; 100]).unwrap();
-    let record = trash_file(&first, &source, Some("h1")).unwrap();
+    let record = trash_file(&first, &source, Some("h1"), &ctx()).unwrap();
     let day = Path::new(&record.stored_path).parent().unwrap().to_path_buf();
     let reviewed = overview(std::slice::from_ref(&source)).remove(0);
     assert_eq!(reviewed.files, 1);
@@ -602,7 +602,7 @@ fn empty_notices_a_file_added_within_the_same_mtime_granule() {
     // two seconds, HFS+ one), so the folder's mtime reads as it did.
     let later = source.join("later.jpg");
     std::fs::write(&later, vec![2u8; 900]).unwrap();
-    trash_file(&later, &source, Some("h2")).unwrap();
+    trash_file(&later, &source, Some("h2"), &ctx()).unwrap();
     std::fs::File::open(&day)
         .unwrap()
         .set_modified(day_modified)
@@ -622,4 +622,206 @@ fn empty_notices_a_file_added_within_the_same_mtime_granule() {
     assert!(Path::new(&record.stored_path).exists());
     let current = overview(std::slice::from_ref(&source)).remove(0);
     assert_eq!((current.files, current.bytes), (2, 1000));
+}
+
+fn ctx() -> TrashContext {
+    TrashContext::new(TrashKind::Delete, "test-operation")
+}
+
+// ---------------------------------------------------------------------------
+// Manifest version 2 and its reader
+
+fn day_of(record: &TrashedRecord) -> PathBuf {
+    PathBuf::from(&record.stored_path).parent().unwrap().to_path_buf()
+}
+
+#[test]
+fn a_version_2_record_round_trips_through_the_reader() {
+    let f = fixture("v2-round-trip");
+    std::fs::create_dir_all(f.source.join("2016").join("spain")).unwrap();
+    let file = f.source.join("2016").join("spain").join("beach.xmp");
+    std::fs::write(&file, b"sidecar").unwrap();
+    let context = TrashContext::new(TrashKind::MoveCleanup, "op-1")
+        .item(Some("item-key".to_string()))
+        .role(TrashRole::Companion)
+        .moved_to(Some("/dest/beach.xmp".to_string()));
+
+    let record = trash_file(&file, &f.source, Some("h"), &context).unwrap();
+    assert_eq!(record.v, 2);
+    assert_eq!(record.original_relative, "2016/spain/beach.xmp");
+    assert_eq!(record.stored_name, "beach.xmp");
+    assert_eq!(record.size, 7);
+
+    let listing = read_day(&day_of(&record), &root_spellings(&f.source)).unwrap();
+    assert_eq!(listing.records.len(), 1);
+    let (read, stored) = &listing.records[0];
+    assert_eq!(read.version, 2);
+    assert_eq!(read.original_relative.as_deref(), Some("2016/spain/beach.xmp"));
+    assert_eq!(read.kind, Some(TrashKind::MoveCleanup));
+    assert_eq!(read.operation.as_deref(), Some("op-1"));
+    assert_eq!(read.item.as_deref(), Some("item-key"));
+    assert_eq!(read.role, Some(TrashRole::Companion));
+    assert_eq!(read.moved_to.as_deref(), Some("/dest/beach.xmp"));
+    assert_eq!(read.content_hash.as_deref(), Some("h"));
+    assert_eq!(read.size, Some(7));
+    assert_eq!(read.mtime_ms, Some(record.mtime_ms));
+    assert_eq!(
+        *stored,
+        StoredState::Regular {
+            size: 7,
+            mtime_ms: record.mtime_ms
+        }
+    );
+}
+
+/// A day folder written by hand, as an older OneCopy or a user left it.
+fn hand_day(root: &Path, day: &str, lines: &[String], files: &[(&str, &[u8])]) -> PathBuf {
+    let day_dir = root.join(TRASH_DIR_NAME).join(day);
+    std::fs::create_dir_all(&day_dir).unwrap();
+    if !lines.is_empty() {
+        std::fs::write(day_dir.join("manifest.jsonl"), lines.join("\n") + "\n").unwrap();
+    }
+    for (name, bytes) in files {
+        std::fs::write(day_dir.join(name), bytes).unwrap();
+    }
+    day_dir
+}
+
+fn legacy_line(original: &Path, stored: &Path) -> String {
+    serde_json::json!({
+        "originalPath": original.to_string_lossy(),
+        "storedPath": stored.to_string_lossy(),
+        "contentHash": null,
+        "deletedAtUtc": "2026-09-01T10:00:00.000Z",
+    })
+    .to_string()
+}
+
+#[test]
+fn an_original_four_field_line_still_reads() {
+    let f = fixture("legacy");
+    let day = f.source.join(TRASH_DIR_NAME).join("20260901-utc");
+    let line = legacy_line(&f.source.join("trips").join("a.jpg"), &day.join("a.jpg"));
+    let day = hand_day(&f.source, "20260901-utc", &[line], &[("a.jpg", b"aaa")]);
+
+    let listing = read_day(&day, &root_spellings(&f.source)).unwrap();
+    assert_eq!(listing.records.len(), 1);
+    let (record, _) = &listing.records[0];
+    assert_eq!(record.version, 1);
+    assert_eq!(record.stored_name, "a.jpg");
+    assert_eq!(record.original_relative.as_deref(), Some("trips/a.jpg"));
+    assert_eq!(record.size, None, "an original line cannot be verified");
+    assert_eq!(record.kind, None);
+}
+
+#[test]
+fn original_lines_outside_the_root_or_from_older_layouts_do_not_resolve_here() {
+    let f = fixture("legacy-outside");
+    let day = f.source.join(TRASH_DIR_NAME).join("20260901-utc");
+    let lines = vec![
+        // The root was renamed, or the drive came from Windows: the absolute
+        // path no longer starts with any spelling of the current root.
+        legacy_line(Path::new(r"C:\Photos\old.jpg"), &day.join("old.jpg")),
+        // The nested layout of August 2026: the stored path is not a flat
+        // entry of this day folder, so it is never resolved to one.
+        legacy_line(
+            &f.source.join("nested.jpg"),
+            &day.join("Users").join("me").join("nested.jpg"),
+        ),
+        // A stored path into another day folder, copied by hand.
+        legacy_line(
+            &f.source.join("elsewhere.jpg"),
+            &f.source.join(TRASH_DIR_NAME).join("20260902-utc").join("elsewhere.jpg"),
+        ),
+    ];
+    let day = hand_day(
+        &f.source,
+        "20260901-utc",
+        &lines,
+        &[("old.jpg", b"o"), ("nested.jpg", b"n"), ("elsewhere.jpg", b"e")],
+    );
+
+    let listing = read_day(&day, &root_spellings(&f.source)).unwrap();
+    assert_eq!(listing.records.len(), 1);
+    assert_eq!(listing.records[0].0.stored_name, "old.jpg");
+    assert_eq!(listing.records[0].0.original_relative, None, "outside this root");
+    assert_eq!(listing.malformed_lines, 2, "the other two describe nothing here");
+    assert_eq!(listing.unrecorded_files, 2);
+}
+
+#[test]
+fn malformed_and_torn_lines_are_skipped_and_counted_without_rewriting() {
+    let f = fixture("malformed");
+    let first = f.source.join("one.jpg");
+    std::fs::write(&first, b"one").unwrap();
+    let record = trash_file(&first, &f.source, None, &ctx()).unwrap();
+    let day = day_of(&record);
+    let manifest = day.join("manifest.jsonl");
+    let mut text = std::fs::read_to_string(&manifest).unwrap();
+    text.push_str("not json at all\n");
+    text.push_str("{\"v\":2,\"storedName\":\"x.jpg\"}\n");
+    std::fs::write(&manifest, &text).unwrap();
+    let second = f.source.join("two.jpg");
+    std::fs::write(&second, b"two").unwrap();
+    trash_file(&second, &f.source, None, &ctx()).unwrap();
+    // A crash tore the last line.
+    let mut torn = std::fs::read_to_string(&manifest).unwrap();
+    torn.push_str("{\"originalPath\":\"/x/three.jpg\",\"stor");
+    std::fs::write(&manifest, &torn).unwrap();
+
+    let listing = read_day(&day, &root_spellings(&f.source)).unwrap();
+    let names: Vec<_> = listing.records.iter().map(|(r, _)| r.stored_name.as_str()).collect();
+    assert_eq!(names, ["one.jpg", "two.jpg"]);
+    assert_eq!(listing.malformed_lines, 3);
+    assert_eq!(std::fs::read_to_string(&manifest).unwrap(), torn, "never rewritten");
+}
+
+#[test]
+fn files_without_a_record_are_counted_not_listed() {
+    let f = fixture("unrecorded");
+    // No manifest at all: every file is unrecorded.
+    let bare = hand_day(&f.source, "20260901-utc", &[], &[("a.jpg", b"a"), ("b.jpg", b"b")]);
+    let listing = read_day(&bare, &root_spellings(&f.source)).unwrap();
+    assert!(listing.records.is_empty());
+    assert_eq!(listing.unrecorded_files, 2);
+
+    // A file moved by hand into another day folder: unrecorded there, and its
+    // old record has no file, so it is not listed either.
+    let file = f.source.join("moved.jpg");
+    std::fs::write(&file, b"m").unwrap();
+    let record = trash_file(&file, &f.source, None, &ctx()).unwrap();
+    std::fs::rename(&record.stored_path, bare.join("moved.jpg")).unwrap();
+    let old = read_day(&day_of(&record), &root_spellings(&f.source)).unwrap();
+    assert!(old.records.is_empty());
+    assert_eq!(old.unrecorded_files, 0);
+    let new = read_day(&bare, &root_spellings(&f.source)).unwrap();
+    assert_eq!(new.unrecorded_files, 3);
+}
+
+#[test]
+fn a_restored_line_hides_its_record_and_leaves_the_totals_alone() {
+    let f = fixture("restored-line");
+    let file = f.source.join("photo.jpg");
+    std::fs::write(&file, vec![1u8; 40]).unwrap();
+    let record = trash_file(&file, &f.source, None, &ctx()).unwrap();
+    let day = day_of(&record);
+    let before = overview(std::slice::from_ref(&f.source));
+
+    std::fs::rename(&record.stored_path, &file).unwrap();
+    append_restored(&day, &record.stored_name, "photo.jpg");
+    let listing = read_day(&day, &root_spellings(&f.source)).unwrap();
+    assert!(listing.records.is_empty(), "a restored record is not listed");
+    assert_eq!(listing.restored, 1);
+    assert_eq!(listing.malformed_lines, 0, "the event line is understood");
+
+    let after = overview(std::slice::from_ref(&f.source));
+    assert_eq!((before[0].files, before[0].bytes), (1, 40));
+    assert_eq!((after[0].files, after[0].bytes), (0, 0), "the manifest never counts");
+
+    // Deleting the same name again after the restore: the new record wins
+    // over both the old record and the restored line.
+    trash_file(&file, &f.source, None, &ctx()).unwrap();
+    let listing = read_day(&day, &root_spellings(&f.source)).unwrap();
+    assert_eq!(listing.records.len(), 1);
+    assert_eq!(listing.restored, 0);
 }
