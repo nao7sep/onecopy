@@ -488,6 +488,9 @@ pub struct DayListing {
     /// Authoritative records whose stored file is gone and a `restored`
     /// line names after them.
     pub restored: u64,
+    /// Those restored records with where the latest such line says the file
+    /// went (`/`-joined below the root), when it says.
+    pub restored_to: Vec<(DayRecord, String)>,
     /// Lines that are not a record or event this reader understands (a torn
     /// last line after a crash included). They are skipped, never repaired.
     pub malformed_lines: u64,
@@ -513,11 +516,15 @@ struct RawLine {
     moved_to: Option<String>,
     size: Option<u64>,
     mtime_ms: Option<i64>,
+    restored_to: Option<String>,
 }
 
 enum ParsedLine {
     Record(DayRecord),
-    Restored(String),
+    Restored {
+        stored_name: String,
+        restored_to: Option<String>,
+    },
 }
 
 /// A bare stored name: one component, never the manifest itself.
@@ -561,11 +568,15 @@ fn legacy_relative(original_path: &str, root_spellings: &[PathBuf]) -> Option<St
 fn parse_line(line: &str, day: &str, root_spellings: &[PathBuf]) -> Option<ParsedLine> {
     let raw: RawLine = serde_json::from_str(line).ok()?;
     if let Some(event) = raw.event.as_deref() {
+        let restored_to = raw.restored_to;
         return (event == "restored")
             .then_some(raw.stored_name)
             .flatten()
             .filter(|name| valid_stored_name(name))
-            .map(ParsedLine::Restored);
+            .map(|stored_name| ParsedLine::Restored {
+                stored_name,
+                restored_to,
+            });
     }
     let deleted_at_utc = raw.deleted_at_utc?;
     match raw.v {
@@ -631,7 +642,7 @@ pub fn read_day(day_dir: &Path, root_spellings: &[PathBuf]) -> Result<DayListing
     // name -> (line index of the latest record, record)
     let mut latest: std::collections::HashMap<String, (usize, DayRecord)> =
         std::collections::HashMap::new();
-    let mut restored_lines: Vec<(usize, String)> = Vec::new();
+    let mut restored_lines: Vec<(usize, String, Option<String>)> = Vec::new();
     for (index, line) in String::from_utf8_lossy(&manifest).lines().enumerate() {
         if line.trim().is_empty() {
             continue;
@@ -640,7 +651,10 @@ pub fn read_day(day_dir: &Path, root_spellings: &[PathBuf]) -> Result<DayListing
             Some(ParsedLine::Record(record)) => {
                 latest.insert(record.stored_name.clone(), (index, record));
             }
-            Some(ParsedLine::Restored(name)) => restored_lines.push((index, name)),
+            Some(ParsedLine::Restored {
+                stored_name,
+                restored_to,
+            }) => restored_lines.push((index, stored_name, restored_to)),
             None => listing.malformed_lines += 1,
         }
     }
@@ -672,11 +686,15 @@ pub fn read_day(day_dir: &Path, root_spellings: &[PathBuf]) -> Result<DayListing
         match stored.get(&record.stored_name) {
             Some(state) => listing.records.push((record, *state)),
             None => {
-                if restored_lines
+                let mut after = restored_lines
                     .iter()
-                    .any(|(line, name)| *line > index && *name == record.stored_name)
-                {
+                    .filter(|(line, name, _)| *line > index && *name == record.stored_name)
+                    .peekable();
+                if after.peek().is_some() {
                     listing.restored += 1;
+                    if let Some(to) = after.filter_map(|(_, _, to)| to.clone()).last() {
+                        listing.restored_to.push((record, to));
+                    }
                 }
             }
         }
@@ -764,6 +782,10 @@ pub struct TrashEntry {
     pub role: Option<TrashRole>,
     pub moved_to: Option<String>,
     pub status: EntryStatus,
+    /// For a companion: where a main file of its deleted item in its folder
+    /// was restored to under another name (`/`-joined below the root), so it
+    /// no longer pairs by name with a companion that comes back unchanged.
+    pub main_restored_as: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
@@ -903,6 +925,10 @@ pub fn list_root(root: &Path, data_root: &Path) -> Result<TrashListing, String> 
     }
     let spellings = root_spellings(root);
     let mut listing = TrashListing::default();
+    // (deleted item, original folder) -> where a main file of it was restored
+    // under another name.
+    let mut restored_mains: std::collections::HashMap<(String, String), String> =
+        std::collections::HashMap::new();
     let mut days = volume_io::read_dir(&location, false)
         .map_err(|error| format!("could not list deleted files: {error}"))?;
     days.sort_by(|left, right| left.file_name.cmp(&right.file_name));
@@ -921,9 +947,20 @@ pub fn list_root(root: &Path, data_root: &Path) -> Result<TrashListing, String> 
         let read = read_day(&day.path, &spellings)?;
         listing.unrecorded_files += read.unrecorded_files;
         listing.malformed_lines += read.malformed_lines;
+        for (record, restored_to) in &read.restored_to {
+            let Some(original) = record.original_relative.as_deref() else {
+                continue;
+            };
+            if record_role(record) == TrashRole::Main && restored_to != original {
+                restored_mains.insert(
+                    (group_key(record, &day_name), folder_of(original).to_string()),
+                    restored_to.clone(),
+                );
+            }
+        }
         for (record, stored) in read.records {
             let status = entry_status(&record, stored, root, data_root);
-            let companion = is_companion_name(&record.stored_name);
+            let role = record_role(&record);
             let group = group_key(&record, &day_name);
             let size = match stored {
                 StoredState::Regular { size, .. } => size,
@@ -943,21 +980,38 @@ pub fn list_root(root: &Path, data_root: &Path) -> Result<TrashListing, String> 
                 kind: record.kind,
                 operation: record.operation,
                 item: record.item,
-                // An older record has no role; the file's extension tells a
-                // companion the way the library tells one.
-                role: record.role.or_else(|| {
-                    Some(if companion {
-                        TrashRole::Companion
-                    } else {
-                        TrashRole::Main
-                    })
-                }),
+                role: Some(role),
                 moved_to: record.moved_to,
                 status,
+                main_restored_as: None,
             });
         }
     }
+    for entry in &mut listing.entries {
+        if entry.role != Some(TrashRole::Companion) {
+            continue;
+        }
+        let folder = entry.original_relative.as_deref().map(folder_of).unwrap_or_default();
+        entry.main_restored_as = restored_mains
+            .get(&(entry.group.clone(), folder.to_string()))
+            .cloned();
+    }
     Ok(listing)
+}
+
+/// A record's role; an older record has none, and the file's extension tells
+/// a companion the way the library tells one.
+fn record_role(record: &DayRecord) -> TrashRole {
+    record.role.unwrap_or(if is_companion_name(&record.stored_name) {
+        TrashRole::Companion
+    } else {
+        TrashRole::Main
+    })
+}
+
+/// The folder part of a `/`-joined relative path.
+fn folder_of(relative: &str) -> &str {
+    relative.rsplit_once('/').map_or("", |(folder, _)| folder)
 }
 
 #[cfg(test)]

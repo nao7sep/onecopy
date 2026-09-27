@@ -36,6 +36,7 @@ function entry(overrides: Partial<TrashEntry> & { id: string }): TrashEntry {
     role: "main",
     movedTo: null,
     status: "restorable",
+    mainRestoredAs: null,
     ...overrides,
   };
 }
@@ -216,7 +217,7 @@ describe("the restore receipt", () => {
   });
 
   it("offers Rename and Restore only when a file is renamed, and nothing when all are skipped", () => {
-    const file = { id: "a", original: "a.jpg", target: "a.jpg", renamed: false, unverified: true, skip: null };
+    const file = { id: "a", original: "a.jpg", target: "a.jpg", renamed: false, unverified: true, skip: null, mainRestoredAs: null };
     expect(reviewAction({ files: [file], folders: [], companionsLeft: [] })).toBe("restore");
     expect(reviewAction({ files: [{ ...file, renamed: true }], folders: [], companionsLeft: [] })).toBe(
       "rename-and-restore",

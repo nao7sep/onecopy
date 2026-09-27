@@ -132,7 +132,8 @@ pub struct RestorePlan {
 
 /// What the review shows. It is needed only when something needs a decision
 /// or a warning: a name conflict, a folder to recreate, an unverified entry,
-/// or a selected file that will be skipped.
+/// a selected file that will be skipped, or a companion that will not pair
+/// with its main file restored earlier under another name.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RestoreReview {
@@ -154,6 +155,10 @@ pub struct ReviewFile {
     pub renamed: bool,
     pub unverified: bool,
     pub skip: Option<Skip>,
+    /// A companion coming back under a name that no longer pairs with its
+    /// main file, which was restored earlier under another name: where that
+    /// main file is, relative to the root.
+    pub main_restored_as: Option<String>,
 }
 
 impl RestoreReview {
@@ -162,7 +167,12 @@ impl RestoreReview {
             || self
                 .files
                 .iter()
-                .any(|file| file.renamed || file.unverified || file.skip.is_some())
+                .any(|file| {
+                file.renamed
+                    || file.unverified
+                    || file.skip.is_some()
+                    || file.main_restored_as.is_some()
+            })
     }
 }
 
@@ -304,6 +314,14 @@ pub fn plan_restore(
     plan
 }
 
+/// The name stem companions pair by (the library's rule: same folder, same
+/// stem ignoring case).
+fn pairing_stem(path: &Path) -> String {
+    path.file_stem()
+        .map(|stem| stem.to_string_lossy().to_lowercase())
+        .unwrap_or_default()
+}
+
 /// The review the plan needs, relative to `root`.
 pub fn review_of(plan: &RestorePlan, root: &Path, selected_all: &[TrashEntry]) -> RestoreReview {
     let relative = |path: &Path| {
@@ -322,16 +340,29 @@ pub fn review_of(plan: &RestorePlan, root: &Path, selected_all: &[TrashEntry]) -
         .iter()
         .map(|step| {
             let (target, renamed, skip) = match &step.action {
-                Action::Restore { target, renamed } => (Some(relative(target)), *renamed, None),
+                Action::Restore { target, renamed } => (Some(target), *renamed, None),
                 Action::Skip(skip) => (None, false, Some(*skip)),
+            };
+            // Blueprint case 24: pairing is by folder and name stem, so a
+            // companion restored under a stem its restored main no longer
+            // has comes back alone.
+            let main_restored_as = match (target, &step.entry.main_restored_as) {
+                (Some(target), Some(main))
+                    if step.entry.role == Some(TrashRole::Companion)
+                        && pairing_stem(target) != pairing_stem(Path::new(main)) =>
+                {
+                    Some(main.clone())
+                }
+                _ => None,
             };
             ReviewFile {
                 id: step.entry.id.clone(),
                 original: step.entry.original_relative.clone(),
-                target,
+                target: target.map(|target| relative(target)),
                 renamed,
                 unverified: step.entry.status == EntryStatus::Unverified,
                 skip,
+                main_restored_as,
             }
         })
         .collect();
@@ -952,6 +983,7 @@ fn missing_entry(id: &str, location: &Path) -> TrashEntry {
         role: None,
         moved_to: None,
         status: EntryStatus::Changed,
+        main_restored_as: None,
     }
 }
 

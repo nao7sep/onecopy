@@ -1158,6 +1158,7 @@
   "restoreReview.renamed": "原名称已被占用，将恢复为 {path}",
   "restoreReview.target": "恢复到 {path}",
   "restoreReview.companionsLeft": "以下伴随文件仍留在已删除的文件中：",
+  "restoreReview.companionUnpaired": "其主文件之前已恢复为 {path}，此伴随文件保留原名称，不会与其配对",
   "restoreReview.renameAndRestore": "重命名并恢复",
   "restoreReview.skipAlreadyThere": "已在原始位置 — 仍留在已删除的文件中",
   "restoreReview.skipMissing": "已不在已删除的文件中",

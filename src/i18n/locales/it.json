@@ -1158,6 +1158,7 @@
   "restoreReview.renamed": "Il nome originale è già usato: ripristinato come {path}",
   "restoreReview.target": "Ripristinato in {path}",
   "restoreReview.companionsLeft": "Questi file associati restano in File eliminati:",
+  "restoreReview.companionUnpaired": "Il file principale è stato ripristinato in precedenza come {path}: questo file associato mantiene il nome originale e non verrà abbinato",
   "restoreReview.renameAndRestore": "Rinomina e ripristina",
   "restoreReview.skipAlreadyThere": "Già nella posizione originale: resta in File eliminati",
   "restoreReview.skipMissing": "Non è più in File eliminati",

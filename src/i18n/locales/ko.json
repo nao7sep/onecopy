@@ -1158,6 +1158,7 @@
   "restoreReview.renamed": "원래 이름이 사용 중이므로 {path}(으)로 복원합니다",
   "restoreReview.target": "{path}(으)로 복원",
   "restoreReview.companionsLeft": "다음 동반 파일은 삭제된 파일에 남습니다:",
+  "restoreReview.companionUnpaired": "주 파일은 이전에 {path}(으)로 복원되었습니다. 이 동반 파일은 원래 이름을 유지하므로 짝을 이루지 않습니다",
   "restoreReview.renameAndRestore": "이름 바꿔 복원",
   "restoreReview.skipAlreadyThere": "이미 원래 위치에 있음 — 삭제된 파일에 남음",
   "restoreReview.skipMissing": "더 이상 삭제된 파일에 없음",

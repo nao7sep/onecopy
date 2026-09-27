@@ -1158,6 +1158,7 @@
   "restoreReview.renamed": "O nome original está em uso; será restaurado como {path}",
   "restoreReview.target": "Será restaurado em {path}",
   "restoreReview.companionsLeft": "Estes arquivos associados ficam em Arquivos apagados:",
+  "restoreReview.companionUnpaired": "O arquivo principal foi restaurado antes como {path}; este arquivo associado mantém o nome original e não será pareado com ele",
   "restoreReview.renameAndRestore": "Renomear e restaurar",
   "restoreReview.skipAlreadyThere": "Já está no local original: fica em Arquivos apagados",
   "restoreReview.skipMissing": "Não está mais em Arquivos apagados",

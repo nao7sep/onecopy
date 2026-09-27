@@ -36,6 +36,9 @@ export interface TrashEntry {
   role: TrashRole | null;
   movedTo: string | null;
   status: EntryStatus;
+  /** For a companion: where a main file of its deleted item in its folder was
+   * restored to under another name. */
+  mainRestoredAs: string | null;
 }
 
 export interface TrashListing {
@@ -285,6 +288,9 @@ export interface RestoreReviewFile {
   renamed: boolean;
   unverified: boolean;
   skip: RestoreSkip | null;
+  /** A companion that will not pair with its main file, which was restored
+   * earlier under another name: where that main file is. */
+  mainRestoredAs: string | null;
 }
 
 export interface RestoreReview {

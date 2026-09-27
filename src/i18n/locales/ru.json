@@ -1158,6 +1158,7 @@
   "restoreReview.renamed": "Исходное имя занято — будет восстановлен как {path}",
   "restoreReview.target": "Будет восстановлен в {path}",
   "restoreReview.companionsLeft": "Эти сопутствующие файлы останутся в удалённых файлах:",
+  "restoreReview.companionUnpaired": "Основной файл ранее был восстановлен как {path} — этот сопутствующий файл сохранит исходное имя и не будет связан с ним",
   "restoreReview.renameAndRestore": "Переименовать и восстановить",
   "restoreReview.skipAlreadyThere": "Уже на исходном месте — остаётся в удалённых файлах",
   "restoreReview.skipMissing": "Больше нет в удалённых файлах",

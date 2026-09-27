@@ -30,6 +30,7 @@ function entry(overrides: Partial<TrashEntry> & { id: string }): TrashEntry {
     role: "main",
     movedTo: null,
     status: "restorable",
+    mainRestoredAs: null,
     ...overrides,
   };
 }
@@ -187,8 +188,8 @@ describe("Restore", () => {
               requiresReview: true,
               review: {
                 files: [
-                  { id: "20260927-utc/beach.jpg", original: "trips/beach.jpg", target: "trips/beach 2.jpg", renamed: true, unverified: false, skip: null },
-                  { id: "20260927-utc/beach.xmp", original: "trips/beach.xmp", target: "trips/beach 2.xmp", renamed: true, unverified: false, skip: null },
+                  { id: "20260927-utc/beach.jpg", original: "trips/beach.jpg", target: "trips/beach 2.jpg", renamed: true, unverified: false, skip: null, mainRestoredAs: null },
+                  { id: "20260927-utc/beach.xmp", original: "trips/beach.xmp", target: "trips/beach 2.xmp", renamed: true, unverified: false, skip: null, mainRestoredAs: null },
                 ],
                 folders: ["trips"],
                 companionsLeft: [],
@@ -208,6 +209,29 @@ describe("Restore", () => {
     expect(document.body.textContent).toContain("2 restored");
   });
 
+  it("says when a companion comes back without the name its restored main now has", async () => {
+    mockCommands({
+      trash_entries: () => LISTING,
+      trash_restore: () =>
+        outcome({
+          requiresReview: true,
+          review: {
+            files: [
+              { id: "20260927-utc/beach.xmp", original: "trips/beach.xmp", target: "trips/beach.xmp", renamed: false, unverified: false, skip: null, mainRestoredAs: "trips/beach 2.jpg" },
+            ],
+            folders: [],
+            companionsLeft: [],
+          },
+        }),
+    });
+    await selectFirstItem();
+    await act(async () => button("Restore").click());
+    expect(document.body.textContent).toContain("Restored to trips/beach.xmp");
+    expect(document.body.textContent).toContain(
+      "Its main file was restored earlier as trips/beach 2.jpg — this companion keeps its original name and will not pair with it",
+    );
+  });
+
   it("cancelling the review restores nothing", async () => {
     const calls: Array<Record<string, unknown>> = [];
     mockCommands({
@@ -216,7 +240,7 @@ describe("Restore", () => {
         calls.push(args);
         return outcome({
           requiresReview: true,
-          review: { files: [{ id: "x", original: "x.jpg", target: null, renamed: false, unverified: false, skip: "already-there" }], folders: [], companionsLeft: [] },
+          review: { files: [{ id: "x", original: "x.jpg", target: null, renamed: false, unverified: false, skip: "already-there", mainRestoredAs: null }], folders: [], companionsLeft: [] },
         });
       },
     });

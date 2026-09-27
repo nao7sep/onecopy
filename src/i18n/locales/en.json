@@ -1158,6 +1158,7 @@
   "restoreReview.renamed": "Original name is taken — restored as {path}",
   "restoreReview.target": "Restored to {path}",
   "restoreReview.companionsLeft": "These companions stay in Deleted files:",
+  "restoreReview.companionUnpaired": "Its main file was restored earlier as {path} — this companion keeps its original name and will not pair with it",
   "restoreReview.renameAndRestore": "Rename and Restore",
   "restoreReview.skipAlreadyThere": "Already at its original location — stays in Deleted files",
   "restoreReview.skipMissing": "No longer in Deleted files",

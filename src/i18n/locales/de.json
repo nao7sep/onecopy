@@ -1158,6 +1158,7 @@
   "restoreReview.renamed": "Der ursprüngliche Name ist belegt – wird als {path} wiederhergestellt",
   "restoreReview.target": "Wird nach {path} wiederhergestellt",
   "restoreReview.companionsLeft": "Diese Begleitdateien bleiben in „Gelöschte Dateien“:",
+  "restoreReview.companionUnpaired": "Die Hauptdatei wurde bereits als {path} wiederhergestellt – diese Begleitdatei behält ihren ursprünglichen Namen und wird ihr nicht zugeordnet",
   "restoreReview.renameAndRestore": "Umbenennen und wiederherstellen",
   "restoreReview.skipAlreadyThere": "Bereits am ursprünglichen Ort – bleibt in „Gelöschte Dateien“",
   "restoreReview.skipMissing": "Nicht mehr in „Gelöschte Dateien“",

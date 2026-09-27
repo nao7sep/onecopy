@@ -1158,6 +1158,7 @@
   "restoreReview.renamed": "Le nom d’origine est pris, restauré sous {path}",
   "restoreReview.target": "Restauré dans {path}",
   "restoreReview.companionsLeft": "Ces fichiers associés restent dans Fichiers supprimés\u00a0:",
+  "restoreReview.companionUnpaired": "Son fichier principal a été restauré plus tôt sous {path}. Ce fichier associé garde son nom d’origine et ne lui sera pas associé",
   "restoreReview.renameAndRestore": "Renommer et restaurer",
   "restoreReview.skipAlreadyThere": "Déjà à son emplacement d’origine, reste dans Fichiers supprimés",
   "restoreReview.skipMissing": "N’est plus dans Fichiers supprimés",

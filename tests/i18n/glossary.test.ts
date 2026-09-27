@@ -144,6 +144,7 @@ const RESTORE_CONCEPT_KEYS = [
   "restoreReview.renameAndRestore",
   "restoreReview.renamed",
   "restoreReview.target",
+  "restoreReview.companionUnpaired",
   "mutation.restoreComplete",
   "mutation.restoreCancelled",
   "mutation.restoreWithFailures",

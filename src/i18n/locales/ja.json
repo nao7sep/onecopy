@@ -1158,6 +1158,7 @@
   "restoreReview.renamed": "元の名前は使用中のため、{path} として復元します",
   "restoreReview.target": "{path} に復元",
   "restoreReview.companionsLeft": "次の関連ファイルは削除済みファイルに残ります:",
+  "restoreReview.companionUnpaired": "メインのファイルは以前 {path} として復元されました。この関連ファイルは元の名前のままで、ペアになりません",
   "restoreReview.renameAndRestore": "名前を変えて復元",
   "restoreReview.skipAlreadyThere": "すでに元の場所にあります — 削除済みファイルに残ります",
   "restoreReview.skipMissing": "削除済みファイルにもうありません",

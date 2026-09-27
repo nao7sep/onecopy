@@ -31,6 +31,7 @@ fn entry(id: &str, relative: &str) -> TrashEntry {
         role: Some(TrashRole::Main),
         moved_to: None,
         status: EntryStatus::Restorable,
+        main_restored_as: None,
     }
 }
 
@@ -468,6 +469,40 @@ fn a_family_comes_back_under_one_suffix() {
 }
 
 #[cfg(unix)]
+#[test]
+fn a_companion_restored_after_its_main_came_back_renamed_says_it_will_not_pair() {
+    // 24: the companion returns under its own original name, and the review
+    // says so, naming where its main file is.
+    let f = fixture("companion-after-main", false);
+    let main = f.deleted("trip/IMG.jpg", b"main", "i1", TrashRole::Main);
+    let companion = f.deleted("trip/IMG.xmp", b"sidecar", "i1", TrashRole::Companion);
+    std::fs::write(f.root.join("trip/IMG.jpg"), b"a different photo").unwrap();
+    let outcome = f.restore(std::slice::from_ref(&main));
+    assert_eq!(outcome.restored.len(), 1);
+    assert!(f.root.join("trip/IMG 2.jpg").exists());
+
+    let (plan, review, _) = f.plan(std::slice::from_ref(&companion));
+    let file = &review.files[0];
+    assert_eq!(file.target.as_deref(), Some("trip/IMG.xmp"));
+    assert!(!file.renamed);
+    assert_eq!(file.main_restored_as.as_deref(), Some("trip/IMG 2.jpg"));
+    assert!(review.needed(), "the review states it before anything moves");
+    f.execute(&plan);
+    assert!(f.root.join("trip/IMG.xmp").exists());
+}
+
+#[test]
+fn a_companion_restored_after_its_main_came_back_unchanged_needs_no_review() {
+    let f = fixture("companion-after-main-home", false);
+    let main = f.deleted("trip/IMG.jpg", b"main", "i1", TrashRole::Main);
+    let companion = f.deleted("trip/IMG.xmp", b"sidecar", "i1", TrashRole::Companion);
+    f.restore(std::slice::from_ref(&main));
+
+    let (_, review, _) = f.plan(std::slice::from_ref(&companion));
+    assert_eq!(review.files[0].main_restored_as, None);
+    assert!(!review.needed());
+}
+
 #[test]
 fn a_folder_that_became_a_link_is_refused_and_never_followed() {
     // 3.
