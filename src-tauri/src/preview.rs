@@ -332,7 +332,7 @@ fn copy_file_atomic(src: &Path, target: &Path) -> Result<(), String> {
     let parent = target
         .parent()
         .ok_or_else(|| "cache path has no parent".to_string())?;
-    std::fs::create_dir_all(parent)
+    std::fs::create_dir_all(parent) // data root
         .map_err(|e| crate::resource_limits::cache_write_error("preview copy cache directory", e))?;
     let stem = target
         .file_stem()
@@ -358,7 +358,7 @@ fn copy_file_atomic(src: &Path, target: &Path) -> Result<(), String> {
     };
     drop(staged);
     copied.inspect_err(|_| crate::fs_recovery::remove_file(&tmp, "preview copy staging cleanup"))?;
-    std::fs::rename(&tmp, target).map_err(|e| {
+    std::fs::rename(&tmp, target).map_err(|e| { // data root
         crate::fs_recovery::remove_file(&tmp, "preview copy publication cleanup");
         crate::resource_limits::cache_write_error("preview copy publication", e)
     })?;
@@ -428,7 +428,7 @@ pub fn ensure_fullres(
     hash: &str,
 ) -> Result<(), String> {
     let target = cache.fullres(hash);
-    if target.exists() {
+    if target.exists() { // data root
         return Ok(());
     }
     let Some(ffmpeg) = ffmpeg else {
@@ -443,12 +443,12 @@ pub fn ensure_fullres(
     // whose decode ceiling protects the native image worker, not this route.
     let src = Path::new(&path);
     let parent = target.parent().ok_or("cache path has no parent")?;
-    std::fs::create_dir_all(parent)
+    std::fs::create_dir_all(parent) // data root
         .map_err(|e| crate::resource_limits::cache_write_error("full-resolution cache", e))?;
     let stem = target.file_stem().and_then(|s| s.to_str()).unwrap_or("cache");
     let tmp = parent.join(format!("{stem}-{}.tmp", crate::nanoid::generate()?));
     let converted = convert_full_resolution(ffmpeg, src, &tmp).and_then(|()| {
-        std::fs::rename(&tmp, &target).map_err(|e| e.to_string())
+        std::fs::rename(&tmp, &target).map_err(|e| e.to_string()) // data root
     });
     if converted.is_err() {
         crate::fs_recovery::remove_file(&tmp, "full-resolution staging cleanup");
@@ -471,7 +471,7 @@ fn convert_full_resolution(ffmpeg: &Path, src: &Path, output: &Path) -> Result<(
         .args(["-frames:v", "1", "-c:v", "png", "-f", "image2", "-update", "1", "-y"])
         .arg(output);
     let run = crate::subprocess::run_bounded(cmd, &crate::derived_runtime::cancelled)?;
-    let written = std::fs::metadata(output).is_ok_and(|meta| meta.len() > 0);
+    let written = std::fs::metadata(output).is_ok_and(|meta| meta.len() > 0); // data root
     if !run.status_ok || !written {
         return Err(format!(
             "ffmpeg could not decode this format: {}",
@@ -510,7 +510,7 @@ pub fn derive_one(
     ffmpeg: Option<&Path>,
     hash: &str,
 ) -> Result<String, String> {
-    if cache.thumb(hash).exists() && cache.preview(hash).exists() {
+    if cache.thumb(hash).exists() && cache.preview(hash).exists() { // data root
         return Ok(hash.to_string());
     }
     if crate::derived_state::preview_failed(conn, hash)? {
@@ -975,7 +975,7 @@ fn strip_frames_on_disk(cache: &CachePaths, hash: &str) -> Vec<std::path::PathBu
     let Some(shard) = crate::video::strip_path(cache, hash, 0).parent().map(|p| p.to_path_buf()) else {
         return Vec::new();
     };
-    let Ok(entries) = std::fs::read_dir(&shard) else {
+    let Ok(entries) = std::fs::read_dir(&shard) else { // data root
         return Vec::new();
     };
     entries
@@ -1050,7 +1050,7 @@ pub fn rename_entries(cache: &CachePaths, old: &str, new: &str, strip_frames: i6
         ));
     }
     for (from, to) in moves {
-        if from.exists() {
+        if from.exists() { // data root
             if let Some(parent) = to.parent() {
                 if !crate::fs_recovery::create_dir_all(parent, "cache identity promotion") {
                     continue;
@@ -1115,7 +1115,7 @@ pub fn startup_sweep(
             return Ok(removed);
         }
         let tree = cache.root.join(sub);
-        let tree_exists = match tree.try_exists() {
+        let tree_exists = match tree.try_exists() { // data root
             Ok(exists) => exists,
             Err(error) => {
                 crate::logging::warn(
@@ -1131,7 +1131,7 @@ pub fn startup_sweep(
         if !tree_exists {
             continue;
         }
-        for entry in walkdir::WalkDir::new(&tree).follow_links(false) {
+        for entry in walkdir::WalkDir::new(&tree).follow_links(false) { // data root
             if cancel_when() {
                 return Ok(removed);
             }
@@ -1170,7 +1170,7 @@ pub fn startup_sweep(
                 name.ends_with(".tmp")
             };
             if orphan {
-                match std::fs::remove_file(entry.path()) {
+                match std::fs::remove_file(entry.path()) { // data root
                     Ok(()) => removed = removed.saturating_add(1),
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                     Err(error) => crate::logging::warn(
@@ -1202,7 +1202,7 @@ pub fn purge_for_rebuild(
     discard_previews: bool,
     discard_transcripts: bool,
 ) -> Result<(), String> {
-    let remove = |path: &Path| match std::fs::remove_dir_all(path) {
+    let remove = |path: &Path| match std::fs::remove_dir_all(path) { // data root
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(format!(
@@ -1219,7 +1219,7 @@ pub fn purge_for_rebuild(
             remove(&tree)?;
             continue;
         }
-        let shards = match std::fs::read_dir(&tree) {
+        let shards = match std::fs::read_dir(&tree) { // data root
             Ok(shards) => shards,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(error) => {
@@ -1322,7 +1322,7 @@ pub fn write_webp(img: &DynamicImage, target: &Path, quality: f32) -> Result<(),
     let parent = target
         .parent()
         .ok_or_else(|| "cache path has no parent".to_string())?;
-    std::fs::create_dir_all(parent)
+    std::fs::create_dir_all(parent) // data root
         .map_err(|e| crate::resource_limits::cache_write_error("WebP cache directory", e))?;
 
     let rgba = img.to_rgba8();
@@ -1334,11 +1334,11 @@ pub fn write_webp(img: &DynamicImage, target: &Path, quality: f32) -> Result<(),
         .and_then(|s| s.to_str())
         .unwrap_or("cache");
     let tmp = parent.join(format!("{stem}-{}.tmp", nanoid::generate()?));
-    std::fs::write(&tmp, &*encoded).map_err(|e| {
+    std::fs::write(&tmp, &*encoded).map_err(|e| { // data root
         crate::fs_recovery::remove_file(&tmp, "WebP staging write cleanup");
         crate::resource_limits::cache_write_error("WebP staging write", e)
     })?;
-    std::fs::rename(&tmp, target).map_err(|e| {
+    std::fs::rename(&tmp, target).map_err(|e| { // data root
         crate::fs_recovery::remove_file(&tmp, "WebP publication cleanup");
         crate::resource_limits::cache_write_error("WebP publication", e)
     })?;

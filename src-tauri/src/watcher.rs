@@ -511,7 +511,7 @@ pub fn watch_root(
     let root_path = root.to_path_buf();
     crate::volume_io::call(root, crate::volume_io::Op::Watch, None, move || {
         use notify::Watcher;
-        let mut watcher = notify::recommended_watcher(handler).map_err(std::io::Error::other)?;
+        let mut watcher = notify::recommended_watcher(handler).map_err(std::io::Error::other)?; // volume_io worker
         watcher
             .watch(&root_path, notify::RecursiveMode::Recursive)
             .map_err(std::io::Error::other)?;

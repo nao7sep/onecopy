@@ -702,7 +702,7 @@ pub fn ensure_preview(
 /// requested-preview claim; an existing entry returns at once.
 pub fn ensure_fullres(app: &AppHandle, data_root: &Path, hash: &str) -> Result<(), String> {
     let cache = CachePaths::new(data_root.join(crate::storage::CACHE_DIR_NAME));
-    if cache.fullres(hash).is_file() {
+    if cache.fullres(hash).is_file() { // data root
         return Ok(());
     }
     let _work = crate::derived_runtime::begin_requested_preview(app, hash)?;

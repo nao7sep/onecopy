@@ -50,7 +50,7 @@ impl FileIdentity {
             let fs_path = crate::winpath::for_fs(path).into_owned();
             return volume_io::call(path, Op::Stat, None, move || {
                 use std::os::windows::fs::OpenOptionsExt;
-                let mut options = std::fs::OpenOptions::new();
+                let mut options = std::fs::OpenOptions::new(); // volume_io worker
                 options.read(true).custom_flags(
                     windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT
                         | windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS,
@@ -101,7 +101,7 @@ pub fn volume_of(path: &Path) -> io::Result<u64> {
         let fs_path = crate::winpath::for_fs(path).into_owned();
         return volume_io::call(path, Op::Stat, None, move || {
             use std::os::windows::fs::OpenOptionsExt;
-            let file = std::fs::OpenOptions::new()
+            let file = std::fs::OpenOptions::new() // volume_io worker
                 .access_mode(0)
                 .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS)
                 .open(&fs_path)?;
@@ -162,7 +162,7 @@ pub fn open_regular_nofollow(path: &Path) -> io::Result<(VolumeFile, FileIdentit
 
 fn open_regular_nofollow_raw(path: &Path) -> io::Result<(File, FileIdentity)> {
     let fs_path = crate::winpath::for_fs(path);
-    let mut options = std::fs::OpenOptions::new();
+    let mut options = std::fs::OpenOptions::new(); // volume_io worker
     options.read(true);
     #[cfg(unix)]
     {

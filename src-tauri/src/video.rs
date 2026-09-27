@@ -151,7 +151,7 @@ fn extract_frame(
             run.stderr_tail()
         ));
     }
-    if !staged_jpg.is_file() {
+    if !staged_jpg.is_file() { // data root
         return Err(format!("ffmpeg emitted no frame at {seconds}s for {}", src.display()));
     }
     Ok(())
@@ -267,7 +267,7 @@ fn derive_videos_pending_limit(
     };
     // not recorded: ffmpeg frame staging (temp/, wiped at launch); the WebP
     // results land through preview.rs's own unrecorded cache writes.
-    std::fs::create_dir_all(temp_dir)
+    std::fs::create_dir_all(temp_dir) // data root
         .map_err(|e| crate::resource_limits::cache_write_error("video staging directory", e))?;
 
     let rows = crate::derived_state::video_candidates(conn, true, limit, only_hash)?;
@@ -362,7 +362,7 @@ pub fn derive_strips_pending(
 ) -> Result<StripDeriveStats, String> {
     // not recorded: ffmpeg strip-frame staging lives in temp/ and produces
     // reconstructible binary cache entries.
-    std::fs::create_dir_all(temp_dir)
+    std::fs::create_dir_all(temp_dir) // data root
         .map_err(|e| crate::resource_limits::cache_write_error("video staging directory", e))?;
     let rows = if priority_hashes.is_empty() {
         crate::derived_state::strip_candidates(

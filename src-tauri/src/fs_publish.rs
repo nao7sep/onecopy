@@ -87,8 +87,8 @@ fn rename_exclusive(source: &Path, target: &Path) -> io::Result<()> {
 /// the moment of replacement is left alone.
 #[cfg(target_os = "macos")]
 fn publish_without_exclusive_rename_raw(source: &Path, target: &Path) -> io::Result<()> {
-    std::fs::symlink_metadata(source)?;
-    let placeholder = std::fs::OpenOptions::new()
+    std::fs::symlink_metadata(source)?; // volume_io worker
+    let placeholder = std::fs::OpenOptions::new() // volume_io worker
         .write(true)
         .create_new(true)
         .open(target)?;
@@ -98,7 +98,7 @@ fn publish_without_exclusive_rename_raw(source: &Path, target: &Path) -> io::Res
             format!("the reserved name was replaced: {}", target.display()),
         ));
     }
-    match std::fs::rename(source, target) {
+    match std::fs::rename(source, target) { // volume_io worker
         Ok(()) => Ok(()),
         Err(error) => {
             if crate::file_identity::path_names_file(target, &placeholder) {
@@ -204,6 +204,6 @@ fn rename_no_replace_raw(source: &Path, target: &Path, _exclusive_unsupported: b
     // Non-shipping test/development platforms: hard-link publication has the
     // same atomic no-clobber property. The source remains recovery authority
     // if removing the staging name fails.
-    std::fs::hard_link(source, target)?;
-    std::fs::remove_file(source)
+    std::fs::hard_link(source, target)?; // volume_io worker
+    std::fs::remove_file(source) // volume_io worker
 }

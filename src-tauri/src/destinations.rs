@@ -56,12 +56,12 @@ fn is_browsable_destination_child(
     policy: &visibility::Policy,
     data_root: &Path,
 ) -> Result<bool, String> {
+    let file_type = entry
+        .file_type
+        .ok_or_else(|| format!("could not read {}", entry.path.display()))?;
     if trash::is_trash_path(&entry.path)
         || paths::is_within_data_root(&entry.path, data_root)
-        || !entry
-            .file_type
-            .ok_or_else(|| format!("could not read {}", entry.path.display()))?
-            .is_dir()
+        || !file_type.is_dir()
     {
         return Ok(false);
     }
