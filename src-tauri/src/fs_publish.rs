@@ -70,7 +70,7 @@ fn rename_exclusive(source: &Path, target: &Path) -> io::Result<()> {
     // SAFETY: both arguments are owned NUL-terminated path buffers for the
     // duration of the call; RENAME_EXCL requests an ordinary same-volume move
     // that fails rather than replacing an occupied target.
-    let result = unsafe { libc::renamex_np(source.as_ptr(), target.as_ptr(), libc::RENAME_EXCL) };
+    let result = unsafe { libc::renamex_np(source.as_ptr(), target.as_ptr(), libc::RENAME_EXCL) }; // volume_io worker
     if result == 0 {
         Ok(())
     } else {
@@ -160,6 +160,7 @@ pub fn replace_existing(source: &Path, target: &Path) -> io::Result<()> {
     // call. The flags request a write-through replacement of this private,
     // rebuildable cache entry.
     let succeeded = unsafe {
+        // data root
         MoveFileExW(
             source.as_ptr(),
             target.as_ptr(),
@@ -191,7 +192,7 @@ fn rename_no_replace_raw(source: &Path, target: &Path, _exclusive_unsupported: b
     // SAFETY: both path buffers are NUL-terminated and remain alive for the
     // call. Zero flags deliberately omit MOVEFILE_REPLACE_EXISTING, so an
     // exact-boundary winner is preserved instead of overwritten.
-    let succeeded = unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), 0) };
+    let succeeded = unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), 0) }; // volume_io worker
     if succeeded == 0 {
         Err(io::Error::last_os_error())
     } else {

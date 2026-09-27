@@ -1347,7 +1347,7 @@ fn directory_is_case_sensitive(directory: &Path) -> bool {
     // never fewer.
     volume_io::call(directory, volume_io::Op::Stat, None, move || {
         // SAFETY: `path` is an owned NUL-terminated buffer alive for the call.
-        Ok(unsafe { libc::pathconf(path.as_ptr(), libc::_PC_CASE_SENSITIVE) == 1 })
+        Ok(unsafe { libc::pathconf(path.as_ptr(), libc::_PC_CASE_SENSITIVE) == 1 }) // volume_io worker
     })
     .unwrap_or(false)
 }

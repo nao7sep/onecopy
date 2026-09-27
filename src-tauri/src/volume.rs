@@ -79,6 +79,7 @@ fn windows_serial(root: &Path) -> Option<String> {
     use std::os::windows::ffi::OsStrExt;
     #[link(name = "kernel32")]
     extern "system" {
+        // volume_io worker: a declaration; the one call runs in `platform_identity`'s bounded call
         fn GetVolumeInformationW(
             root_path_name: *const u16,
             volume_name_buffer: *mut u16,
@@ -97,6 +98,7 @@ fn windows_serial(root: &Path) -> Option<String> {
     wide.push(0);
     let mut serial: u32 = 0;
     let ok = unsafe {
+        // volume_io worker
         GetVolumeInformationW(
             wide.as_ptr(),
             std::ptr::null_mut(),

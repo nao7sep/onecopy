@@ -62,6 +62,22 @@ fn raw_primitive(code: &str) -> Option<&'static str> {
         ".try_exists()",
         ".read_dir()",
         ".symlink_metadata()",
+        // Native filesystem calls, which no Rust lint sees as file access.
+        "libc::renamex_np(",
+        "libc::rename(",
+        "libc::open(",
+        "libc::stat(",
+        "libc::lstat(",
+        "libc::statfs(",
+        "libc::pathconf(",
+        "libc::unlink(",
+        "MoveFileExW(",
+        "CreateFileW(",
+        "DeleteFileW(",
+        "RemoveDirectoryW(",
+        "GetFileAttributesW(",
+        "SetFileAttributesW(",
+        "GetVolumeInformationW(",
     ];
     if let Some(needle) = NEEDLES.iter().find(|needle| code.contains(**needle)) {
         return Some(needle);
@@ -168,6 +184,8 @@ fn the_lint_recognizes_raw_calls_and_ignores_accessors() {
         "let file = File::open(path)?;",
         "if !target.exists() {",
         "let exif = nom_exif::read_exif(path)?;",
+        "let existing = unsafe { GetFileAttributesW(wide.as_ptr()) };",
+        "let moved = unsafe { libc::renamex_np(from, to, libc::RENAME_EXCL) };",
     ] {
         assert!(raw_primitive(raw).is_some(), "{raw}");
     }

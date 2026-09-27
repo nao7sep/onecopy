@@ -834,31 +834,42 @@ fn nearest_existing(path: &Path) -> Result<PathBuf, String> {
 fn hide_windows(trash_root: &Path) {
     // Best-effort: mark the trash root hidden (dot-prefix means nothing to
     // Explorer). This calls the Win32 attribute API directly rather than
-    // spawning `attrib`, so there is no console flash, no process start, and
-    // no unbounded external wait per trashed file (R1-12, R6-04) — the call
-    // also runs at most once per trash root, when `prepare_trash` creates it.
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        GetFileAttributesW, SetFileAttributesW, FILE_ATTRIBUTE_HIDDEN, INVALID_FILE_ATTRIBUTES,
+    // spawning `attrib`, so there is no console flash and no process start
+    // (R1-12, R6-04), in one bounded call like every other step on the root's
+    // volume; it runs at most once per trash root, when `prepare_trash`
+    // creates it.
+    let wide: Vec<u16> = {
+        use std::os::windows::ffi::OsStrExt;
+        crate::winpath::for_fs(trash_root)
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect()
     };
-
-    let wide: Vec<u16> = crate::winpath::for_fs(trash_root)
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
-    let existing = unsafe { GetFileAttributesW(wide.as_ptr()) };
-    let attrs = if existing == INVALID_FILE_ATTRIBUTES {
-        FILE_ATTRIBUTE_HIDDEN
-    } else {
-        existing | FILE_ATTRIBUTE_HIDDEN
-    };
-    if unsafe { SetFileAttributesW(wide.as_ptr(), attrs) } == 0 {
+    let hidden = volume_io::call(trash_root, volume_io::Op::Create, None, move || {
+        use windows_sys::Win32::Storage::FileSystem::{
+            GetFileAttributesW, SetFileAttributesW, FILE_ATTRIBUTE_HIDDEN,
+            INVALID_FILE_ATTRIBUTES,
+        };
+        // SAFETY: `wide` is an owned NUL-terminated path buffer alive for
+        // both calls.
+        let existing = unsafe { GetFileAttributesW(wide.as_ptr()) }; // volume_io worker
+        let attrs = if existing == INVALID_FILE_ATTRIBUTES {
+            FILE_ATTRIBUTE_HIDDEN
+        } else {
+            existing | FILE_ATTRIBUTE_HIDDEN
+        };
+        if unsafe { SetFileAttributesW(wide.as_ptr(), attrs) } == 0 { // volume_io worker
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    });
+    if let Err(error) = hidden {
         crate::logging::warn(
             "trash directory could not be hidden",
             serde_json::json!({
                 "path": trash_root,
-                "error": { "message": std::io::Error::last_os_error().to_string() },
+                "error": { "message": error.to_string() },
             }),
         );
     }
