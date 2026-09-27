@@ -305,7 +305,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     }
     windowIntent = start;
     const loaded = await readWindow(get, section, start);
-    if (loaded !== null) publishWindow(set, loaded);
+    if (loaded !== null) await adoptWindow(set, get, loaded);
   },
 
   selectPosition: async (requestedIndex, extend) => {
@@ -549,23 +549,14 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     if (get().selected !== null) await reconcileCurrent(set, get, false, "center");
   },
 
-  // The light refresh round. Selection positions stay valid while the section
-  // order is unchanged, so an unchanged order needs only fresher rows for the
-  // window Main wants, without round-tripping a possibly huge selection
-  // through `reconcile_section` (C-M2). Any change to the order -- an item
-  // entering, leaving or being reclassified, which source checks and
-  // file-information runs do -- makes those positions stale, so the round
-  // becomes a full reconcile, which re-derives them by identity.
+  // The light refresh round: fresher rows for the window Main wants, without
+  // round-tripping a possibly huge selection through `reconcile_section`
+  // (C-M2) while the section order is unchanged (`adoptWindow`).
   refreshWindow: async () => {
     const section = get().selected;
     if (section === null) return;
     const loaded = await readWindow(get, section, windowIntent);
-    if (loaded === null) return;
-    if (loaded.order !== get().orderToken) {
-      await reconcileCurrent(set, get, false, "center");
-      return;
-    }
-    publishWindow(set, loaded);
+    if (loaded !== null) await adoptWindow(set, get, loaded);
   },
 
   applyDerivedItem: (previousHash, item) => {
@@ -656,6 +647,25 @@ async function readWindow(
     recordActionFailure("section-window-load-failed", failure, error);
     return null;
   }
+}
+
+/** Publishes a window read under the section order the selection positions
+ * were derived under. Any change to the order -- an item entering, leaving or
+ * being reclassified, which source checks and file-information runs do --
+ * makes those positions stale, so a window from another order reconciles
+ * instead, which re-derives them by identity. Every window read goes through
+ * here: a scroll load that supersedes a light refresh must not publish the
+ * new order under the old positions. */
+async function adoptWindow(
+  set: (patch: Partial<ItemsState>) => void,
+  get: () => ItemsState,
+  window: SectionWindow,
+): Promise<void> {
+  if (window.order !== get().orderToken) {
+    await reconcileCurrent(set, get, false, "center");
+    return;
+  }
+  publishWindow(set, window);
 }
 
 function publishWindow(set: (patch: Partial<ItemsState>) => void, window: SectionWindow): void {

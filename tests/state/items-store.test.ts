@@ -589,6 +589,33 @@ describe("refreshWindow", () => {
     expect(state.items[0]?.hash).toBe("h689");
   });
 
+  it("re-derives selection positions when a scroll load supersedes it under a changed order", async () => {
+    let rows = Array.from({ length: 1200 }, (_, index) => item(index + 1));
+    let gate: Promise<void> = Promise.resolve();
+    mockSection(async () => {
+      await gate;
+      return rows;
+    });
+    await useItemsStore.getState().select(SECTION);
+    useItemsStore.getState().selectItem("h5", "nearest", 4);
+
+    // A source check inserts twenty earlier files, so h5 now sits at 24. The
+    // light refresh it triggers is superseded by a scroll load.
+    rows = [...Array.from({ length: 20 }, (_, index) => item(5000 + index, { resolvedUtcMs: index })), ...rows];
+    let open!: () => void;
+    gate = new Promise((resolve) => {
+      open = resolve;
+    });
+    const refresh = useItemsStore.getState().refreshWindow();
+    const scroll = useItemsStore.getState().loadWindow(900);
+    open();
+    await Promise.all([refresh, scroll]);
+
+    expect(useItemsStore.getState().selectedPositions.get("h5")).toBe(24);
+    await useItemsStore.getState().rangeSelect("h6", 25);
+    expect([...useItemsStore.getState().selectedKeys].sort()).toEqual(["h5", "h6"]);
+  });
+
   it("does nothing when no section is selected", async () => {
     invokeCalls.length = 0;
     await useItemsStore.getState().refreshWindow();
