@@ -112,6 +112,7 @@ export function statusLine(input: {
         ? "danger"
         : input.mutationResult.cancelled ||
             summary.filesFailed > 0 ||
+            summary.filesUnknown > 0 ||
             summary.itemsPartial > 0 ||
             summary.itemsUnstarted > 0 ||
             summary.filesUnstarted > 0

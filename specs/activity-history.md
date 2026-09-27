@@ -10,7 +10,7 @@ Meaningful work is recorded independently of debug logging. Internal selection, 
 
 One operation has one stable row from its first recorded admission or start through its terminal outcome. Available progress appears while work is open; completion updates the same row rather than inserting each lifecycle event as another task. An operation's identity and initial position do not change when later events arrive.
 
-Operation summaries derive from the retained lifecycle, not whichever raw events happen to fit in a loaded page. Missing start or terminal evidence remains explicitly unknown; no elapsed-time heuristic, quiet queue, or application restart implies success. An unfinished operation from an earlier app run is not presented as currently running.
+Operation summaries derive from the retained lifecycle, not whichever raw events happen to fit in a loaded page. Missing start or terminal evidence remains explicitly unknown; no elapsed-time heuristic, quiet queue, or application restart implies success. A file operation that ended with files whose outcome is unknown (`file-operations.md`, `Drives that stop answering`) ends as outcome unknown rather than completed or failed. An unfinished operation from an earlier app run is not presented as currently running.
 
 History survives ordinary restart and upgrades. Raw diagnostics and operation summaries share one history authority; a projection used for bounded reads is reconstructible from retained events and never becomes a job ledger. Failure to record activity is logged without changing independent work, and unavailable history has an explicit error rather than looking empty.
 

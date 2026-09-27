@@ -20,7 +20,11 @@ import { recordActivity } from "../repositories/activity";
 const install = createEventInstaller(
   async (listeners) => {
     const recordFailedResult = (result: MutationResult) => {
-      if (result.summary.error === null && result.summary.filesFailed === 0) return;
+      if (
+        result.summary.error === null &&
+        result.summary.filesFailed === 0 &&
+        result.summary.filesUnknown === 0
+      ) return;
       void recordRecentNotification({
         kind: `${result.kind}-failed`,
         level: result.summary.error === null ? "warning" : "error",

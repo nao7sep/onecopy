@@ -571,7 +571,7 @@ describe("the failure workflow", () => {
         progress: { ...progress, phase: "complete", failures: 1 }, cancelled: false,
         summary: {
           itemsCompleted: 0, itemsPartial: 1, itemsUnstarted: 0, filesCompleted: 0,
-          filesFailed: 1, filesUnstarted: 0, trashAvailable: false, error: null,
+          filesFailed: 1, filesUnknown: 0, filesUnstarted: 0, trashAvailable: false, error: null,
         },
       });
       return {

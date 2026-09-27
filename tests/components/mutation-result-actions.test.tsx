@@ -16,6 +16,7 @@ function result(trashAvailable: boolean): MutationResult {
       itemsUnstarted: 0,
       filesCompleted: 2,
       filesFailed: 0,
+      filesUnknown: 0,
       filesUnstarted: 0,
       trashAvailable,
       error: null,

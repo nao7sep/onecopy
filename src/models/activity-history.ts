@@ -42,7 +42,7 @@ const STATE_KEYS: Record<string, MessageKey> = {
   running: "activity.stateWorking", queued: "work.queued", waiting: "activity.stateWaiting",
   stopping: "activity.stateStopping", succeeded: "activity.stateCompleted", failed: "activity.stateFailed",
   cancelled: "activity.stateCancelled", paused: "work.paused", stale: "activity.stateSuperseded",
-  coalesced: "activity.stateCombined",
+  coalesced: "activity.stateCombined", outcomeUnknown: "activity.stateOutcomeUnknown",
 };
 
 // The app's own name, which reads the same in every language.

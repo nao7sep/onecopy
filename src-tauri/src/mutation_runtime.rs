@@ -297,7 +297,11 @@ struct ResultSummary {
     items_partial: u64,
     items_unstarted: u64,
     files_completed: u64,
+    /// Files that failed with a known outcome.
     files_failed: u64,
+    /// Files whose rename or removal was given up on while their drive was
+    /// not responding: done or not, the next check settles them.
+    files_unknown: u64,
     files_unstarted: u64,
     trash_available: bool,
     error: Option<String>,
@@ -345,6 +349,7 @@ impl Publisher {
         if let Some(trace) = &mut self.trace {
             use crate::activity::ActivityState;
             trace.finish(if cancelled { ActivityState::Cancelled }
+                else if summary.as_ref().is_some_and(|result| result.files_unknown > 0) { ActivityState::OutcomeUnknown }
                 else if summary.as_ref().is_some_and(|result| result.files_failed > 0 || result.error.is_some()) { ActivityState::Failed }
                 else if summary.is_none() { ActivityState::Idle }
                 else { ActivityState::Succeeded }, None);
@@ -368,6 +373,7 @@ impl Publisher {
             progress.files_total,
             progress.files_done,
             progress.failures,
+            0,
             false,
             Some(error.to_string()),
         );
@@ -391,6 +397,7 @@ fn result_summary(
     files_total: u64,
     files_done: u64,
     files_failed: u64,
+    files_unknown: u64,
     trash_available: bool,
     error: Option<String>,
 ) -> ResultSummary {
@@ -399,7 +406,8 @@ fn result_summary(
         items_partial: items_started.saturating_sub(items_completed),
         items_unstarted: items_total.saturating_sub(items_started),
         files_completed: files_done.saturating_sub(files_failed),
-        files_failed,
+        files_failed: files_failed.saturating_sub(files_unknown),
+        files_unknown,
         files_unstarted: files_total.saturating_sub(files_done),
         trash_available,
         error,
@@ -615,6 +623,7 @@ pub(crate) fn delete_items(
                     terminal.files_total,
                     terminal.files_done,
                     terminal.failures,
+                    outcome.unknown_files,
                     !permanent && outcome.deleted_files > 0,
                     outcome.error.clone(),
                 )),
@@ -820,6 +829,8 @@ pub(crate) fn move_items_out(
                         terminal.files_total,
                         terminal.files_done,
                         terminal.failures,
+                        (outcome.unknown.len() as u64)
+                            .saturating_add(outcome.post_action.unknown_files),
                         (mode == crate::operations::MoveOutMode::MoveTrashRest
                             && outcome.post_action.deleted_files > 0)
                             || outcome.trashed_destination_files > 0,
@@ -949,6 +960,7 @@ pub(crate) fn empty_trash(
                     terminal.files_total,
                     terminal.files_done,
                     terminal.failures,
+                    0,
                     false,
                     None,
                 )),

@@ -99,6 +99,9 @@ pub enum ActivityState {
     Cancelled,
     Stale,
     Coalesced,
+    /// Ended with files whose rename or removal was given up on while their
+    /// drive was not responding.
+    OutcomeUnknown,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -626,7 +629,7 @@ impl WorkTrace {
         let mut draft = self.draft.clone();
         draft.kind = match state {
             ActivityState::Succeeded => ActivityKind::Completed,
-            ActivityState::Failed => ActivityKind::Failed,
+            ActivityState::Failed | ActivityState::OutcomeUnknown => ActivityKind::Failed,
             ActivityState::Cancelled => ActivityKind::Cancelled,
             ActivityState::Paused => ActivityKind::Paused,
             _ => ActivityKind::Closed,

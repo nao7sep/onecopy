@@ -22,15 +22,36 @@ fn cancellation_is_bound_to_one_claim_identity() {
 #[test]
 fn result_accounting_separates_complete_partial_and_unstarted_work() {
     assert_eq!(
-        result_summary(8, 4, 3, 12, 7, 2, true, None),
+        result_summary(8, 4, 3, 12, 7, 2, 0, true, None),
         ResultSummary {
             items_completed: 3,
             items_partial: 1,
             items_unstarted: 4,
             files_completed: 5,
             files_failed: 2,
+            files_unknown: 0,
             files_unstarted: 5,
             trash_available: true,
+            error: None,
+        }
+    );
+}
+
+// A file whose rename or removal was given up on is neither completed nor a
+// known failure: it is reported on its own.
+#[test]
+fn result_accounting_reports_unknown_outcomes_apart_from_failures() {
+    assert_eq!(
+        result_summary(2, 2, 1, 4, 4, 3, 2, false, None),
+        ResultSummary {
+            items_completed: 1,
+            items_partial: 1,
+            items_unstarted: 0,
+            files_completed: 1,
+            files_failed: 1,
+            files_unknown: 2,
+            files_unstarted: 0,
+            trash_available: false,
             error: None,
         }
     );

@@ -69,7 +69,8 @@ export type ActivityState =
   | "failed"
   | "cancelled"
   | "stale"
-  | "coalesced";
+  | "coalesced"
+  | "outcomeUnknown";
 
 export type ActivityReason =
   | "user"

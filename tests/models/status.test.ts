@@ -168,6 +168,7 @@ describe("what the status bar shows", () => {
           itemsUnstarted: 4,
           filesCompleted: 5,
           filesFailed: 1,
+          filesUnknown: 0,
           filesUnstarted: 6,
           trashAvailable: true,
           error: null,
@@ -177,6 +178,32 @@ describe("what the status bar shows", () => {
     expect(status.tone).toBe("warning");
     expect(status.text).toBe(
       "Move cancelled — 2 completed · 1 partially processed · 5 file steps completed · 1 failed · 4 unstarted",
+    );
+  });
+
+  it("reports files whose outcome is unknown apart from failures", () => {
+    const status = statusLine({
+      ...IDLE,
+      mutationResult: {
+        operationId: 10,
+        kind: "destination-move",
+        cancelled: false,
+        summary: {
+          itemsCompleted: 1,
+          itemsPartial: 0,
+          itemsUnstarted: 2,
+          filesCompleted: 2,
+          filesFailed: 0,
+          filesUnknown: 1,
+          filesUnstarted: 3,
+          trashAvailable: false,
+          error: "the volume is not responding",
+        },
+      },
+    }, t, number, percent);
+    expect(status.tone).toBe("danger");
+    expect(status.text).toBe(
+      "Move stopped — 1 completed · 2 file steps completed · 1 outcome unknown · 2 unstarted · the operation stopped before it could finish",
     );
   });
 

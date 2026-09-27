@@ -37,6 +37,9 @@ export interface MutationResultSummary {
   itemsUnstarted: number;
   filesCompleted: number;
   filesFailed: number;
+  /** Files whose rename or removal was given up on while their drive was not
+   * responding: each may or may not have happened. */
+  filesUnknown: number;
   filesUnstarted: number;
   trashAvailable: boolean;
   error: string | null;
@@ -98,7 +101,9 @@ const RUNNING_HEADLINES: Record<MutationKind, MessageKey> = {
 function outcome(result: MutationResult): Outcome {
   if (result.summary.error !== null) return "stopped";
   if (result.cancelled) return "cancelled";
-  return result.summary.filesFailed > 0 ? "failures" : "complete";
+  return result.summary.filesFailed > 0 || result.summary.filesUnknown > 0
+    ? "failures"
+    : "complete";
 }
 
 /** Whole percent of the file being handled right now, or null when the backend
@@ -126,6 +131,7 @@ export function mutationResultLine(
     (result.cancelled ||
       summary.error !== null ||
       summary.filesFailed > 0 ||
+      summary.filesUnknown > 0 ||
       summary.itemsPartial > 0 ||
       summary.itemsUnstarted > 0 ||
       summary.filesUnstarted > 0)
@@ -134,6 +140,9 @@ export function mutationResultLine(
   }
   if (summary.filesFailed > 0) {
     facts.push(t("trash.failedCount", { count: summary.filesFailed }));
+  }
+  if (summary.filesUnknown > 0) {
+    facts.push(t("mutation.factOutcomeUnknown", { count: summary.filesUnknown }));
   }
   if (summary.itemsUnstarted > 0) {
     facts.push(t("mutation.factUnstarted", { count: summary.itemsUnstarted }));
