@@ -1116,6 +1116,7 @@ fn is_excluded_from_discovery(path: &Path, data_root: Option<&Path>) -> bool {
     crate::trash::is_trash_path(path)
         || data_root.is_some_and(|root| crate::paths::is_within_data_root(path, root))
         || is_apple_double_sidecar(path)
+        || crate::file_identity::is_private_tmp_name(path)
 }
 
 /// Whether `path` is a macOS AppleDouble sidecar (`._name`) sitting beside its
@@ -1218,7 +1219,15 @@ fn walk_root_with_progress(
     for entry in walkdir::WalkDir::new(fs_root.as_ref())
         .follow_links(false)
         .into_iter()
-        .filter_entry(|entry| !is_excluded_from_discovery(entry.path(), data_root))
+        .filter_entry(|entry| {
+            let path = entry.path();
+            if entry.file_type().is_file() && crate::file_identity::is_private_tmp_name(path) {
+                // Launch-time garbage from a previous process that quitting
+                // gave up on; see `file_identity::is_private_tmp_name`.
+                crate::fs_recovery::remove_file(path, "private staging leftover cleanup");
+            }
+            !is_excluded_from_discovery(path, data_root)
+        })
     {
         check_cancel()?;
         // A pending foreground action or urgent preparation takes the index

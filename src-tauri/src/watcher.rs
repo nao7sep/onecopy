@@ -145,6 +145,7 @@ pub fn restat_dir(
         if crate::trash::is_trash_path(&path)
             || crate::paths::is_within_data_root(&path, data_root)
             || crate::scanner::is_apple_double_sidecar(&path)
+            || crate::file_identity::is_private_tmp_name(&path)
         {
             continue;
         }
@@ -526,6 +527,7 @@ pub fn collect(
                 if crate::trash::is_trash_path(&path)
                     || crate::paths::is_within_data_root(&path, data_root)
                     || crate::scanner::is_apple_double_sidecar(&path)
+                    || crate::file_identity::is_private_tmp_name(&path)
                 {
                     continue;
                 }

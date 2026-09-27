@@ -850,6 +850,33 @@ fn apple_double_sidecars_beside_their_real_file_are_never_indexed() {
 }
 
 #[test]
+fn leftover_private_staging_files_are_never_indexed_and_are_removed() {
+    // A `.onecopy-stage-*.tmp` (or `.onecopy-claim-*.tmp`) leftover can only
+    // be launch-time garbage from a previous process that quitting gave up
+    // on at the mutation-quiescence deadline (`app_lifecycle::MUTATION_QUIESCE_DEADLINE`,
+    // `specs/file-operations.md` "Normal exit and abnormal termination"). It
+    // must never be indexed as library content, and it is swept away outright
+    // rather than left to leak forever.
+    let f = fixture("private-staging-leftover");
+    std::fs::write(f.root.join("IMG_0002.jpg"), b"photo").unwrap();
+    let leftover = f.root.join(".onecopy-stage-abandoned.tmp");
+    std::fs::write(&leftover, b"partial bytes from a killed process").unwrap();
+    assert!(onecopy_lib::file_identity::is_private_tmp_name(&leftover));
+
+    let stats = walk_root(&f.conn, &f.root, &lists()).unwrap();
+
+    assert_eq!(stats.added, 1, "only the real file is indexed");
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM paths WHERE file_name LIKE '.onecopy-stage-%'"),
+        0
+    );
+    assert!(
+        !leftover.exists(),
+        "the leftover private staging file is removed, not merely hidden from the index"
+    );
+}
+
+#[test]
 fn duplicate_live_photo_identifiers_never_cross_directory_cohorts() {
     let f = fixture("live-photo-duplicate-trees");
     for dir in ["backup-a", "backup-b"] {

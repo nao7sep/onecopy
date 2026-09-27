@@ -75,8 +75,9 @@ fn lock_child(
 
 /// Kills every subprocess still running right now. Best-effort and
 /// idempotent: a child that already exited is left to its own owning thread,
-/// which reaps it on its next poll. Called only once quitting's bounded wait
-/// has expired (exit-join deadline).
+/// which reaps it on its next poll. Called once quitting's bounded wait for
+/// the non-mutation exit joins expires, and again if quitting gives up on the
+/// active mutation at its own deadline.
 pub fn kill_all_running() {
     let running = match RUNNING.lock() {
         Ok(running) => running.clone(),

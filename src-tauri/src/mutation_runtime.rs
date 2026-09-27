@@ -7,7 +7,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, LazyLock, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::json;
@@ -200,24 +200,53 @@ pub(crate) fn request_shutdown() -> Result<(), String> {
     }
 }
 
-pub(crate) fn wait_for_idle() -> Result<(), String> {
+/// The outcome of bounded exit-time mutation quiescence: either the claim
+/// dropped (the operation reached a safe point, or none was active), or the
+/// deadline passed first and the current file operation is given up on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IdleWait {
+    Idle,
+    TimedOut,
+}
+
+/// Waits up to `deadline` for the active mutation claim to drop, i.e. for the
+/// current file operation to reach its own safe point (between physical
+/// files, per `specs/file-operations.md` "Cancellation"). Normal exit calls
+/// this after requesting cancellation, so the wait only lasts as long as the
+/// current bounded filesystem step takes, up to `deadline`; on `IdleWait::TimedOut`
+/// the caller gives up on that step (killing outstanding subprocesses) rather
+/// than waiting longer, per "Normal exit and abnormal termination".
+pub(crate) fn wait_for_idle(deadline: Duration) -> Result<IdleWait, String> {
+    let cutoff = Instant::now() + deadline;
     let (mut active, mut recovered) = match RUNTIME.active.lock() {
         Ok(active) => (active, false),
         Err(poisoned) => (poisoned.into_inner(), true),
     };
     while active.is_some() {
-        active = match RUNTIME.idle.wait(active) {
-            Ok(next) => next,
+        let remaining = cutoff.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return idle_wait_result(recovered, IdleWait::TimedOut);
+        }
+        let waited = match RUNTIME.idle.wait_timeout(active, remaining) {
+            Ok(pair) => pair,
             Err(poisoned) => {
                 recovered = true;
                 poisoned.into_inner()
             }
         };
+        active = waited.0;
+        if active.is_some() && waited.1.timed_out() {
+            return idle_wait_result(recovered, IdleWait::TimedOut);
+        }
     }
+    idle_wait_result(recovered, IdleWait::Idle)
+}
+
+fn idle_wait_result(recovered: bool, outcome: IdleWait) -> Result<IdleWait, String> {
     if recovered {
         Err("file-operation state was recovered while waiting for shutdown".to_string())
     } else {
-        Ok(())
+        Ok(outcome)
     }
 }
 

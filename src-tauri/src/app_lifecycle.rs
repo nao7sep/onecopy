@@ -72,9 +72,15 @@ pub(crate) fn publish_if_running<T>(publish: impl FnOnce() -> T) -> Option<T> {
 
 /// Bounds only the non-mutation exit joins (derived work, requested media,
 /// watchers, source check, binaries, startup, instance owner). Mutation
-/// quiescence has no deadline (`specs/file-operations.md`, "Normal exit and
-/// abnormal termination").
+/// quiescence has its own, longer deadline (`MUTATION_QUIESCE_DEADLINE`).
 const EXIT_JOIN_DEADLINE: Duration = Duration::from_secs(10);
+
+/// How long normal exit waits for the current file operation to reach its own
+/// safe point before giving up on it (`specs/file-operations.md`, "Normal exit
+/// and abnormal termination"). Giving up kills outstanding subprocesses and
+/// exits; the operation's unpublished private output is never at the file's
+/// final name, and it is removed at the next launch's discovery pass.
+const MUTATION_QUIESCE_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Set once the exit sequence has reached the point where exiting is safe;
 /// only then may an exit request close the process.
@@ -108,7 +114,7 @@ pub(crate) fn quiesce(app: &AppHandle) {
         ExitSequence {
             join_workers: Box::new(move || join_workers(&joins)),
             wait_for_mutation: Box::new(|| {
-                crate::mutation_runtime::wait_for_idle()
+                crate::mutation_runtime::wait_for_idle(MUTATION_QUIESCE_DEADLINE)
             }),
             exit: Box::new(move || {
                 let released = crate::media_use::begin_shutdown(&media);
@@ -181,7 +187,7 @@ fn join_workers(app: &AppHandle) {
 /// The steps after admission closes, as seams the sequence runs in order.
 struct ExitSequence {
     join_workers: Box<dyn FnOnce() + Send>,
-    wait_for_mutation: Box<dyn FnOnce() -> Result<(), String> + Send>,
+    wait_for_mutation: Box<dyn FnOnce() -> Result<crate::mutation_runtime::IdleWait, String> + Send>,
     exit: Box<dyn FnOnce() + Send>,
     report: Arc<dyn Fn(String) + Send + Sync>,
 }
@@ -224,8 +230,9 @@ fn run_exit(sequence: ExitSequence, spawn: Spawn, deadline: Duration) {
 }
 
 /// Waits for the non-mutation joins up to `deadline`, then for mutation
-/// quiescence with no deadline, then exits. A join that never reaches its own
-/// cancellation point is abandoned at the deadline, once.
+/// quiescence up to its own `MUTATION_QUIESCE_DEADLINE`, then exits. A join or
+/// a file operation that never reaches its own safe point is abandoned at its
+/// deadline, once, with outstanding subprocesses killed either way.
 fn finish_exit(sequence: ExitSequence, spawn: Spawn, deadline: Duration) {
     let ExitSequence {
         join_workers,
@@ -250,8 +257,16 @@ fn finish_exit(sequence: ExitSequence, spawn: Spawn, deadline: Duration) {
             crate::subprocess::kill_all_running();
         }
     }
-    if let Err(error) = wait_for_mutation() {
-        report(error);
+    match wait_for_mutation() {
+        Ok(crate::mutation_runtime::IdleWait::Idle) => {}
+        Ok(crate::mutation_runtime::IdleWait::TimedOut) => {
+            crate::logging::warn(
+                "mutation quiescence exceeded its deadline; giving up on the current file operation",
+                json!({ "deadline_secs": MUTATION_QUIESCE_DEADLINE.as_secs() }),
+            );
+            crate::subprocess::kill_all_running();
+        }
+        Err(error) => report(error),
     }
     exit();
 }

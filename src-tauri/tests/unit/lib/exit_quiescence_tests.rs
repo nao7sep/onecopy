@@ -35,7 +35,7 @@ fn sequence(steps: &Steps, join_workers: Box<dyn FnOnce() + Send>, mutation: Dur
             wait_for_mutation: Box::new(move || {
                 std::thread::sleep(mutation);
                 mutation_steps.lock().unwrap().push("mutation idle".into());
-                Ok(())
+                Ok(crate::mutation_runtime::IdleWait::Idle)
             }),
             exit: Box::new(move || {
                 exit_steps.lock().unwrap().push("exit".into());
@@ -49,12 +49,12 @@ fn sequence(steps: &Steps, join_workers: Box<dyn FnOnce() + Send>, mutation: Dur
     )
 }
 
-// A mutation still in flight is never terminated by the exit deadline
-// (`specs/file-operations.md`, "Normal exit and abnormal termination"): a
-// stuck derived join is abandoned at its deadline, and exit still waits for
-// the mutation step to finish, with no deadline of its own.
+// A mutation that reaches its own safe point well inside its deadline is
+// never treated as timed out, even while a stuck derived join is abandoned at
+// its own, shorter deadline (`specs/file-operations.md`, "Normal exit and
+// abnormal termination").
 #[test]
-fn mutation_quiescence_has_no_deadline_while_a_stuck_join_is_abandoned() {
+fn a_mutation_that_reaches_its_safe_point_in_time_exits_normally() {
     let steps = Steps::default();
     let (_never, stuck) = std::sync::mpsc::channel::<()>();
     let (exit, exited) = sequence(
@@ -70,6 +70,41 @@ fn mutation_quiescence_has_no_deadline_while_a_stuck_join_is_abandoned() {
 
     assert!(started.elapsed() >= Duration::from_millis(300));
     assert_eq!(*steps.lock().unwrap(), vec!["mutation idle", "exit"]);
+}
+
+// A file operation that never reaches its own safe point lets exit complete
+// once the mutation-quiescence deadline passes: quitting gives up on it
+// rather than waiting forever, per the same "Normal exit and abnormal
+// termination" contract.
+#[test]
+fn a_mutation_that_never_reaches_a_safe_point_still_lets_exit_complete() {
+    let steps = Steps::default();
+    let mutation_steps = steps.clone();
+    let exit_steps = steps.clone();
+    let (exited_tx, exited_rx) = std::sync::mpsc::channel();
+    let sequence = ExitSequence {
+        join_workers: Box::new(|| {}),
+        wait_for_mutation: Box::new(move || {
+            mutation_steps.lock().unwrap().push("mutation timed out".into());
+            Ok(crate::mutation_runtime::IdleWait::TimedOut)
+        }),
+        exit: Box::new(move || {
+            exit_steps.lock().unwrap().push("exit".into());
+            let _ = exited_tx.send(());
+        }),
+        report: Arc::new(|_| {}),
+    };
+    let started = Instant::now();
+    run_exit(sequence, spawn_thread, Duration::from_secs(5));
+    exited_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("giving up on the mutation still reaches exit");
+
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "giving up must not add its own extra wait on top of the mutation's own deadline"
+    );
+    assert_eq!(*steps.lock().unwrap(), vec!["mutation timed out", "exit"]);
 }
 
 fn no_exit_thread(name: &'static str, work: Box<dyn FnOnce() + Send>) -> std::io::Result<()> {

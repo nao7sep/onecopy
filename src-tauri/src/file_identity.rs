@@ -183,6 +183,31 @@ pub fn path_names_file(path: &Path, file: &File) -> bool {
     FileIdentity::from_file(file).is_ok_and(|expected| path_names(path, expected))
 }
 
+/// Shared prefix and suffix of every private pathname this app creates for
+/// its own bookkeeping beside a real output: a staged output
+/// (`.onecopy-stage-<nanoid>.tmp`, `operations::output_stage_path`) or a
+/// publication ownership hold (`.onecopy-claim-<nanoid>.tmp`, `claim_private`
+/// above). Nothing else ever names a file this way.
+const PRIVATE_TMP_PREFIX: &str = ".onecopy-";
+const PRIVATE_TMP_SUFFIX: &str = ".tmp";
+
+/// Whether `path`'s file name is one of this app's own private staging or
+/// claim pathnames, recognizable purely from its shape. A survivor found on a
+/// later launch can only be launch-time garbage left by a previous process
+/// that quitting gave up on (`app_lifecycle::MUTATION_QUIESCE_DEADLINE`): this
+/// process's own mutation admission serializes every file operation against
+/// discovery (`scan_runtime::begin_admitted_mutation`), so no live process
+/// ever has one of these names at rest while discovery can see it. Discovery
+/// excludes it so it is never indexed as library content, and the walk
+/// removes it outright (`scanner::is_excluded_from_discovery`).
+pub fn is_private_tmp_name(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name.starts_with(PRIVATE_TMP_PREFIX) && name.ends_with(PRIVATE_TMP_SUFFIX)
+        })
+}
+
 /// Moves a private staging pathname into a fresh private hold and verifies the
 /// physical file that actually moved against this operation's open
 /// descriptor. This is the operation-owned claim used by both publication and

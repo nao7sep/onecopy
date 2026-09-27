@@ -48,6 +48,44 @@ fn section_recheck_answers_busy_while_a_file_operation_runs() {
     assert!(crate::scan_runtime::section_admission().is_ok());
 }
 
+// Quitting must not wait past its deadline for a file operation that never
+// reaches its own safe point (`specs/file-operations.md`, "Normal exit and
+// abnormal termination"): it gives up on the current file, not on the whole
+// exit sequence.
+#[test]
+fn wait_for_idle_gives_up_at_its_deadline_when_the_claim_never_drops() {
+    let _serial = crate::scan_runtime::serial_test();
+    let claim = begin().unwrap();
+    let started = std::time::Instant::now();
+    let outcome = wait_for_idle(std::time::Duration::from_millis(50));
+    assert_eq!(outcome, Ok(IdleWait::TimedOut));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "must give up at the deadline, not hang"
+    );
+    drop(claim);
+}
+
+// A file operation that reaches its safe point (drops its claim) before the
+// deadline lets exit proceed at once, without waiting out the full deadline.
+#[test]
+fn wait_for_idle_returns_as_soon_as_the_claim_drops_before_the_deadline() {
+    let _serial = crate::scan_runtime::serial_test();
+    let claim = begin().unwrap();
+    let released = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        drop(claim);
+    });
+    let started = std::time::Instant::now();
+    let outcome = wait_for_idle(std::time::Duration::from_secs(10));
+    released.join().unwrap();
+    assert_eq!(outcome, Ok(IdleWait::Idle));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "must not wait out the full deadline once the claim already dropped"
+    );
+}
+
 #[test]
 fn a_rebuild_requested_during_a_file_operation_is_refused_at_once_and_never_queued() {
     // `begin_rebuild` takes this same claim, reporting only state failures.
