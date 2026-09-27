@@ -2144,7 +2144,7 @@ pub struct ResolveStats {
     pub undated: u64,
 }
 
-const RESOLVE_PAGE_SIZE: usize = 256;
+pub const RESOLVE_PAGE_SIZE: usize = 256;
 
 /// The pure resolution pass: stored evidence + stat columns → resolved
 /// timestamp columns. Never opens a file.

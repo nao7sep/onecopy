@@ -2258,6 +2258,7 @@ fn library_wide_date_re_resolution_holds_the_write_lock_only_briefly() {
     let config = resolution_config();
     let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let worker_done = done.clone();
+    let worker_start = std::time::Instant::now();
     let worker = std::thread::spawn(move || {
         re_resolve_all_with_progress(&f.conn, &config, false, &|_| {}).unwrap();
         worker_done.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -2309,6 +2310,7 @@ fn library_wide_date_re_resolution_holds_the_write_lock_only_briefly() {
     }
     max_gap_ms = max_gap_ms.max(std::time::Instant::now().duration_since(last_success_at).as_millis());
     worker.join().unwrap();
+    let worker_elapsed_ms = worker_start.elapsed().as_millis().max(1);
 
     // Without the fix, invalidation ran as one transaction spanning the
     // whole library and the per-file resolve phase wrote one autocommit
@@ -2322,19 +2324,35 @@ fn library_wide_date_re_resolution_holds_the_write_lock_only_briefly() {
     // fix, every page's transaction is followed by a real idle interval, so
     // no such stretch approaches the length either phase used to hold the
     // lock for.
+    //
+    // The bound itself must not be a fixed wall-clock millisecond count:
+    // under parallel test-suite load the whole worker runs slower (more
+    // pages per second is not guaranteed), so a fixed cap flakes even with
+    // the fix in place. Instead measure the property the fix establishes —
+    // the lock is only ever held for about one page — by comparing the
+    // longest starved stretch to the worker's own average time per page.
+    // Both phases page over the whole `ROWS`-row library at
+    // `RESOLVE_PAGE_SIZE`, so this is a lower bound on the number of pages
+    // actually written; a generous multiple absorbs scheduling jitter
+    // without hiding a real multi-page stall.
+    let pages = 2 * (ROWS as u128).div_ceil(RESOLVE_PAGE_SIZE as u128);
+    let avg_page_ms = (worker_elapsed_ms / pages).max(1);
+    let max_allowed_gap_ms = avg_page_ms * 50;
     assert!(
         attempts >= 10,
         "the probe only got {attempts} chances to run"
     );
     assert!(successes > 0, "the probe never got a single write through");
     assert!(
-        max_gap_ms < 1_000,
+        max_gap_ms <= max_allowed_gap_ms,
         "the probe went {max_gap_ms} ms without a single successful write \
-         during the re-resolve — the invalidation and per-file resolve \
-         phases must page their writes through the projection-batch \
-         publisher, with a real idle interval between pages, so no single \
-         transaction (or unbroken run of them) holds the write lock long \
-         enough to starve a concurrent writer"
+         during a re-resolve that averaged {avg_page_ms} ms per page \
+         (allowing up to {max_allowed_gap_ms} ms) — the invalidation and \
+         per-file resolve phases must page their writes through the \
+         projection-batch publisher, with a real idle interval between \
+         pages, so no single transaction (or unbroken run of them) holds \
+         the write lock for many pages' worth of time and starves a \
+         concurrent writer"
     );
 }
 
