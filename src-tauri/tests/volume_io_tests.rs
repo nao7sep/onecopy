@@ -229,3 +229,34 @@ fn volumes_are_told_apart_by_spelling_alone() {
     // the filesystem, so a path that does not exist still has a volume.
     assert!(!volume_io::is_stalled(Path::new("/definitely/not/here")));
 }
+
+/// Cancel while the walk waits: the walk stops at its next entry and says it
+/// was cancelled, so no caller mistakes the entries it got for all of them.
+#[test]
+fn a_cancelled_walk_ends_as_cancelled_never_as_complete() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("a")).unwrap();
+    std::fs::write(dir.path().join("a").join("f"), b"x").unwrap();
+    std::fs::write(dir.path().join("a").join("g"), b"y").unwrap();
+    let volume = Arc::new(FakeStallingVolume::mount(dir.path(), Duration::from_secs(60)));
+    volume.stall(&[Op::List], Some(&dir.path().join("a")));
+    let releaser = volume.clone();
+    // Released well inside the cancel grace, so the walk stops by itself
+    // rather than being abandoned.
+    std::thread::spawn(move || {
+        releaser.wait_until_held(1, Duration::from_secs(5));
+        std::thread::sleep(Duration::from_millis(50));
+        releaser.release();
+    });
+    let mut walk = volume_io::walk(dir.path(), |_, _| true).unwrap();
+    let ended = loop {
+        match walk.next(Some(&|| true)) {
+            Some(Ok(_)) => {}
+            Some(Err(error)) => break Some(error),
+            None => break None,
+        }
+    };
+    let error = ended.expect("a cancelled walk must not read as a complete one");
+    assert_eq!(failure(&error), Some(WaitFailure::Cancelled));
+    assert!(!volume.is_stalled(), "a walk that stopped by itself was not abandoned");
+}

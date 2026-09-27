@@ -940,6 +940,8 @@ enum WalkMessage {
     Entry(Result<WalkEntry, WalkError>),
     /// The walk ended; `Err` when its thread failed or panicked.
     End(Result<(), String>),
+    /// The walk stopped early because its consumer cancelled it.
+    Stopped,
 }
 
 /// A walk of a directory tree running on a pool thread, consumed on the
@@ -989,7 +991,7 @@ pub fn walk(
                 .filter_entry(|entry| filter(entry.path(), &entry.file_type()))
             {
                 if producer_stop.load(Ordering::Acquire) {
-                    return Ok(());
+                    return Ok(false);
                 }
                 let message = match entry {
                     Ok(entry) => {
@@ -1019,14 +1021,18 @@ pub fn walk(
                     }),
                 };
                 if sender.send(WalkMessage::Entry(message)).is_err() {
-                    return Ok(());
+                    return Ok(false);
                 }
             }
-            Ok(())
+            Ok(true)
         }));
+        // A walk cut short is never reported as a complete one: a consumer
+        // must not read absence into entries it never received.
         let end = match produced {
-            Ok(result) => result,
-            Err(_) => Err("the walk panicked".to_string()),
+            Ok(Ok(true)) => WalkMessage::End(Ok(())),
+            Ok(Ok(false)) => WalkMessage::Stopped,
+            Ok(Err(error)) => WalkMessage::End(Err(error)),
+            Err(_) => WalkMessage::End(Err("the walk panicked".to_string())),
         };
         let mut state = producer_state.lock().unwrap_or_else(|p| p.into_inner());
         if *state == CallState::Abandoned {
@@ -1035,7 +1041,7 @@ pub fn walk(
         } else {
             *state = CallState::Done;
             drop(state);
-            let _ = sender.send(WalkMessage::End(end));
+            let _ = sender.send(end);
         }
     }))?;
     Ok(Walk {
@@ -1071,6 +1077,15 @@ impl Walk {
                 Ok(WalkMessage::End(Err(message))) => {
                     self.finished = true;
                     return Some(Err(io::Error::other(message)));
+                }
+                Ok(WalkMessage::Stopped) => {
+                    self.finished = true;
+                    return Some(Err(VolumeWait {
+                        failure: WaitFailure::Cancelled,
+                        volume: display_volume(&self.lane.key),
+                        op: Op::List,
+                    }
+                    .into_io()));
                 }
                 Err(RecvTimeoutError::Disconnected) => {
                     self.finished = true;
