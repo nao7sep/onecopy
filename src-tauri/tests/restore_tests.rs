@@ -776,6 +776,29 @@ fn a_restore_rename_given_up_on_that_fails_later_is_still_in_deleted_files() {
 }
 
 #[test]
+fn a_drive_that_stops_answering_before_the_move_says_the_file_is_still_in_deleted_files() {
+    // 6: the stop is the drive's, not the file's: the Issue must not claim
+    // the file left Deleted files or that something blocks its folder.
+    use onecopy_lib::volume_io::{FakeStallingVolume, Op};
+    let f = fixture("stat-given-up", false);
+    let first = f.deleted("a.jpg", b"first", "i1", TrashRole::Main);
+    let second = f.deleted("b.jpg", b"second", "i2", TrashRole::Main);
+    let (plan, _, _) = f.plan(&[first, second]);
+    let volume = FakeStallingVolume::mount(&f.root, STALL_BOUND);
+    volume.stall(&[Op::Stat], Some(&f.root.join(TRASH_DIR_NAME)));
+    let outcome = f.execute(&plan);
+    volume.release();
+    assert!(volume.wait_until_settled(SETTLE));
+    assert_eq!((outcome.failed, outcome.unknown, outcome.unstarted), (1, 0, 1));
+    assert!(outcome.error.is_some());
+    assert_eq!(
+        f.issue_keys(),
+        [("restore-error".to_string(), "notice.restoreFailed".to_string())]
+    );
+    assert_eq!(list_root(&f.root, &f.data).unwrap().entries.len(), 2, "nothing moved");
+}
+
+#[test]
 fn only_a_configured_root_can_be_restored_into() {
     // 5, 8: the location must be one the settings name now.
     let roots = [PathBuf::from("/Volumes/A/Photos")];

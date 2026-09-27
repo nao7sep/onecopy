@@ -556,8 +556,9 @@ pub struct RestoreProgress {
 enum StepFailure {
     /// This file only.
     File(&'static str, String),
-    /// This file, and the drive or root cannot take more: stop the rest.
-    Stop(&'static str, String),
+    /// The drive or root cannot take more: this file was not moved, and the
+    /// rest stops. The reason is the drive's, never this file's own.
+    Stop(String),
     /// Given up on while the drive was not responding: outcome unknown, and
     /// nothing further goes to this drive.
     Unknown(String),
@@ -584,7 +585,7 @@ fn ensure_folder(folder: &Path, root: &Path) -> Result<(), StepFailure> {
         Err(error) => {
             let message = format!("could not create {}: {error}", folder.display());
             return Err(if stops_remainder(&error, root) {
-                StepFailure::Stop(FAILED, message)
+                StepFailure::Stop(message)
             } else {
                 StepFailure::File(FAILED, message)
             });
@@ -627,7 +628,7 @@ fn restore_one(
             return Err(StepFailure::File(MISSING, error.to_string()))
         }
         Err(error) if stops_remainder(&error, root) => {
-            return Err(StepFailure::Stop(MISSING, error.to_string()))
+            return Err(StepFailure::Stop(error.to_string()))
         }
         Err(error) => return Err(StepFailure::File(CHANGED, error.to_string())),
         Ok(metadata) => {
@@ -669,7 +670,7 @@ fn restore_one(
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => ensure_folder(folder, root)?,
             Err(error) if stops_remainder(&error, root) => {
-                return Err(StepFailure::Stop(FOLDER_BLOCKED, error.to_string()))
+                return Err(StepFailure::Stop(error.to_string()))
             }
             Err(error) => return Err(StepFailure::File(FOLDER_BLOCKED, error.to_string())),
         }
@@ -678,7 +679,7 @@ fn restore_one(
         (Ok(home), Ok(stored)) => home == stored,
         (Err(error), _) | (_, Err(error)) => {
             return Err(if stops_remainder(&error, root) {
-                StepFailure::Stop(OTHER_DRIVE, error.to_string())
+                StepFailure::Stop(error.to_string())
             } else {
                 StepFailure::File(OTHER_DRIVE, error.to_string())
             })
@@ -705,7 +706,7 @@ fn restore_one(
             return Err(StepFailure::File(MISSING, error.to_string()))
         }
         Err(error) if stops_remainder(&error, root) => {
-            return Err(StepFailure::Stop(FAILED, error.to_string()))
+            return Err(StepFailure::Stop(error.to_string()))
         }
         Err(error) => {
             return Err(StepFailure::File(
@@ -802,8 +803,8 @@ pub fn execute(
                 StepFailure::File(key, message) => {
                     record(conn, &stored, RESTORE_ERROR, key, &message)
                 }
-                StepFailure::Stop(key, message) => {
-                    let recorded = record(conn, &stored, RESTORE_ERROR, key, &message);
+                StepFailure::Stop(message) => {
+                    let recorded = record(conn, &stored, RESTORE_ERROR, FAILED, &message);
                     stop = Some(message);
                     recorded
                 }
