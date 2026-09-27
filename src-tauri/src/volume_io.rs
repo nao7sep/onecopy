@@ -956,6 +956,9 @@ pub struct Walk {
     lane: Lane,
     bound: Duration,
     finished: bool,
+    /// The walk's thread returned while a wait was giving up on it; the rest
+    /// of its messages are queued and are delivered without waiting.
+    producer_done: bool,
 }
 
 /// Starts walking `root` without following symlinks. `filter` decides, on
@@ -1051,6 +1054,7 @@ pub fn walk(
         lane,
         bound,
         finished: false,
+        producer_done: false,
     })
 }
 
@@ -1064,33 +1068,19 @@ impl Walk {
         if self.finished {
             return None;
         }
+        if self.producer_done {
+            // The walk's thread has returned: everything it produced, its end
+            // included, is already queued.
+            let message = self.receiver.recv().ok();
+            return self.deliver(message);
+        }
         let started = Instant::now();
         let deadline = started + self.bound;
         let mut cancel_at: Option<Instant> = None;
         loop {
             match self.receiver.recv_timeout(POLL) {
-                Ok(WalkMessage::Entry(entry)) => return Some(Ok(entry)),
-                Ok(WalkMessage::End(Ok(()))) => {
-                    self.finished = true;
-                    return None;
-                }
-                Ok(WalkMessage::End(Err(message))) => {
-                    self.finished = true;
-                    return Some(Err(io::Error::other(message)));
-                }
-                Ok(WalkMessage::Stopped) => {
-                    self.finished = true;
-                    return Some(Err(VolumeWait {
-                        failure: WaitFailure::Cancelled,
-                        volume: display_volume(&self.lane.key),
-                        op: Op::List,
-                    }
-                    .into_io()));
-                }
-                Err(RecvTimeoutError::Disconnected) => {
-                    self.finished = true;
-                    return None;
-                }
+                Ok(message) => return self.deliver(Some(message)),
+                Err(RecvTimeoutError::Disconnected) => return self.deliver(None),
                 Err(RecvTimeoutError::Timeout) => {}
             }
             let now = Instant::now();
@@ -1105,12 +1095,18 @@ impl Walk {
             } else {
                 continue;
             };
-            self.finished = true;
-            self.stop.store(true, Ordering::Release);
             let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
             if *state == CallState::Done {
-                return None;
+                // The walk finished between the last poll and this check: its
+                // remaining entries and its end are queued, never dropped, so
+                // a walk cut short is still never read as a complete one.
+                drop(state);
+                self.producer_done = true;
+                let message = self.receiver.recv().ok();
+                return self.deliver(message);
             }
+            self.finished = true;
+            self.stop.store(true, Ordering::Release);
             *state = CallState::Abandoned;
             *registry()
                 .abandoned
@@ -1134,6 +1130,37 @@ impl Walk {
                 }),
             );
             return Some(Err(wait.into_io()));
+        }
+    }
+
+    /// Hands one message from the walk's thread to the consumer.
+    fn deliver(
+        &mut self,
+        message: Option<WalkMessage>,
+    ) -> Option<io::Result<Result<WalkEntry, WalkError>>> {
+        match message {
+            Some(WalkMessage::Entry(entry)) => Some(Ok(entry)),
+            Some(WalkMessage::End(Ok(()))) => {
+                self.finished = true;
+                None
+            }
+            Some(WalkMessage::End(Err(message))) => {
+                self.finished = true;
+                Some(Err(io::Error::other(message)))
+            }
+            Some(WalkMessage::Stopped) => {
+                self.finished = true;
+                Some(Err(VolumeWait {
+                    failure: WaitFailure::Cancelled,
+                    volume: display_volume(&self.lane.key),
+                    op: Op::List,
+                }
+                .into_io()))
+            }
+            None => {
+                self.finished = true;
+                None
+            }
         }
     }
 }
