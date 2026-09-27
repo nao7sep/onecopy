@@ -554,7 +554,14 @@ fn call_with<D: Send + 'static, T: Send + 'static>(
     let job_path = path.to_path_buf();
     if let Err(error) = submit(Box::new(move || {
         let result = match fake.and_then(|fake| fake.hold(op, &job_path)) {
-            Some(failed) => Err(failed),
+            // A call the fake fails never runs, but what it carried (a
+            // private file's settle action) still settles here, before the
+            // volume counts as answering again, exactly as a real call's
+            // result does below.
+            Some(failed) => {
+                drop(data);
+                Err(failed)
+            }
             None => match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(data))) {
                 Ok(result) => result,
                 Err(_) => Err(io::Error::other("a filesystem call panicked")),
