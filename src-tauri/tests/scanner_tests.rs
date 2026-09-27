@@ -1787,6 +1787,45 @@ fn removing_a_root_forgets_its_files_and_their_cache() {
 }
 
 #[test]
+fn removing_a_source_keeps_a_nested_root_still_configured_as_its_own_source() {
+    // A folder can be configured as its own source while it also sits inside
+    // a different, separately configured source. Removing the outer source
+    // must not sweep away the inner one's rows just because its abs_path
+    // starts with the same prefix as the outer root's LIKE pattern.
+    let f = fixture("forget-root-nested");
+    let parent = f.root.join("Parent");
+    let child = parent.join("Child");
+    std::fs::create_dir_all(&child).unwrap();
+    std::fs::write(parent.join("a.jpg"), b"parent-bytes").unwrap();
+    std::fs::write(child.join("b.jpg"), b"child-bytes").unwrap();
+    let cache = test_cache(&f);
+    walk_root(&f.conn, &parent, &lists()).unwrap();
+    walk_root(&f.conn, &child, &lists()).unwrap();
+    hash_pending(&f.conn, &cache).unwrap();
+
+    // Only the nested Child root stays configured; Parent is removed.
+    let configured = vec![child.to_string_lossy().to_string()];
+    let forgotten = forget_unconfigured_roots(&f.conn, &configured, &cache).unwrap();
+
+    assert_eq!(forgotten, 1, "only Parent's own file leaves");
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM paths WHERE file_name = 'a.jpg'"),
+        0,
+        "the removed parent's own file leaves the index"
+    );
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM paths WHERE file_name = 'b.jpg'"),
+        1,
+        "the nested still-configured root keeps its rows"
+    );
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM scan_dirs"),
+        1,
+        "only the child root remains configured"
+    );
+}
+
+#[test]
 fn removing_a_root_with_more_orphaned_hashes_than_sqlites_bound_parameter_limit_still_works() {
     // R6-01: orphan collection is a subquery over `batch_touched_hashes`,
     // never one bound parameter per orphaned hash, so a root holding more

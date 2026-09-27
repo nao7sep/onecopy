@@ -533,10 +533,38 @@ pub fn forget_unconfigured_roots(
             }
     };
 
+    // A root still configured as its own source keeps its rows even when it
+    // sits inside a root being forgotten here (e.g. the user removes a parent
+    // folder but kept a subfolder of it configured separately): the LIKE
+    // prefix below would otherwise sweep up that nested source's paths along
+    // with the parent's, deleting evidence and rows for a folder the user
+    // never asked to stop tracking.
+    let kept_roots: Vec<String> = recorded
+        .iter()
+        .filter(|(root, configured_root)| still_configured(root, configured_root.as_deref()))
+        .map(|(root, _)| root.clone())
+        .collect();
+
     let mut forgotten = 0u64;
     for (root, configured_root) in recorded {
         if still_configured(&root, configured_root.as_deref()) {
             continue;
+        }
+        let nested_kept_roots: Vec<&String> = kept_roots
+            .iter()
+            .filter(|kept| directory_belongs_to_root(kept, &root) && kept.as_str() != root)
+            .collect();
+        // `?1` is always the forgotten root's own prefix; `?2`, `?3`, ... are
+        // any nested still-configured roots, bound (never interpolated) like
+        // every other path value in this function.
+        let mut abs_path_params: Vec<String> = vec![like_prefix(&root)];
+        let mut exclude_nested_kept = String::new();
+        for kept in &nested_kept_roots {
+            abs_path_params.push(like_prefix(kept));
+            exclude_nested_kept.push_str(&format!(
+                " AND abs_path NOT LIKE ?{} ESCAPE '!'",
+                abs_path_params.len()
+            ));
         }
         // Evidence, companions, paths, orphan contents and scan_dirs all
         // move in one IMMEDIATE batch transaction: a crash or DB error
@@ -561,21 +589,27 @@ pub fn forget_unconfigured_roots(
             |tx| {
                 // Companions first: their rows hold a foreign key to the primary.
                 tx.execute(
-                    "DELETE FROM evidence WHERE path_id IN \
-                     (SELECT id FROM paths WHERE abs_path LIKE ?1 ESCAPE '!')",
-                    [like_prefix(&root)],
+                    &format!(
+                        "DELETE FROM evidence WHERE path_id IN \
+                         (SELECT id FROM paths WHERE abs_path LIKE ?1 ESCAPE '!'{exclude_nested_kept})"
+                    ),
+                    rusqlite::params_from_iter(abs_path_params.iter()),
                 )
                 .map_err(|e| e.to_string())?;
                 tx.execute(
-                    "UPDATE paths SET companion_of = NULL \
-                     WHERE abs_path LIKE ?1 ESCAPE '!' AND companion_of IS NOT NULL",
-                    [like_prefix(&root)],
+                    &format!(
+                        "UPDATE paths SET companion_of = NULL \
+                         WHERE abs_path LIKE ?1 ESCAPE '!' AND companion_of IS NOT NULL{exclude_nested_kept}"
+                    ),
+                    rusqlite::params_from_iter(abs_path_params.iter()),
                 )
                 .map_err(|e| e.to_string())?;
                 removed = tx
                     .execute(
-                        "DELETE FROM paths WHERE abs_path LIKE ?1 ESCAPE '!'",
-                        [like_prefix(&root)],
+                        &format!(
+                            "DELETE FROM paths WHERE abs_path LIKE ?1 ESCAPE '!'{exclude_nested_kept}"
+                        ),
+                        rusqlite::params_from_iter(abs_path_params.iter()),
                     )
                     .map_err(|e| e.to_string())?;
                 tx.execute("DELETE FROM scan_dirs WHERE root = ?1", [&root])
@@ -1497,6 +1531,13 @@ pub fn promote_identity(
             .map_err(|e| e.to_string())?;
         Some(strip_frames.unwrap_or(0))
     };
+    // Held from just before commit through the cache rename/removal below, so
+    // the startup sweep (which takes the same lock for its whole pass) can
+    // never run its "is this key still in `contents`?" check in the gap
+    // between this commit and the cache files actually moving — otherwise it
+    // can see the just-vacated provisional key as orphaned and delete the
+    // file this function is about to rename out from under it.
+    let _identity_lock = crate::preview::lock_cache_identity();
     tx.commit().map_err(|e| e.to_string())?;
 
     if let Some(strip_frames) = strip_frames_for_rename {
@@ -1504,6 +1545,7 @@ pub fn promote_identity(
     } else {
         crate::preview::remove_entries(cache, provisional);
     }
+    drop(_identity_lock);
     let _ = crate::activity::record(crate::activity::ActivityDraft {
         kind: crate::activity::ActivityKind::Changed,
         owner: crate::activity::ActivityOwner::Identity,
