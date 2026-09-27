@@ -529,8 +529,29 @@ pub fn empty_root_with_progress(
 
 struct CachedDaySize {
     modified: std::time::SystemTime,
+    /// When `bytes` and `files` were counted.
+    measured: std::time::SystemTime,
     bytes: u64,
     files: u64,
+}
+
+/// The coarsest directory mtime granularity OneCopy meets (FAT's two
+/// seconds). A change within this window after a count can leave a day
+/// folder's mtime equal to the one the count saw.
+const MTIME_GRANULARITY: std::time::Duration = std::time::Duration::from_secs(2);
+
+impl CachedDaySize {
+    /// Whether this count still describes a day folder whose mtime is
+    /// `modified`. An equal mtime proves nothing changed only when the count
+    /// was taken more than one mtime granule after that mtime; otherwise a
+    /// file added in the same granule would leave the mtime unchanged.
+    fn describes(&self, modified: std::time::SystemTime) -> bool {
+        self.modified == modified
+            && self
+                .measured
+                .duration_since(modified)
+                .is_ok_and(|settled| settled > MTIME_GRANULARITY)
+    }
 }
 
 /// Per-day-folder size cache, keyed by that folder's own path. Trash layout is
@@ -539,7 +560,9 @@ struct CachedDaySize {
 /// changes on every add, remove, or rename directly inside it -- whether done
 /// by OneCopy or, per this app's recovery contract, by hand outside it. That
 /// makes the day folder the exact right cache boundary: reusing its cached
-/// size whenever its mtime is unchanged never risks serving a stale total,
+/// size whenever its mtime is unchanged, once that mtime is older than one
+/// mtime granule at counting time (`CachedDaySize::describes`), never risks
+/// serving a stale total,
 /// while a full walk of every day folder on every Trash-modal open (C-L3) is
 /// avoided for the common case of reopening it with nothing changed.
 static DAY_SIZE_CACHE: std::sync::LazyLock<
@@ -612,7 +635,7 @@ fn measure_root(root: &Path) -> TrashMeasure {
             .unwrap_or(0);
         seen.insert(day_path.clone());
         if let Some(cached) = cache.get(&day_path) {
-            if cached.modified == modified {
+            if cached.describes(modified) {
                 total_bytes += cached.bytes;
                 total_files += cached.files;
                 token_parts.push((
@@ -622,6 +645,7 @@ fn measure_root(root: &Path) -> TrashMeasure {
                 continue;
             }
         }
+        let measured = std::time::SystemTime::now();
         let (bytes, files) = day_dir_size(&day_path);
         total_bytes += bytes;
         total_files += files;
@@ -630,6 +654,7 @@ fn measure_root(root: &Path) -> TrashMeasure {
             day_path,
             CachedDaySize {
                 modified,
+                measured,
                 bytes,
                 files,
             },

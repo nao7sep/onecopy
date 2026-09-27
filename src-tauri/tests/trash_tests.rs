@@ -580,3 +580,46 @@ fn a_deleted_files_folder_that_is_not_a_real_directory_is_never_used() {
     assert!(trash_file(&file, &f.source, None).is_err());
     assert_eq!(std::fs::read(&file).unwrap(), b"bytes");
 }
+
+#[test]
+fn empty_notices_a_file_added_within_the_same_mtime_granule() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-trash-empty-granule-")
+        .tempdir()
+        .unwrap();
+    let source = dir.path().join("src");
+    std::fs::create_dir_all(&source).unwrap();
+    let first = source.join("reviewed.jpg");
+    std::fs::write(&first, vec![1u8; 100]).unwrap();
+    let record = trash_file(&first, &source, Some("h1")).unwrap();
+    let day = Path::new(&record.stored_path).parent().unwrap().to_path_buf();
+    let reviewed = overview(std::slice::from_ref(&source)).remove(0);
+    assert_eq!(reviewed.files, 1);
+    let day_modified = std::fs::metadata(&day).unwrap().modified().unwrap();
+
+    // A Delete finishes while the confirmation shows "1 file" and trashes one
+    // more file into the same day folder within one mtime granule (FAT keeps
+    // two seconds, HFS+ one), so the folder's mtime reads as it did.
+    let later = source.join("later.jpg");
+    std::fs::write(&later, vec![2u8; 900]).unwrap();
+    trash_file(&later, &source, Some("h2")).unwrap();
+    std::fs::File::open(&day)
+        .unwrap()
+        .set_modified(day_modified)
+        .unwrap();
+
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    let outcome = empty_root_with_progress(
+        Path::new(&reviewed.root),
+        &reviewed.plan_token,
+        &cancelled,
+        &|_| {},
+        &|_, _| Ok(()),
+    )
+    .unwrap();
+
+    assert!(outcome.plan_changed, "the unreviewed file must not be emptied");
+    assert!(Path::new(&record.stored_path).exists());
+    let current = overview(std::slice::from_ref(&source)).remove(0);
+    assert_eq!((current.files, current.bytes), (2, 1000));
+}

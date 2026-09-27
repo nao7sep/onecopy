@@ -77,6 +77,7 @@ fn overview_reuses_a_day_folders_size_while_its_mtime_is_unchanged() {
             day_dir.clone(),
             CachedDaySize {
                 modified,
+                measured: modified + std::time::Duration::from_secs(60),
                 bytes: 999,
                 files: 7,
             },
