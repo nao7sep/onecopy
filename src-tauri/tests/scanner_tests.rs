@@ -2618,3 +2618,39 @@ fn the_walk_excludes_the_data_root_however_it_is_spelled() {
         1
     );
 }
+
+// A source whose drive stops answering mid-walk: the walk gives up within its
+// bound (so whoever holds the index claim gets it back), publishes no
+// absence, and keeps the root owed for the next check.
+#[test]
+fn a_walk_the_drive_stops_answering_ends_incomplete_within_its_bound() {
+    use onecopy_lib::volume_io::{FakeStallingVolume, Op};
+    let f = fixture("stalled-walk");
+    std::fs::write(f.root.join("a.jpg"), b"a").unwrap();
+    std::fs::create_dir(f.root.join("zz")).unwrap();
+    std::fs::write(f.root.join("zz").join("b.jpg"), b"b").unwrap();
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths WHERE missing = 0"), 2);
+
+    let volume = FakeStallingVolume::mount(&f.root, std::time::Duration::from_millis(300));
+    volume.stall(&[Op::List], Some(&f.root.join("zz")));
+    let started = std::time::Instant::now();
+    let stats = walk_root(&f.conn, &f.root, &lists()).unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    assert!(stats.errors > 0);
+    assert_eq!(stats.marked_missing, 0);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths WHERE missing = 0"), 2);
+    assert_eq!(count(&f.conn, "SELECT dirty FROM scan_dirs"), 1);
+
+    // While the drive has not answered, the next walk fails fast.
+    let started = std::time::Instant::now();
+    let again = walk_root(&f.conn, &f.root, &lists()).unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_millis(200));
+    assert!(again.errors > 0 && again.marked_missing == 0);
+
+    volume.release();
+    assert!(volume.wait_until_settled(std::time::Duration::from_secs(5)));
+    let repaired = walk_root(&f.conn, &f.root, &lists()).unwrap();
+    assert_eq!(repaired.errors, 0);
+    assert_eq!(count(&f.conn, "SELECT dirty FROM scan_dirs"), 0);
+}

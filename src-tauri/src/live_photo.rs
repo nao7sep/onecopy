@@ -26,7 +26,7 @@ const MOOV_CAP: u64 = 32 * 1024 * 1024;
 
 /// Reads Apple MakerNote tag 17 from a JPEG/HEIC still, if present.
 pub fn still_content_identifier(path: &Path) -> Option<String> {
-    let exif = nom_exif::read_exif(crate::winpath::for_fs(path).as_ref()).ok()?;
+    let exif = crate::metadata::read_exif(path).ok()?;
     let maker_note = exif.get(nom_exif::ExifTag::MakerNote)?.as_undefined()?;
     apple_maker_note_content_identifier(maker_note)
 }
@@ -86,7 +86,7 @@ pub fn apple_maker_note_content_identifier(bytes: &[u8]) -> Option<String> {
 
 /// Reads the content identifier from a video file, if present.
 pub fn quicktime_content_identifier(path: &Path) -> Option<String> {
-    let mut file = std::fs::File::open(crate::winpath::for_fs(path).as_ref()).ok()?;
+    let mut file = crate::volume_io::open_read(path).ok()?;
     let file_len = file.metadata().ok()?.len();
     let mut position = 0u64;
 

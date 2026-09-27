@@ -12,7 +12,7 @@ fn a_completed_run_leaves_no_queued_work_behind() {
         audio: vec![],
         companions: vec![],
     };
-    crate::scanner::upsert_file(&conn, &photo, &lists, 0).unwrap();
+    crate::scanner::upsert_file(&conn, &photo, &std::fs::metadata(&photo).unwrap(), &lists, 0).unwrap();
     assert!(crate::scanner::pending_index_work_exists(&conn).unwrap());
 
     let summary = complete_pending(&conn, crate::scanner::pending_index_work_exists, |conn| {

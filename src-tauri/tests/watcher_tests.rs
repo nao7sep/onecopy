@@ -435,3 +435,31 @@ fn a_vanished_directory_is_marked_missing_through_the_batch_publisher() {
     assert_eq!(missing, 600);
     assert_eq!(unguarded, 0, "every row was published under the batch guard");
 }
+
+// Each root is watched in its own bounded registration: a root whose drive
+// does not answer fails within the bound and never keeps another unwatched.
+#[test]
+fn a_root_that_does_not_answer_never_keeps_another_root_unwatched() {
+    use onecopy_lib::volume_io::{FakeStallingVolume, Op};
+    let stalled = tempfile::tempdir().unwrap();
+    let healthy = tempfile::tempdir().unwrap();
+    let volume = FakeStallingVolume::mount(stalled.path(), std::time::Duration::from_millis(300));
+    volume.stall(&[Op::Watch], None);
+
+    let started = std::time::Instant::now();
+    let refused = watch_root(stalled.path(), |_event: notify::Result<notify::Event>| {});
+    assert!(refused.is_err_and(|error| onecopy_lib::volume_io::is_not_responding(&error)));
+    let (events, received) = std::sync::mpsc::channel();
+    let _watching = watch_root(healthy.path(), move |event| {
+        let _ = events.send(event);
+    })
+    .expect("the healthy root is watched");
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+
+    std::fs::write(healthy.path().join("new.jpg"), b"x").unwrap();
+    assert!(received
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .is_ok());
+    volume.release();
+    assert!(volume.wait_until_settled(std::time::Duration::from_secs(5)));
+}

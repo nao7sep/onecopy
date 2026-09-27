@@ -28,13 +28,15 @@ An explicitly requested source-folder check acknowledges successful completion e
 
 A missing configured source or unavailable drive does not block the entire application. OneCopy continues with available copies, reports unavailable paths, and allows files to reappear when their source returns. It retains a reachable in-app path to recheck presence or repair the configured root without restarting.
 
+A drive that stops answering is treated as unavailable within a bounded time rather than waited on (`file-operations.md`, `Drives that stop answering`). A source check whose drive stops answering partway ends that source's pass incomplete with an Issue: nothing it did not see is marked missing, the source stays owed for the next check, and checking, watching, file-information completion, preparation, and file operations on other drives continue. Reading an original for its information or preparation fails as that one file when its drive does not answer.
+
 A configured source that contains OneCopy's own data folder never indexes or reacts to that folder's contents: the app's index, logs, caches, and models are its own storage, never source content. This exclusion applies everywhere source discovery occurs — the source-folder check, watcher ingestion, and destination browsing — the same way deleted-file storage is excluded everywhere it occurs.
 
 A macOS AppleDouble sidecar (`._name`) sitting beside its real file `name` in the same directory is operating-system metadata, not source content: macOS writes it to carry extended attributes and a resource fork on a volume that cannot store them natively, such as FAT, exFAT, or many network shares. It is excluded from discovery the same way, everywhere source discovery occurs, for as long as `name` exists beside it. An index row already recorded for one leaves the library the same way any other vanished path does, marked missing rather than raised as a failure. A `._name` file with no such sibling — its real file already gone, or its name unrelated — is ordinary content and remains discoverable.
 
 ## Watchers and section recheck
 
-Filesystem watchers remain active while OneCopy is open. Watcher discoveries enter the same durable information-completion work as source-check discoveries. A watcher failure becomes visible rather than silently leaving the library stale.
+Filesystem watchers remain active while OneCopy is open. Each configured source is watched on its own, so a source whose drive does not answer when watching starts is reported without leaving the other sources unwatched. Watcher discoveries enter the same durable information-completion work as source-check discoveries. A watcher failure becomes visible rather than silently leaving the library stale.
 
 `Recheck this section`, also available through Cmd/Ctrl+R, rechecks the filesystem locations already represented by the open section, settles changed files, and reloads that section. It does not search unrelated source directories for files that might newly qualify for the section.
 

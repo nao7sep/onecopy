@@ -46,7 +46,7 @@ pub struct MediaMetadata {
 /// RAW containers), kamadak-exif as the TIFF-family fallback. A parse failure
 /// is an empty result, not an error — many files simply carry no EXIF.
 pub fn read_image_metadata(path: &Path) -> std::io::Result<MediaMetadata> {
-    match nom_exif::read_exif(path) {
+    match read_exif(path) {
         Ok(exif) => return Ok(from_nom_exif(&exif)),
         Err(nom_exif::Error::Io(error)) if error.kind() != std::io::ErrorKind::UnexpectedEof => {
             return Err(error)
@@ -60,7 +60,7 @@ pub fn read_image_metadata(path: &Path) -> std::io::Result<MediaMetadata> {
 /// result.
 pub fn read_video_metadata(path: &Path) -> std::io::Result<MediaMetadata> {
     let live_photo_identifier = crate::live_photo::quicktime_content_identifier(path);
-    let track = match nom_exif::read_track(path) {
+    let track = match read_track(path) {
         Ok(track) => track,
         Err(nom_exif::Error::Io(error)) if error.kind() != std::io::ErrorKind::UnexpectedEof => {
             return Err(error)
@@ -154,10 +154,37 @@ fn from_nom_exif(exif: &nom_exif::Exif) -> MediaMetadata {
     }
 }
 
+/// Parsers read an original through a bounded `volume_io` file; the buffer
+/// keeps their many small reads and seeks to one bounded call per block.
+const PARSE_BUFFER: usize = 256 * 1024;
+
+fn open_for_parsing(path: &Path) -> std::io::Result<BufReader<crate::volume_io::VolumeFile>> {
+    Ok(BufReader::with_capacity(
+        PARSE_BUFFER,
+        crate::volume_io::open_read(path)?,
+    ))
+}
+
+/// nom-exif's EXIF read over a bounded file.
+pub fn read_exif(path: &Path) -> nom_exif::Result<nom_exif::Exif> {
+    let source = nom_exif::MediaSource::seekable(
+        open_for_parsing(path).map_err(nom_exif::Error::Io)?,
+    )?;
+    nom_exif::MediaParser::new().parse_exif(source).map(Into::into)
+}
+
+/// nom-exif's track read over a bounded file.
+pub fn read_track(path: &Path) -> nom_exif::Result<nom_exif::TrackInfo> {
+    let source = nom_exif::MediaSource::seekable(
+        open_for_parsing(path).map_err(nom_exif::Error::Io)?,
+    )?;
+    nom_exif::MediaParser::new().parse_track(source)
+}
+
 /// kamadak-exif fallback for TIFF-family containers, metadata-only.
 pub fn read_tiff_metadata(path: &Path) -> std::io::Result<Option<MediaMetadata>> {
-    let file = std::fs::File::open(crate::winpath::for_fs(path).as_ref())?;
-    let exif = match exif::Reader::new().read_from_container(&mut BufReader::new(file)) {
+    let mut file = open_for_parsing(path)?;
+    let exif = match exif::Reader::new().read_from_container(&mut file) {
         Ok(exif) => exif,
         // A truncated metadata container is a parse failure, not a failed
         // filesystem read. Other I/O errors retain their native error kind.

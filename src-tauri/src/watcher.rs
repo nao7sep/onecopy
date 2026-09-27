@@ -25,7 +25,6 @@ use std::time::Duration;
 /// `notify`'s own `need_rescan()` rather than growing without bound (W-L4).
 const EVENT_QUEUE_CAPACITY: usize = 4096;
 
-use notify::Watcher;
 use serde_json::json;
 
 use crate::logging;
@@ -77,7 +76,7 @@ pub fn restat_dir(
     // after its events arrived is normal (Shift+Del, `rm -r`), not a walk
     // failure. Every row under it is marked missing instead, contained to
     // this one dirty entry rather than aborting the whole watcher batch.
-    if matches!(std::fs::symlink_metadata(dir), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+    if matches!(crate::volume_io::symlink_metadata(dir), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
     {
         let dir_str = dir.to_string_lossy().to_string();
         return scanner::mark_missing_under(conn, &dir_str);
@@ -87,7 +86,8 @@ pub fn restat_dir(
     let mut changed = visibility_directories.changed_files as u64;
     let mut present: HashSet<String> = HashSet::new();
 
-    let entries = match std::fs::read_dir(dir) {
+    // One bounded listing that also reads each entry's metadata.
+    let entries = match crate::volume_io::read_dir(dir, true) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             // A race after the check above (deleted between the two calls):
@@ -109,34 +109,18 @@ pub fn restat_dir(
         }
     };
     for entry in entries {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(error) => {
-                crate::index_store::upsert_issue_with_descriptor(
-                    conn,
-                    Some(dir.to_string_lossy().as_ref()),
-                    scanner::WALK_ERROR,
-                    Some(scanner::scan_issue_message_key(scanner::WALK_ERROR)),
-                    None,
-                    &error.to_string(),
-                )?;
-                return Err(error.to_string());
-            }
-        };
-        let path = entry.path();
-        let file_type = match entry.file_type() {
-            Ok(file_type) => file_type,
-            Err(error) => {
-                crate::index_store::upsert_issue_with_descriptor(
-                    conn,
-                    Some(path.to_string_lossy().as_ref()),
-                    scanner::STAT_ERROR,
-                    Some(scanner::scan_issue_message_key(scanner::STAT_ERROR)),
-                    None,
-                    &error.to_string(),
-                )?;
-                return Err(error.to_string());
-            }
+        let path = entry.path;
+        let Some(file_type) = entry.file_type else {
+            let error = "could not read the entry's type".to_string();
+            crate::index_store::upsert_issue_with_descriptor(
+                conn,
+                Some(path.to_string_lossy().as_ref()),
+                scanner::STAT_ERROR,
+                Some(scanner::scan_issue_message_key(scanner::STAT_ERROR)),
+                None,
+                &error,
+            )?;
+            return Err(error);
         };
         if !file_type.is_file() {
             continue;
@@ -150,7 +134,12 @@ pub fn restat_dir(
             continue;
         }
         present.insert(abs.clone());
-        match scanner::upsert_file(conn, &path, lists, inherited) {
+        let upserted = match entry.metadata {
+            Some(Ok(meta)) => scanner::upsert_file(conn, &path, &meta, lists, inherited),
+            Some(Err(error)) => Err(error.to_string()),
+            None => Err("file metadata was not read".to_string()),
+        };
+        match upserted {
             Ok(scanner::Upsert::Unchanged) => {}
             Ok(_) => changed += 1,
             Err(error) => {
@@ -262,16 +251,20 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
     // an unbounded backlog.
     let overflowed_while_blocked = Arc::new(AtomicBool::new(false));
     let handler_overflow = overflowed_while_blocked.clone();
-    let handler = move |event: notify::Result<notify::Event>| {
-        forward_or_flag_overflow(&tx, &handler_overflow, event);
-    };
-    let mut watcher = notify::recommended_watcher(handler).map_err(|error| error.to_string())?;
+    // One watcher per root, each registered in its own bounded call, so a
+    // root whose drive does not answer never keeps the others unwatched.
+    let mut watchers = Vec::new();
     let mut watched = 0usize;
     for root in &source_dirs {
         if !owns_generation(generation) {
             return Ok(());
         }
-        if let Err(err) = watcher.watch(Path::new(root), notify::RecursiveMode::Recursive) {
+        let (tx, handler_overflow) = (tx.clone(), handler_overflow.clone());
+        let handler = move |event: notify::Result<notify::Event>| {
+            forward_or_flag_overflow(&tx, &handler_overflow, event);
+        };
+        let registered = watch_root(Path::new(root), handler);
+        if let Err(err) = registered.map(|watcher| watchers.push(watcher)) {
             if !owns_generation(generation) {
                 return Ok(());
             }
@@ -288,6 +281,8 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
             watched += 1;
         }
     }
+    // Only the watchers' handlers send from here on.
+    drop(tx);
     if watched == 0 {
         return Err("none of the configured source folders could be watched".to_string());
     }
@@ -506,6 +501,24 @@ pub fn forward_or_flag_overflow(
     }
 }
 
+/// Registers one recursive watch on `root` in its own bounded call. A root
+/// whose drive does not answer fails within the bound (and every later call on
+/// that drive fails at once), so it never keeps another root unwatched.
+pub fn watch_root(
+    root: &Path,
+    handler: impl notify::EventHandler,
+) -> std::io::Result<notify::RecommendedWatcher> {
+    let root_path = root.to_path_buf();
+    crate::volume_io::call(root, crate::volume_io::Op::Watch, None, move || {
+        use notify::Watcher;
+        let mut watcher = notify::recommended_watcher(handler).map_err(std::io::Error::other)?;
+        watcher
+            .watch(&root_path, notify::RecursiveMode::Recursive)
+            .map_err(std::io::Error::other)?;
+        Ok(watcher)
+    })
+}
+
 /// Folds one watcher event into the dirty-directory set.
 ///
 /// `pub` for the tests: a file event must map to its PARENT directory, since
@@ -531,7 +544,9 @@ pub fn collect(
                 {
                     continue;
                 }
-                let dir = if path.is_dir() {
+                // Bounded: a volume that does not answer reads as "not a
+                // directory", and the parent's re-read then reports it.
+                let dir = if crate::volume_io::is_dir(&path).unwrap_or(false) {
                     path
                 } else {
                     match path.parent() {

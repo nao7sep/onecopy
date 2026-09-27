@@ -105,8 +105,8 @@ impl DirectoryFacts {
         } else {
             let parent = dir.parent().ok_or("Visibility directory has no parent")?;
             let inherited = self.refresh(conn, root, parent)?;
-            let metadata = std::fs::metadata(crate::winpath::for_fs(dir).as_ref())
-                .map_err(|error| error.to_string())?;
+            let metadata =
+                crate::volume_io::metadata(dir).map_err(|error| error.to_string())?;
             (
                 Some(parent.to_string_lossy().into_owned()),
                 visibility::entry_flags(dir, &metadata),
@@ -284,8 +284,8 @@ pub fn complete_missing_facts(conn: &Connection, roots: &[String]) -> Result<(),
             let result = (|| {
                 let inherited =
                     directories.refresh(conn, &root, path.parent().ok_or("File has no parent")?)?;
-                let metadata = std::fs::metadata(crate::winpath::for_fs(path).as_ref())
-                    .map_err(|error| error.to_string())?;
+                let metadata =
+                    crate::volume_io::metadata(path).map_err(|error| error.to_string())?;
                 let own = visibility::entry_flags(path, &metadata);
                 conn.execute("UPDATE paths SET own_visibility_flags = ?2, visibility_flags = ?3, visibility_checked = 1 WHERE id = ?1",
                     params![id, own, own | inherited]).map_err(|error| error.to_string())?;

@@ -705,7 +705,7 @@ pub fn forget_unconfigured_roots(
 ///    HERE specifically: this compares roots, never individual files, and two
 ///    roots differing only by case cannot coexist on either target platform.
 pub fn settled_root(conn: &Connection, configured: &Path) -> Result<PathBuf, String> {
-    let canonical = std::fs::canonicalize(configured)
+    let canonical = crate::volume_io::canonicalize(configured)
         .map_err(|e| format!("{}: {e}", configured.display()))?;
     let canonical_str = canonical.to_string_lossy().to_string();
 
@@ -978,13 +978,15 @@ pub enum Upsert {
     Unchanged,
 }
 
-/// The one per-file upsert: stat + classify + insert/update/skip-unchanged.
-/// Shared by the full walk and the watcher's single-directory re-stat, so the
-/// two can never drift on the checkpoint semantics (size+mtime unchanged =
-/// skip, changed = reset content facts).
+/// The one per-file upsert: classify + insert/update/skip-unchanged over the
+/// file's metadata, read by the caller through `volume_io` (the walk reads it
+/// on its own thread). Shared by the full walk and the watcher's
+/// single-directory re-stat, so the two can never drift on the checkpoint
+/// semantics (size+mtime unchanged = skip, changed = reset content facts).
 pub fn upsert_file(
     conn: &Connection,
     path: &Path,
+    meta: &std::fs::Metadata,
     lists: &ScanLists,
     inherited_visibility_flags: i64,
 ) -> Result<Upsert, String> {
@@ -993,8 +995,7 @@ pub fn upsert_file(
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    let meta = std::fs::metadata(crate::winpath::for_fs(path).as_ref()).map_err(|e| e.to_string())?;
-    let own_visibility_flags = crate::visibility::entry_flags(path, &meta);
+    let own_visibility_flags = crate::visibility::entry_flags(path, meta);
     let visibility_flags = own_visibility_flags | inherited_visibility_flags;
     let size = meta.len() as i64;
     let mtime_ms = meta
@@ -1134,7 +1135,10 @@ pub(crate) fn is_apple_double_sidecar(path: &Path) -> bool {
         return false;
     };
     match name.strip_prefix("._") {
-        Some(real_name) if !real_name.is_empty() => path.with_file_name(real_name).exists(),
+        // A sibling that cannot be checked is not proven: index the entry.
+        Some(real_name) if !real_name.is_empty() => {
+            crate::volume_io::exists(&path.with_file_name(real_name)).unwrap_or(false)
+        }
         _ => false,
     }
 }
@@ -1212,16 +1216,14 @@ fn walk_root_with_progress(
     // Entries carry the root's resolved spelling (verbatim on Windows, links
     // resolved), so the data root is excluded in that same spelling.
     let resolved_data_root = data_root.map(|root| {
-        std::fs::canonicalize(crate::winpath::for_fs(root).as_ref())
+        std::fs::canonicalize(crate::winpath::for_fs(root).as_ref()) // data root
             .unwrap_or_else(|_| root.to_path_buf())
     });
-    let data_root = resolved_data_root.as_deref();
-    for entry in walkdir::WalkDir::new(fs_root.as_ref())
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|entry| {
-            let path = entry.path();
-            if entry.file_type().is_file()
+    // The walk runs on a volume_io thread and hands entries over with their
+    // metadata; each wait for the next entry is bounded. The filter runs on
+    // that thread too, so the calls it makes run there directly.
+    let mut walk = match crate::volume_io::walk(fs_root.as_ref(), move |path, file_type| {
+            if file_type.is_file()
                 && crate::file_identity::is_private_tmp_name(path)
                 && crate::file_identity::is_abandoned_leftover(path)
             {
@@ -1234,10 +1236,44 @@ fn walk_root_with_progress(
                 // be deleted merely because a walk happened to visit it.
                 crate::fs_recovery::remove_file(path, "private staging leftover cleanup");
             }
-            !is_excluded_from_discovery(path, data_root)
-        })
-    {
+            !is_excluded_from_discovery(path, resolved_data_root.as_deref())
+        }) {
+        Ok(walk) => Some(walk),
+        Err(error) => {
+            // The volume is already known not to answer: nothing was read,
+            // so nothing is proven absent.
+            walk_incomplete = true;
+            stats.errors += 1;
+            record_issue(conn, Some(root_str.clone()), WALK_ERROR, &error.to_string())?;
+            None
+        }
+    };
+    while let Some(next) = walk.as_mut().and_then(|walk| walk.next(Some(&cancelled))) {
         check_cancel()?;
+        let entry = match next {
+            Ok(Ok(entry)) => entry,
+            Ok(Err(err)) => {
+                walk_incomplete = true;
+                stats.errors += 1;
+                record_issue(
+                    conn,
+                    err.path.map(|p| p.to_string_lossy().to_string()),
+                    WALK_ERROR,
+                    &err.message,
+                )?;
+                continue;
+            }
+            // Given up on: the volume stopped answering. The walk ends here,
+            // incomplete, so no absence is published and the root stays
+            // owed; the claim is released as this function returns.
+            Err(error) => {
+                check_cancel()?;
+                walk_incomplete = true;
+                stats.errors += 1;
+                record_issue(conn, Some(root_str.clone()), WALK_ERROR, &error.to_string())?;
+                break;
+            }
+        };
         // A pending foreground action or urgent preparation takes the index
         // here and the walk continues from this entry afterwards. Rows and
         // attributes it cached may have changed meanwhile.
@@ -1245,28 +1281,14 @@ fn walk_root_with_progress(
             visibility_directories = crate::visibility_index::DirectoryFacts::default();
             issues_present = crate::index_store::any_issues(conn)?;
         }
-        let entry = match entry {
-            Ok(e) => e,
-            Err(err) => {
-                walk_incomplete = true;
-                stats.errors += 1;
-                record_issue(
-                    conn,
-                    err.path().map(|p| p.to_string_lossy().to_string()),
-                    WALK_ERROR,
-                    &err.to_string(),
-                )?;
-                continue;
-            }
-        };
         if issues_present {
-            let entry_path = entry.path().to_string_lossy().to_string();
+            let entry_path = entry.path.to_string_lossy().to_string();
             crate::index_store::clear_issues(conn, &entry_path, &[WALK_ERROR])?;
         }
-        if !entry.file_type().is_file() {
+        if !entry.file_type.is_file() {
             continue;
         }
-        let path = entry.path();
+        let path = entry.path.as_path();
         let abs = path.to_string_lossy().to_string();
         stats.seen += 1;
         record_present
@@ -1276,7 +1298,12 @@ fn walk_root_with_progress(
         let upsert = (|| {
             let visibility_root = crate::visibility_index::root_for(visibility_roots, path).ok_or("File is outside configured sources")?;
             let inherited = visibility_directories.refresh(conn, &visibility_root, path.parent().ok_or("File has no parent")?)?;
-            upsert_file(conn, path, lists, inherited)
+            let meta = match &entry.metadata {
+                Some(Ok(meta)) => meta,
+                Some(Err(error)) => return Err(error.to_string()),
+                None => return Err("File metadata was not read".to_string()),
+            };
+            upsert_file(conn, path, meta, lists, inherited)
         })();
         match upsert {
             Ok(outcome) => {
@@ -2747,7 +2774,7 @@ fn store_media_facts(
 /// Whether a listed path no longer exists at all, as opposed to existing
 /// but failing to stat.
 fn vanished(path: &Path) -> bool {
-    std::fs::symlink_metadata(crate::winpath::for_fs(path).as_ref())
+    crate::volume_io::symlink_metadata(path)
         .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
 }
 
