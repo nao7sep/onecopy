@@ -331,7 +331,20 @@ fn delete_targets(
                     if live == 0 {
                         // Missing rows are files that are not on disk; they may
                         // not hold a foreign key into a contents row that is
-                        // about to go.
+                        // about to go. Their evidence and any companion paired
+                        // with them hold foreign keys to those rows in turn.
+                        tx.execute(
+                            "DELETE FROM evidence WHERE path_id IN \
+                             (SELECT id FROM paths WHERE content_hash = ?1)",
+                            [hash],
+                        )
+                        .map_err(|e| e.to_string())?;
+                        tx.execute(
+                            "UPDATE paths SET companion_of = NULL WHERE companion_of IN \
+                             (SELECT id FROM paths WHERE content_hash = ?1)",
+                            [hash],
+                        )
+                        .map_err(|e| e.to_string())?;
                         tx.execute("DELETE FROM paths WHERE content_hash = ?1", [hash])
                             .map_err(|e| e.to_string())?;
                         tx.execute(

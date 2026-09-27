@@ -2188,3 +2188,49 @@ fn move_keeps_a_changed_copys_companion_beside_it() {
         assert_eq!(outcome.exported, 2);
     }
 }
+
+#[test]
+fn deleting_the_last_live_copy_forgets_missing_siblings_that_carry_evidence() {
+    // A missing sibling keeps the date evidence it was indexed with. Foreign
+    // keys are enforced on every connection, so forgetting that sibling with
+    // the identity must take its evidence first, or the whole delete fails
+    // after the file already left the disk.
+    let f = fixture("missing-sibling-evidence");
+    for sub in ["a", "b"] {
+        std::fs::create_dir_all(f.root.join(sub)).unwrap();
+        std::fs::write(f.root.join(sub).join("IMG_20240102_030405.jpg"), b"same-bytes").unwrap();
+    }
+    scan(&f);
+    scanner::extract_pending(&f.conn).unwrap();
+    let evidence: i64 = f
+        .conn
+        .query_row("SELECT COUNT(*) FROM evidence", [], |r| r.get(0))
+        .unwrap();
+    assert!(evidence >= 2, "both copies carry filename evidence");
+    let hash: String = f
+        .conn
+        .query_row("SELECT content_hash FROM paths LIMIT 1", [], |r| r.get(0))
+        .unwrap();
+
+    std::fs::remove_file(f.root.join("b").join("IMG_20240102_030405.jpg")).unwrap();
+    scanner::walk_root(&f.conn, &f.root, &lists()).unwrap();
+
+    delete_item(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        ItemRef::Hash(&hash),
+        DeleteMode::Trash,
+    )
+    .unwrap();
+    let remaining: (i64, i64, i64) = f
+        .conn
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM paths), (SELECT COUNT(*) FROM contents), \
+             (SELECT COUNT(*) FROM evidence)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(remaining, (0, 0, 0));
+}
