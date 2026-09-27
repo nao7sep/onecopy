@@ -308,3 +308,38 @@ fn a_walk_that_finishes_as_its_wait_gives_up_still_delivers_every_entry() {
     }
     assert!(caught_at_the_give_up.get() > 0, "the walk never finished during a wait");
 }
+
+/// Cancel during the final flush of a private output returns without waiting
+/// for the flush's size-derived bound, which for a large file on a slow drive
+/// is many minutes; the private output settles when the flush returns.
+#[test]
+fn cancel_ends_a_stalled_flush_of_a_private_output() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let dest_dir = tempfile::tempdir().unwrap();
+    let source = source_dir.path().join("photo.jpg");
+    std::fs::write(&source, vec![3u8; 64 * 1024]).unwrap();
+    let dest = dest_dir.path().join("photo.jpg.private");
+    let volume = Arc::new(FakeStallingVolume::mount(dest_dir.path(), Duration::from_secs(10)));
+    volume.stall(&[Op::Sync], None);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let (flag, held) = (cancelled.clone(), volume.clone());
+    std::thread::spawn(move || {
+        held.wait_until_held(1, Duration::from_secs(5));
+        flag.store(true, Ordering::SeqCst);
+    });
+
+    let started = Instant::now();
+    let error = onecopy_lib::hashing::hash_while_copying_cancellable(
+        &source,
+        &dest,
+        &|| cancelled.load(Ordering::SeqCst),
+        &mut |_, _| {},
+    )
+    .unwrap_err();
+    assert!(started.elapsed() < SLACK, "waited {:?}", started.elapsed());
+    assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+
+    volume.release();
+    assert!(volume.wait_until_settled(Duration::from_secs(5)));
+    assert!(!dest.exists(), "the unpublished output removes itself once the flush returns");
+}

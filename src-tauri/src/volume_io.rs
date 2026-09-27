@@ -835,8 +835,10 @@ impl VolumeFile {
     }
 
     /// Flushes `bytes` of written data; the bound grows with the size.
-    pub fn sync_all(&mut self, bytes: u64) -> io::Result<()> {
-        self.with(Op::Sync, Some(sync_bound(bytes)), None, |file| file.sync_all())
+    /// `cancel` ends the wait (a flush of a large file can legitimately take
+    /// many minutes, far longer than a user waits on Cancel).
+    pub fn sync_all(&mut self, bytes: u64, cancel: Option<&dyn Fn() -> bool>) -> io::Result<()> {
+        self.with(Op::Sync, Some(sync_bound(bytes)), cancel, |file| file.sync_all())
     }
 
     /// One bounded read of up to `buf.len()` bytes.

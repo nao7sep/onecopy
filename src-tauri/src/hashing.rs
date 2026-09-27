@@ -233,7 +233,7 @@ fn hash_while_copying_detailed(
         progress(total, expected_total);
     }
     writer
-        .sync_all(total)
+        .sync_all(total, Some(cancelled))
         .map_err(|error| classify(error, CopyFailure::Destination))?;
     after_sync(dst);
     let streamed_hash = hasher.finalize().to_hex().to_string();

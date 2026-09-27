@@ -85,7 +85,7 @@ One persistent nonmodal operation surface shows progress, Cancel, `Cancelling af
 
 ## Cancellation
 
-Cancellation takes effect between physical files or other bounded filesystem steps. It does not interrupt a publication, recoverable move, or deletion halfway through its owned step: from a copy's final publication through a Move's cleanup of the sources it covers, Cancel lets each of those short steps finish within its own time limit. Writing and verifying a private output that is not yet published may stop mid-file, and Cancel also ends a read or write of that private output that a drive is not answering, without waiting for the drive. OneCopy removes its unpublished private output on cancellation and on every failure, but never rolls back work that has already reached its completed boundary.
+Cancellation takes effect between physical files or other bounded filesystem steps. It does not interrupt a publication, recoverable move, or deletion halfway through its owned step: from a copy's final publication through a Move's cleanup of the sources it covers, Cancel lets each of those short steps finish within its own time limit. Writing and verifying a private output that is not yet published may stop mid-file, and Cancel also ends a read, write, or final flush of that private output that a drive is not answering or is still flushing, without waiting for the drive. OneCopy removes its unpublished private output on cancellation and on every failure, but never rolls back work that has already reached its completed boundary.
 
 Because cancellation is bounded, a batch and even one logical item's physical copies may complete partially. The partial result follows the same accounting and recovery rules as any other failure.
 
