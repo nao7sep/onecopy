@@ -426,16 +426,16 @@ function AttributesBodyView({
           </OperationResult>
         ) : null}
         <dl className="mt-5 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm">
-          <dt className="text-ink-muted">{t("common.kind")}</dt>
+          <dt className="whitespace-nowrap text-ink-muted">{t("common.kind")}</dt>
           {/* The kind word is the core's own, and becomes a code in its pass. */}
-          <dd className="text-ink">{detail.kind}</dd>
-          <dt className="text-ink-muted">{t("common.size")}</dt>
-          <dd className="text-ink">
+          <dd className="break-words text-ink">{detail.kind}</dd>
+          <dt className="whitespace-nowrap text-ink-muted">{t("common.size")}</dt>
+          <dd className="break-words text-ink">
             {byteSize === null ? t("textPreview.unknown") : formatBytes(byteSize, number)}
           </dd>
-          <dt className="text-ink-muted">{t("common.date")}</dt>
-          <dd className="text-ink">{takenPresentation(detail, t, dateTime)}</dd>
-          <dt className="text-ink-muted">{t("textPreview.copies")}</dt>
+          <dt className="whitespace-nowrap text-ink-muted">{t("common.date")}</dt>
+          <dd className="break-words text-ink">{takenPresentation(detail, t, dateTime)}</dd>
+          <dt className="whitespace-nowrap text-ink-muted">{t("textPreview.copies")}</dt>
           <dd>
             <p className="mb-1 text-ink">
               {t("textPreview.exactCopies", { count: detail.copyPaths.length })}

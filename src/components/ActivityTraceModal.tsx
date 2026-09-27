@@ -99,12 +99,12 @@ function OperationDetails({ row, beforeChange, afterChange }: {
   }, [row.id]);
   useLayoutEffect(afterChange, [events]);
   return <div className="space-y-3 border-t border-border px-3 py-3 text-xs">
-    <dl data-activity-anchor={"details:" + row.id} className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-ink-muted">
-      <dt>{t("activity.session")}</dt><dd className="break-all font-mono">{row.first.sessionId}</dd>
-      {row.first.operationId && <><dt>{t("activity.operation")}</dt><dd className="break-all font-mono">{row.first.operationId}</dd></>}
-      {row.first.causeId && <><dt>{t("activity.causedBy")}</dt><dd className="break-all font-mono">{row.first.causeId}</dd></>}
-      {row.targetHash && <><dt>{t("activity.contentIdentity")}</dt><dd className="break-all font-mono">{row.targetHash}</dd></>}
-      <dt>{t("activity.events")}</dt><dd>{row.eventCount}</dd>
+    <dl data-activity-anchor={"details:" + row.id} className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-1 text-ink-muted">
+      <dt className="whitespace-nowrap">{t("activity.session")}</dt><dd className="break-all font-mono">{row.first.sessionId}</dd>
+      {row.first.operationId && <><dt className="whitespace-nowrap">{t("activity.operation")}</dt><dd className="break-all font-mono">{row.first.operationId}</dd></>}
+      {row.first.causeId && <><dt className="whitespace-nowrap">{t("activity.causedBy")}</dt><dd className="break-all font-mono">{row.first.causeId}</dd></>}
+      {row.targetHash && <><dt className="whitespace-nowrap">{t("activity.contentIdentity")}</dt><dd className="break-all font-mono">{row.targetHash}</dd></>}
+      <dt className="whitespace-nowrap">{t("activity.events")}</dt><dd>{row.eventCount}</dd>
     </dl>
     <ol className="space-y-2">
       {events.map((event) => <li key={event.eventId} data-activity-anchor={"event:" + event.eventId} className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 text-ink-muted">
