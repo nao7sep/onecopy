@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -16,7 +16,9 @@ function variantClasses(): Map<string, string> {
   const table = source.match(/const VARIANTS[^{]*\{([\s\S]*?)\n\};/);
   if (table === null) throw new Error("Button.tsx no longer declares a VARIANTS table");
   const variants = new Map<string, string>();
-  for (const [, name, classes] of table[1].matchAll(/(\w+):\s*((?:\s*"[^"]*")+)/g)) {
+  // A key is a bare word or a quoted one ("danger-solid"); the quoted form was
+  // once skipped here, which left that variant unchecked by every rule below.
+  for (const [, name, classes] of table[1].matchAll(/"?([\w-]+)"?:\s*((?:\s*"[^"]*")+)/g)) {
     variants.set(name, [...classes.matchAll(/"([^"]*)"/g)].map(([, part]) => part).join(" "));
   }
   return variants;
@@ -25,8 +27,8 @@ function variantClasses(): Map<string, string> {
 describe("Button variants", () => {
   const variants = variantClasses();
 
-  it("declares the four variants the primitive types", () => {
-    expect([...variants.keys()].sort()).toEqual(["danger", "ghost", "primary", "secondary"]);
+  it("declares the five variants the primitive types", () => {
+    expect([...variants.keys()].sort()).toEqual(["danger", "danger-solid", "ghost", "primary", "secondary"]);
   });
 
   it.each([...variants])("fades %s when it is disabled", (_name, classes) => {
@@ -71,5 +73,25 @@ describe("Button variants", () => {
       ),
     );
     expect([...answers]).toHaveLength(1);
+  });
+});
+
+// The filled destructive commit and the in-result action size are roles of
+// the primitive (interface-styling-conventions: "Few anatomies, named by
+// role"; "Destructive actions"). A surface that re-spells the filled commit,
+// or a container that resizes the buttons inside it, is the drift those roles
+// replaced.
+describe("Button roles stay in the primitive", () => {
+  const components = join(__dirname, "../../src/components");
+  const files = (readdirSync(components, { recursive: true }) as string[])
+    .filter((file) => file.endsWith(".tsx") && !file.endsWith("Button.tsx"));
+
+  it.each(files)("%s draws no filled destructive button of its own", (file) => {
+    expect(readFileSync(join(components, file), "utf8")).not.toMatch(/\bbg-danger-solid\b/);
+  });
+
+  it("lets an operation result's actions keep their own size", () => {
+    const result = readFileSync(join(components, "ui/OperationResult.tsx"), "utf8");
+    expect(result).not.toMatch(/\[&>button\]/);
   });
 });

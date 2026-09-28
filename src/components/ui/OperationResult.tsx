@@ -42,7 +42,7 @@ export default function OperationResult({
         {children}
       </div>
       {actions !== undefined ? (
-        <div className="-my-1 flex min-h-6 shrink-0 items-center gap-2 [&>button]:h-6">
+        <div className="-my-1 flex min-h-6 shrink-0 items-center gap-2">
           {actions}
         </div>
       ) : null}

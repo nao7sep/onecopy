@@ -90,7 +90,7 @@ describe("modal result growth", () => {
 
   it("centers a message beside its labelled action without changing top-aligned dismissals", () => {
     render(
-      <OperationResult level="error" actions={<Button variant="ghost">Retry</Button>}>
+      <OperationResult level="error" actions={<Button variant="ghost" size="xs">Retry</Button>}>
         Playback controls could not be connected. Try again.
       </OperationResult>,
     );
@@ -98,6 +98,9 @@ describe("modal result growth", () => {
     const alert = screen.getByRole("alert");
     expect(alert.className).toContain("items-center");
     expect(alert.className).not.toContain("items-start");
-    expect(screen.getByRole("button", { name: "Retry" }).parentElement?.className).toContain("[&>button]:h-6");
+    // The action's height is its own `xs` role, never imposed by the banner.
+    const retry = screen.getByRole("button", { name: "Retry" });
+    expect(retry.className).toContain("h-6");
+    expect(retry.parentElement?.className).not.toContain("[&>button]");
   });
 });

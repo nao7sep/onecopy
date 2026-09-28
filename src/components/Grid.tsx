@@ -40,6 +40,7 @@ import { requestComparisonFromMain } from "../workflows/comparison";
 import FaceRating from "./FaceRating";
 import { usePreviewStore } from "../state/preview-store";
 import { setPreviewPlacement } from "../workflows/preview";
+import Button from "./ui/Button";
 import OperationResult from "./ui/OperationResult";
 import { isComposingEvent } from "../hooks/useComposing";
 import { useComparisonStore } from "../state/comparison-store";
@@ -736,12 +737,9 @@ export default function Grid({
           onDismiss={clearPreviewError}
           dismissLabel={t("preview.dismissResult")}
           actions={
-              <button
-                className="font-medium underline"
-                onClick={() => void setPreviewPlacement("split")}
-              >
+              <Button size="xs" onClick={() => void setPreviewPlacement("split")}>
                 {t("grid.showInThisWindow")}
-              </button>
+              </Button>
           }
         >
           {text(previewError)}

@@ -1,5 +1,6 @@
 import { useBlockingSurface } from "../hooks/useBlockingSurface";
 import { useI18n } from "../i18n/I18nContext";
+import Button from "./ui/Button";
 
 // Missing roots and substituted roots have different safety meanings. An
 // absent root is an availability problem: Main stays usable and the source
@@ -36,18 +37,12 @@ export function MissingSourcesNotice({
           </ul>
         </div>
         <div className="flex shrink-0 gap-2">
-          <button
-            className="inline-flex h-8 items-center justify-center rounded-md border border-border bg-surface px-3 font-medium text-ink hover:bg-surface-muted"
-            onClick={onReconfigure}
-          >
+          <Button onClick={onReconfigure}>
             {t("source.rerunSetup")}
-          </button>
-          <button
-            className="inline-flex h-8 items-center justify-center rounded-md bg-primary px-3 font-medium text-ink-inverted hover:brightness-110"
-            onClick={onRecheck}
-          >
+          </Button>
+          <Button variant="primary" onClick={onRecheck}>
             {t("source.checkAgain")}
-          </button>
+          </Button>
         </div>
       </div>
     </section>
@@ -93,18 +88,12 @@ export function SubstitutedSourceGate({
           </ul>
         )}
         <div className="flex justify-end gap-2">
-          <button
-            className="inline-flex h-9 items-center justify-center rounded-lg border border-border bg-surface px-4 text-sm font-medium text-ink hover:bg-surface-muted"
-            onClick={onReconfigure}
-          >
+          <Button size="md" onClick={onReconfigure}>
             {t("source.rerunSetup")}
-          </button>
-          <button
-            className="inline-flex h-9 items-center justify-center rounded-lg bg-primary px-4 text-sm font-medium text-ink-inverted shadow-sm outline-none transition-all hover:brightness-110 focus-visible:ring-2 focus-visible:ring-primary-ring"
-            onClick={onRecheck}
-          >
+          </Button>
+          <Button variant="primary" size="md" onClick={onRecheck}>
             {t("source.checkAgain")}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

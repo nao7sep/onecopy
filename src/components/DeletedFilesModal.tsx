@@ -466,7 +466,7 @@ export default function DeletedFilesModal({
             level={outcome.failed > 0 || outcome.error !== null ? "warning" : "info"}
             actions={
               outcome.restored.length > 0 ? (
-                <Button onClick={revealRestored}>
+                <Button size="xs" onClick={revealRestored}>
                   {t("deletedFiles.revealRestored", { manager })}
                 </Button>
               ) : undefined

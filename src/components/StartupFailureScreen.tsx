@@ -50,14 +50,9 @@ export default function StartupFailureScreen() {
         ) : null}
         <div className="mt-6 flex justify-end gap-2">
           <Button onClick={openLogFolder}>{t("app.revealLogs")}</Button>
-          <button
-            type="button"
-            className="inline-flex h-9 items-center justify-center rounded-lg bg-primary px-4 text-sm font-medium text-ink-inverted outline-none hover:brightness-110 focus-visible:ring-2 focus-visible:ring-primary-ring"
-            onClick={quit}
-            autoFocus
-          >
+          <Button type="button" variant="primary" size="md" onClick={quit} autoFocus>
             {t("startup.quit")}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

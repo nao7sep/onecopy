@@ -8,12 +8,13 @@
 // re-typed per call site.
 //
 // Sizes carry real touch targets (the `sm` height is 32px, `md` 36px), which
-// is most of the difference between this and what was here before.
+// is most of the difference between this and what was here before. `xs`
+// (24px) is only for actions inside an operation result.
 
 import type { ButtonHTMLAttributes } from "react";
 
 type Variant = "primary" | "secondary" | "ghost" | "danger" | "danger-solid";
-type Size = "sm" | "md";
+type Size = "xs" | "sm" | "md";
 
 // Every variant carries a PRESSED state distinct from its hover state. With a
 // mouse, hover is already showing before the click lands, so a press with no
@@ -45,7 +46,11 @@ const VARIANTS: Record<Variant, string> = {
     "bg-danger-solid text-ink-inverted shadow-sm hover:bg-danger-solid-hover active:brightness-90 disabled:opacity-40",
 };
 
+// `xs` is the compact role for an action inside an operation result, whose
+// text is 12px: the result's own line sets that height, so the action takes a
+// size of its own rather than being squeezed by the banner it sits in.
 const SIZES: Record<Size, string> = {
+  xs: "h-6 rounded-md px-2 text-xs",
   sm: "h-8 rounded-lg px-3 text-sm",
   md: "h-9 rounded-lg px-4 text-sm",
 };

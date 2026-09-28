@@ -325,7 +325,7 @@ function VideoSurface({
         <OperationResult
           level="error"
           className="shrink-0"
-          actions={<Button variant="ghost" onClick={() => void playback.retrySetup()}>{t("common.retry")}</Button>}
+          actions={<Button variant="ghost" size="xs" onClick={() => void playback.retrySetup()}>{t("common.retry")}</Button>}
         >
           {t("preview.playbackSetupFailed")}
         </OperationResult>
@@ -552,7 +552,7 @@ function AudioSurface({
         {playback.setupFailed ? (
           <OperationResult
             level="error"
-            actions={<Button variant="ghost" onClick={() => void playback.retrySetup()}>{t("common.retry")}</Button>}
+            actions={<Button variant="ghost" size="xs" onClick={() => void playback.retrySetup()}>{t("common.retry")}</Button>}
           >
             {t("preview.playbackSetupFailed")}
           </OperationResult>

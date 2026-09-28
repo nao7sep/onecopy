@@ -10,6 +10,7 @@
 import { useState } from "react";
 import { useI18n } from "../i18n/I18nContext";
 import ModalShell from "./ModalShell";
+import Button from "./ui/Button";
 import { Row, Toggle } from "./ui/Field";
 
 export default function RebuildIndexModal({
@@ -31,13 +32,13 @@ export default function RebuildIndexModal({
       initialFocus="close"
       footerArrowNavigation
       primaryAction={
-        <button
+        <Button
+          variant="danger-solid"
           data-destructive
-          className="inline-flex h-8 shrink-0 items-center justify-center rounded-lg bg-danger-solid px-3 text-sm font-medium text-ink-inverted shadow-sm outline-none transition-all hover:bg-danger-solid-hover focus:ring-2 focus:ring-primary-ring"
           onClick={() => onConfirm({ discardPreviews, discardTranscripts })}
         >
           {t("settings.rebuildConfirm")}
-        </button>
+        </Button>
       }
     >
       <p className="text-sm text-ink">{t("settings.rebuildMessage")}</p>

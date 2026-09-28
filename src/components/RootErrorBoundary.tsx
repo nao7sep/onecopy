@@ -3,6 +3,7 @@ import { documentTranslator } from "../i18n/I18nContext";
 import { message } from "../i18n/translate";
 import { log, toErrorFields } from "../repositories";
 import { recordInterfaceFailure } from "../utils/failureSurface";
+import Button from "./ui/Button";
 
 interface Props {
   children: ReactNode;
@@ -44,12 +45,9 @@ export default class RootErrorBoundary extends Component<Props, State> {
           <p className="mt-2 text-sm leading-relaxed text-ink-muted">
             {t("crash.needsReloadBody")}
           </p>
-          <button
-            className="mt-5 inline-flex h-9 items-center justify-center rounded-lg bg-primary px-4 text-sm font-medium text-ink-inverted outline-none hover:brightness-110 focus-visible:ring-2 focus-visible:ring-primary-ring"
-            onClick={() => window.location.reload()}
-          >
+          <Button variant="primary" size="md" className="mt-5" onClick={() => window.location.reload()}>
             {t("crash.reloadWindow")}
-          </button>
+          </Button>
         </section>
       </main>
     );

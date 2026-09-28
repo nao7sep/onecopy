@@ -21,6 +21,7 @@ import {
 import ComparisonSlot from "./ComparisonSlot";
 import ConfirmModal from "./ConfirmModal";
 import RevealCopiesModal from "./RevealCopiesModal";
+import Button from "./ui/Button";
 import OperationResult from "./ui/OperationResult";
 import MutationResultActions from "./MutationResultActions";
 
@@ -278,12 +279,9 @@ export default function ComparisonView({
           level="error"
           className="mx-3 mb-2 shrink-0"
           actions={
-            <button
-              className="rounded border border-danger/40 px-2 py-0.5 hover:bg-danger/10"
-              onClick={() => void retryComparisonFailure()}
-            >
+            <Button size="xs" onClick={() => void retryComparisonFailure()}>
               {t("comparison.retryRemaining")}
-            </button>
+            </Button>
           }
         >
           {text(failure.message)}
