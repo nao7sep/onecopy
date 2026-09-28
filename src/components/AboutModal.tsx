@@ -57,7 +57,7 @@ export default function AboutModal({
           of prose and two buttons only reads as deliberate when it is a splash
           screen; here it made the modal look unfinished. */}
       <div className="flex flex-col gap-1">
-        <p className="text-base font-semibold text-ink-strong">OneCopy</p>
+        <p className="text-[22px] font-bold leading-7 tracking-tight text-ink-strong">OneCopy</p>
         <p className="text-xs text-ink-muted">{t("about.version", { version: __APP_VERSION__ })}</p>
         <p className="mt-2 text-sm text-ink">
           {t("about.description")}
@@ -79,7 +79,7 @@ export default function AboutModal({
             level={releaseResult.status === "failed" ? "error" : "info"}
             className="mt-3"
             actions={releaseResult.status === "newer" ? (
-              <Button onClick={() => void openProjectPage("release", LATEST_RELEASE_PAGE, "about.releaseOpenFailed")}>
+              <Button size="xs" onClick={() => void openProjectPage("release", LATEST_RELEASE_PAGE, "about.releaseOpenFailed")}>
                 {t("about.viewRelease")}
               </Button>
             ) : undefined}
