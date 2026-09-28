@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CATALOGUES } from "../../src/i18n/catalogues";
 import { LANGUAGES, type Language } from "../../src/i18n/languages";
+import { createTranslator } from "../../src/i18n/translate";
 
 // The catalogue gate. English defines the key set; every other language must
 // carry every key, keep every placeholder, supply exactly its own CLDR plural
@@ -209,5 +210,16 @@ describe("catalogues", () => {
   it("names every language differently, in its own words", () => {
     const names = LANGUAGES.map((language) => catalogues[language]["language.name"]);
     expect(new Set(names).size).toBe(LANGUAGES.length);
+  });
+
+  // Every control that opens About must read exactly like the macOS About
+  // item (app-chrome-conventions, App identity): the in-app menu item
+  // (`app.about`) and the dialog's own title (`about.title`) are the same
+  // words as the native menu's `nativeMenu.about`, with the app name filled
+  // in, and never carry a trailing ellipsis the native item does not have.
+  it.each(LANGUAGES)("%s's About controls read exactly like the macOS About item", (language) => {
+    const expected = createTranslator(language).t("nativeMenu.about", { app: "OneCopy" });
+    expect(catalogues[language]["app.about"]).toBe(expected);
+    expect(catalogues[language]["about.title"]).toBe(expected);
   });
 });

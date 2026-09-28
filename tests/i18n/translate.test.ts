@@ -7,7 +7,7 @@ import { createTranslator, message } from "../../src/i18n/translate";
 describe("createTranslator", () => {
   it("fills placeholders from the language's own catalogue", () => {
     expect(createTranslator("ja").t("nativeMenu.about", { app: "OneCopy" })).toBe(
-      "OneCopyについて",
+      "OneCopy について",
     );
     expect(createTranslator("de").t("nativeMenu.about", { app: "OneCopy" })).toBe(
       "Über OneCopy",
