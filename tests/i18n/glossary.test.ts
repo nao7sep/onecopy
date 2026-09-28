@@ -169,3 +169,45 @@ describe("glossary: Restore keeps its name", () => {
     }
   });
 });
+
+// "Folder" is one word per language for the directories OneCopy scans. The
+// English Settings and setup surfaces say "directory" where every notice says
+// "folder"; the translations had carried that split into two words, and
+// Japanese had also spelt フォルダ two ways.
+const FOLDER_TERM: Record<Exclude<Language, "en">, string> = {
+  ja: "フォルダ",
+  "zh-Hans": "文件夹",
+  ko: "폴더",
+  es: "carpeta",
+  "pt-BR": "pasta",
+  fr: "dossier",
+  de: "ordner",
+  it: "cartell",
+  ru: "пап",
+};
+
+const FOLDER_CONCEPT_KEYS = [
+  "settings.directories",
+  "settings.noSourceDirectories",
+  "settings.addDirectory",
+  "settings.directoryPickerFailed",
+  "wizard.directories",
+  "wizard.noDirectories",
+  "grid.recheckHint",
+  "destinations.emptyHint",
+  "work.sourceCheck",
+];
+
+describe("glossary: Folder keeps its name", () => {
+  it.each(Object.keys(FOLDER_TERM) as Array<keyof typeof FOLDER_TERM>)("%s names a scanned folder one way", (language) => {
+    const term = FOLDER_TERM[language].toLowerCase();
+    for (const key of FOLDER_CONCEPT_KEYS) {
+      const value = text(catalogues[language][key]).toLowerCase();
+      expect(value.includes(term), `${language} ${key}: expected "${term}" in ${JSON.stringify(catalogues[language][key])}`).toBe(true);
+    }
+  });
+
+  it("spells the Japanese folder one way", () => {
+    expect(JSON.stringify(catalogues.ja)).not.toContain("フォルダー");
+  });
+});
