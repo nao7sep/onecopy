@@ -52,7 +52,7 @@ export default function AboutModal({
   };
 
   return (
-    <ModalShell title={t("about.title")} onClose={onClose} widthClass="w-[400px]">
+    <ModalShell title={t("about.title")} onClose={onClose} widthClass="w-[500px]" hideTitle>
       {/* Left-aligned like every other surface in the app. Centering a block
           of prose and two buttons only reads as deliberate when it is a splash
           screen; here it made the modal look unfinished. */}

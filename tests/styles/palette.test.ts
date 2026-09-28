@@ -3,6 +3,12 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { contrast, resolveRgb, themeBlock, type Rgb } from "../helpers/themeCss";
 
+const modalShellSource = readFileSync(
+  join(__dirname, "../../src/components/ModalShell.tsx"),
+  "utf8",
+);
+const fieldSource = readFileSync(join(__dirname, "../../src/components/ui/Field.tsx"), "utf8");
+
 const css = readFileSync(join(__dirname, "../../src/App.css"), "utf8");
 const tailwindTheme = readFileSync(
   join(__dirname, "../../node_modules/tailwindcss/theme.css"),
@@ -63,6 +69,41 @@ describe("semantic palette contrast", () => {
         expect(pairContrast(theme, foreground, background), `${foreground} on ${background}`)
           .toBeGreaterThanOrEqual(3);
       }
+    });
+  }
+});
+
+// A `border-<token>` Tailwind utility resolves to the `--<token>` custom
+// property (App.css's `@theme inline` block copies every `--color-<token>`
+// straight from `--<token>`), so pulling the token name out of the class
+// string and reading it as a CSS variable gives the exact colour the
+// component paints.
+function borderToken(source: string, utilityPattern: RegExp): string {
+  const match = source.match(utilityPattern);
+  if (!match) throw new Error(`no match for ${utilityPattern} in source`);
+  return `--${match[1]}`;
+}
+
+describe("modal-dialog band lines", () => {
+  // modal-dialog-conventions, "Each band is drawn as a band": the header- and
+  // footer-closing lines are "never fainter than the app's own control
+  // borders in either theme" — a comparison against whatever token a real
+  // control's edge uses, not a fixed ratio. Field.tsx's input is that
+  // control: its outline is its only boundary (see the BOUNDARY_PAIRS
+  // comment above), while a button's border is decorative chrome on a filled
+  // shape. Reading both tokens from source, rather than assuming they are
+  // the same variable, means this fails the moment either one drifts.
+  const lineToken = borderToken(modalShellSource, /border-b border-(input-border|border)\b/);
+  const controlToken = borderToken(fieldSource, /border-(input-border|border)"/);
+
+  for (const theme of themes) {
+    it(`keeps the header/footer line at least as visible as the input's own border in the ${theme} theme`, () => {
+      const block = themeBlock(css, theme);
+      const surface = resolveRgb(block, "--surface", sources);
+      const lineContrast = contrast(resolveRgb(block, lineToken, sources), surface);
+      const controlContrast = contrast(resolveRgb(block, controlToken, sources), surface);
+      expect(lineContrast, `${lineToken} vs ${controlToken} on --surface`)
+        .toBeGreaterThanOrEqual(controlContrast);
     });
   }
 });

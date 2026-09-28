@@ -32,6 +32,7 @@ export default function ModalShell({
   footerStart,
   footerResult,
   primaryAction,
+  hideTitle = false,
   children,
 }: {
   title: string;
@@ -51,6 +52,11 @@ export default function ModalShell({
   footerResult?: React.ReactNode;
   /** The primary action button(s), rendered to the right of the dismiss. */
   primaryAction?: React.ReactNode;
+  /** True only where the body opens by naming what the title would say
+   * (About): the header keeps the title for assistive technology, drops its
+   * visible text and its closing line, and keeps the close X in its corner
+   * (modal-dialog-conventions, "Every modal…"). */
+  hideTitle?: boolean;
   children: React.ReactNode;
 }) {
   const { t } = useI18n();
@@ -69,8 +75,15 @@ export default function ModalShell({
         data-modal-initial-focus={initialFocus === "surface" ? true : undefined}
         className={`flex max-h-[90vh] ${widthClass} max-w-[90vw] flex-col rounded-2xl border border-border bg-surface shadow-xl`}
       >
-        <div className="flex shrink-0 items-center justify-between gap-4 px-5 pb-3 pt-4">
-          <h1 id={titleId} className="text-base font-semibold tracking-tight text-ink-strong">
+        <div
+          className={`flex shrink-0 items-center gap-4 px-5 pb-3 pt-4 ${
+            hideTitle ? "justify-end" : "justify-between border-b border-input-border"
+          }`}
+        >
+          <h1
+            id={titleId}
+            className={hideTitle ? "sr-only" : "text-base font-semibold tracking-tight text-ink-strong"}
+          >
             {title}
           </h1>
           <button
@@ -83,8 +96,8 @@ export default function ModalShell({
             <X size={15} />
           </button>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-1">{children}</div>
-        <div className="shrink-0 space-y-3 px-5 pb-4 pt-4">
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
+        <div className="shrink-0 space-y-3 border-t border-input-border px-5 pt-4 pb-4">
           {footerResult === undefined ? null : <div className="min-w-0 break-words">{footerResult}</div>}
           <div className="flex flex-wrap items-baseline gap-x-4 gap-y-3">
             {footerStart === undefined ? null : (
