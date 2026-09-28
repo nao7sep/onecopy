@@ -48,6 +48,20 @@ body.row-resizing * {
   cursor: row-resize !important;
 }
 
+/* An item's X sits on its first line (interface-styling-conventions): a
+   close/dismiss/remove ✕ inside a row, card, toast or result is centred on
+   the text's first line, never on the whole block and never pinned to a
+   fixed pixel offset. Only the X moves — its row keeps `items-start` and its
+   text keeps its own font, line height and padding — so the X is nudged down
+   by a margin computed from the row's own line height (`1lh`, matching the
+   text it sits beside) against the button's fixed 24px (h-6/w-6) size. It may
+   overflow its line box symmetrically rather than grow the row. Shared by
+   every dismissible result and notice; ChaChat's `.cc-state-notice__dismiss`
+   is the reference implementation. */
+.oc-first-line-dismiss {
+  margin-block: calc((1lh - 1.5rem) / 2);
+}
+
 /* ── Semantic color tokens ────────────────────────────────────────────────
    Single source of truth for every color in the app. Light values alias
    Tailwind's default palette; the prefers-color-scheme dark block overrides the

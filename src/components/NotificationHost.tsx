@@ -32,7 +32,7 @@ function ReleaseNotice() {
       role="status"
       className="pointer-events-auto w-full rounded-lg border border-border bg-surface p-3 text-ink"
     >
-      <div className="flex items-start gap-3">
+      <div className="flex items-start gap-3 text-sm">
         <div className="min-w-0 flex-1">
           <p className="select-text break-words text-sm">
             {t("about.newerAvailable", { version })}
@@ -44,7 +44,7 @@ function ReleaseNotice() {
         <button
           aria-label={t("notice.dismissRelease")}
           title={t("common.dismiss")}
-          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-current opacity-70 hover:bg-ink/10 hover:opacity-100 focus-visible:bg-ink/10 focus-visible:opacity-100"
+          className="oc-first-line-dismiss flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-current opacity-70 hover:bg-ink/10 hover:opacity-100 focus-visible:bg-ink/10 focus-visible:opacity-100"
           onClick={dismiss}
         >
           <X size={14} />
@@ -138,7 +138,7 @@ function Toast({
         startTimer();
       }}
     >
-      <div className="flex items-start gap-3">
+      <div className="flex items-start gap-3 text-sm">
         <div className="min-w-0 flex-1">
           {/* The condition's own sentence, in the current interface
               language; real detail the sentence cannot restate (a system
@@ -157,7 +157,7 @@ function Toast({
           aria-label={t("notice.dismissNotification")}
           title={t("common.dismiss")}
           disabled={dismissing}
-          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-current opacity-70 hover:bg-ink/10 hover:opacity-100 focus-visible:bg-ink/10 focus-visible:opacity-100 disabled:opacity-30"
+          className="oc-first-line-dismiss flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-current opacity-70 hover:bg-ink/10 hover:opacity-100 focus-visible:bg-ink/10 focus-visible:opacity-100 disabled:opacity-30"
           onClick={() => void dismiss(record.id)}
         >
           <X size={14} />

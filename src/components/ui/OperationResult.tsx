@@ -51,7 +51,7 @@ export default function OperationResult({
           type="button"
           aria-label={dismissLabel ?? t("common.dismissResult")}
           title={t("common.dismiss")}
-          className="-my-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-current opacity-70 hover:bg-ink/10 hover:opacity-100 focus-visible:bg-ink/10 focus-visible:opacity-100"
+          className="oc-first-line-dismiss flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-current opacity-70 hover:bg-ink/10 hover:opacity-100 focus-visible:bg-ink/10 focus-visible:opacity-100"
           onClick={onDismiss}
         >
           <X aria-hidden="true" size={14} />

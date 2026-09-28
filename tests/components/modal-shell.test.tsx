@@ -85,7 +85,7 @@ describe("modal result growth", () => {
     expect(alert.className).toContain("items-start");
     expect(alert.querySelectorAll("svg")).toHaveLength(1);
     expect(dismiss.querySelector("svg")).not.toBeNull();
-    expect(dismiss.className).toContain("-my-1");
+    expect(dismiss.className).toContain("oc-first-line-dismiss");
   });
 
   it("centers a message beside its labelled action without changing top-aligned dismissals", () => {
