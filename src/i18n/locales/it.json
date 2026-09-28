@@ -446,7 +446,7 @@
   "activity.loadEarlierDetails": "Carica i dettagli precedenti",
   "about.title": "Informazioni su OneCopy",
   "about.version": "Versione {version}",
-  "about.description": "Un gestore in stile inbox zero per deduplicare foto, video e altri file.",
+  "about.description": "Riduci foto e video di più unità a una sola copia ciascuna, confrontando scatti simili fianco a fianco prima di conservarli o eliminarli.",
   "about.reportIssue": "Segnala un problema",
   "about.checking": "Controllo su GitHub…",
   "about.checkRelease": "Controlla su GitHub se c’è una nuova versione",

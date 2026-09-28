@@ -1,7 +1,7 @@
 [package]
 name = "onecopy"
 version = "0.1.0"
-description = "An inbox-zero dedup handler for photos, videos, and other files"
+description = "Cull photos and videos from many drives down to one copy each, comparing similar shots side by side before you keep or delete"
 authors = ["Yoshinao Inoguchi <yoshinao@inoguchi.com>"]
 license = "GPL-3.0-or-later"
 repository = "https://github.com/nao7sep/onecopy"

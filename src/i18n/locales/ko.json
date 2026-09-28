@@ -446,7 +446,7 @@
   "activity.loadEarlierDetails": "이전 세부 정보 불러오기",
   "about.title": "OneCopy 정보",
   "about.version": "버전 {version}",
-  "about.description": "사진, 동영상, 기타 파일의 중복을 남김없이 정리하는 도구.",
+  "about.description": "여러 드라이브의 사진과 동영상을 각각 한 장의 사본으로 정리하고, 비슷한 사진을 나란히 비교한 뒤 보관하거나 삭제합니다.",
   "about.reportIssue": "문제 보고",
   "about.checking": "GitHub 확인 중…",
   "about.checkRelease": "GitHub에서 새 릴리스 확인",

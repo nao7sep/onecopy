@@ -446,7 +446,7 @@
   "activity.loadEarlierDetails": "Charger les détails précédents",
   "about.title": "À propos de OneCopy",
   "about.version": "Version {version}",
-  "about.description": "Un outil de tri et de dédoublonnage «\u00a0inbox zero\u00a0» pour les photos, les vidéos et les autres fichiers.",
+  "about.description": "Réduisez les photos et vidéos de plusieurs disques à une seule copie chacune, en comparant les clichés similaires côte à côte avant de les conserver ou de les supprimer.",
   "about.reportIssue": "Signaler un problème",
   "about.checking": "Vérification sur GitHub…",
   "about.checkRelease": "Rechercher une nouvelle version sur GitHub",

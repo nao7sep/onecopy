@@ -446,7 +446,7 @@
   "activity.loadEarlierDetails": "Load earlier details",
   "about.title": "About OneCopy",
   "about.version": "Version {version}",
-  "about.description": "An inbox-zero dedup handler for photos, videos, and other files.",
+  "about.description": "Cull photos and videos from many drives down to one copy each, comparing similar shots side by side before you keep or delete.",
   "about.reportIssue": "Report an issue",
   "about.checking": "Checking GitHub…",
   "about.checkRelease": "Check GitHub for New Release",

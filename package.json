@@ -2,6 +2,7 @@
   "name": "onecopy",
   "private": true,
   "version": "0.1.0",
+  "description": "Cull photos and videos from many drives down to one copy each, comparing similar shots side by side before you keep or delete",
   "author": "Yoshinao Inoguchi <yoshinao@inoguchi.com>",
   "license": "GPL-3.0-or-later",
   "type": "module",

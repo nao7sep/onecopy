@@ -446,7 +446,7 @@
   "activity.loadEarlierDetails": "Frühere Details laden",
   "about.title": "Über OneCopy",
   "about.version": "Version {version}",
-  "about.description": "Ein Inbox-Zero-Werkzeug für Fotos, Videos und andere Dateien, das Duplikate erkennt und aussortiert.",
+  "about.description": "Fassen Sie Fotos und Videos aus vielen Laufwerken auf je eine Kopie zusammen und vergleichen Sie ähnliche Aufnahmen nebeneinander, bevor Sie sie behalten oder löschen.",
   "about.reportIssue": "Problem melden",
   "about.checking": "GitHub wird geprüft…",
   "about.checkRelease": "Auf GitHub nach neuem Release suchen",

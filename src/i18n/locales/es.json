@@ -446,7 +446,7 @@
   "activity.loadEarlierDetails": "Cargar los detalles anteriores",
   "about.title": "Acerca de OneCopy",
   "about.version": "Versión {version}",
-  "about.description": "Un gestor de duplicados para fotos, videos y otros archivos, pensado para no dejar nada pendiente.",
+  "about.description": "Reduce las fotos y los videos de varias unidades a una sola copia cada uno, comparando las tomas similares una junto a otra antes de conservarlas o eliminarlas.",
   "about.reportIssue": "Informar de un problema",
   "about.checking": "Comprobando GitHub…",
   "about.checkRelease": "Buscar una versión nueva en GitHub",

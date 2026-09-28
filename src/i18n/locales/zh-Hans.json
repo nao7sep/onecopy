@@ -446,7 +446,7 @@
   "activity.loadEarlierDetails": "加载更早的详细信息",
   "about.title": "关于 OneCopy",
   "about.version": "版本 {version}",
-  "about.description": "照片、视频和其他文件的去重整理工具，目标是把待处理的内容清空。",
+  "about.description": "将各个驱动器上的照片和视频整理成每张仅保留一份，比较相似的照片后再决定保留还是删除。",
   "about.reportIssue": "报告问题",
   "about.checking": "正在检查 GitHub…",
   "about.checkRelease": "在 GitHub 上检查新版本",
