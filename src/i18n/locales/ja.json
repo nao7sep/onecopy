@@ -446,7 +446,7 @@
   "activity.loadEarlierDetails": "それ以前の詳細を読み込む",
   "about.title": "OneCopy について",
   "about.version": "バージョン {version}",
-  "about.description": "複数のドライブにある写真や動画をそれぞれ1つのコピーに絞り込み、似たカットは並べて比較してから残すか削除するかを決めましょう。",
+  "about.description": "複数のドライブにある写真や動画をそれぞれ 1 つのコピーに絞り込み、似た写真は並べて比較してから、残すか削除するかを決めましょう。",
   "about.reportIssue": "問題を報告",
   "about.checking": "GitHub を確認中…",
   "about.checkRelease": "GitHub で新しいリリースを確認",

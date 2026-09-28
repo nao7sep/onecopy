@@ -446,7 +446,7 @@
   "activity.loadEarlierDetails": "Carregar detalhes anteriores",
   "about.title": "Sobre o OneCopy",
   "about.version": "Versão {version}",
-  "about.description": "Reduza fotos e vídeos de vários drives a uma única cópia cada, comparando fotos semelhantes lado a lado antes de mantê-las ou excluí-las.",
+  "about.description": "Reduza fotos e vídeos de vários discos a uma única cópia cada, comparando fotos semelhantes lado a lado antes de mantê-los ou apagá-los.",
   "about.reportIssue": "Relatar um problema",
   "about.checking": "Consultando o GitHub…",
   "about.checkRelease": "Procurar Nova Versão no GitHub",

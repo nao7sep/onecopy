@@ -87,7 +87,7 @@
   "destinations.title": "Destinations",
   "destinations.addRoot": "Ajouter une racine…",
   "destinations.treeLabel": "Dossiers de destination",
-  "destinations.emptyHint": "Ajoutez une racine de destination : l’endroit où seront déplacés les fichiers que vous conservez. Elle doit se trouver en dehors de tous les dossiers analysés.",
+  "destinations.emptyHint": "Ajoutez une racine de destination\u00a0: l’endroit où seront déplacés les fichiers que vous conservez. Elle doit se trouver en dehors de tous les dossiers analysés.",
   "destinations.refreshingFolders": "Actualisation des dossiers…",
   "destinations.readingFolders": "Lecture des dossiers…",
   "destinations.folderReadFailed": "Impossible de lire ce dossier.",
