@@ -1,7 +1,4 @@
-// Window sizing — the single source of truth for the layout's minimum
-// dimensions. The window minimum is DERIVED from the pane minimums plus the
-// fixed chrome, never hand-typed, so the window and its content can never
-// disagree (app-chrome-conventions).
+// Layout dimensions and window minimum calculations (window-conventions).
 //
 // The layout (App) is a vertical stack: a content row of
 // [sections sidebar | divider | grid | divider | (preview pane | divider)? |
@@ -69,10 +66,8 @@ export function computeMinWindowWidth(previewOpen = false): number {
   );
 }
 
-// The footer is the one full-width fixed band, reserved before the content row
-// (app-chrome: fixed chrome is never the thing that gets clipped). The title
-// section is inside the sidebar and is covered by the content row's own
-// minimum, so it deliberately does not appear here.
+// The title section sits inside the sidebar, so only the footer adds to the
+// content row's minimum height.
 export function computeMinWindowHeight(): number {
   return CONTENT_MIN_HEIGHT + FOOTER_HEIGHT;
 }
