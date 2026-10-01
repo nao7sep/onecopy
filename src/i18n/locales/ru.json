@@ -993,8 +993,6 @@
   "settings.screenRowColumn": "{row} {column}",
   "settings.screenPosition": "позиция {index} из {total}",
   "settings.screenTop": "сверху",
-  "settings.soundSaveFailed": "Настройки сохранены, но звук и громкость сохранить не удалось. Ваши изменения остались на месте; попробуйте ещё раз.",
-  "settings.soundSaveFailedNotice": "Настройки сохранены, но OneCopy не удалось сохранить звук и громкость.",
   "settings.sourceCheckFailedNotice": "Настройки сохранены, но OneCopy не удалось начать проверку исходных папок.",
   "settings.textEncodingsReadFailed": "Не удалось прочитать поддерживаемые кодировки текста.",
   "settings.visibilityOptionsReadFailed": "Не удалось прочитать параметры видимости для этой платформы.",

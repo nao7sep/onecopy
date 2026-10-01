@@ -993,8 +993,6 @@
   "settings.screenRowColumn": "{column}{row}",
   "settings.screenPosition": "第 {index} 个（共 {total} 个）",
   "settings.screenTop": "上",
-  "settings.soundSaveFailed": "设置已保存，但无法保存声音和音量。你的更改仍保留在这里，请重试。",
-  "settings.soundSaveFailedNotice": "设置已保存，但 OneCopy 无法保存声音和音量。",
   "settings.sourceCheckFailedNotice": "设置已保存，但 OneCopy 无法开始检查源文件夹。",
   "settings.textEncodingsReadFailed": "无法读取受支持的文本编码。",
   "settings.visibilityOptionsReadFailed": "无法读取此平台的可见性选项。",

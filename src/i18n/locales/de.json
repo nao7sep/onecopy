@@ -993,8 +993,6 @@
   "settings.screenRowColumn": "{row} {column}",
   "settings.screenPosition": "Position {index} von {total}",
   "settings.screenTop": "oben",
-  "settings.soundSaveFailed": "Die Einstellungen wurden gespeichert, aber Ton und Lautstärke konnten nicht gespeichert werden. Ihre Änderungen sind noch vorhanden; versuchen Sie es erneut.",
-  "settings.soundSaveFailedNotice": "Die Einstellungen wurden gespeichert, aber OneCopy konnte Ton und Lautstärke nicht speichern.",
   "settings.sourceCheckFailedNotice": "Die Einstellungen wurden gespeichert, aber OneCopy konnte die Prüfung der Quellordner nicht starten.",
   "settings.textEncodingsReadFailed": "Die unterstützten Textkodierungen konnten nicht gelesen werden.",
   "settings.visibilityOptionsReadFailed": "Die Sichtbarkeitsoptionen dieser Plattform konnten nicht gelesen werden.",

@@ -993,8 +993,6 @@
   "settings.screenRowColumn": "{row} {column}",
   "settings.screenPosition": "posición {index} de {total}",
   "settings.screenTop": "superior",
-  "settings.soundSaveFailed": "La configuración se guardó, pero no se pudieron guardar el sonido y el volumen. Tus cambios siguen aquí; inténtalo de nuevo.",
-  "settings.soundSaveFailedNotice": "La configuración se guardó, pero OneCopy no pudo guardar el sonido y el volumen.",
   "settings.sourceCheckFailedNotice": "La configuración se guardó, pero OneCopy no pudo empezar a comprobar las carpetas de origen.",
   "settings.textEncodingsReadFailed": "No se pudieron leer las codificaciones de texto compatibles.",
   "settings.visibilityOptionsReadFailed": "No se pudieron leer las opciones de visibilidad de esta plataforma.",
