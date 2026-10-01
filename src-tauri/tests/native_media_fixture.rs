@@ -3,9 +3,9 @@
 use onecopy_lib::storage::{self, DefaultConfig};
 
 #[test]
-#[ignore = "requires ONECOPY_HOME pointing to a fresh disposable profile and a sibling media directory"]
+#[ignore = "requires ONECOPY_DATA_DIR pointing to a fresh disposable profile and a sibling media directory"]
 fn prepare_native_media_profile() {
-    let profile = std::path::PathBuf::from(std::env::var_os("ONECOPY_HOME").expect("explicit isolated ONECOPY_HOME required"));
+    let profile = std::path::PathBuf::from(std::env::var_os("ONECOPY_DATA_DIR").expect("explicit isolated ONECOPY_DATA_DIR required"));
     assert!(profile.is_absolute());
     let source = profile.parent().unwrap().join("media");
     assert!(source.is_dir(), "supply disposable media first");

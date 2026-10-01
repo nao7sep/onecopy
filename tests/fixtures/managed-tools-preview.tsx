@@ -10,7 +10,7 @@ import { managedToolsFixture } from "./managed-tools";
 import "../../src/App.css";
 
 // A browser has no native bridge. Native visual acceptance uses a disposable
-// ONECOPY_HOME and replaces every action exposed by this modal below; Tauri's
+// ONECOPY_DATA_DIR and replaces every action exposed by this modal below; Tauri's
 // actual injected IPC property is readonly and cannot use its browser mock.
 if (!isTauri()) {
   mockIPC((command) => { throw new Error(`Native command blocked in visual fixture: ${command}`); });
