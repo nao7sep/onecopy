@@ -45,10 +45,9 @@ fn simultaneous_claims_have_exactly_one_owner() {
         let hold = hold.clone();
         workers.push(std::thread::spawn(move || {
             start.wait();
-            let claim = claim(&root).unwrap();
-            let primary = matches!(claim, Claim::Primary { .. });
+            let claim = claim(&root);
             hold.wait();
-            primary
+            matches!(claim.unwrap(), Claim::Primary { .. })
         }));
     }
     start.wait();
