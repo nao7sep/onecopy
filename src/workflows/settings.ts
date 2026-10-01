@@ -7,7 +7,7 @@ import { log, toErrorFields } from "../repositories";
 import { useAppStore } from "../state/app-store";
 import { useItemsStore } from "../state/items-store";
 import { useSectionsStore } from "../state/sections-store";
-import { useSettingsStore } from "../state/settings-store";
+import { changedSettingsSets, useSettingsStore } from "../state/settings-store";
 import { useWizardStore } from "../state/wizard-store";
 import { message } from "../i18n/translate";
 import {
@@ -24,7 +24,7 @@ import { reconcileComparisonMembership } from "./comparison";
 type LibrarySettingsOutcome = { status: "applied"; resolved: number } | { status: "owed" };
 
 export async function saveSettings(): Promise<void> {
-  const { draft, opened } = useSettingsStore.getState();
+  const { draft, opened, similarityReset } = useSettingsStore.getState();
   if (!draft) return;
   const sourceDirsChanged =
     opened !== null && JSON.stringify(draft.sourceDirs) !== JSON.stringify(opened.sourceDirs);
@@ -42,7 +42,7 @@ export async function saveSettings(): Promise<void> {
   // Config publication is the Save transaction's commit point; sound and
   // volume are settings like the rest and ride in the same patch.
   try {
-    await useAppStore.getState().patchConfig({ ...draft }, { reportFailure: false });
+    await useAppStore.getState().patchConfig(changedSettingsSets(draft, opened, similarityReset), { reportFailure: false });
   } catch (error) {
     useSettingsStore.setState({
       saving: false,

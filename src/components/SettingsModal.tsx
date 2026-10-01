@@ -377,7 +377,7 @@ export default function SettingsModal({
 
   if (!open || draft === null) return null;
 
-  const dirty = JSON.stringify(draft) !== JSON.stringify(opened);
+  const dirty = useSettingsStore.getState().similarityReset || JSON.stringify(draft) !== JSON.stringify(opened);
   const requestClose = () => {
     if (dirty) setConfirmDiscard(true);
     else {

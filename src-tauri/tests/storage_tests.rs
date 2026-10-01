@@ -60,7 +60,7 @@ fn appearance_reads_only_preferences_without_repairing_or_loading_other_stores()
 fn default_config_serializes_with_camel_case_and_expected_defaults() {
     let value = serde_json::to_value(DefaultConfig::default()).unwrap();
     assert_eq!(value["goodRangeStartYear"], serde_json::json!(1995));
-    assert_eq!(value["similarityMaxGapSeconds"], serde_json::json!(90));
+    assert_eq!(value["similarity"]["maxGapSeconds"], serde_json::json!(90));
     assert_eq!(value["previewLongEdgePx"], serde_json::json!(1600));
     assert_eq!(value["videoAutoplay"], serde_json::json!(true));
     assert_eq!(value["audioAutoplay"], serde_json::json!(true));
@@ -140,26 +140,14 @@ fn loading_config_removes_the_obsolete_copy_verification_preference() {
     )
     .unwrap();
 
-    // An ordinary unserialized read strips the retired key from what it
-    // returns, but never writes back on its own (D-L3): that
-    // read-modify-write used to run outside PATCH_LOCK and could race a
-    // concurrent patch_json_store call, dropping the user's just-saved
-    // setting. Only the explicit, once-at-startup migration persists the
-    // removal, and it goes through patch_json_store like every other write.
     let loaded = read_config_for_setup(&root).unwrap().unwrap();
     assert!(loaded.get("verifyAfterCopy").is_none());
-    let untouched: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let untouched: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(untouched["verifyAfterCopy"], false);
-
-    migrate_legacy_config_keys(&root).unwrap();
-    let stored: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    patch_json_store(&path, &serde_json::json!({ "theme": "dark" })).unwrap();
+    let stored: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert!(stored.get("verifyAfterCopy").is_none());
     assert_eq!(stored["pairingEnabled"], true);
-
-    // A second migration call is a no-op: nothing to remove, nothing to write.
-    migrate_legacy_config_keys(&root).unwrap();
 }
 
 #[test]
@@ -191,7 +179,7 @@ fn scanner_projects_the_pairing_switch() {
 #[serial(backup_store)]
 fn patch_merges_shallow_and_survives_interleaved_writers() {
     let dir = temp_dir("patch");
-    let target = dir.join("config.json");
+    let target = dir.join("registry.json");
     write_atomic(&target, b"{\"a\": 1, \"list\": [\"x\"]}").unwrap();
 
     // GENUINELY interleaved: two threads, each reading before either writes.
@@ -250,7 +238,7 @@ fn patch_merges_shallow_and_survives_interleaved_writers() {
 }
 #[test]
 #[serial(backup_store)]
-fn patching_corrupt_config_reseeds_before_merging() {
+fn patching_corrupt_config_saves_only_changed_sets() {
     let dir = temp_dir("patch-corrupt-config");
     let target = dir.join(CONFIG_FILE_NAME);
     std::fs::write(&target, b"not json").unwrap();
@@ -258,8 +246,8 @@ fn patching_corrupt_config_reseeds_before_merging() {
     let outcome = patch_json_store(&target, &serde_json::json!({ "theme": "dark" })).unwrap();
 
     assert_eq!(outcome.merged["theme"], "dark");
-    assert_eq!(outcome.merged["goodRangeStartYear"], 1995);
-    assert_eq!(outcome.merged["sourceDirs"], serde_json::json!([]));
+    assert!(outcome.merged.get("goodRangeStartYear").is_none());
+    assert_eq!(outcome.merged, serde_json::json!({ "theme": "dark" }));
     // The outcome carries the record — a mid-session quarantine has no load
     // result to ride home on, so the patch itself must hand it back.
     let record = outcome.quarantined.expect("the patch reports its own quarantine");
@@ -269,7 +257,7 @@ fn patching_corrupt_config_reseeds_before_merging() {
 
 #[test]
 #[serial(backup_store)]
-fn patching_non_object_config_preserves_it_before_seeding_and_merging() {
+fn patching_non_object_config_preserves_it_before_saving_changed_sets() {
     let dir = temp_dir("patch-wrong-envelope-config");
     let target = dir.join(CONFIG_FILE_NAME);
     std::fs::write(&target, b"[\"preserve\", 7]\n").unwrap();
@@ -277,7 +265,7 @@ fn patching_non_object_config_preserves_it_before_seeding_and_merging() {
     let outcome = patch_json_store(&target, &serde_json::json!({ "theme": "dark" })).unwrap();
 
     assert_eq!(outcome.merged["theme"], "dark");
-    assert_eq!(outcome.merged["goodRangeStartYear"], 1995);
+    assert!(outcome.merged.get("goodRangeStartYear").is_none());
     let record = outcome
         .quarantined
         .expect("the invalid envelope is reported by the save path");
@@ -290,17 +278,36 @@ fn patching_non_object_config_preserves_it_before_seeding_and_merging() {
 
 #[test]
 #[serial(backup_store)]
-fn materialize_writes_only_when_absent() {
-    let dir = temp_dir("materialize");
-    materialize_config_if_missing(&dir).unwrap();
+fn first_run_and_one_set_save_are_sparse() {
+    let dir = temp_dir("sparse");
+    let loaded = load_from_root(&dir).unwrap();
     let path = dir.join(CONFIG_FILE_NAME);
-    let first = std::fs::read_to_string(&path).unwrap();
-    assert!(first.contains("goodRangeStartYear"));
+    assert!(!path.exists());
+    assert_eq!(loaded.config["previewLongEdgePx"], 1600);
+    let result = patch_json_store(&path, &serde_json::json!({ "previewLongEdgePx": 2000 })).unwrap();
+    assert_eq!(result.merged, serde_json::json!({ "previewLongEdgePx": 2000 }));
+    assert_eq!(load_from_root(&dir).unwrap().config["theme"], "system");
+    std::fs::write(&path, br#"{"version":1,"previewLongEdgePx":2000}"#).unwrap();
+    assert_eq!(patch_json_store(&path, &serde_json::json!({ "theme": "dark" })).unwrap().merged, serde_json::json!({ "previewLongEdgePx":2000,"theme":"dark" }));
+}
 
-    // A user-edited file is never touched by a second materialization.
-    std::fs::write(&path, "{\"custom\": true}\n").unwrap();
-    materialize_config_if_missing(&dir).unwrap();
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"custom\": true}\n");
+#[test]
+#[serial(backup_store)]
+fn resetting_similarity_deletes_the_whole_set() {
+    let dir = temp_dir("reset-set");
+    let path = dir.join(CONFIG_FILE_NAME);
+    let similarity = serde_json::json!({ "maxGapSeconds": 12, "phashMaxDistance": 19, "phashMaxDistanceBurst": 27, "diameterMultiplier": 4 });
+    patch_json_store(&path, &serde_json::json!({ "similarity": similarity, "theme": "dark" })).unwrap();
+    assert_eq!(load_from_root(&dir).unwrap().config["similarity"], similarity);
+    let result = patch_json_store(&path, &serde_json::json!({ "similarity": null })).unwrap();
+    assert_eq!(result.merged, serde_json::json!({ "theme": "dark" }));
+    assert_eq!(load_from_root(&dir).unwrap().config["similarity"], effective_config(None)["similarity"]);
+}
+
+#[test]
+fn malformed_sets_fall_back_whole_without_reinterpreting_legacy_keys() {
+    let stored = serde_json::json!({ "similarity": { "maxGapSeconds": 12 }, "aiAcceleration": { "transcription": "cuda", "face-scoring": "none" }, "theme": "invalid", "sourceDirs": [12], "similarityMaxGapSeconds": 12 });
+    assert_eq!(effective_config(Some(&stored)), effective_config(None));
 }
 
 #[test]
@@ -323,7 +330,7 @@ fn write_atomic_replaces_and_leaves_no_temps() {
 // A corrupt store's recovery, end to end: branch, preserved bytes and report.
 #[test]
 #[serial(quarantine_journal)]
-fn a_corrupt_config_is_set_aside_reported_and_reseeded_in_the_same_load() {
+fn a_corrupt_config_is_set_aside_reported_and_not_reseeded() {
     let root = temp_dir("quarantine-config");
     let config = root.join("config.json");
     std::fs::write(&config, b"{ not json").unwrap();
@@ -343,10 +350,8 @@ fn a_corrupt_config_is_set_aside_reported_and_reseeded_in_the_same_load() {
         "the report must name the file that actually holds the bytes"
     );
 
-    // Reseeded IN THIS LOAD: setup's materialization already ran before the
-    // load, so without the re-check config.json would stay missing until
-    // some later save happened to write it.
-    assert!(config.is_file(), "the store comes back seeded, not absent");
+    // Reading built-ins does not write a replacement.
+    assert!(!config.exists(), "quarantine leaves no replacement config");
     let started_with = loaded.config;
     assert_eq!(
         started_with["goodRangeStartYear"],
@@ -400,9 +405,9 @@ fn an_unserialized_config_read_leaves_its_quarantine_pending_for_load_from_root(
     std::fs::write(&config, b"{ not json").unwrap();
 
     // Simulates the watcher's own read: it must set the corrupt store aside
-    // and materialize a fresh default...
+    // and return no stored copy...
     let watcher_read = read_config_for_setup(&root).unwrap();
-    assert!(watcher_read.is_some(), "a fresh default config must load");
+    assert!(watcher_read.is_none(), "no replacement is seeded");
 
     // ...but the quarantine record it produced must still be waiting for
     // the real frontend load, not silently consumed here.

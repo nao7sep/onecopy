@@ -111,8 +111,6 @@ fn join_finished(workers: &mut Vec<JoinHandle<()>>) {
 }
 
 fn prepare_data(data_root: &Path) -> Result<PreparedData, String> {
-    crate::storage::materialize_config_if_missing(data_root)?;
-    crate::storage::migrate_legacy_config_keys(data_root)?;
     let conn = crate::index_store::open(
         &data_root.join(crate::storage::INDEX_DB_FILE_NAME),
     )?;
@@ -279,7 +277,7 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
                     .as_ref()
                     .and_then(|value| value.get("checkUpdatesAtLaunch"))
                     .and_then(Value::as_bool)
-                    .unwrap_or(false);
+                    .unwrap_or(crate::storage::DefaultConfig::default().check_updates_at_launch);
                 if !check_at_launch {
                     return Ok(());
                 }

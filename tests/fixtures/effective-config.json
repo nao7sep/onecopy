@@ -31,10 +31,6 @@
   "scoreFaces": true,
   "showFaceStars": true,
   "similarPhotoAnalysisEnabled": true,
-  "similarityDiameterMultiplier": 2,
-  "similarityMaxGapSeconds": 90,
-  "similarityPhashMaxDistance": 3,
-  "similarityPhashMaxDistanceBurst": 10,
   "sourceDirs": [],
   "textFallbackEncoding": "utf-8",
   "textPreviewMaxBytes": 2097152,
@@ -46,5 +42,11 @@
   "videoStripMaxFrames": 40,
   "videoStripMinFrames": 5,
   "videoStripSecondsPerFrame": 20,
-  "videoTranscriptionEnabled": true
+  "videoTranscriptionEnabled": true,
+  "similarity": {
+    "diameterMultiplier": 2,
+    "maxGapSeconds": 90,
+    "phashMaxDistance": 3,
+    "phashMaxDistanceBurst": 10
+  }
 }

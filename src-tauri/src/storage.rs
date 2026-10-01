@@ -27,7 +27,7 @@
 //! Invalid-config policy (storage-path conventions): malformed JSON or a
 //! non-object config envelope is quarantined aside to
 //! `<stem>-<yyyymmdd-hhmmss-fff-utc>.invalid`
-//! and defaults are recreated — never silently overwritten. The quarantine
+//! and built-ins are read without creating a replacement. The quarantine
 //! rename runs OUTSIDE the parse-failure handling: a failed rename propagates as
 //! an error instead of falling through to a default-reset that would clobber the
 //! very bytes quarantine exists to preserve.
@@ -46,12 +46,7 @@ pub const PREVIEW_WINDOW_FILE_NAME: &str = "preview-window.json";
 pub const INDEX_DB_FILE_NAME: &str = "index.sqlite3";
 pub const CACHE_DIR_NAME: &str = "cache";
 
-/// Durable user settings — the single canonical defaults definition. Serialized
-/// through the same save path the app uses (never a hand-written JSON literal)
-/// to materialize `config.json` on first run. The store never validates a
-/// loaded feature values; each feature validates what it consumes
-/// (config-seeding conventions). The storage boundary validates only that the
-/// config document itself has the required object envelope.
+/// Canonical built-in config sets. Built-ins are read in memory, never seeded.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DefaultConfig {
@@ -60,27 +55,11 @@ pub struct DefaultConfig {
     pub hide_hidden_attributes: bool,
     pub hide_system_attributes: bool,
     /// IANA name applied when interpreting naive local timestamps (EXIF without
-    /// an offset). Seeded from the system timezone; the wizard owns it after.
+    /// an offset). The built-in follows the system timezone; the wizard saves the choice.
     pub default_timezone: String,
     /// Timestamps resolving before this year are rejected as implausible.
     pub good_range_start_year: i32,
-    /// Burst-split gap (seconds) inside a visual cluster with camera data.
-    pub similarity_max_gap_seconds: u32,
-    /// Max perceptual-hash Hamming distance for two photos to cluster.
-    pub similarity_phash_max_distance: u32,
-    /// The relaxed distance for pairs within the burst gap (Phase 33): real
-    /// bursts spread wider than the strict line tolerates, and capture time
-    /// is the cheap, strong signal that they belong together. 10 is a
-    /// REASONED default — it awaits tuning on the developer's real family
-    /// index (the strict default stays icon-tuned at 3).
-    pub similarity_phash_max_distance_burst: u32,
-    /// How much WIDER than one pairing step a single family may spread, as a
-    /// multiple of the pairing thresholds. 1 = every member must resemble the
-    /// family's leader directly; 2 (the default) allows a burst whose ends
-    /// meet only through their shared middle. Raising it invites chaining —
-    /// the setting exists so a corpus that needs looser families can have
-    /// them deliberately, never by accident.
-    pub similarity_diameter_multiplier: u32,
+    pub similarity: SimilaritySettings,
     /// Long edge of the screen-fit preview cache entries.
     pub preview_long_edge_px: u32,
     /// Edge of the grid thumbnail cache entries.
@@ -147,8 +126,7 @@ pub struct DefaultConfig {
     pub source_dirs: Vec<String>,
     /// Destination roots for the move/copy-out tree (absolute paths).
     pub destination_roots: Vec<String>,
-    /// Conflict renaming follows one familiar desktop style. The platform
-    /// default is materialized on first setup; users may choose the other.
+    /// Conflict renaming follows one familiar desktop style. The built-in follows the platform; users may choose the other.
     pub destination_conflict_rename_style: String,
 }
 
@@ -161,12 +139,7 @@ impl Default for DefaultConfig {
             hide_system_attributes: true,
             default_timezone: iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".to_string()),
             good_range_start_year: 1995,
-            similarity_max_gap_seconds: 90,
-            // Deliberately tight: on a measured 548-image corpus, 12 collapsed
-            // everything into one 484-member hairball; 2-4 recovered families.
-            similarity_phash_max_distance: 3,
-            similarity_phash_max_distance_burst: 10,
-            similarity_diameter_multiplier: 2,
+            similarity: SimilaritySettings::default(),
             preview_long_edge_px: 1600,
             thumbnail_edge_px: 320,
             video_strip_seconds_per_frame: 20,
@@ -211,22 +184,56 @@ impl Default for DefaultConfig {
     }
 }
 
-/// The configuration every reader acts on: the stored document's members over
-/// the canonical defaults. Defaults are materialized into `config.json` only
-/// when the file is first created, so a key added later resolves here, the
-/// one place defaults are answered for the frontend too.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SimilaritySettings {
+    pub max_gap_seconds: u32,
+    pub phash_max_distance: u32,
+    pub phash_max_distance_burst: u32,
+    pub diameter_multiplier: u32,
+}
+
+impl Default for SimilaritySettings {
+    fn default() -> Self {
+        Self { max_gap_seconds: 90, phash_max_distance: 3, phash_max_distance_burst: 10, diameter_multiplier: 2 }
+    }
+}
+
+/// Known set keys and built-ins have one owner: `DefaultConfig`.
+/// A malformed copy is absent as a whole, never filled member by member.
 pub fn effective_config(stored: Option<&JsonValue>) -> JsonValue {
-    let mut effective =
-        serde_json::to_value(DefaultConfig::default()).expect("the default config serializes");
-    if let (Some(fields), Some(stored)) = (
-        effective.as_object_mut(),
-        stored.and_then(JsonValue::as_object),
-    ) {
-        for (key, value) in stored {
-            fields.insert(key.clone(), value.clone());
+    let mut effective = serde_json::to_value(DefaultConfig::default()).expect("the default config serializes");
+    for (key, builtin) in effective.as_object_mut().expect("defaults are an object") {
+        if let Some(value) = stored.and_then(|document| document.get(key)) {
+            if valid_set(key, value, builtin) {
+                *builtin = value.clone();
+            } else {
+                static WARNED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+                if WARNED.lock().unwrap_or_else(|p| p.into_inner()).insert(key.clone()) {
+                    logging::warn("invalid config set; using built-in", serde_json::json!({ "key": key }));
+                }
+            }
         }
     }
     effective
+}
+
+fn valid_set(key: &str, value: &JsonValue, builtin: &JsonValue) -> bool {
+    let shape = match builtin {
+        JsonValue::Bool(_) => value.is_boolean(),
+        JsonValue::Number(_) => value.is_number(),
+        JsonValue::String(_) => value.is_string(),
+        JsonValue::Array(_) => value.as_array().is_some_and(|items| items.iter().all(JsonValue::is_string)),
+        JsonValue::Object(fields) => value.as_object().is_some_and(|copy| fields.iter().all(|(key, builtin)| copy.get(key).is_some_and(|value| valid_set(key, value, builtin)))),
+        _ => false,
+    };
+    shape && match key {
+        "theme" => matches!(value.as_str(), Some("system" | "light" | "dark")),
+        "language" => value.as_str().is_some_and(|tag| tag == "system" || crate::i18n::LANGUAGES.contains(&tag)),
+        "destinationConflictRenameStyle" => matches!(value.as_str(), Some("space-number" | "parenthesized-number")),
+        "transcription" | "face-scoring" => matches!(value.as_str(), Some("none" | "metal")),
+        _ => true,
+    }
 }
 
 /// Everything the frontend needs at startup, in one command round-trip.
@@ -333,8 +340,6 @@ pub fn read_config_for_setup(root: &Path) -> Result<Option<JsonValue>, String> {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .push(record);
-        materialize_config_if_missing(root)?;
-        return Ok(read_config_optional(&root.join(CONFIG_FILE_NAME))?.value);
     }
     Ok(read.value)
 }
@@ -388,11 +393,9 @@ pub fn load_from_root(root: &Path) -> Result<LoadedAppData, String> {
     let mut quarantines = take_pending_quarantines();
     let config_read = read_config_optional(&root.join(CONFIG_FILE_NAME))?;
     let state_read = read_json_optional(&root.join(STATE_FILE_NAME))?;
-    let mut config = config_read.value;
+    let config = config_read.value;
     if let Some(record) = config_read.quarantined {
         quarantines.push(record);
-        materialize_config_if_missing(root)?;
-        config = read_config_optional(&root.join(CONFIG_FILE_NAME))?.value;
     }
     if let Some(record) = state_read.quarantined {
         quarantines.push(record);
@@ -509,9 +512,8 @@ pub struct PatchOutcome {
     pub quarantined: Option<QuarantineRecord>,
 }
 
-/// Shallow merge: each top-level key in `patch` replaces the stored value
-/// wholesale (arrays and objects included — `sourceDirs` is a list you set,
-/// not a list you splice). Keys are never deleted; `null` stores as null.
+/// Replace whole sets; a null config value deletes its copy for reset.
+/// Unknown config keys are dropped. State patches retain null as a value.
 pub fn patch_json_store(target: &Path, patch: &JsonValue) -> Result<PatchOutcome, String> {
     // Serialized: this is a read-modify-write, and both `patch_config` and
     // `patch_state` are Tauri commands dispatched on a thread pool, so two
@@ -529,22 +531,12 @@ pub fn patch_json_store(target: &Path, patch: &JsonValue) -> Result<PatchOutcome
         .file_name()
         .is_some_and(|name| name == CONFIG_FILE_NAME)
     {
-        read_config_optional(target)?
+        read_json_optional_with_envelope(target, true)?
     } else {
         read_json_optional(target)?
     };
     let quarantined = read.quarantined;
-    let mut current = read.value;
-    if quarantined.is_some()
-        && target
-            .file_name()
-            .is_some_and(|name| name == CONFIG_FILE_NAME)
-    {
-        if let Some(root) = target.parent() {
-            materialize_config_if_missing(root)?;
-        }
-        current = read_config_optional(target)?.value;
-    }
+    let current = read.value;
     let mut current = current.unwrap_or_else(|| serde_json::json!({}));
     if !current.is_object() {
         current = serde_json::json!({});
@@ -552,8 +544,18 @@ pub fn patch_json_store(target: &Path, patch: &JsonValue) -> Result<PatchOutcome
     let (Some(doc), Some(fields)) = (current.as_object_mut(), patch.as_object()) else {
         return Err("patch must be a JSON object".to_string());
     };
+    let is_config = target.file_name().is_some_and(|name| name == CONFIG_FILE_NAME);
+    let defaults = effective_config(None);
+    if is_config {
+        doc.retain(|key, _| defaults.get(key).is_some());
+    }
     for (key, value) in fields {
-        doc.insert(key.clone(), value.clone());
+        if is_config && defaults.get(key).is_none() { continue; }
+        if is_config && value.is_null() {
+            doc.remove(key);
+        } else {
+            doc.insert(key.clone(), value.clone());
+        }
     }
     // state.json is volatile state and nothing else: written atomically but
     // not recorded in the backup history. Every other patched store records.
@@ -571,20 +573,6 @@ pub fn patch_json_store(target: &Path, patch: &JsonValue) -> Result<PatchOutcome
     })
 }
 
-/// First-run materialization (storage-path conventions): write `config.json`
-/// from the canonical defaults, through the app's own save path, ONLY when the
-/// file is absent. An existing file — even a corrupt one — is never touched
-/// here; the load path owns the quarantine decision. `state.json` is deliberately
-/// not materialized (volatile, written only when there is state to record).
-pub fn materialize_config_if_missing(root: &Path) -> Result<(), String> {
-    let target = root.join(CONFIG_FILE_NAME);
-    if target.exists() {
-        return Ok(());
-    }
-    let defaults = serde_json::to_value(DefaultConfig::default()).map_err(|e| e.to_string())?;
-    atomic_write_json(&target, &defaults, true)
-}
-
 struct JsonRead {
     value: Option<JsonValue>,
     /// Set when this read set the store aside; the caller owns getting the
@@ -600,41 +588,11 @@ fn read_json_optional(path: &Path) -> Result<JsonRead, String> {
     read_json_optional_with_envelope(path, false)
 }
 
-/// Ordinary reads never write. Earlier this removed the legacy
-/// `verifyAfterCopy` key and wrote the result straight back — a
-/// read-modify-write outside `PATCH_LOCK` that could race a concurrent
-/// `patch_json_store` call and silently drop the user's just-saved setting
-/// (a background reader observing the legacy key mid-patch would write the
-/// old document back over it). The key is stripped from the value this
-/// returns either way; only `migrate_legacy_config_keys`, which goes through
-/// `patch_json_store`, persists that removal to disk.
 fn read_config_optional(path: &Path) -> Result<JsonRead, String> {
     let mut read = read_json_optional_with_envelope(path, true)?;
-    if let Some(value) = read.value.as_mut() {
-        if let Some(fields) = value.as_object_mut() {
-            fields.remove("verifyAfterCopy");
-        }
-    }
+    read.value = read.value.as_ref().map(|value| effective_config(Some(value)));
     register_volume_roots(read.value.as_ref());
     Ok(read)
-}
-
-/// One-time migration for the retired `verifyAfterCopy` config key, run once
-/// at startup (`startup::prepare_data`) rather than from every unserialized
-/// reader. It goes through `patch_json_store` so the read-modify-write is
-/// under `PATCH_LOCK` like every other config write, and it is a no-op once
-/// the key is gone.
-pub fn migrate_legacy_config_keys(root: &Path) -> Result<(), String> {
-    let target = root.join(CONFIG_FILE_NAME);
-    let has_legacy_key = read_json_optional_with_envelope(&target, true)?
-        .value
-        .as_ref()
-        .and_then(JsonValue::as_object)
-        .is_some_and(|fields| fields.contains_key("verifyAfterCopy"));
-    if has_legacy_key {
-        patch_json_store(&target, &serde_json::json!({}))?;
-    }
-    Ok(())
 }
 
 fn read_json_optional_with_envelope(
@@ -672,7 +630,7 @@ fn quarantine_invalid_store(path: &Path, reason: &str) -> Result<JsonRead, Strin
         )
     })?;
     logging::warn(
-        "invalid JSON store quarantined; recreating defaults",
+        "invalid JSON store quarantined; using built-ins",
         serde_json::json!({
             "file": path.to_string_lossy(),
             "quarantinedTo": quarantined.to_string_lossy(),

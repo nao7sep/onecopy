@@ -21,7 +21,6 @@ fn prepare_native_media_profile() {
         check_updates_at_launch: false,
         ..DefaultConfig::default()
     };
-    storage::materialize_config_if_missing(&profile).unwrap();
     storage::patch_json_store(&profile.join(storage::CONFIG_FILE_NAME), &serde_json::to_value(config).unwrap()).unwrap();
     println!("Native media profile: {}", profile.display());
 }

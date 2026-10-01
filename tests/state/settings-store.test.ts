@@ -76,13 +76,13 @@ describe("GitHub release preference", () => {
 });
 
 describe("UI font preference", () => {
-  it("presents the historical seeded CSS stack as the blank system default", () => {
+  it("preserves a saved font stack verbatim", () => {
     useSettingsStore.getState().beginEditing({
       ...config,
       uiFontFamily:
         'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
     });
-    expect(useSettingsStore.getState().draft?.uiFontFamily).toBe("");
+    expect(useSettingsStore.getState().draft?.uiFontFamily).toBe('system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif');
   });
 
   it("preserves a custom family list", () => {

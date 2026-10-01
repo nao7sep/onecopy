@@ -50,6 +50,19 @@ describe("Settings save boundary", () => {
     expect(invokeCalls.find((call) => call.command === "patch_config")?.args).toMatchObject({ patch: { hideDotNames: false, ignoredFileNames: [] } });
   });
 
+  it("writes one changed set and leaves every other set absent", async () => {
+    useSettingsStore.getState().update({ previewLongEdgePx: 2000 });
+    await saveSettings();
+    expect(invokeCalls.find((call) => call.command === "patch_config")?.args.patch).toEqual({ previewLongEdgePx: 2000 });
+  });
+
+  it("saves the similarity reset as deletion", async () => {
+    useSettingsStore.getState().beginEditing(effectiveConfig({ similarity: { maxGapSeconds: 12, phashMaxDistance: 19, phashMaxDistanceBurst: 27, diameterMultiplier: 4 } }), [], effectiveConfig());
+    useSettingsStore.getState().resetSimilarPhotoSettings();
+    await saveSettings();
+    expect(invokeCalls.find((call) => call.command === "patch_config")?.args.patch).toEqual({ similarity: null });
+  });
+
   it("says a busy apply will still take effect instead of reporting a failure", async () => {
     mockCommands({ apply_library_settings: () => ({ status: "owed" }) });
     useSettingsStore.getState().update({ defaultTimezone: "UTC" });
@@ -138,7 +151,7 @@ describe("Settings save boundary", () => {
     await saveSettings();
 
     const configSave = invokeCalls.find((call) => call.command === "patch_config");
-    expect(configSave?.args.patch).toMatchObject({
+    expect(configSave?.args.patch).toEqual({
       soundEnabled: false,
       playbackVolume: 0.35,
     });

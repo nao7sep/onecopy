@@ -117,16 +117,17 @@ pub struct Limits {
 
 impl Limits {
     pub fn from_config(config: Option<&serde_json::Value>) -> Self {
+        let defaults = crate::storage::DefaultConfig::default();
         Self {
             max_bytes: config
                 .and_then(|value| value.get("textPreviewMaxBytes"))
                 .and_then(serde_json::Value::as_u64)
-                .unwrap_or(DEFAULT_MAX_BYTES)
+                .unwrap_or(defaults.text_preview_max_bytes)
                 .clamp(1, MAX_ALLOWED_BYTES),
             fallback_encoding: config
                 .and_then(|value| value.get("textFallbackEncoding"))
                 .and_then(serde_json::Value::as_str)
-                .unwrap_or(DEFAULT_FALLBACK_ENCODING)
+                .unwrap_or(&defaults.text_fallback_encoding)
                 .to_string(),
         }
     }

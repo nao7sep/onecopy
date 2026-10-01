@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { applyUiFont } from "../../src/utils/uiFont";
 
 describe("UI font preference", () => {
-  it("keeps CSS fallback ownership out of the user preference", () => {
+  it("applies a saved font verbatim and clears a blank preference", () => {
     applyUiFont("Iosevka, monospace");
     expect(document.documentElement.style.getPropertyValue("--font-ui")).toBe(
       "Iosevka, monospace",
@@ -15,7 +15,9 @@ describe("UI font preference", () => {
       'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
     );
     expect(document.documentElement.style.getPropertyValue("--font-ui")).toBe(
-      "",
+      'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
     );
+    applyUiFont("");
+    expect(document.documentElement.style.getPropertyValue("--font-ui")).toBe("");
   });
 });

@@ -3,15 +3,8 @@
 // sets each window's theme natively and App.css follows it through
 // prefers-color-scheme.)
 
-// The old seeded preference duplicated App.css's built-in stack. Treat that
-// exact historical value as the default so existing installs see the same
-// short, blank preference as new ones; arbitrary user stacks remain verbatim.
-const LEGACY_DEFAULT_UI_FONT =
-  'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
-
 export function normalizeUiFontPreference(family: unknown): string {
-  if (typeof family !== "string") return "";
-  return family.trim() === LEGACY_DEFAULT_UI_FONT ? "" : family;
+  return typeof family === "string" ? family : "";
 }
 
 /** Applies the configured UI font by setting the one `--font-ui` variable —

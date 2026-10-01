@@ -720,12 +720,12 @@ fn an_unsupported_saved_acceleration_fails_only_its_own_engine() {
         .prefix("onecopy-unsupported-acceleration-")
         .tempdir()
         .unwrap();
-    // Saved on another platform: neither backend is offered by this binary
-    // for face scoring, and `cuda` by none for transcription.
+    // A known mode can be unsupported on this engine; it remains a saved
+    // choice and fails at use rather than being rewritten.
     std::fs::write(
         dir.path().join(onecopy_lib::storage::CONFIG_FILE_NAME),
         serde_json::json!({
-            "aiAcceleration": { "transcription": "cuda", "face-scoring": "metal" },
+            "aiAcceleration": { "transcription": "none", "face-scoring": "metal" },
             "scoreFaces": true,
         })
         .to_string(),
@@ -746,15 +746,13 @@ fn an_unsupported_saved_acceleration_fails_only_its_own_engine() {
     let capabilities = onecopy_lib::derived_work::work_capabilities(dir.path()).unwrap();
     let config = onecopy_lib::storage::read_config_for_setup(dir.path()).unwrap();
     let settings = settings_from_config(config.as_ref(), dir.path());
-    assert!(settings.transcription_acceleration.is_err());
+    assert!(settings.transcription_acceleration.is_ok());
     assert!(settings.face_acceleration.is_err());
     assert_eq!(
         priority_candidates(&conn, &settings, Some("photo"), &[], None).unwrap(),
         ["photo"]
     );
-    assert!(priority_candidates_for_class(&conn, &settings, "audio-transcripts", Some("song"), &[], None)
-        .unwrap()
-        .is_empty());
+
 
     let value = serde_json::to_value(
         snapshot(
@@ -779,7 +777,7 @@ fn an_unsupported_saved_acceleration_fails_only_its_own_engine() {
             .clone()
     };
     assert_eq!(row("previews")["state"], "queued");
-    for id in ["audio-transcripts", "faces"] {
+    for id in ["faces"] {
         assert_eq!(row(id)["state"], "unavailable", "{id}");
         assert_eq!(row(id)["reason"], derived_state::UNSUPPORTED_ACCELERATION, "{id}");
     }

@@ -338,10 +338,7 @@ describe("Settings categories", () => {
     useSettingsStore.getState().beginEditing({
       ...config,
       goodRangeStartYear: 2007,
-      similarityMaxGapSeconds: 12,
-      similarityPhashMaxDistance: 19,
-      similarityPhashMaxDistanceBurst: 27,
-      similarityDiameterMultiplier: 4,
+      similarity: { maxGapSeconds: 12, phashMaxDistance: 19, phashMaxDistanceBurst: 27, diameterMultiplier: 4 },
       previewLongEdgePx: 2048,
       confirmTrashDelete: true,
     }, [], DEFAULT_CONFIG);
@@ -353,10 +350,10 @@ describe("Settings categories", () => {
 
     expect(useSettingsStore.getState().draft).toEqual({
       ...before,
-      similarityMaxGapSeconds: DEFAULT_CONFIG.similarityMaxGapSeconds,
-      similarityPhashMaxDistance: DEFAULT_CONFIG.similarityPhashMaxDistance,
-      similarityPhashMaxDistanceBurst: DEFAULT_CONFIG.similarityPhashMaxDistanceBurst,
-      similarityDiameterMultiplier: DEFAULT_CONFIG.similarityDiameterMultiplier,
+      similarityMaxGapSeconds: (DEFAULT_CONFIG.similarity as Record<string, number>).maxGapSeconds,
+      similarityPhashMaxDistance: (DEFAULT_CONFIG.similarity as Record<string, number>).phashMaxDistance,
+      similarityPhashMaxDistanceBurst: (DEFAULT_CONFIG.similarity as Record<string, number>).phashMaxDistanceBurst,
+      similarityDiameterMultiplier: (DEFAULT_CONFIG.similarity as Record<string, number>).diameterMultiplier,
     });
   });
 
