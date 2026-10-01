@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
 const DATA_DIR_NAME: &str = ".onecopy";
-const HOME_ENV_VAR: &str = "ONECOPY_DATA_DIR";
+const DATA_DIR_ENV_VAR: &str = "ONECOPY_DATA_DIR";
 
 // The standard subdirectory/file names under the root, owned here so one
 // module names every standard subpath (storage-path conventions; storage.rs
@@ -65,7 +65,7 @@ pub fn resolve_data_root(app: &AppHandle) -> Result<PathBuf, String> {
         .path()
         .home_dir()
         .map_err(|e| format!("could not resolve home directory: {e}"))?;
-    let root = resolve_root(&home, std::env::var(HOME_ENV_VAR).ok())?;
+    let root = resolve_root(&home, std::env::var(DATA_DIR_ENV_VAR).ok())?;
     create_data_root(&root)
         .map_err(|e| format!("could not create storage root {}: {e}", root.display()))?;
     #[cfg(unix)]
@@ -125,7 +125,7 @@ fn ensure_private(root: &Path) {
 // nothing; None if the home or the override cannot be resolved.
 pub fn data_root_before_launch() -> Option<PathBuf> {
     let home = dirs::home_dir()?;
-    resolve_root(&home, std::env::var(HOME_ENV_VAR).ok()).ok()
+    resolve_root(&home, std::env::var(DATA_DIR_ENV_VAR).ok()).ok()
 }
 
 /// Whether `candidate` is the app's own data root, or lies beneath it — the
@@ -165,7 +165,7 @@ fn resolve_root(home: &Path, override_value: Option<String>) -> Result<PathBuf, 
     let expanded = expanded.trim();
     if expanded.is_empty() {
         return Err(format!(
-            "{HOME_ENV_VAR} is set to \"{raw}\" but expands to an empty path \
+            "{DATA_DIR_ENV_VAR} is set to \"{raw}\" but expands to an empty path \
              (an unset $VAR/%VAR%?). Set it to a usable directory, or unset it to use ~/{DATA_DIR_NAME}."
         ));
     }
