@@ -59,7 +59,7 @@ beforeEach(() => {
       },
     }),
   });
-  useSettingsStore.getState().beginEditing(config, null, accelerationCapabilities);
+  useSettingsStore.getState().beginEditing(config, accelerationCapabilities);
 });
 
 afterEach(() => {
@@ -344,7 +344,7 @@ describe("Settings categories", () => {
       similarityDiameterMultiplier: 4,
       previewLongEdgePx: 2048,
       confirmTrashDelete: true,
-    }, null, [], DEFAULT_CONFIG);
+    }, [], DEFAULT_CONFIG);
     const before = useSettingsStore.getState().draft;
     render(<SettingsModal open onClose={() => {}} />);
     fireEvent.click(screen.getByRole("tab", { name: "Media" }));

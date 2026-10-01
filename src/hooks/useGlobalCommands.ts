@@ -43,7 +43,6 @@ export function useGlobalCommands() {
     const appData = useAppStore.getState().appData;
     useSettingsStore.getState().beginEditing(
       appData?.config ?? null,
-      appData?.state ?? null,
       appData?.aiAccelerationCapabilities ?? [],
       appData?.configDefaults ?? null,
     );

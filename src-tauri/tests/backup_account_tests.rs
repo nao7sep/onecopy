@@ -1,12 +1,12 @@
 // The developer-approved managed-text account: durable safety/authored text
-// records; re-derivable dependency facts do not.
+// records; re-derivable dependency facts and volatile state do not.
 
 use onecopy_lib::backup_store;
 use onecopy_lib::binaries::BinaryFacts;
-use onecopy_lib::{binaries_manager, paths, volume};
+use onecopy_lib::{binaries_manager, paths, storage, volume};
 
 #[test]
-fn durable_text_records_and_dependency_facts_do_not() {
+fn durable_text_records_and_dependency_facts_and_volatile_state_do_not() {
     let root = tempfile::Builder::new()
         .prefix("onecopy-backup-account-")
         .tempdir()
@@ -22,6 +22,32 @@ fn durable_text_records_and_dependency_facts_do_not() {
             latest_known_version: Some("9.1".to_string()),
             last_checked_at_utc: Some("2026-08-22T00:00:00.000Z".to_string()),
         },
+    )
+    .unwrap();
+
+    // Volatile state is written atomically but never recorded; config is.
+    binaries_manager::save_check_attempt(
+        root.path(),
+        binaries_manager::GITHUB_RELEASE_ATTEMPT_KEY,
+        "2026-08-22T00:00:00.000Z",
+    )
+    .unwrap();
+    assert_eq!(
+        binaries_manager::load_check_attempt(
+            root.path(),
+            binaries_manager::GITHUB_RELEASE_ATTEMPT_KEY
+        )
+        .as_deref(),
+        Some("2026-08-22T00:00:00.000Z")
+    );
+    storage::patch_json_store(
+        &root.path().join(storage::STATE_FILE_NAME),
+        &serde_json::json!({ "zoomLevel": 1.2 }),
+    )
+    .unwrap();
+    storage::patch_json_store(
+        &root.path().join(storage::CONFIG_FILE_NAME),
+        &serde_json::json!({ "theme": "dark" }),
     )
     .unwrap();
 
@@ -41,4 +67,10 @@ fn durable_text_records_and_dependency_facts_do_not() {
     assert!(!paths_recorded
         .iter()
         .any(|path| path.ends_with(paths::DEPENDENCIES_FILE_NAME)));
+    assert!(paths_recorded
+        .iter()
+        .any(|path| path.ends_with(storage::CONFIG_FILE_NAME)));
+    assert!(!paths_recorded
+        .iter()
+        .any(|path| path.ends_with(storage::STATE_FILE_NAME)));
 }

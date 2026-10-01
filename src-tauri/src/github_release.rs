@@ -120,25 +120,23 @@ async fn write_attempt_marker_then<T>(
     request.await
 }
 
-async fn run_check(app: &AppHandle) -> Result<ReleaseCheckOutcome, String> {
+async fn run_check(_app: &AppHandle) -> Result<ReleaseCheckOutcome, String> {
     let attempted_at_utc = crate::logging::now_iso_millis();
-    // The state-file write is filesystem I/O; this function runs on a tokio
+    // The facts-file write is filesystem I/O; this function runs on a tokio
     // worker (spawned by `check()` below), so it goes through the same
     // blocking-pool dispatch every other filesystem write in the app uses
     // instead of blocking the async worker directly.
     let attempt_marker = attempted_at_utc.clone();
     let write_timestamp = async {
-        let saved = crate::dispatch(move || {
-            crate::storage::patch_state(&json!({ "githubReleaseLastAttemptAtUtc": attempt_marker }))
+        crate::dispatch(move || {
+            let root = crate::paths::data_root()?;
+            crate::binaries_manager::save_check_attempt(
+                &root,
+                crate::binaries_manager::GITHUB_RELEASE_ATTEMPT_KEY,
+                &attempt_marker,
+            )
         })
         .await?;
-        if let Some(record) = saved.quarantined {
-            crate::failure_runtime::emit_or_record(
-                app,
-                "storage://quarantined",
-                json!({ "quarantines": [record] }),
-            );
-        }
         crate::logging::info("GitHub release check started", json!({}));
         Ok(())
     };

@@ -1,6 +1,6 @@
 // The complete Settings Save transaction. The settings store owns its draft;
-// this application edge publishes durable configuration and playback view
-// state through their separate owners, then refreshes affected projections.
+// this application edge publishes durable configuration, then refreshes
+// affected projections.
 
 import { invoke } from "@tauri-apps/api/core";
 import { log, toErrorFields } from "../repositories";
@@ -30,7 +30,6 @@ export async function saveSettings(): Promise<void> {
     opened !== null && JSON.stringify(draft.sourceDirs) !== JSON.stringify(opened.sourceDirs);
   const visibilityChanged = opened === null || ["ignoredFileNames", "hideDotNames", "hideHiddenAttributes", "hideSystemAttributes"]
     .some((key) => JSON.stringify(draft[key as keyof typeof draft]) !== JSON.stringify(opened[key as keyof typeof opened]));
-  const { soundEnabled, playbackVolume, ...configDraft } = draft;
   useSettingsStore.setState({ saving: true, message: null, messageLevel: null });
   const operationId = newActivityOperationId("settings");
   recordActivity({
@@ -40,11 +39,10 @@ export async function saveSettings(): Promise<void> {
     current: "running",
     reason: "user",
   });
-  // Config publication is the Save transaction's commit point. Sound and
-  // volume live in the separate interface-state document, so their failure is
-  // an honest partial result rather than proof that configuration rolled back.
+  // Config publication is the Save transaction's commit point; sound and
+  // volume are settings like the rest and ride in the same patch.
   try {
-    await useAppStore.getState().patchConfig(configDraft, { reportFailure: false });
+    await useAppStore.getState().patchConfig({ ...draft }, { reportFailure: false });
   } catch (error) {
     useSettingsStore.setState({
       saving: false,
@@ -64,36 +62,16 @@ export async function saveSettings(): Promise<void> {
     return;
   }
 
-  let stateSaveFailed = false;
   let followUpFailed = false;
-  try {
-    await useAppStore.getState().patchState(
-      { soundEnabled, playbackVolume },
-      { immediate: true, reportFailure: false },
-    );
-    // Index projection is durable follow-up work: once both authored
-    // documents publish, close the draft rather than holding Settings open
-    // for a potentially large rebuild.
-    useSettingsStore.setState({
-      draft: null,
-      opened: null,
-      saving: false,
-    });
-    useAppShellStore.getState().closeUtility();
-  } catch (error) {
-    stateSaveFailed = true;
-    useSettingsStore.setState({
-      saving: false,
-      message: message("settings.soundSaveFailed"),
-      messageLevel: "error",
-    });
-    log.error("settings interface-state save failed", toErrorFields(error));
-    recordActionFailure(
-      "settings-interface-state-save-failed",
-      message("settings.soundSaveFailedNotice"),
-      error,
-    );
-  }
+  // Index projection is durable follow-up work: once the config publishes,
+  // close the draft rather than holding Settings open for a potentially large
+  // rebuild.
+  useSettingsStore.setState({
+    draft: null,
+    opened: null,
+    saving: false,
+  });
+  useAppShellStore.getState().closeUtility();
 
   // The backend compares the saved settings with those the index was
   // projected with. When it cannot be admitted in time the apply stays owed
@@ -145,7 +123,7 @@ export async function saveSettings(): Promise<void> {
       );
     }
   }
-  const failed = stateSaveFailed || followUpFailed;
+  const failed = followUpFailed;
   log.info(failed ? "settings partially saved" : "settings saved", {
     resolved,
   });

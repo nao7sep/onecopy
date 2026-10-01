@@ -132,48 +132,22 @@ describe("Settings save boundary", () => {
     expect(invokeCalls.some((call) => call.command === "start_source_check")).toBe(true);
   });
 
-  it("publishes Sound and volume as view state rather than configuration", async () => {
+  it("publishes Sound and volume with the rest of the config patch and writes no state", async () => {
     useSettingsStore.getState().update({ soundEnabled: false, playbackVolume: 0.35 });
 
     await saveSettings();
 
     const configSave = invokeCalls.find((call) => call.command === "patch_config");
-    expect(configSave?.args.patch).not.toHaveProperty("soundEnabled");
-    expect(configSave?.args.patch).not.toHaveProperty("playbackVolume");
-    expect(useAppStore.getState().appData?.state).toMatchObject({
+    expect(configSave?.args.patch).toMatchObject({
       soundEnabled: false,
       playbackVolume: 0.35,
     });
-  });
-
-  it("keeps the exact draft and completes config repair after interface-state persistence fails", async () => {
-    useSettingsStore.getState().update({
-      sourceDirs: ["/photos"],
-      soundEnabled: false,
-      playbackVolume: 0.35,
-    });
-    const draft = useSettingsStore.getState().draft;
-    mockCommands({ patch_state: () => Promise.reject(new Error("state disk full")) });
-
-    await saveSettings();
-
-    expect(useSettingsStore.getState()).toMatchObject({
-      draft,
-      saving: false,
-      messageLevel: "error",
-    });
-    expect(inEnglish(useSettingsStore.getState().message)).toBe(
-      "Settings were saved, but Sound and volume could not be saved. Your changes are still here; try again.",
-    );
-    expect(useAppShellStore.getState().utilitySurface).toBe("settings");
-    expect(invokeCalls.some((call) => call.command === "apply_library_settings")).toBe(true);
-    expect(invokeCalls.some((call) => call.command === "start_source_check")).toBe(true);
+    expect(invokeCalls.some((call) => call.command === "patch_state")).toBe(false);
   });
 
   it("publishes an explicit runtime acceleration selection as configuration", async () => {
     useSettingsStore.getState().beginEditing(
       effectiveConfig({ aiAcceleration: { transcription: "metal", "face-scoring": "none" } }),
-      null,
       [
         {
           feature: "transcription",

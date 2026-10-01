@@ -8,7 +8,7 @@ import {
   type PlaybackSurface,
 } from "../models/playback";
 import { log, toErrorFields } from "../repositories";
-import { retainStatePatch, useAppStore } from "../state/app-store";
+import { reportStatePatchFailure, useAppStore } from "../state/app-store";
 import { usePreviewStore } from "../state/preview-store";
 import { useQuickViewStore } from "../state/quick-view-store";
 import { createEventInstaller } from "../utils/eventInstallation";
@@ -38,18 +38,13 @@ function booleanConfig(key: string, fallback = true): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
 
-function booleanState(key: string, fallback = true): boolean {
-  const value = useAppStore.getState().appData?.state?.[key];
-  return typeof value === "boolean" ? value : fallback;
-}
-
 function policy() {
   return {
     videoAutoplay: booleanConfig("videoAutoplay"),
     audioAutoplay: booleanConfig("audioAutoplay"),
-    soundEnabled: booleanState("soundEnabled"),
+    soundEnabled: booleanConfig("soundEnabled"),
     volume: clampPlaybackVolume(
-      useAppStore.getState().appData?.state?.playbackVolume,
+      useAppStore.getState().appData?.config?.playbackVolume,
     ),
   };
 }
@@ -134,8 +129,44 @@ function unregister(registration: PlaybackRegistration): void {
   recompute();
 }
 
-function queueStatePatch(patch: Record<string, unknown>): void {
-  retainStatePatch(patch);
+// Sound and volume are config settings. The player reports every volume tick
+// while the user drags, so writes coalesce on a short timer and run one at a
+// time, as app-store does for state; the new values are published
+// optimistically so the policy subscription never reads a stale pair back.
+const CONFIG_FLUSH_MS = 400;
+let pendingConfigPatch: Record<string, unknown> | null = null;
+let configFlushTimer: ReturnType<typeof setTimeout> | null = null;
+let configWriteTail: Promise<void> = Promise.resolve();
+
+function flushConfigPatch(): Promise<void> {
+  if (configFlushTimer !== null) clearTimeout(configFlushTimer);
+  configFlushTimer = null;
+  const patch = pendingConfigPatch;
+  pendingConfigPatch = null;
+  if (patch === null) return configWriteTail;
+  const write = configWriteTail.then(() =>
+    useAppStore.getState().patchConfig(patch, { reportFailure: false }),
+  );
+  configWriteTail = write.catch(() => undefined);
+  return write;
+}
+
+/** Writes any coalesced sound/volume change before the app exits. */
+export async function flushPlaybackConfigForShutdown(): Promise<void> {
+  await flushConfigPatch();
+}
+
+function queueConfigPatch(patch: Record<string, unknown>): void {
+  useAppStore.setState((s) =>
+    s.appData === null
+      ? s
+      : { appData: { ...s.appData, config: { ...s.appData.config, ...patch } } },
+  );
+  pendingConfigPatch = { ...(pendingConfigPatch ?? {}), ...patch };
+  if (configFlushTimer !== null) clearTimeout(configFlushTimer);
+  configFlushTimer = setTimeout(() => {
+    void flushConfigPatch().catch(reportStatePatchFailure);
+  }, CONFIG_FLUSH_MS);
 }
 
 function observe(observation: PlaybackObservation): void {
@@ -172,7 +203,7 @@ function observe(observation: PlaybackObservation): void {
     broadcast();
   }
   if (soundChanged || volumeChanged) {
-    queueStatePatch({ soundEnabled, playbackVolume: volume });
+    queueConfigPatch({ soundEnabled, playbackVolume: volume });
   }
 }
 
@@ -292,10 +323,8 @@ export async function setSoundEnabled(enabled: boolean): Promise<void> {
   try {
     // The caller shows the failure, so the core stays quiet: one failed write
     // is one record.
-    await useAppStore.getState().patchState(
-      { soundEnabled: enabled },
-      { immediate: true, reportFailure: false },
-    );
+    pendingConfigPatch = { ...(pendingConfigPatch ?? {}), soundEnabled: enabled };
+    await flushConfigPatch();
   } catch (error) {
     // Players and the status bar must not keep claiming a setting that was
     // never saved.

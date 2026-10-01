@@ -12,6 +12,11 @@ export interface LoadedAppData {
   /** The core's defaults for a new installation, for Settings' reset actions. */
   configDefaults?: Record<string, unknown>;
   state: Record<string, unknown> | null;
+  /** The check-attempt timestamps the core keeps in `dependencies.json`. */
+  checkAttempts?: {
+    managedToolUpdateLastAttemptAtUtc?: string | null;
+    githubReleaseLastAttemptAtUtc?: string | null;
+  };
   dataRoot: string;
   debugEnabled: boolean;
   /** Backend-owned acceleration choices compiled into this platform build. */

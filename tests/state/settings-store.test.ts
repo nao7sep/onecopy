@@ -33,8 +33,6 @@ describe("playback preferences", () => {
         ...config,
         videoAutoplay: false,
         audioAutoplay: false,
-      },
-      {
         soundEnabled: false,
         playbackVolume: 0.4,
       },
@@ -47,17 +45,9 @@ describe("playback preferences", () => {
     });
   });
 
-  it("does not read playback state from the configuration document", () => {
-    useSettingsStore.getState().beginEditing({
-      ...config,
-      soundEnabled: false,
-      playbackVolume: 0.2,
-    });
-
-    expect(useSettingsStore.getState().draft).toMatchObject({
-      soundEnabled: true,
-      playbackVolume: 1,
-    });
+  it("clamps a stored volume into the playable range", () => {
+    useSettingsStore.getState().beginEditing({ ...config, playbackVolume: 0 });
+    expect(useSettingsStore.getState().draft?.playbackVolume).toBe(0.01);
   });
 });
 

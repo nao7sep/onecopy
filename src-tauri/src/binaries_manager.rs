@@ -348,11 +348,46 @@ pub fn load_facts_for(root: &Path, id: &str) -> BinaryFacts {
 static FACTS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub fn save_facts_for(root: &Path, id: &str, facts: &BinaryFacts) -> Result<(), String> {
+    save_entry(
+        root,
+        id,
+        serde_json::to_value(facts).map_err(|e| e.to_string())?,
+    )
+}
+
+/// The two launch-check throttle timestamps ride in the same facts store, as
+/// top-level strings beside the per-binary entries. They are volatile network
+/// facts like `lastCheckedAtUtc`: re-derivable by simply checking again.
+pub const MANAGED_TOOL_UPDATE_ATTEMPT_KEY: &str = "managedToolUpdateLastAttemptAtUtc";
+pub const GITHUB_RELEASE_ATTEMPT_KEY: &str = "githubReleaseLastAttemptAtUtc";
+
+/// The recorded attempt timestamp under `key`, when it is a string.
+pub fn load_check_attempt(root: &Path, key: &str) -> Option<String> {
+    load_facts_map(root)
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+}
+
+/// Both attempt timestamps as one document for the frontend's startup load;
+/// an absent one is null.
+pub fn load_check_attempts(root: &Path) -> serde_json::Value {
+    serde_json::json!({
+        MANAGED_TOOL_UPDATE_ATTEMPT_KEY: load_check_attempt(root, MANAGED_TOOL_UPDATE_ATTEMPT_KEY),
+        GITHUB_RELEASE_ATTEMPT_KEY: load_check_attempt(root, GITHUB_RELEASE_ATTEMPT_KEY),
+    })
+}
+
+pub fn save_check_attempt(root: &Path, key: &str, at_utc: &str) -> Result<(), String> {
+    save_entry(root, key, serde_json::Value::String(at_utc.to_string()))
+}
+
+fn save_entry(root: &Path, key: &str, value: serde_json::Value) -> Result<(), String> {
     let _lock = FACTS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     // not recorded: dependencies.json contains re-derivable dependency and
     // update facts, not user-authored data.
     let mut map = load_facts_map(root);
-    map.insert(id.to_string(), serde_json::to_value(facts).map_err(|e| e.to_string())?);
+    map.insert(key.to_string(), value);
     let mut text = serde_json::to_string_pretty(&serde_json::Value::Object(map))
         .map_err(|e| e.to_string())?;
     text.push('\n');

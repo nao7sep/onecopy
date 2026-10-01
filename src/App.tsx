@@ -114,7 +114,7 @@ export default function App() {
 export function ReadyApp({ appData }: { appData: LoadedAppData }) {
   const { t, text, number, percent } = useI18n();
   useDestinationDragBoundary();
-  const soundEnabled = appData?.state?.soundEnabled !== false;
+  const soundEnabled = configFlag(appData?.config, "soundEnabled");
   const videoAutoplay = configFlag(appData?.config, "videoAutoplay");
   const audioAutoplay = configFlag(appData?.config, "audioAutoplay");
   const counts = useSectionsStore((s) => s.counts);

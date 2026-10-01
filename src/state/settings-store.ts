@@ -1,7 +1,6 @@
-// The Settings surface over durable configuration plus the two playback-view
-// adjustments it exposes for convenience. This store owns only the draft,
-// field validation, and picker; the workflow splits config from state again at
-// publication.
+// The Settings surface over durable configuration, including the sound and
+// volume settings. This store owns only the draft, field validation, and
+// picker; the workflow publishes the whole draft as one config patch.
 
 import { create } from "zustand";
 import {
@@ -10,6 +9,7 @@ import {
 } from "../i18n/languages";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { log, toErrorFields } from "../repositories";
+import { clampPlaybackVolume } from "../models/playback";
 import { stringArrayField } from "../utils/configProjection";
 import {
   configFlag,
@@ -92,7 +92,6 @@ function stringField(config: AppConfig | null, key: string): string {
 
 function draftFrom(
   config: AppConfig | null,
-  state: Record<string, unknown> | null,
   accelerationCapabilities: AiAccelerationCapability[],
 ): SettingsDraft {
   if (config?.ignoredFileNames !== undefined && (!Array.isArray(config.ignoredFileNames)
@@ -138,13 +137,8 @@ function draftFrom(
     aiAcceleration,
     videoAutoplay: flag("videoAutoplay"),
     audioAutoplay: flag("audioAutoplay"),
-    // Playback view state, not configuration: a view that never saved one
-    // plays with sound at full volume.
-    soundEnabled: state?.soundEnabled !== false,
-    playbackVolume: Math.min(
-      1,
-      Math.max(0.01, typeof state?.playbackVolume === "number" && Number.isFinite(state.playbackVolume) ? state.playbackVolume : 1),
-    ),
+    soundEnabled: flag("soundEnabled"),
+    playbackVolume: clampPlaybackVolume(config?.playbackVolume),
     enlargeSmallImagesInPreview: flag("enlargeSmallImagesInPreview"),
     enlargeSmallImagesInQuickView: flag("enlargeSmallImagesInQuickView"),
     textPreviewMaxBytes: Math.max(1, numberField(config, "textPreviewMaxBytes")),
@@ -192,7 +186,6 @@ interface SettingsState {
   messageLevel: "error" | "info" | null;
   beginEditing: (
     config: AppConfig | null,
-    state?: Record<string, unknown> | null,
     accelerationCapabilities?: AiAccelerationCapability[],
     defaults?: AppConfig | null,
   ) => void;
@@ -213,12 +206,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   message: null,
   messageLevel: null,
 
-  beginEditing: (config, state = null, accelerationCapabilities = [], defaults = null) => {
+  beginEditing: (config, accelerationCapabilities = [], defaults = null) => {
     set({
       accelerationCapabilities,
       defaults,
-      draft: draftFrom(config, state, accelerationCapabilities),
-      opened: draftFrom(config, state, accelerationCapabilities),
+      draft: draftFrom(config, accelerationCapabilities),
+      opened: draftFrom(config, accelerationCapabilities),
       message: null,
       messageLevel: null,
     });

@@ -283,13 +283,12 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
                 if !check_at_launch {
                     return Ok(());
                 }
-                let state = crate::storage::read_state_for_setup(&root)?;
-                let last_attempt = state
-                    .as_ref()
-                    .and_then(|value| value.get("managedToolUpdateLastAttemptAtUtc"))
-                    .and_then(Value::as_str);
+                let last_attempt = crate::binaries_manager::load_check_attempt(
+                    &root,
+                    crate::binaries_manager::MANAGED_TOOL_UPDATE_ATTEMPT_KEY,
+                );
                 let now = chrono::Utc::now();
-                if !managed_update_attempt_eligible(last_attempt, now) {
+                if !managed_update_attempt_eligible(last_attempt.as_deref(), now) {
                     return Ok(());
                 }
                 let stale_ids: Vec<String> = crate::binaries_manager::states(&root)
@@ -303,16 +302,11 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
                 if stale_ids.is_empty() {
                     return Ok(());
                 }
-                let attempt = crate::storage::patch_state(
-                    &json!({ "managedToolUpdateLastAttemptAtUtc": crate::logging::now_iso_millis() }),
+                crate::binaries_manager::save_check_attempt(
+                    &root,
+                    crate::binaries_manager::MANAGED_TOOL_UPDATE_ATTEMPT_KEY,
+                    &crate::logging::now_iso_millis(),
                 )?;
-                if let Some(record) = attempt.quarantined {
-                    crate::failure_runtime::emit_or_record(
-                        &handle,
-                        "storage://quarantined",
-                        json!({ "quarantines": [record] }),
-                    );
-                }
                 let report_handle = handle.clone();
                 spawn_launch_worker(
                     handle,

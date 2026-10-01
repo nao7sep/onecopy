@@ -72,7 +72,7 @@ export async function startAutomaticReleaseCheck(data: LoadedAppData): Promise<v
   if (useReleaseCheckStore.getState().automaticStarted) return;
   useReleaseCheckStore.setState({ automaticStarted: true });
   if (!configFlag(data.config, "checkGithubReleasesAtLaunch")) return;
-  if (!releaseCheckEligible(data.state?.githubReleaseLastAttemptAtUtc)) return;
+  if (!releaseCheckEligible(data.checkAttempts?.githubReleaseLastAttemptAtUtc)) return;
   const operation = beginCheck(false);
   try {
     const outcome = await operation.promise;

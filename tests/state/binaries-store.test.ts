@@ -60,7 +60,7 @@ beforeEach(() => {
     activity_record: () => null,
     publish_notification: () => ({}),
     binaries_cancel: () => true,
-    patch_state: ({ patch }) => patch,
+    record_managed_tool_check_attempt: () => null,
   });
 });
 
@@ -309,7 +309,7 @@ describe("managed-tool terminal ownership", () => {
       entry("whisper-large-v3-turbo", "not-installed"),
     ]);
     mockCommands({
-      patch_state: () => Promise.reject(new TypeError("EACCES writing state.json")),
+      record_managed_tool_check_attempt: () => Promise.reject(new TypeError("EACCES writing dependencies.json")),
       record_recent_notification: () => ({ id: 1 }),
     });
 
@@ -318,8 +318,8 @@ describe("managed-tool terminal ownership", () => {
     expect(inEnglish(useBinariesStore.getState().checkError))
       .toBe("OneCopy couldn’t record this managed-tool check. Try again.");
     expect(useBinariesStore.getState().checking).toBe(false);
-    const write = invokeCalls.find((call) => call.command === "patch_state");
-    expect(write?.args.reportFailure).toBe(false);
+    expect(invokeCalls.some((call) => call.command === "record_managed_tool_check_attempt")).toBe(true);
+    expect(invokeCalls.some((call) => call.command === "patch_state")).toBe(false);
     await vi.waitFor(() =>
       expect(invokeCalls.filter((call) => call.command === "record_recent_notification")).toHaveLength(1),
     );
@@ -356,8 +356,8 @@ describe("managed-tool terminal ownership", () => {
         id: "ffmpeg",
         operationId: expect.any(String),
       });
-      expect(invokeCalls.find((call) => call.command === "patch_state")?.args.patch)
-        .toMatchObject({ managedToolUpdateLastAttemptAtUtc: expect.any(String) });
+      expect(invokeCalls.some((call) => call.command === "record_managed_tool_check_attempt")).toBe(true);
+      expect(invokeCalls.some((call) => call.command === "patch_state")).toBe(false);
     } finally {
       vi.useRealTimers();
     }

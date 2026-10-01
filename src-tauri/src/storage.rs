@@ -5,15 +5,15 @@
 //! by the storage_file_names integration test):
 //!
 //! - `config.json`       — durable user settings.               RECORDED (managed text)
-//! - `state.json`        — volatile UI/session state.           RECORDED (managed text)
-//! - `window.json`       — volatile Main placement state.       RECORDED (managed text)
-//! - `preview-window.json` — volatile Preview placement state.  RECORDED (managed text)
+//! - `state.json`        — volatile UI/session state.           not recorded (volatile state and nothing else; written via the unrecorded atomic path)
+//! - `window.json`       — volatile Main placement state.       not recorded (volatile state; unrecorded atomic path)
+//! - `preview-window.json` — volatile Preview placement state.  not recorded (volatile state; unrecorded atomic path)
 //! - `index.sqlite3`     — the scan index (facts/cache).        not recorded (binary, reconstructible)
 //! - `source-volumes.json` — destructive-operation trust baselines. RECORDED (managed safety text)
 //! - `backups.sqlite3`   — the write-through backup store.      not recorded (the store itself)
 //! - `logs/`             — per-session logs.                    not recorded (append-mode, by construction)
 //! - `cache/`            — derived thumbnails/previews/strips.  not recorded (binary, reconstructible)
-//! - `dependencies.json` — managed-binaries facts.              not recorded (re-derivable dependency/update facts)
+//! - `dependencies.json` — managed-binaries facts, plus the two check-attempt timestamps. not recorded (re-derivable dependency/update facts)
 //! - `bin/`, `temp/`     — managed binaries + download staging. not recorded (binary; staging is wiped at launch; the version sidecar in `bin/` rides along, written via write_atomic_unrecorded)
 //! - `installation-id`   — this data root's random identity fact, used only to
 //!                          fingerprint private staging/claim names so two
@@ -122,6 +122,10 @@ pub struct DefaultConfig {
     /// Run the stat-only configured-source reconciliation after launch.
     pub check_source_folders_at_launch: bool,
     pub keep_awake_during_indexing: bool,
+    /// Whether playback is audible. Edited in Settings and from the status bar.
+    pub sound_enabled: bool,
+    /// Playback volume, 0.01 to 1.
+    pub playback_volume: f64,
     /// Face scoring for comparison-group ordering. Off means the coordinator
     /// does not run the optional pass; ordering falls back to sharpness.
     pub score_faces: bool,
@@ -189,6 +193,8 @@ impl Default for DefaultConfig {
             check_github_releases_at_launch: true,
             check_source_folders_at_launch: true,
             keep_awake_during_indexing: true,
+            sound_enabled: true,
+            playback_volume: 1.0,
             score_faces: true,
             show_face_stars: true,
             maximum_images_in_comparison: 16,
@@ -233,6 +239,9 @@ pub struct LoadedAppData {
     /// actions; the frontend keeps no default table of its own.
     pub config_defaults: JsonValue,
     pub state: Option<JsonValue>,
+    /// The check-attempt timestamps kept in `dependencies.json`
+    /// (see `binaries_manager::load_check_attempts`).
+    pub check_attempts: JsonValue,
     pub data_root: String,
     /// Set by the command layer from logging::debug_enabled(); storage leaves it false.
     pub debug_enabled: bool,
@@ -356,7 +365,7 @@ pub fn read_window_state_for_setup(root: &Path) -> Result<Option<JsonValue>, Str
 
 pub fn save_window_state(state: &JsonValue) -> Result<(), String> {
     let root = paths::data_root()?;
-    atomic_write_json(&root.join(WINDOW_FILE_NAME), state)
+    atomic_write_json(&root.join(WINDOW_FILE_NAME), state, false)
 }
 
 pub fn read_preview_window_state_for_setup(root: &Path) -> Result<Option<JsonValue>, String> {
@@ -372,7 +381,7 @@ pub fn read_preview_window_state_for_setup(root: &Path) -> Result<Option<JsonVal
 
 pub fn save_preview_window_state(state: &JsonValue) -> Result<(), String> {
     let root = paths::data_root()?;
-    atomic_write_json(&root.join(PREVIEW_WINDOW_FILE_NAME), state)
+    atomic_write_json(&root.join(PREVIEW_WINDOW_FILE_NAME), state, false)
 }
 
 pub fn load_from_root(root: &Path) -> Result<LoadedAppData, String> {
@@ -392,6 +401,7 @@ pub fn load_from_root(root: &Path) -> Result<LoadedAppData, String> {
         config: effective_config(config.as_ref()),
         config_defaults: effective_config(None),
         state: state_read.value,
+        check_attempts: crate::binaries_manager::load_check_attempts(root),
         data_root: root.to_string_lossy().into_owned(),
         debug_enabled: false,
         ai_acceleration_capabilities: crate::ai_acceleration::capabilities(None)
@@ -485,8 +495,8 @@ pub fn patch_config(patch: &JsonValue) -> Result<PatchOutcome, String> {
 
 /// Patch-merges into `state.json` (same one-owner contract as `patch_config`).
 pub fn patch_state(patch: &JsonValue) -> Result<PatchOutcome, String> {
-    // records: state.json is volatile UI state, still managed text — recorded on
-    // every save; the store's per-path content dedup absorbs the churn.
+    // not recorded: state.json is volatile UI state and nothing else; the
+    // write goes through the unrecorded atomic path (see `patch_json_store`).
     let root = paths::data_root()?;
     patch_json_store(&root.join(STATE_FILE_NAME), patch)
 }
@@ -545,7 +555,12 @@ pub fn patch_json_store(target: &Path, patch: &JsonValue) -> Result<PatchOutcome
     for (key, value) in fields {
         doc.insert(key.clone(), value.clone());
     }
-    atomic_write_json(target, &current)?;
+    // state.json is volatile state and nothing else: written atomically but
+    // not recorded in the backup history. Every other patched store records.
+    let record = !target
+        .file_name()
+        .is_some_and(|name| name == STATE_FILE_NAME);
+    atomic_write_json(target, &current, record)?;
     if target.file_name().is_some_and(|name| name == CONFIG_FILE_NAME) {
         crate::sleep_prevention::configure(&current);
         register_volume_roots(Some(&current));
@@ -567,7 +582,7 @@ pub fn materialize_config_if_missing(root: &Path) -> Result<(), String> {
         return Ok(());
     }
     let defaults = serde_json::to_value(DefaultConfig::default()).map_err(|e| e.to_string())?;
-    atomic_write_json(&target, &defaults)
+    atomic_write_json(&target, &defaults, true)
 }
 
 struct JsonRead {
@@ -683,11 +698,12 @@ fn quarantine_name(path: &Path) -> PathBuf {
     path.with_file_name(format!("{stem}-{}.invalid", logging::filename_stamp_now()))
 }
 
-/// Serializes through serde (never a hand-written literal) and writes atomically.
-fn atomic_write_json(target: &Path, value: &JsonValue) -> Result<(), String> {
+/// Serializes through serde (never a hand-written literal) and writes atomically,
+/// recording the bytes in the backup store only when `record` is set.
+fn atomic_write_json(target: &Path, value: &JsonValue, record: bool) -> Result<(), String> {
     let mut text = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
     text.push('\n');
-    write_atomic(target, text.as_bytes())
+    write_atomic_inner(target, text.as_bytes(), record)
 }
 
 /// Atomic write: write to a `<stem>-<nanoid>.tmp` sibling, fsync it, rename over
@@ -699,9 +715,10 @@ pub fn write_atomic(target: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 /// The same atomic write, WITHOUT the backup record. For text that is excluded
-/// from the history by a design-time, per-write-site decision: today the version
-/// sidecar in the binary-bearing `bin/`, which describes the re-fetchable binary
-/// it sits beside and is rewritten by the next install (see the table above).
+/// from the history by a design-time, per-write-site decision: the version
+/// sidecar in the binary-bearing `bin/`, the dependency facts, and the volatile
+/// state stores (`state.json`, `window.json`, `preview-window.json`; see the
+/// table above).
 pub fn write_atomic_unrecorded(target: &Path, bytes: &[u8]) -> Result<(), String> {
     write_atomic_inner(target, bytes, false)
 }

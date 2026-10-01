@@ -23,11 +23,10 @@ beforeEach(async () => {
       config: {
         videoAutoplay: true,
         audioAutoplay: false,
-      },
-      state: {
         soundEnabled: true,
         playbackVolume: 0.7,
       },
+      state: {},
       dataRoot: "/app",
       debugEnabled: false,
       quarantines: [],
@@ -42,23 +41,23 @@ describe("sound setting", () => {
   it("takes Sound back from the players when its write never reached disk", async () => {
     fireEvent("playback://register", { surface: "preview-split", key: "clip", medium: "video" });
     mockCommands({
-      patch_state: () => Promise.reject(new TypeError("EACCES writing state.json")),
+      patch_config: () => Promise.reject(new TypeError("EACCES writing config.json")),
     });
 
     await expect(setSoundEnabled(false)).rejects.toBeInstanceOf(TypeError);
 
     expect(latestState()).toMatchObject({ soundEnabled: true });
-    expect(useAppStore.getState().appData?.state).toMatchObject({ soundEnabled: true });
+    expect(useAppStore.getState().appData?.config).toMatchObject({ soundEnabled: true });
   });
 
   it("keeps a saved Sound change", async () => {
     fireEvent("playback://register", { surface: "preview-split", key: "clip", medium: "video" });
-    mockCommands({ patch_state: ({ patch }) => patch });
+    mockCommands({ patch_config: ({ patch }) => patch });
 
     await setSoundEnabled(false);
 
     expect(latestState()).toMatchObject({ soundEnabled: false });
-    expect(useAppStore.getState().appData?.state).toMatchObject({ soundEnabled: false });
+    expect(useAppStore.getState().appData?.config).toMatchObject({ soundEnabled: false });
   });
 });
 

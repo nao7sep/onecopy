@@ -95,7 +95,7 @@ beforeEach(() => {
       states: useBinariesStore.getState().entries,
     }),
     binaries_state: () => [],
-    patch_state: ({ patch }) => patch,
+    record_managed_tool_check_attempt: () => null,
   });
   seed([
     entry("ffmpeg", "not-installed"),

@@ -24,6 +24,7 @@ import { isComposingEvent } from "./useComposing";
 import { isEditableTarget, shadowsMacTextEditing } from "../utils/shortcuts";
 import { computeMinWindowHeight, computeMinWindowWidth } from "../utils/windowSizing";
 import { installDisplayZoneReconciliation } from "../workflows/display-zone";
+import { flushPlaybackConfigForShutdown } from "../workflows/playback";
 import {
   ZOOM_DEFAULT,
   isZoomIn,
@@ -120,6 +121,7 @@ export function useMainWindowLifecycle({
       closing = true;
       try {
         await flushStatePatchesForShutdown();
+        await flushPlaybackConfigForShutdown();
       } catch (error) {
         reportStatePatchFailure(error);
       }

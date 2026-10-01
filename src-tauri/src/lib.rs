@@ -206,6 +206,21 @@ async fn patch_state(app: AppHandle, patch: Value, report_failure: Option<bool>)
     dispatch(move || store_patch::patch_state(&app, &patch, report_failure.unwrap_or(true))).await
 }
 
+// The managed-tool update check's attempt timestamp lives in `dependencies.json`
+// (the facts store), not in state.json; the frontend's manual check records it
+// here. The core quietly returns the failure: the caller shows its own notice.
+#[tauri::command]
+async fn record_managed_tool_check_attempt() -> Result<(), String> {
+    dispatch(|| {
+        binaries_manager::save_check_attempt(
+            &paths::data_root()?,
+            binaries_manager::MANAGED_TOOL_UPDATE_ATTEMPT_KEY,
+            &logging::now_iso_millis(),
+        )
+    })
+    .await
+}
+
 #[tauri::command]
 async fn start_source_check(app: AppHandle, explicit: bool) -> Result<bool, String> {
     dispatch(move || {
@@ -1545,6 +1560,7 @@ pub fn run() {
             patch_config,
             appearance_preferences,
             patch_state,
+            record_managed_tool_check_attempt,
             record_interface_failure,
             start_source_check,
             stop_source_check,

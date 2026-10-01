@@ -21,6 +21,8 @@
     "desktop.ini"
   ],
   "keepAwakeDuringIndexing": true,
+  "soundEnabled": true,
+  "playbackVolume": 1.0,
   "language": "system",
   "maximumImagesInComparison": 16,
   "notificationDisplaySeconds": 6,

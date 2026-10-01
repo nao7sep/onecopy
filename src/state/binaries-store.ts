@@ -18,7 +18,6 @@ import { log, toErrorFields } from "../repositories";
 import { recordInterfaceFailure } from "../utils/failureSurface";
 import { createEventInstaller } from "../utils/eventInstallation";
 import { recordActionFailure } from "./notifications-store";
-import { useAppStore } from "./app-store";
 import {
   finishActivityOperation,
   newActivityOperationId,
@@ -433,10 +432,7 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
       try {
         // Managed Tools shows the failure on its own surface, so the core stays
         // quiet: one failed write is one notice and one Issue.
-        await useAppStore.getState().patchState(
-          { managedToolUpdateLastAttemptAtUtc: new Date().toISOString() },
-          { immediate: true, reportFailure: false },
-        );
+        await invoke("record_managed_tool_check_attempt");
       } catch (error) {
         const failure = message("binaries.checkAttemptSaveFailed");
         log.error("managed-tool check attempt save failed", toErrorFields(error));
