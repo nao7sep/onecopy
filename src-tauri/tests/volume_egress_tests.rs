@@ -20,6 +20,7 @@ const DATA_ROOT_MODULES: &[(&str, &str)] = &[
     ("ai_acceleration.rs", "managed runtime files"),
     ("ai_dependencies.rs", "managed model files"),
     ("backup_store.rs", "managed-text backups"),
+    ("binary_archive.rs", "bounded snapshots of declared data-root stores"),
     ("binaries.rs", "managed tools"),
     ("binaries_acquisition.rs", "managed tool downloads"),
     ("binaries_manager.rs", "managed tools"),

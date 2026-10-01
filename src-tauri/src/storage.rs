@@ -8,7 +8,8 @@
 //! - `state.json`        — volatile UI/session state.           not recorded (volatile state and nothing else; written via the unrecorded atomic path)
 //! - `window.json`       — volatile Main placement state.       not recorded (volatile state; unrecorded atomic path)
 //! - `preview-window.json` — volatile Preview placement state.  not recorded (volatile state; unrecorded atomic path)
-//! - `index.sqlite3`     — the scan index (facts/cache).        not recorded (binary, reconstructible)
+//! - `index.sqlite3`     — scan facts, caches, diagnostics.    archived (binary store)
+//! - `activity.sqlite3`  — causal diagnostic history.          archived (binary store)
 //! - `source-volumes.json` — destructive-operation trust baselines. RECORDED (managed safety text)
 //! - `backups.sqlite3`   — the write-through backup store.      not recorded (the store itself)
 //! - `logs/`             — per-session logs.                    not recorded (append-mode, by construction)
@@ -45,6 +46,12 @@ pub const WINDOW_FILE_NAME: &str = "window.json";
 pub const PREVIEW_WINDOW_FILE_NAME: &str = "preview-window.json";
 pub const INDEX_DB_FILE_NAME: &str = "index.sqlite3";
 pub const CACHE_DIR_NAME: &str = "cache";
+
+/// SQLite stores protected by whole-file archives; temp scratch is excluded.
+pub const ARCHIVED_STORES: [(&str, &str); 2] = [
+    (INDEX_DB_FILE_NAME, INDEX_DB_FILE_NAME),
+    (crate::activity::ACTIVITY_DB_FILE_NAME, crate::activity::ACTIVITY_DB_FILE_NAME),
+];
 
 /// Canonical built-in config sets. Built-ins are read in memory, never seeded.
 #[derive(Serialize)]

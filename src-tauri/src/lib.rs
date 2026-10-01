@@ -12,6 +12,7 @@ mod app_lifecycle;
 mod sleep_prevention;
 pub mod background_work;
 pub mod backup_store;
+mod binary_archive;
 pub mod binaries;
 mod binaries_acquisition;
 pub mod binaries_manager;
@@ -1685,7 +1686,6 @@ pub fn run() {
         tauri::RunEvent::Exit => {
             window_placement::save(&placement_state);
             window_placement::save_preview(&preview_placement_state);
-            activity::record_shutdown();
             logging::info("app shutdown", json!({ "reason": "exit" }));
         }
         _ => {}

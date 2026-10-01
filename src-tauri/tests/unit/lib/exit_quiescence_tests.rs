@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 
 #[test]
 fn a_signal_before_the_deadline_finishes_without_killing_anything() {
-    let (tx, rx) = std::sync::mpsc::channel::<()>();
-    tx.send(()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<bool>();
+    tx.send(true).unwrap();
     assert!(await_other_joins_with_deadline(rx, Duration::from_secs(5)));
 }
 
@@ -13,7 +13,7 @@ fn a_signal_before_the_deadline_finishes_without_killing_anything() {
 // own cancellation point.
 #[test]
 fn no_signal_by_the_deadline_gives_up_waiting() {
-    let (_tx, rx) = std::sync::mpsc::channel::<()>();
+    let (_tx, rx) = std::sync::mpsc::channel::<bool>();
     let started = Instant::now();
     assert!(!await_other_joins_with_deadline(rx, Duration::from_millis(50)));
     assert!(
@@ -31,13 +31,13 @@ fn sequence(steps: &Steps, join_workers: Box<dyn FnOnce() + Send>, mutation: Dur
     let report_steps = steps.clone();
     (
         ExitSequence {
-            join_workers,
+            join_workers: Box::new(move || { join_workers(); true }),
             wait_for_mutation: Box::new(move || {
                 std::thread::sleep(mutation);
                 mutation_steps.lock().unwrap().push("mutation idle".into());
                 Ok(crate::mutation_runtime::IdleWait::Idle)
             }),
-            exit: Box::new(move || {
+            exit: Box::new(move |_| {
                 exit_steps.lock().unwrap().push("exit".into());
                 let _ = exited_tx.send(());
             }),
@@ -83,12 +83,12 @@ fn a_mutation_that_never_reaches_a_safe_point_still_lets_exit_complete() {
     let exit_steps = steps.clone();
     let (exited_tx, exited_rx) = std::sync::mpsc::channel();
     let sequence = ExitSequence {
-        join_workers: Box::new(|| {}),
+        join_workers: Box::new(|| true),
         wait_for_mutation: Box::new(move || {
             mutation_steps.lock().unwrap().push("mutation timed out".into());
             Ok(crate::mutation_runtime::IdleWait::TimedOut)
         }),
-        exit: Box::new(move || {
+        exit: Box::new(move |_| {
             exit_steps.lock().unwrap().push("exit".into());
             let _ = exited_tx.send(());
         }),
@@ -133,4 +133,20 @@ fn a_failed_exit_thread_start_still_quits_after_mutation_quiescence() {
             "exit",
         ]
     );
+}
+
+
+#[test]
+fn unsuccessful_worker_quiescence_cannot_authorize_a_clean_archive() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (clean_tx, clean_rx) = std::sync::mpsc::channel();
+    let sequence = ExitSequence {
+        join_workers: Box::new(|| false),
+        wait_for_mutation: Box::new(|| Ok(crate::mutation_runtime::IdleWait::Idle)),
+        exit: Box::new(move |clean| { clean_tx.send(clean).unwrap(); tx.send(()).unwrap(); }),
+        report: Arc::new(|_| {}),
+    };
+    run_exit(sequence, spawn_thread, Duration::from_secs(1));
+    rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(!clean_rx.recv().unwrap());
 }

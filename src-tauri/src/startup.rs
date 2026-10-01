@@ -145,6 +145,7 @@ fn prepare(app: &tauri::App, debug_enabled: bool) -> Result<StartupState, String
         .join(crate::paths::LOGS_DIR_NAME)
         .join(crate::logging::session_filename());
     crate::logging::init(&log_path, debug_enabled);
+    crate::binary_archive::launch(&data_root);
     crate::activity::init(data_root.join(crate::activity::ACTIVITY_DB_FILE_NAME));
     crate::logging::install_panic_hook();
 

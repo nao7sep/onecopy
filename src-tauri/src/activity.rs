@@ -189,7 +189,7 @@ pub struct ActivityPage {
 pub struct ActivityRecorder {
     session_id: String,
     started: Instant,
-    state: Mutex<RecorderState>,
+    state: Mutex<Option<RecorderState>>,
 }
 
 struct RecorderState {
@@ -211,10 +211,10 @@ impl ActivityRecorder {
         Ok(Self {
             session_id,
             started: Instant::now(),
-            state: Mutex::new(RecorderState {
+            state: Mutex::new(Some(RecorderState {
                 next_sequence,
                 connection,
-            }),
+            })),
         })
     }
 
@@ -239,6 +239,7 @@ impl ActivityRecorder {
             .state
             .lock()
             .map_err(|_| "activity history is unavailable".to_string())?;
+        let state = state.as_mut().ok_or("activity history is closed")?;
         state.next_sequence = state.next_sequence.wrapping_add(1);
         let sequence = state.next_sequence;
         let draft_json = serde_json::to_string(&draft).map_err(|error| error.to_string())?;
@@ -288,6 +289,7 @@ impl ActivityRecorder {
             .state
             .lock()
             .map_err(|_| "activity history is unavailable".to_string())?;
+        let state = state.as_ref().ok_or("activity history is closed")?;
         read_page(&state.connection, before, limit)
     }
 
@@ -301,6 +303,7 @@ impl ActivityRecorder {
             .state
             .lock()
             .map_err(|_| "activity history is unavailable".to_string())?;
+        let state = state.as_ref().ok_or("activity history is closed")?;
         crate::activity_history::operations(
             &state.connection,
             before,
@@ -321,6 +324,7 @@ impl ActivityRecorder {
             .state
             .lock()
             .map_err(|_| "activity history is unavailable".to_string())?;
+        let state = state.as_ref().ok_or("activity history is closed")?;
         crate::activity_history::events(&state.connection, operation, before, limit)
     }
 }
@@ -730,6 +734,12 @@ pub fn record_app_admitted() {
         total: None,
         target_hash: None,
     });
+}
+
+pub(crate) fn close() {
+    if let Some(recorder) = RECORDER.get() {
+        recorder.state.lock().unwrap_or_else(|p| p.into_inner()).take();
+    }
 }
 
 pub fn record_shutdown() {

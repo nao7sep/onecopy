@@ -116,7 +116,7 @@ pub(crate) fn quiesce(app: &AppHandle) {
             wait_for_mutation: Box::new(|| {
                 crate::mutation_runtime::wait_for_idle(MUTATION_QUIESCE_DEADLINE)
             }),
-            exit: Box::new(move || {
+            exit: Box::new(move |clean| {
                 let released = crate::media_use::begin_shutdown(&media);
                 if let Err(error) = &released {
                     let _ = crate::failure_runtime::report(
@@ -127,6 +127,10 @@ pub(crate) fn quiesce(app: &AppHandle) {
                     );
                 }
                 drop(released);
+                crate::activity::record_shutdown();
+                if clean {
+                    crate::binary_archive::clean_exit();
+                }
                 EXIT_READY.store(true, Ordering::SeqCst);
                 media.exit(0);
             }),
@@ -167,7 +171,7 @@ fn request_worker_shutdown(app: &AppHandle) {
 }
 
 /// Joins every non-mutation worker; the exit sequence bounds this wait.
-fn join_workers(app: &AppHandle) {
+fn join_workers(app: &AppHandle) -> bool {
     let joined = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         crate::source_check_runtime::join();
         crate::sleep_prevention::join();
@@ -181,14 +185,16 @@ fn join_workers(app: &AppHandle) {
     if let Err(payload) = joined {
         let error = crate::failure_runtime::panic_message(payload);
         let _ = crate::failure_runtime::report(app, "shutdown-worker-failed", None, &error);
+        return false;
     }
+    true
 }
 
 /// The steps after admission closes, as seams the sequence runs in order.
 struct ExitSequence {
-    join_workers: Box<dyn FnOnce() + Send>,
+    join_workers: Box<dyn FnOnce() -> bool + Send>,
     wait_for_mutation: Box<dyn FnOnce() -> Result<crate::mutation_runtime::IdleWait, String> + Send>,
-    exit: Box<dyn FnOnce() + Send>,
+    exit: Box<dyn FnOnce(bool) + Send>,
     report: Arc<dyn Fn(String) + Send + Sync>,
 }
 
@@ -240,44 +246,44 @@ fn finish_exit(sequence: ExitSequence, spawn: Spawn, deadline: Duration) {
         exit,
         report,
     } = sequence;
-    let (done_tx, done_rx) = mpsc::channel::<()>();
+    let (done_tx, done_rx) = mpsc::channel::<bool>();
     let joins = spawn(
         "onecopy-exit-joins",
         Box::new(move || {
-            join_workers();
-            let _ = done_tx.send(());
+            let joined = join_workers();
+            let _ = done_tx.send(joined);
         }),
     );
-    match joins {
-        Ok(()) => {
-            await_other_joins_with_deadline(done_rx, deadline);
-        }
+    let joined = match joins {
+        Ok(()) => await_other_joins_with_deadline(done_rx, deadline),
         Err(error) => {
             report(format!("could not start the exit joins: {error}"));
             crate::subprocess::kill_all_running();
+            false
         }
-    }
-    match wait_for_mutation() {
-        Ok(crate::mutation_runtime::IdleWait::Idle) => {}
+    };
+    let idle = match wait_for_mutation() {
+        Ok(crate::mutation_runtime::IdleWait::Idle) => true,
         Ok(crate::mutation_runtime::IdleWait::TimedOut) => {
             crate::logging::warn(
                 "mutation quiescence exceeded its deadline; giving up on the current file operation",
                 json!({ "deadline_secs": MUTATION_QUIESCE_DEADLINE.as_secs() }),
             );
             crate::subprocess::kill_all_running();
+            false
         }
-        Err(error) => report(error),
-    }
-    exit();
+        Err(error) => { report(error); false },
+    };
+    exit(joined && idle);
 }
 
 /// Waits up to `deadline` for the non-mutation exit joins signalled on `rx`.
 /// If the deadline passes first, kills every managed-tool subprocess still
 /// running (W-L1) and stops waiting for those joins. Returns whether the
 /// joins finished in time.
-fn await_other_joins_with_deadline(rx: mpsc::Receiver<()>, deadline: Duration) -> bool {
-    if rx.recv_timeout(deadline).is_ok() {
-        return true;
+fn await_other_joins_with_deadline(rx: mpsc::Receiver<bool>, deadline: Duration) -> bool {
+    if let Ok(joined) = rx.recv_timeout(deadline) {
+        return joined;
     }
     crate::logging::warn(
         "exit joins exceeded their deadline; killing outstanding subprocesses",
