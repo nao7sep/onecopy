@@ -90,22 +90,49 @@ fn new_launch_sets_the_marker_and_unclean_launch_archives_before_opening_stores(
 }
 
 #[test]
-fn newest_ten_are_kept() {
+fn archives_are_thinned_by_age_and_the_newest_always_stays() {
+    let now = chrono::NaiveDateTime::parse_from_str("20261003-120000-utc", "%Y%m%d-%H%M%S-utc").unwrap().and_utc();
+    let names = [
+        "20261001-080000-utc",  // within 21 days: every copy stays
+        "20261001-090000-utc",
+        "20260901-080000-utc",  // days 22-90: the last of each UTC day
+        "20260901-200000-utc",
+        "20260301-080000-utc",  // days 91-1,095: the last of each ISO week (Sunday ends week 9)
+        "20260302-080000-utc",  // Monday starts week 10
+        "20260304-080000-utc",
+        "20230101-080000-utc",  // after 1,095 days: the last of each month
+        "20230115-080000-utc",
+        "not-a-time",
+    ];
+    let paths = names.iter().map(|name| PathBuf::from(format!("{name}.zip"))).collect::<Vec<_>>();
+    let mut dropped = thinned_out(&paths, now)
+        .into_iter()
+        .map(|path| path.file_stem().unwrap().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    dropped.sort();
+    assert_eq!(dropped, ["20230101-080000-utc", "20260302-080000-utc", "20260901-080000-utc"]);
+    // A lone old archive is the newest and stays.
+    assert!(thinned_out(&paths[7..8], now).is_empty());
+}
+
+#[test]
+fn a_run_thins_the_archives_beside_it() {
     let root = tempfile::tempdir().unwrap();
     stores(root.path());
     run(root.path()).unwrap();
     let directory = root.path().join(ARCHIVES);
     let first = archives(&directory).unwrap().pop().unwrap();
-    let old = directory.join("20000101-000000-utc.zip");
-    std::fs::rename(first, &old).unwrap();
-    for day in 2..=10 { std::fs::copy(&old, directory.join(format!("200001{day:02}-000000-utc.zip"))).unwrap(); }
+    for name in ["20000101-080000-utc", "20000101-090000-utc"] {
+        std::fs::copy(&first, directory.join(format!("{name}.zip"))).unwrap();
+    }
+    std::fs::remove_file(first).unwrap();
     let changed = Connection::open(root.path().join("index.sqlite3")).unwrap();
     changed.execute("INSERT INTO evidence VALUES ('new')", []).unwrap();
     drop(changed);
     assert!(run(root.path()).unwrap());
     let files = archives(&directory).unwrap();
-    assert_eq!(files.len(), 10);
-    assert!(!old.exists());
+    assert_eq!(files.len(), 2, "one copy of that month and the new archive");
+    assert!(directory.join("20000101-090000-utc.zip").exists());
     assert!(!directory.join(".lock").exists());
     assert!(std::fs::read_dir(directory).unwrap().all(|entry| !entry.unwrap().path().extension().is_some_and(|ext| ext == "tmp")));
 }

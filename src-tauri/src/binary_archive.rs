@@ -177,11 +177,54 @@ fn run(root: &Path) -> Result<bool, String> {
     zip.write_all(&serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     zip.finish().map_err(|e| e.to_string())?.sync_all().map_err(|e| e.to_string())?;
     let target = directory.join(format!("{}.zip", chrono::Utc::now().format("%Y%m%d-%H%M%S-utc")));
-    std::fs::hard_link(staging.join("archive.zip"), target).map_err(|e| e.to_string())?;
-    for old in previous.into_iter().rev().skip(9) {
+    std::fs::hard_link(staging.join("archive.zip"), &target).map_err(|e| e.to_string())?;
+    let mut kept = previous;
+    kept.push(target);
+    for old in thinned_out(&kept, chrono::Utc::now()) {
         std::fs::remove_file(old).map_err(|e| e.to_string())?;
     }
     Ok(true)
+}
+
+fn archive_time(path: &Path) -> Option<chrono::DateTime<chrono::Utc>> {
+    let stem = path.file_stem()?.to_str()?;
+    chrono::NaiveDateTime::parse_from_str(stem, "%Y%m%d-%H%M%S-utc").ok().map(|time| time.and_utc())
+}
+
+/// The archives the data-lifecycle conventions' thinning schedule drops; the
+/// newest, and any archive whose name carries no time, always stay.
+fn thinned_out(archives: &[PathBuf], now: chrono::DateTime<chrono::Utc>) -> Vec<PathBuf> {
+    use chrono::Datelike;
+    let timed = archives
+        .iter()
+        .filter_map(|path| archive_time(path).map(|time| (path, time)))
+        .collect::<Vec<_>>();
+    let Some(newest) = timed.iter().map(|(_, time)| *time).max() else {
+        return Vec::new();
+    };
+    timed
+        .iter()
+        .filter(|(_, time)| {
+            let age = now - *time;
+            if *time == newest || age <= chrono::Duration::days(21) {
+                return false;
+            }
+            let bucket = |time: &chrono::DateTime<chrono::Utc>| {
+                if age <= chrono::Duration::days(90) {
+                    (0, time.year(), time.ordinal())
+                } else if age <= chrono::Duration::days(1_095) {
+                    let week = time.iso_week();
+                    (1, week.year(), week.week())
+                } else {
+                    (2, time.year(), time.month())
+                }
+            };
+            timed
+                .iter()
+                .any(|(_, other)| other > time && bucket(other) == bucket(time))
+        })
+        .map(|(path, _)| (*path).clone())
+        .collect()
 }
 
 #[cfg(test)]
