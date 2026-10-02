@@ -144,10 +144,9 @@ fn loading_config_removes_the_obsolete_copy_verification_preference() {
     assert!(loaded.get("verifyAfterCopy").is_none());
     let untouched: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(untouched["verifyAfterCopy"], false);
-    patch_json_store(&path, &serde_json::json!({ "theme": "dark" })).unwrap();
+    save_config(&root, &serde_json::json!({ "theme": "dark" })).unwrap();
     let stored: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    assert!(stored.get("verifyAfterCopy").is_none());
-    assert_eq!(stored["pairingEnabled"], true);
+    assert_eq!(stored, serde_json::json!({ "theme": "dark" }), "a copy equal to its built-in is not kept");
 }
 
 #[test]
@@ -184,7 +183,7 @@ fn patch_merges_shallow_and_survives_interleaved_writers() {
 
     // GENUINELY interleaved: two threads, each reading before either writes.
     // The sequential calls below cannot reach the lost update the name claims —
-    // it needs overlapping read windows, and both patch_config and patch_state
+    // it needs overlapping read windows, and patch_state saves
     // are Tauri commands dispatched on a thread pool, so that overlap is real.
     {
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
@@ -238,34 +237,34 @@ fn patch_merges_shallow_and_survives_interleaved_writers() {
 }
 #[test]
 #[serial(backup_store)]
-fn patching_corrupt_config_saves_only_changed_sets() {
-    let dir = temp_dir("patch-corrupt-config");
+fn saving_over_a_corrupt_config_keeps_only_sets_that_differ() {
+    let dir = temp_dir("save-corrupt-config");
     let target = dir.join(CONFIG_FILE_NAME);
     std::fs::write(&target, b"not json").unwrap();
 
-    let outcome = patch_json_store(&target, &serde_json::json!({ "theme": "dark" })).unwrap();
+    let outcome = save_config(&dir, &serde_json::json!({ "theme": "dark" })).unwrap();
 
-    assert_eq!(outcome.merged["theme"], "dark");
-    assert!(outcome.merged.get("goodRangeStartYear").is_none());
-    assert_eq!(outcome.merged, serde_json::json!({ "theme": "dark" }));
+    assert_eq!(outcome.effective["theme"], "dark");
+    assert_eq!(outcome.effective["goodRangeStartYear"], 1995);
+    let stored: serde_json::Value = serde_json::from_slice(&std::fs::read(&target).unwrap()).unwrap();
+    assert_eq!(stored, serde_json::json!({ "theme": "dark" }));
     // The outcome carries the record — a mid-session quarantine has no load
-    // result to ride home on, so the patch itself must hand it back.
-    let record = outcome.quarantined.expect("the patch reports its own quarantine");
+    // result to ride home on, so the save itself must hand it back.
+    let record = outcome.quarantined.expect("the save reports its own quarantine");
     assert_eq!(record.file, "config.json");
     assert!(record.quarantined_to.ends_with(".invalid"));
 }
 
 #[test]
 #[serial(backup_store)]
-fn patching_non_object_config_preserves_it_before_saving_changed_sets() {
-    let dir = temp_dir("patch-wrong-envelope-config");
+fn saving_over_a_non_object_config_preserves_it_first() {
+    let dir = temp_dir("save-wrong-envelope-config");
     let target = dir.join(CONFIG_FILE_NAME);
     std::fs::write(&target, b"[\"preserve\", 7]\n").unwrap();
 
-    let outcome = patch_json_store(&target, &serde_json::json!({ "theme": "dark" })).unwrap();
+    let outcome = save_config(&dir, &serde_json::json!({ "theme": "dark" })).unwrap();
 
-    assert_eq!(outcome.merged["theme"], "dark");
-    assert!(outcome.merged.get("goodRangeStartYear").is_none());
+    assert_eq!(outcome.effective["theme"], "dark");
     let record = outcome
         .quarantined
         .expect("the invalid envelope is reported by the save path");
@@ -278,30 +277,40 @@ fn patching_non_object_config_preserves_it_before_saving_changed_sets() {
 
 #[test]
 #[serial(backup_store)]
-fn first_run_and_one_set_save_are_sparse() {
+fn first_run_writes_nothing_and_a_save_writes_every_set_that_differs() {
     let dir = temp_dir("sparse");
     let loaded = load_from_root(&dir).unwrap();
     let path = dir.join(CONFIG_FILE_NAME);
     assert!(!path.exists());
     assert_eq!(loaded.config["previewLongEdgePx"], 1600);
-    let result = patch_json_store(&path, &serde_json::json!({ "previewLongEdgePx": 2000 })).unwrap();
-    assert_eq!(result.merged, serde_json::json!({ "previewLongEdgePx": 2000 }));
+    let stored = |path: &std::path::Path| -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    };
+    save_config(&dir, &serde_json::json!({ "previewLongEdgePx": 2000 })).unwrap();
+    assert_eq!(stored(&path), serde_json::json!({ "previewLongEdgePx": 2000 }));
     assert_eq!(load_from_root(&dir).unwrap().config["theme"], "system");
+    // Unknown keys are dropped, and a set saved equal to its built-in leaves.
     std::fs::write(&path, br#"{"version":1,"previewLongEdgePx":2000}"#).unwrap();
-    assert_eq!(patch_json_store(&path, &serde_json::json!({ "theme": "dark" })).unwrap().merged, serde_json::json!({ "previewLongEdgePx":2000,"theme":"dark" }));
+    load_from_root(&dir).unwrap();
+    save_config(&dir, &serde_json::json!({ "theme": "dark", "playbackVolume": 1 })).unwrap();
+    assert_eq!(stored(&path), serde_json::json!({ "previewLongEdgePx": 2000, "theme": "dark" }));
+    save_config(&dir, &serde_json::json!({ "previewLongEdgePx": 1600, "theme": "system" })).unwrap();
+    assert_eq!(stored(&path), serde_json::json!({}), "the file stays, holding an empty map");
+    assert!(save_config(&dir, &serde_json::json!({ "theme": "purple" })).is_err());
 }
 
 #[test]
 #[serial(backup_store)]
-fn resetting_similarity_deletes_the_whole_set() {
+fn resetting_similarity_removes_the_whole_set_from_the_file() {
     let dir = temp_dir("reset-set");
     let path = dir.join(CONFIG_FILE_NAME);
     let similarity = serde_json::json!({ "maxGapSeconds": 12, "phashMaxDistance": 19, "phashMaxDistanceBurst": 27, "diameterMultiplier": 4 });
-    patch_json_store(&path, &serde_json::json!({ "similarity": similarity, "theme": "dark" })).unwrap();
+    save_config(&dir, &serde_json::json!({ "similarity": similarity, "theme": "dark" })).unwrap();
     assert_eq!(load_from_root(&dir).unwrap().config["similarity"], similarity);
-    let result = patch_json_store(&path, &serde_json::json!({ "similarity": null })).unwrap();
-    assert_eq!(result.merged, serde_json::json!({ "theme": "dark" }));
-    assert_eq!(load_from_root(&dir).unwrap().config["similarity"], effective_config(None)["similarity"]);
+    let result = save_config(&dir, &serde_json::json!({ "similarity": effective_config(None)["similarity"] })).unwrap();
+    assert_eq!(result.effective["similarity"], effective_config(None)["similarity"]);
+    let stored: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(stored, serde_json::json!({ "theme": "dark" }));
 }
 
 #[test]

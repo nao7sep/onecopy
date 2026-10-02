@@ -1,10 +1,11 @@
-//! Config and state saves are PATCHES merged core-side: the core holds the
-//! file, so it is the one owner of the read-modify-write, and no frontend
-//! store's stale cached copy can blind-overwrite another's save. A config
-//! patch is validated first and then brought into the running app (theme,
-//! native menu language, appearance invalidation, the watcher). Each returns
-//! the merged document — the config as its effective values — so the caller
-//! can publish it without a second read.
+//! Config and state saves. A settings save sends the sets it changed; the
+//! core holds the settings and decides what the file holds
+//! (`storage::save_config`), so no frontend store's stale cached copy can
+//! blind-overwrite another's save. The changes are validated first and then
+//! brought into the running app (theme, native menu language, appearance
+//! invalidation, the watcher). State saves are patches merged core-side. Each
+//! returns the resulting document so the caller can publish it without a
+//! second read.
 
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
@@ -14,32 +15,32 @@ use crate::{
     storage, theme, visibility, watcher,
 };
 
-pub fn patch_config(app: &AppHandle, mut patch: Value, report_failure: bool) -> Result<Value, String> {
+pub fn save_config(app: &AppHandle, mut changes: Value, report_failure: bool) -> Result<Value, String> {
     let result = logging::boundary(
-        "patch_config",
+        "save_config",
         json!({}),
         || {
-            let previous_source_dirs = if patch.get("sourceDirs").is_some() {
-                let data_root = paths::data_root()?;
+            let data_root = paths::data_root()?;
+            let previous_source_dirs = if changes.get("sourceDirs").is_some() {
                 Some(storage::load_config_source_dirs(&data_root)?)
             } else {
                 None
             };
-            if let Some(value) = patch.get_mut("defaultTimezone") {
+            if let Some(value) = changes.get_mut("defaultTimezone") {
                 let name = value
                     .as_str()
                     .ok_or("Default timezone must be an IANA timezone name")?;
                 *value = Value::String(resolution::parse_timezone_name(name)?.to_string());
             }
-            ai_acceleration::validate_patch(&patch)?;
-            visibility::Policy::from_config(&patch)?;
-            let outcome = storage::patch_config(&patch)?;
+            ai_acceleration::validate_patch(&changes)?;
+            visibility::Policy::from_config(&changes)?;
+            let outcome = storage::save_config(&data_root, &changes)?;
             report_quarantine(app, outcome.quarantined);
             // The theme is applied natively to every window as part of the
             // save; pages follow it through prefers-color-scheme.
-            if patch.get("theme").is_some() {
+            if changes.get("theme").is_some() {
                 if let Err(error) =
-                    theme::apply_everywhere(app, theme::config_window_theme(&outcome.merged))
+                    theme::apply_everywhere(app, theme::config_window_theme(&outcome.effective))
                 {
                     logging::warn(
                         "saved theme could not be applied to every window",
@@ -50,10 +51,10 @@ pub fn patch_config(app: &AppHandle, mut patch: Value, report_failure: bool) -> 
             // A saved language reaches the native menu here; the windows follow
             // through the appearance invalidation below. The items macOS draws
             // itself keep the language AppKit settled on at launch.
-            if patch.get("language").is_some() {
+            if changes.get("language").is_some() {
                 let state = app.state::<i18n::LanguageState>();
                 let resolved = i18n::normalize_preference(
-                    outcome.merged.get("language").and_then(Value::as_str),
+                    outcome.effective.get("language").and_then(Value::as_str),
                 )
                 .unwrap_or(state.system_language);
                 state.set_current(resolved);
@@ -67,7 +68,7 @@ pub fn patch_config(app: &AppHandle, mut patch: Value, report_failure: bool) -> 
             // Invalidation, not a potentially stale snapshot from a racing save.
             failure_runtime::emit_or_record(app, "appearance://changed", json!({}));
             let current_source_dirs = outcome
-                .merged
+                .effective
                 .get("sourceDirs")
                 .and_then(Value::as_array)
                 .map(|dirs| {
@@ -85,7 +86,7 @@ pub fn patch_config(app: &AppHandle, mut patch: Value, report_failure: bool) -> 
                     scan_runtime::record_runtime_failure(app, "watcher-failed", &error);
                 }
             }
-            Ok(storage::effective_config(Some(&outcome.merged)))
+            Ok(outcome.effective)
         },
         |_| json!({}),
     );
@@ -116,9 +117,9 @@ pub fn patch_state(app: &AppHandle, patch: &Value, report_failure: bool) -> Resu
     result
 }
 
-/// A store can also be quarantined mid-session — a patch reads the file it is
-/// about to merge into — where there is no load result to ride home on. The
-/// patch hands its own outcome here, and it is pushed to the same reporting
+/// A store can also be quarantined mid-session — a save reads the file it is
+/// about to write — where there is no load result to ride home on. The
+/// save hands its own outcome here, and it is pushed to the same reporting
 /// surface, so the rule ("every quarantine reaches the user") has no hole.
 fn report_quarantine(app: &AppHandle, record: Option<storage::QuarantineRecord>) {
     if let Some(record) = record {

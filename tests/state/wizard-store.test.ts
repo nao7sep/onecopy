@@ -8,16 +8,16 @@ import { finishWizard } from "../../src/workflows/wizard";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 import { inEnglish } from "../helpers/i18n";
 
-function patchConfigPayloads(): Array<Record<string, unknown>> {
+function saveConfigPayloads(): Array<Record<string, unknown>> {
   return invokeCalls
-    .filter((c) => c.command === "patch_config")
-    .map((c) => (c.args.patch ?? c.args) as Record<string, unknown>);
+    .filter((c) => c.command === "save_config")
+    .map((c) => (c.args.changes ?? c.args) as Record<string, unknown>);
 }
 
 beforeEach(() => {
   resetTauriMocks();
   mockCommands({
-    patch_config: () => ({}),
+    save_config: () => ({}),
     patch_state: () => ({}),
     check_source_dirs: () => ({ missing: [], substituted: [] }),
     start_source_check: () => true,
@@ -47,7 +47,7 @@ describe("finish", () => {
     });
     await finishWizard();
 
-    const merged = Object.assign({}, ...patchConfigPayloads()) as Record<
+    const merged = Object.assign({}, ...saveConfigPayloads()) as Record<
       string,
       unknown
     >;
@@ -67,7 +67,7 @@ describe("finish", () => {
     useWizardStore.setState({ timezone: "   " });
     await finishWizard();
 
-    expect(patchConfigPayloads()).toEqual([]);
+    expect(saveConfigPayloads()).toEqual([]);
   });
 
   // One occurrence, one report: the open form shows the failure, so the core's
@@ -75,7 +75,7 @@ describe("finish", () => {
   // failure for later comes from the form rather than from a second notice.
   it("reports a failed setup save once, in the form, and keeps one Issue", async () => {
     mockCommands({
-      patch_config: () => Promise.reject(new TypeError("EACCES writing config.json")),
+      save_config: () => Promise.reject(new TypeError("EACCES writing config.json")),
     });
 
     await finishWizard();
@@ -84,7 +84,7 @@ describe("finish", () => {
     expect(inEnglish(useWizardStore.getState().error)).toBe(
       "Setup could not be saved. Your changes are still here; try again.",
     );
-    const write = invokeCalls.find((call) => call.command === "patch_config");
+    const write = invokeCalls.find((call) => call.command === "save_config");
     expect(write?.args.reportFailure).toBe(false);
     expect(invokeCalls.filter((call) => call.command === "record_recent_notification")).toHaveLength(1);
     expect(invokeCalls.some((call) => call.command === "publish_notification")).toBe(false);
@@ -115,7 +115,7 @@ describe("finish", () => {
   it("admits one Finish submission and keeps newer draft state open", async () => {
     let finishSave: (() => void) | undefined;
     mockCommands({
-      patch_config: () =>
+      save_config: () =>
         new Promise<Record<string, never>>((resolve) => {
           finishSave = () => resolve({});
         }),
@@ -124,7 +124,7 @@ describe("finish", () => {
     const first = finishWizard();
     const duplicate = finishWizard();
     expect(first).toBe(duplicate);
-    expect(patchConfigPayloads()).toHaveLength(1);
+    expect(saveConfigPayloads()).toHaveLength(1);
     useWizardStore.setState({ timezone: "UTC" });
     finishSave?.();
     await first;
@@ -137,7 +137,7 @@ describe("finish", () => {
     expect(inEnglish(useWizardStore.getState().error)).toBe(
       "Setup was saved, but newer changes are still open. Review them, then finish again.",
     );
-    expect(patchConfigPayloads()).toHaveLength(1);
+    expect(saveConfigPayloads()).toHaveLength(1);
   });
 });
 

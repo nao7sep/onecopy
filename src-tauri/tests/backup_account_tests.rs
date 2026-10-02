@@ -47,11 +47,7 @@ fn durable_text_records_and_dependency_facts_and_volatile_state_do_not() {
     .unwrap();
     storage::save_window_state(root.path(), &serde_json::json!({ "x": 10 })).unwrap();
     storage::save_preview_window_state(root.path(), &serde_json::json!({ "x": 20 })).unwrap();
-    storage::patch_json_store(
-        &root.path().join(storage::CONFIG_FILE_NAME),
-        &serde_json::json!({ "theme": "dark" }),
-    )
-    .unwrap();
+    storage::save_config(root.path(), &serde_json::json!({ "theme": "dark" })).unwrap();
 
     let conn = rusqlite::Connection::open(backup_file).unwrap();
     let mut statement = conn

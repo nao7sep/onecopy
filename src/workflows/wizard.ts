@@ -36,7 +36,7 @@ async function finishSubmission(submission: WizardSubmission): Promise<void> {
   // where its failure belongs: the core stays quiet so one failed write is one
   // notice and one Issue, and the follow-up work below keeps its own boundary.
   try {
-    await useAppStore.getState().patchConfig(
+    await useAppStore.getState().saveConfig(
       {
         sourceDirs: submission.dirs.map((dir) => dir.path),
         language: submission.language,

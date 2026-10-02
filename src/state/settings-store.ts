@@ -181,7 +181,6 @@ interface SettingsState {
   defaults: AppConfig | null;
   /** The draft as it was when the modal opened — the dirty-check baseline. */
   opened: SettingsDraft | null;
-  similarityReset: boolean;
   saving: boolean;
   message: Message | null;
   messageLevel: "error" | "info" | null;
@@ -203,7 +202,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   accelerationCapabilities: [],
   defaults: null,
   opened: null,
-  similarityReset: false,
   saving: false,
   message: null,
   messageLevel: null,
@@ -212,7 +210,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     set({
       accelerationCapabilities,
       defaults,
-      similarityReset: false,
       draft: draftFrom(config, accelerationCapabilities),
       opened: draftFrom(config, accelerationCapabilities),
       message: null,
@@ -227,7 +224,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   update: (patch) => {
     const draft = get().draft;
-    if (draft) set({ draft: { ...draft, ...patch }, ...(SIMILAR_PHOTO_KEYS.some((key) => key in patch) ? { similarityReset: false } : {}) });
+    if (draft) set({ draft: { ...draft, ...patch } });
   },
 
   resetSimilarPhotoSettings: () => {
@@ -238,7 +235,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         SIMILAR_PHOTO_KEYS.map((key) => [key, numberField(defaults?.similarity as AppConfig, key.slice("similarity".length).replace(/^./, (letter) => letter.toLowerCase()))]),
       ) as Pick<SettingsDraft, (typeof SIMILAR_PHOTO_KEYS)[number]>,
     );
-    set({ similarityReset: true });
   },
 
   addSourceDir: async () => {
@@ -277,10 +273,8 @@ function draftSets(draft: SettingsDraft): AppConfig {
   return sets;
 }
 
-export function changedSettingsSets(draft: SettingsDraft, opened: SettingsDraft | null, similarityReset: boolean): AppConfig {
+export function changedSettingsSets(draft: SettingsDraft, opened: SettingsDraft | null): AppConfig {
   const sets = draftSets(draft);
   const baseline = opened && draftSets(opened);
-  const patch = Object.fromEntries(Object.entries(sets).filter(([key, value]) => !baseline || JSON.stringify(value) !== JSON.stringify(baseline[key])));
-  if (similarityReset) patch.similarity = null;
-  return patch;
+  return Object.fromEntries(Object.entries(sets).filter(([key, value]) => !baseline || JSON.stringify(value) !== JSON.stringify(baseline[key])));
 }

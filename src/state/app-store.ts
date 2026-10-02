@@ -3,15 +3,15 @@
 // and a settings save can refresh it everywhere at once.
 //
 // This store is the ONE writer for both persisted documents: every mutation
-// goes through patchConfig/patchState, which send only the changed keys, let
-// the core merge into the file it holds, and publish the merged result here.
-// No caller ever spreads a cached copy over the file again.
+// goes through saveConfig/patchState, which send only the changed sets or
+// keys, let the core decide what the file it holds receives, and publish the
+// result here. No caller ever spreads a cached copy over the file again.
 
 import { create } from "zustand";
 import {
   loadAppData,
   log,
-  patchConfigFile,
+  saveConfigFile,
   patchStateFile,
   toErrorFields,
   type LoadedAppData,
@@ -31,8 +31,8 @@ interface AppState {
   quarantines: QuarantineRecord[];
   dismissQuarantines: () => void;
   initialize: () => Promise<LoadedAppData | null>;
-  patchConfig: (
-    patch: Record<string, unknown>,
+  saveConfig: (
+    changes: Record<string, unknown>,
     options?: { reportFailure?: boolean },
   ) => Promise<void>;
   patchState: (
@@ -185,14 +185,14 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   dismissQuarantines: () => set({ quarantines: [] }),
 
-  patchConfig: async (patch, options) => {
+  saveConfig: async (changes, options) => {
     try {
-      const merged = await patchConfigFile(patch, options?.reportFailure ?? true);
+      const effective = await saveConfigFile(changes, options?.reportFailure ?? true);
       set((s) =>
-        s.appData === null ? s : { appData: { ...s.appData, config: merged } },
+        s.appData === null ? s : { appData: { ...s.appData, config: effective } },
       );
     } catch (error) {
-      log.error("config patch failed", toErrorFields(error));
+      log.error("config save failed", toErrorFields(error));
       throw error;
     }
   },

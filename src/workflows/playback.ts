@@ -145,7 +145,7 @@ function flushConfigPatch(): Promise<void> {
   pendingConfigPatch = null;
   if (patch === null) return configWriteTail;
   const write = configWriteTail.then(() =>
-    useAppStore.getState().patchConfig(patch, { reportFailure: false }),
+    useAppStore.getState().saveConfig(patch, { reportFailure: false }),
   );
   configWriteTail = write.catch(() => undefined);
   return write;
@@ -340,7 +340,7 @@ export async function setMediumAutoplay(
   medium: PlaybackMedium,
   enabled: boolean,
 ): Promise<void> {
-  await useAppStore.getState().patchConfig(
+  await useAppStore.getState().saveConfig(
     { [medium === "video" ? "videoAutoplay" : "audioAutoplay"]: enabled },
     { reportFailure: false },
   );

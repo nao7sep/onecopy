@@ -41,7 +41,7 @@ describe("sound setting", () => {
   it("takes Sound back from the players when its write never reached disk", async () => {
     fireEvent("playback://register", { surface: "preview-split", key: "clip", medium: "video" });
     mockCommands({
-      patch_config: () => Promise.reject(new TypeError("EACCES writing config.json")),
+      save_config: () => Promise.reject(new TypeError("EACCES writing config.json")),
     });
 
     await expect(setSoundEnabled(false)).rejects.toBeInstanceOf(TypeError);
@@ -52,7 +52,7 @@ describe("sound setting", () => {
 
   it("keeps a saved Sound change", async () => {
     fireEvent("playback://register", { surface: "preview-split", key: "clip", medium: "video" });
-    mockCommands({ patch_config: ({ patch }) => patch });
+    mockCommands({ save_config: ({ changes }) => changes });
 
     await setSoundEnabled(false);
 

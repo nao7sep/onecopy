@@ -57,16 +57,17 @@ export function loadAppData(): Promise<BootstrapData> {
   return invoke<BootstrapData>("load_app_data");
 }
 
-// Saves are PATCHES merged core-side (the core holds the file and owns the
-// read-modify-write); the merged document comes back so callers can publish
-// it without a second read. Route through app-store's patchConfig/patchState
-// so the one config/state owner stays current — never call these around it.
+// A settings save sends the sets it changed and the core decides what the
+// file holds; a state save is a patch merged core-side. The resulting
+// document comes back so callers can publish it without a second read. Route
+// through app-store's saveConfig/patchState so the one config/state owner
+// stays current — never call these around it.
 
-export function patchConfigFile(
-  patch: Record<string, unknown>,
+export function saveConfigFile(
+  changes: Record<string, unknown>,
   reportFailure = true,
 ): Promise<Record<string, unknown>> {
-  return invoke<Record<string, unknown>>("patch_config", { patch, reportFailure });
+  return invoke<Record<string, unknown>>("save_config", { changes, reportFailure });
 }
 
 export function patchStateFile(

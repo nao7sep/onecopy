@@ -295,7 +295,7 @@ export default function BinariesModal({
           <Toggle
             checked={checkAtLaunch}
             onChange={(checked) =>
-              void useAppStore.getState().patchConfig({ checkUpdatesAtLaunch: checked })
+              void useAppStore.getState().saveConfig({ checkUpdatesAtLaunch: checked })
             }
           />
         </Row>

@@ -117,7 +117,7 @@ beforeEach(() => {
     check_source_dirs: () => ({ missing: [], substituted: [] }),
     patch_state: () => ({}),
     // The core answers a save with the effective configuration.
-    patch_config: (args) => effectiveConfig((args.patch ?? {}) as Record<string, unknown>),
+    save_config: (args) => effectiveConfig((args.changes ?? {}) as Record<string, unknown>),
     log_event: () => null,
     logging_debug_enabled: () => false,
     background_work_snapshot: () => ({
@@ -380,7 +380,7 @@ describe("the culling workflow", () => {
       });
       await finishWizard();
     });
-    expect(invokeCalls.map((c) => c.command)).toContain("patch_config");
+    expect(invokeCalls.map((c) => c.command)).toContain("save_config");
     expect(invokeCalls.map((c) => c.command)).toContain("start_source_check");
     expect(useSectionsStore.getState().sourceCheck.running).toBe(true);
 

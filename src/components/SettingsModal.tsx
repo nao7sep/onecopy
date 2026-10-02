@@ -86,7 +86,7 @@ function ScreensSection() {
       .getState()
       // This row shows the failure itself, so the core stays quiet: one failed
       // write is one notice and one Issue.
-      .patchConfig({ screenPriority: keys }, { reportFailure: false })
+      .saveConfig({ screenPriority: keys }, { reportFailure: false })
       .catch((error) => {
         log.error("screen priority save failed", toErrorFields(error));
         setScreenError("settings.screenOrderSaveFailed");
@@ -377,7 +377,7 @@ export default function SettingsModal({
 
   if (!open || draft === null) return null;
 
-  const dirty = useSettingsStore.getState().similarityReset || JSON.stringify(draft) !== JSON.stringify(opened);
+  const dirty = JSON.stringify(draft) !== JSON.stringify(opened);
   const requestClose = () => {
     if (dirty) setConfirmDiscard(true);
     else {

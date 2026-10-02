@@ -168,7 +168,7 @@ describe("Settings categories", () => {
     })));
     mockCommands({
       patch_state: () => ({}),
-      patch_config: () => ({}),
+      save_config: () => ({}),
       check_source_dirs: () => [],
       record_recent_notification: () => ({}),
       log_event: () => null,
@@ -178,8 +178,8 @@ describe("Settings categories", () => {
     await waitFor(() => expect(screen.queryAllByRole("button", { name: "Move down" }).length).toBeGreaterThan(0));
 
     const hasScreenPriority = (call: { command: string; args: Record<string, unknown> }) =>
-      call.command === "patch_config" &&
-      "screenPriority" in ((call.args.patch as Record<string, unknown>) ?? {});
+      call.command === "save_config" &&
+      "screenPriority" in ((call.args.changes as Record<string, unknown>) ?? {});
 
     fireEvent.click(screen.getAllByRole("button", { name: "Move down" })[0]);
     await waitFor(() => expect(invokeCalls.some(hasScreenPriority)).toBe(true));
@@ -189,13 +189,13 @@ describe("Settings categories", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Library" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Hide names beginning with a dot" }));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(invokeCalls.some((call) => call.command === "patch_config")).toBe(true));
+    await waitFor(() => expect(invokeCalls.some((call) => call.command === "save_config")).toBe(true));
 
-    const configWrite = invokeCalls.find((call) => call.command === "patch_config");
-    expect(configWrite?.args.patch).toHaveProperty("hideDotNames");
+    const configWrite = invokeCalls.find((call) => call.command === "save_config");
+    expect(configWrite?.args.changes).toHaveProperty("hideDotNames");
     expect(invokeCalls.some(hasScreenPriority)).toBe(false);
     // The move already landed and nothing here reverted it.
-    expect((screenWrite?.args.patch as Record<string, unknown>)).toHaveProperty("screenPriority");
+    expect((screenWrite?.args.changes as Record<string, unknown>)).toHaveProperty("screenPriority");
   });
 
   // R5.5 C7: each screen row renders POSITION before name, in the DOM, not
@@ -247,7 +247,7 @@ describe("Settings categories", () => {
       size: { width: 1920, height: 1080 }, scaleFactor: 1,
     })));
     mockCommands({
-      patch_config: () => Promise.reject(new TypeError("EACCES writing config.json")),
+      save_config: () => Promise.reject(new TypeError("EACCES writing config.json")),
       record_recent_notification: () => ({ id: 1 }),
     });
     render(<SettingsModal open onClose={() => {}} />);
@@ -257,7 +257,7 @@ describe("Settings categories", () => {
     await act(async () => move.click());
 
     expect(await screen.findByText("Couldn’t save the screen order.")).toBeTruthy();
-    const write = invokeCalls.find((call) => call.command === "patch_config");
+    const write = invokeCalls.find((call) => call.command === "save_config");
     expect(write?.args.reportFailure).toBe(false);
     await waitFor(() =>
       expect(invokeCalls.filter((call) => call.command === "record_recent_notification")).toHaveLength(1),

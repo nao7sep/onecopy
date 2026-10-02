@@ -27,7 +27,7 @@ useBinariesStore.setState({
   install: async () => {}, installAll: async () => {}, checkAll: async () => {},
   cancel: async () => {}, cancelCheck: async () => {},
 });
-useAppStore.setState({ patchConfig: async () => {} });
+useAppStore.setState({ saveConfig: async () => {} });
 createRoot(document.getElementById("root")!).render(
   <>
     <p className="fixed inset-x-0 top-2 z-50 text-center text-xs text-ink-muted">

@@ -24,7 +24,7 @@ import { reconcileComparisonMembership } from "./comparison";
 type LibrarySettingsOutcome = { status: "applied"; resolved: number } | { status: "owed" };
 
 export async function saveSettings(): Promise<void> {
-  const { draft, opened, similarityReset } = useSettingsStore.getState();
+  const { draft, opened } = useSettingsStore.getState();
   if (!draft) return;
   const sourceDirsChanged =
     opened !== null && JSON.stringify(draft.sourceDirs) !== JSON.stringify(opened.sourceDirs);
@@ -40,9 +40,9 @@ export async function saveSettings(): Promise<void> {
     reason: "user",
   });
   // Config publication is the Save transaction's commit point; sound and
-  // volume are settings like the rest and ride in the same patch.
+  // volume are settings like the rest and ride in the same save.
   try {
-    await useAppStore.getState().patchConfig(changedSettingsSets(draft, opened, similarityReset), { reportFailure: false });
+    await useAppStore.getState().saveConfig(changedSettingsSets(draft, opened), { reportFailure: false });
   } catch (error) {
     useSettingsStore.setState({
       saving: false,

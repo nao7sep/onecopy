@@ -138,7 +138,7 @@ export async function addDestinationRoot(): Promise<void> {
       const next = [...roots, picked];
       await useAppStore
         .getState()
-        .patchConfig({ destinationRoots: next }, { reportFailure: false });
+        .saveConfig({ destinationRoots: next }, { reportFailure: false });
       useDestinationsStore.setState({ roots: next, message: null });
     });
   } catch (error) {
@@ -157,7 +157,7 @@ export async function removeDestinationRoot(root: string): Promise<void> {
         .roots.filter((candidate) => candidate !== root);
       await useAppStore
         .getState()
-        .patchConfig({ destinationRoots: next }, { reportFailure: false });
+        .saveConfig({ destinationRoots: next }, { reportFailure: false });
       useDestinationsStore.setState({ roots: next, message: null });
     });
   } catch (error) {

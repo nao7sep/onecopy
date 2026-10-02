@@ -26,7 +26,7 @@ beforeEach(() => {
   resetTauriMocks();
   mockCommands({
     patch_state: () => ({}),
-    patch_config: () => ({}),
+    save_config: () => ({}),
     validate_timezone: () => true,
     check_source_dirs: () => ({ missing: [], substituted: [] }),
   });

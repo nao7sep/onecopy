@@ -326,7 +326,7 @@ pub fn read_appearance_preferences(root: &Path) -> Result<JsonValue, String> {
 /// document, the way the `appearance_preferences` command does after calling
 /// `read_appearance_preferences` above. Kept apart from that command's
 /// `app.state::<i18n::LanguageState>()` lookup so the actual contract —
-/// a language a config patch just set is what the very next read returns —
+/// a language a settings save just set is what the very next read returns —
 /// is directly testable against a `LanguageState` a test constructs itself,
 /// with no `AppHandle` involved (R5.5 C3).
 pub fn with_language_fields(mut preferences: JsonValue, state: &crate::i18n::LanguageState) -> JsonValue {
@@ -406,8 +406,10 @@ pub fn load_from_root(root: &Path) -> Result<LoadedAppData, String> {
     if let Some(record) = state_read.quarantined {
         quarantines.push(record);
     }
+    let config = config.unwrap_or_else(|| effective_config(None));
+    hold_config(root, &config);
     Ok(LoadedAppData {
-        config: effective_config(config.as_ref()),
+        config,
         config_defaults: effective_config(None),
         state: state_read.value,
         check_attempts: crate::binaries_manager::load_check_attempts(root),
@@ -490,19 +492,83 @@ fn register_volume_roots(config: Option<&JsonValue>) {
     crate::volume_io::register_roots(&configured_roots_in(config).all());
 }
 
-/// Patch-merges into `config.json` and returns the merged document. The core
-/// holds the file, so it is the one owner of the read-modify-write — the
-/// frontend sends only the keys it changes, and a stale cached copy in one
-/// store can never blind-overwrite another store's save (the lost-update the
-/// persisted-store-separation conventions' one-owner rule exists to prevent).
-pub fn patch_config(patch: &JsonValue) -> Result<PatchOutcome, String> {
-    // records: config.json is durable user settings — managed text, recorded on
-    // every save (data-backup conventions).
-    let root = paths::data_root()?;
-    patch_json_store(&root.join(CONFIG_FILE_NAME), patch)
+/// The settings this process holds for one storage root: every set's
+/// effective value, read once and changed only by saves (config-sets
+/// conventions). Keyed by root so a different root is read afresh.
+static HELD_CONFIG: std::sync::Mutex<Option<(PathBuf, JsonValue)>> = std::sync::Mutex::new(None);
+
+fn hold_config(root: &Path, effective: &JsonValue) {
+    *HELD_CONFIG.lock().unwrap_or_else(|p| p.into_inner()) = Some((root.to_path_buf(), effective.clone()));
 }
 
-/// Patch-merges into `state.json` (same one-owner contract as `patch_config`).
+/// A save's resulting settings plus the quarantine its first read performed,
+/// if any — a mid-session quarantine has no load result to ride home on, so
+/// the command layer publishes it from here.
+pub struct SaveOutcome {
+    pub effective: JsonValue,
+    pub quarantined: Option<QuarantineRecord>,
+}
+
+/// Saves settings: each changed set replaces the held set whole, then the
+/// file is written from what the app holds, every set that differs from its
+/// built-in and nothing else (config-sets conventions).
+pub fn save_config(root: &Path, changes: &JsonValue) -> Result<SaveOutcome, String> {
+    // records: config.json is durable user settings — managed text, recorded on
+    // every save (data-backup conventions).
+    let fields = changes
+        .as_object()
+        .ok_or_else(|| "settings changes must be a JSON object".to_string())?;
+    let mut held = HELD_CONFIG.lock().unwrap_or_else(|p| p.into_inner());
+    let mut quarantined = None;
+    let mut effective = match held.as_ref() {
+        Some((held_root, effective)) if held_root == root => effective.clone(),
+        _ => {
+            let read = read_config_optional(&root.join(CONFIG_FILE_NAME))?;
+            quarantined = read.quarantined;
+            read.value.unwrap_or_else(|| effective_config(None))
+        }
+    };
+    let builtins = effective_config(None);
+    for (key, value) in fields {
+        let Some(builtin) = builtins.get(key) else { continue };
+        if !valid_set(key, value, builtin) {
+            return Err(format!("the {key} setting is not valid"));
+        }
+        effective[key] = value.clone();
+    }
+    let stored = builtins
+        .as_object()
+        .expect("defaults are an object")
+        .iter()
+        .filter(|(key, builtin)| !same_value(&effective[key.as_str()], builtin))
+        .map(|(key, _)| (key.clone(), effective[key.as_str()].clone()))
+        .collect::<serde_json::Map<_, _>>();
+    atomic_write_json(&root.join(CONFIG_FILE_NAME), &JsonValue::Object(stored), true)?;
+    *held = Some((root.to_path_buf(), effective.clone()));
+    crate::sleep_prevention::configure(&effective);
+    register_volume_roots(Some(&effective));
+    Ok(SaveOutcome { effective, quarantined })
+}
+
+/// JSON equality with numbers compared by value, so `1` equals `1.0`.
+fn same_value(left: &JsonValue, right: &JsonValue) -> bool {
+    match (left, right) {
+        (JsonValue::Number(left), JsonValue::Number(right)) => left.as_f64() == right.as_f64(),
+        (JsonValue::Array(left), JsonValue::Array(right)) => {
+            left.len() == right.len() && left.iter().zip(right).all(|(left, right)| same_value(left, right))
+        }
+        (JsonValue::Object(left), JsonValue::Object(right)) => {
+            left.len() == right.len()
+                && left.iter().all(|(key, value)| right.get(key).is_some_and(|other| same_value(value, other)))
+        }
+        _ => left == right,
+    }
+}
+
+/// Patch-merges into `state.json` and returns the merged document. The core
+/// holds the file, so it is the one owner of the read-modify-write — the
+/// frontend sends only the keys it changes, and a stale cached copy in one
+/// store can never blind-overwrite another store's save.
 pub fn patch_state(patch: &JsonValue) -> Result<PatchOutcome, String> {
     // not recorded: state.json is volatile UI state and nothing else; the
     // write goes through the unrecorded atomic path (see `patch_json_store`).
@@ -511,57 +577,36 @@ pub fn patch_state(patch: &JsonValue) -> Result<PatchOutcome, String> {
 }
 
 /// A patch's merged document plus the quarantine this read-modify-write
-/// performed, if any — a mid-session quarantine has no load result to ride
-/// home on, so the command layer publishes it from here.
+/// performed, if any.
 pub struct PatchOutcome {
     pub merged: JsonValue,
     pub quarantined: Option<QuarantineRecord>,
 }
 
-/// Replace whole sets; a null config value deletes its copy for reset.
-/// Unknown config keys are dropped. State patches retain null as a value.
+/// Merges top-level keys into a JSON store; null is a stored value.
 pub fn patch_json_store(target: &Path, patch: &JsonValue) -> Result<PatchOutcome, String> {
-    // Serialized: this is a read-modify-write, and both `patch_config` and
-    // `patch_state` are Tauri commands dispatched on a thread pool, so two
-    // surfaces saving at once could otherwise interleave their reads and the
-    // second write would drop the first's keys — the exact lost update the
-    // one-owner rule exists to prevent. One global lock is enough: patches are
-    // small and rare, and holding it across the atomic write is what makes the
-    // whole read-merge-write atomic with respect to other patchers.
+    // Serialized: this is a read-modify-write dispatched on a thread pool, so
+    // two surfaces saving at once could otherwise interleave their reads and
+    // the second write would drop the first's keys. One global lock is
+    // enough: patches are small and rare, and holding it across the atomic
+    // write is what makes the whole read-merge-write atomic with respect to
+    // other patchers.
     static PATCH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = PATCH_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    let read = if target
-        .file_name()
-        .is_some_and(|name| name == CONFIG_FILE_NAME)
-    {
-        read_json_optional_with_envelope(target, true)?
-    } else {
-        read_json_optional(target)?
-    };
+    let read = read_json_optional(target)?;
     let quarantined = read.quarantined;
-    let current = read.value;
-    let mut current = current.unwrap_or_else(|| serde_json::json!({}));
+    let mut current = read.value.unwrap_or_else(|| serde_json::json!({}));
     if !current.is_object() {
         current = serde_json::json!({});
     }
     let (Some(doc), Some(fields)) = (current.as_object_mut(), patch.as_object()) else {
         return Err("patch must be a JSON object".to_string());
     };
-    let is_config = target.file_name().is_some_and(|name| name == CONFIG_FILE_NAME);
-    let defaults = effective_config(None);
-    if is_config {
-        doc.retain(|key, _| defaults.get(key).is_some());
-    }
     for (key, value) in fields {
-        if is_config && defaults.get(key).is_none() { continue; }
-        if is_config && value.is_null() {
-            doc.remove(key);
-        } else {
-            doc.insert(key.clone(), value.clone());
-        }
+        doc.insert(key.clone(), value.clone());
     }
     // state.json is volatile state and nothing else: written atomically but
     // not recorded in the backup history. Every other patched store records.
@@ -569,10 +614,6 @@ pub fn patch_json_store(target: &Path, patch: &JsonValue) -> Result<PatchOutcome
         .file_name()
         .is_some_and(|name| name == STATE_FILE_NAME);
     atomic_write_json(target, &current, record)?;
-    if target.file_name().is_some_and(|name| name == CONFIG_FILE_NAME) {
-        crate::sleep_prevention::configure(&current);
-        register_volume_roots(Some(&current));
-    }
     Ok(PatchOutcome {
         merged: current,
         quarantined,

@@ -101,7 +101,7 @@ fn with_language_fields_reflects_the_current_value_after_it_changes() {
     // The unrelated field already on the document survives the projection.
     assert_eq!(first["uiFontFamily"], serde_json::Value::Null);
 
-    // A saved language change (as `patch_config` applies through
+    // A saved language change (as `save_config` applies through
     // `state.set_current`) is what the NEXT read returns -- not what the
     // state held when the window launched.
     state.set_current("ja");

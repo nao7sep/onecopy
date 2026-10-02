@@ -40,7 +40,7 @@ function item(pathId: number): SectionItem {
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
-  mockCommands({ patch_config: () => ({}) });
+  mockCommands({ save_config: () => ({}) });
   useDestinationsStore.setState({ roots: ["/existing"], message: null });
 });
 
@@ -57,7 +57,7 @@ describe("destination root failures", () => {
   });
 
   it("keeps a failed config update visible without changing the tree", async () => {
-    mockCommands({ patch_config: () => Promise.reject(new Error("disk full")) });
+    mockCommands({ save_config: () => Promise.reject(new Error("disk full")) });
 
     await removeDestinationRoot("/existing");
 
@@ -65,7 +65,7 @@ describe("destination root failures", () => {
     expect(inEnglish(useDestinationsStore.getState().message)).toBe(
       "Couldn’t remove that destination.",
     );
-    expect(invokeCalls.find((call) => call.command === "patch_config")?.args).toMatchObject({
+    expect(invokeCalls.find((call) => call.command === "save_config")?.args).toMatchObject({
       reportFailure: false,
     });
   });
@@ -74,7 +74,7 @@ describe("destination root failures", () => {
     let finishFirst: (() => void) | undefined;
     let saves = 0;
     mockCommands({
-      patch_config: () => {
+      save_config: () => {
         saves += 1;
         if (saves === 1) {
           return new Promise<Record<string, never>>((resolve) => {
@@ -97,8 +97,8 @@ describe("destination root failures", () => {
 
     expect(useDestinationsStore.getState().roots).toEqual(["/added"]);
     expect(
-      invokeCalls.filter((call) => call.command === "patch_config").map((call) =>
-        call.args.patch,
+      invokeCalls.filter((call) => call.command === "save_config").map((call) =>
+        call.args.changes,
       ),
     ).toEqual([
       { destinationRoots: ["/existing", "/added"] },

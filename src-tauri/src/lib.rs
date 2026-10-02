@@ -197,10 +197,11 @@ async fn appearance_preferences(app: AppHandle) -> Result<Value, String> {
     .await
 }
 
-// Config and state saves are PATCHES merged core-side; see `store_patch`.
+// Settings saves send their changed sets and state saves are patches; see
+// `store_patch`.
 #[tauri::command]
-async fn patch_config(app: AppHandle, patch: Value, report_failure: Option<bool>) -> Result<Value, String> {
-    dispatch(move || store_patch::patch_config(&app, patch, report_failure.unwrap_or(true))).await
+async fn save_config(app: AppHandle, changes: Value, report_failure: Option<bool>) -> Result<Value, String> {
+    dispatch(move || store_patch::save_config(&app, changes, report_failure.unwrap_or(true))).await
 }
 
 #[tauri::command]
@@ -1561,7 +1562,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             load_app_data,
-            patch_config,
+            save_config,
             appearance_preferences,
             patch_state,
             record_managed_tool_check_attempt,

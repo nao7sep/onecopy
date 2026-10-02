@@ -19,7 +19,7 @@ async function settleUntil(predicate: () => boolean): Promise<void> {
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
   mockCommands({
-    patch_config: () => effectiveConfig(),
+    save_config: () => effectiveConfig(),
     patch_state: ({ patch }) => patch,
     log_event: () => null,
     apply_library_settings: () => ({ status: "applied", resolved: 0 }),
@@ -47,20 +47,22 @@ describe("Settings save boundary", () => {
     await saveSettings();
     expect(invokeCalls.some((call) => call.command === "apply_library_settings")).toBe(true);
     expect(invokeCalls.some((call) => call.command === "start_source_check")).toBe(false);
-    expect(invokeCalls.find((call) => call.command === "patch_config")?.args).toMatchObject({ patch: { hideDotNames: false, ignoredFileNames: [] } });
+    expect(invokeCalls.find((call) => call.command === "save_config")?.args).toMatchObject({ changes: { hideDotNames: false, ignoredFileNames: [] } });
   });
 
   it("writes one changed set and leaves every other set absent", async () => {
     useSettingsStore.getState().update({ previewLongEdgePx: 2000 });
     await saveSettings();
-    expect(invokeCalls.find((call) => call.command === "patch_config")?.args.patch).toEqual({ previewLongEdgePx: 2000 });
+    expect(invokeCalls.find((call) => call.command === "save_config")?.args.changes).toEqual({ previewLongEdgePx: 2000 });
   });
 
-  it("saves the similarity reset as deletion", async () => {
+  it("saves the similarity reset as the built-in values, which the core then leaves out of the file", async () => {
     useSettingsStore.getState().beginEditing(effectiveConfig({ similarity: { maxGapSeconds: 12, phashMaxDistance: 19, phashMaxDistanceBurst: 27, diameterMultiplier: 4 } }), [], effectiveConfig());
     useSettingsStore.getState().resetSimilarPhotoSettings();
     await saveSettings();
-    expect(invokeCalls.find((call) => call.command === "patch_config")?.args.patch).toEqual({ similarity: null });
+    expect(invokeCalls.find((call) => call.command === "save_config")?.args.changes).toEqual({
+      similarity: effectiveConfig().similarity,
+    });
   });
 
   it("says a busy apply will still take effect instead of reporting a failure", async () => {
@@ -79,7 +81,7 @@ describe("Settings save boundary", () => {
     expect(invokeCalls.filter((call) => call.command === "activity_record").map((call) => (call.args.draft as { kind: string }).kind)).toEqual(["started", "completed"]);
   });
   it("keeps the draft open when config publication itself fails", async () => {
-    mockCommands({ patch_config: () => Promise.reject(new Error("disk full")) });
+    mockCommands({ save_config: () => Promise.reject(new Error("disk full")) });
 
     await saveSettings();
 
@@ -88,7 +90,7 @@ describe("Settings save boundary", () => {
       "Settings could not be saved. Your changes are still here; try again.",
     );
     expect(invokeCalls.some((call) => call.command === "apply_library_settings")).toBe(false);
-    expect(invokeCalls.find((call) => call.command === "patch_config")?.args).toMatchObject({
+    expect(invokeCalls.find((call) => call.command === "save_config")?.args).toMatchObject({
       reportFailure: false,
     });
   });
@@ -150,8 +152,8 @@ describe("Settings save boundary", () => {
 
     await saveSettings();
 
-    const configSave = invokeCalls.find((call) => call.command === "patch_config");
-    expect(configSave?.args.patch).toEqual({
+    const configSave = invokeCalls.find((call) => call.command === "save_config");
+    expect(configSave?.args.changes).toEqual({
       soundEnabled: false,
       playbackVolume: 0.35,
     });
@@ -187,7 +189,7 @@ describe("Settings save boundary", () => {
 
     await saveSettings();
 
-    expect(invokeCalls.find((call) => call.command === "patch_config")?.args.patch).toMatchObject({
+    expect(invokeCalls.find((call) => call.command === "save_config")?.args.changes).toMatchObject({
       aiAcceleration: { transcription: "none", "face-scoring": "none" },
     });
   });
