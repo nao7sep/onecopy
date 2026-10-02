@@ -21,15 +21,13 @@
 //     volume is human-paced and IO-bounded, so per-line writes cost nothing
 //     meaningful; only a kernel panic or power loss, which no userspace flush
 //     would prevent either, can lose an unsynced page.)
-//   - A mandatory, non-destructive redactor replaces the value of any field whose
-//     name (exact, case-insensitive) is in the denied set; it never edits prose.
+//   - Nothing is redacted (logging conventions).
 //   - If the file cannot be opened or written, it degrades to stderr and never
 //     panics — the app must never crash because logging failed. A mid-session
 //     write failure permanently switches to the stderr fallback (the dead
 //     handle is dropped and never retried), and the line that failed to write
 //     is re-emitted to stderr so its content is never lost.
 
-use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
@@ -133,38 +131,6 @@ pub fn session_filename() -> String {
     format!("{}.log", filename_stamp(now_unix_millis()))
 }
 
-// --- Redaction: non-destructive, key-name based, recursive, total ---
-
-fn default_denied() -> HashSet<String> {
-    ["apikey", "authorization", "token", "password", "secret"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect()
-}
-
-// Replaces the value of any field whose key (lowercased) is denied with the
-// fixed marker; recurses into objects and arrays. Never inspects string content,
-// never edits `message` (it is not a denied key), cannot drop fields or throw.
-fn redact_in_place(value: &mut Value, denied: &HashSet<String>) {
-    match value {
-        Value::Object(map) => {
-            for (key, child) in map.iter_mut() {
-                if denied.contains(&key.to_ascii_lowercase()) {
-                    *child = Value::String("[redacted]".to_string());
-                } else {
-                    redact_in_place(child, denied);
-                }
-            }
-        }
-        Value::Array(items) => {
-            for child in items.iter_mut() {
-                redact_in_place(child, denied);
-            }
-        }
-        _ => {}
-    }
-}
-
 // --- The logger itself ---
 
 struct Inner {
@@ -177,7 +143,6 @@ struct Inner {
 pub struct Logger {
     inner: Mutex<Inner>,
     debug_enabled: bool,
-    denied: HashSet<String>,
     session_id: String,
 }
 
@@ -191,7 +156,6 @@ pub fn init(file_path: &Path, debug_enabled: bool) {
     let logger = Logger {
         inner: Mutex::new(Inner { writer }),
         debug_enabled,
-        denied: default_denied(),
         session_id: crate::nanoid::generate().unwrap_or_else(|_| {
             format!("p{}-{}", std::process::id(), now_unix_millis())
         }),
@@ -242,17 +206,16 @@ pub fn session_id() -> Option<&'static str> {
 }
 
 impl Logger {
-    // Redacts, serializes, and writes one envelope as a single line. Both emit()
-    // and emit_forwarded() funnel through here, so every line in the file passes
-    // the identical redact + write contract.
+    // Serializes and writes one envelope as a single line. Both emit() and
+    // emit_forwarded() funnel through here, so every line in the file passes
+    // the identical write contract.
     fn write_envelope(&self, obj: Map<String, Value>) {
         let mut obj = obj;
         obj.insert(
             "sessionId".to_string(),
             Value::String(self.session_id.clone()),
         );
-        let mut value = Value::Object(obj);
-        redact_in_place(&mut value, &self.denied);
+        let value = Value::Object(obj);
         let mut line = match serde_json::to_string(&value) {
             Ok(line) => line,
             Err(e) => {
@@ -314,8 +277,8 @@ impl Logger {
     }
 
     // Writes an object the frontend already shaped (it stamped `time` at the
-    // event instant). We re-apply the debug gate and the redactor so every line
-    // in the file went through the same writer contract.
+    // event instant). We re-apply the debug gate so every line in the file
+    // went through the same writer contract.
     fn emit_forwarded(&self, value: Value) {
         let mut obj = match value {
             Value::Object(map) => map,

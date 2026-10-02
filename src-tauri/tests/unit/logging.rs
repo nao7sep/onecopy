@@ -62,45 +62,6 @@ fn session_filename_is_the_plain_utc_stamp_with_milliseconds() {
     assert_eq!(parts[2].len(), 3, "millisecond part must be zero-padded to 3 digits");
 }
 
-#[test]
-fn redact_matches_exact_key_case_insensitively() {
-    let denied = default_denied();
-    let mut value = json!({
-        "token": "abc",
-        "tokenCount": 5,
-        "broken": true,
-        "nested": { "PASSWORD": "x", "ok": 1 },
-        "list": [{ "secret": "y" }, { "fine": "z" }],
-    });
-    redact_in_place(&mut value, &denied);
-    assert_eq!(
-        value,
-        json!({
-            "token": "[redacted]",
-            "tokenCount": 5,
-            "broken": true,
-            "nested": { "PASSWORD": "[redacted]", "ok": 1 },
-            "list": [{ "secret": "[redacted]" }, { "fine": "z" }],
-        })
-    );
-}
-
-#[test]
-fn redact_replaces_whole_object_value() {
-    let denied = default_denied();
-    let mut value = json!({ "authorization": { "scheme": "Bearer", "creds": "xyz" } });
-    redact_in_place(&mut value, &denied);
-    assert_eq!(value, json!({ "authorization": "[redacted]" }));
-}
-
-#[test]
-fn redact_never_touches_message_prose() {
-    let denied = default_denied();
-    let mut value = json!({ "message": "token=abc password=def", "level": "info" });
-    redact_in_place(&mut value, &denied);
-    assert_eq!(value["message"], json!("token=abc password=def"));
-}
-
 // --- Writer behavior: unbuffered durability, gating, level normalization ---
 
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -119,7 +80,6 @@ fn temp_logger(debug_enabled: bool) -> (Logger, std::path::PathBuf) {
     let logger = Logger {
         inner: Mutex::new(Inner { writer }),
         debug_enabled,
-        denied: default_denied(),
         session_id: "test-session".to_string(),
     };
     (logger, path)
@@ -167,7 +127,7 @@ fn session_identity_is_owned_by_the_writer() {
 }
 
 #[test]
-fn redaction_applies_to_the_written_line() {
+fn every_field_is_written_as_given() {
     let (logger, path) = temp_logger(false);
     logger.emit(
         Level::Info,
@@ -175,7 +135,7 @@ fn redaction_applies_to_the_written_line() {
         json!({ "apiKey": "sk-secret", "count": 1 }),
     );
     let lines = read_lines(&path);
-    assert_eq!(lines[0]["apiKey"], json!("[redacted]"));
+    assert_eq!(lines[0]["apiKey"], json!("sk-secret"));
     assert_eq!(lines[0]["count"], json!(1));
 }
 
@@ -295,7 +255,6 @@ fn write_failure_permanently_falls_back_and_stops_touching_the_dead_handle() {
             writer: Some(readonly),
         }),
         debug_enabled: false,
-        denied: default_denied(),
         session_id: "test-session".to_string(),
     };
 

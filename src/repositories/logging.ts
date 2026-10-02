@@ -1,7 +1,7 @@
 // Frontend logging. The sandboxed webview never opens a log file itself; it
 // builds the JSON-Lines envelope and forwards each structured event to the Rust
 // core (the `log_event` command), which owns the per-session file and applies
-// redaction + the debug gate authoritatively (see src-tauri/src/logging.rs). If
+// the debug gate authoritatively (see src-tauri/src/logging.rs). If
 // forwarding fails, this degrades to the console and never throws — logging
 // must never break the app.
 //
@@ -38,55 +38,21 @@ export function isDebugLoggingEnabled(): boolean {
   return debugEnabled();
 }
 
-// Denied field names (exact, case-insensitive) — the non-destructive redaction
-// backstop, mirroring the Rust writer's set. It replaces only matched values
-// and never inspects or edits prose.
-const DENIED_KEYS = new Set([
-  "apikey",
-  "authorization",
-  "token",
-  "password",
-  "secret",
-]);
-
-// Recurse only into plain objects and arrays; pass every other object type
-// (Date, Map, Set, class instances) through unchanged. Recursing them via
-// Object.entries would silently flatten e.g. a Date to `{}`, so this guard keeps
-// the redactor type-preserving — it can replace a denied value but never lose one.
-function isPlainObject(value: object): boolean {
-  const proto = Object.getPrototypeOf(value);
-  return proto === Object.prototype || proto === null;
-}
-
-function redact(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(redact);
-  }
-  if (value !== null && typeof value === "object" && isPlainObject(value)) {
-    const out: Record<string, unknown> = {};
-    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
-      out[key] = DENIED_KEYS.has(key.toLowerCase()) ? "[redacted]" : redact(val);
-    }
-    return out;
-  }
-  return value;
-}
-
 function emit(level: Level, message: string, fields?: LogFields): void {
   if (level === "debug" && !debugEnabled()) return;
 
   // `time` is stamped at the event instant (UTC ISO 8601 ms + Z). Fields are
   // spread first and the envelope keys last, so a field that happens to be named
-  // `time` / `level` / `message` can never clobber the envelope, and redaction
-  // (which runs only on the fields) can never touch the message.
+  // `time` / `level` / `message` can never clobber the envelope. Nothing is
+  // redacted (logging conventions).
   const entry: Record<string, unknown> = {
-    ...(fields ? (redact(fields) as LogFields) : {}),
+    ...(fields ?? {}),
     time: new Date().toISOString(),
     level,
     message,
   };
 
-  // Forward to the core (the authoritative writer, which re-applies redaction).
+  // Forward to the core (the authoritative writer).
   // Fire-and-forget so logging never blocks the UI. On failure, degrade to the
   // console — never swallow, never throw. The invoke is deferred into a promise
   // chain so a synchronous throw (or a non-promise return) can never escape.
