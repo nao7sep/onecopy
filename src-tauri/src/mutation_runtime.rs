@@ -482,7 +482,7 @@ fn admit(
     // roots this batch's accepted files actually sit under, so a source that
     // failed verification never blocks a batch that never touches it.
     let data_root = crate::paths::data_root()?;
-    let source_dirs = crate::storage::load_config_source_dirs(&data_root)?;
+    let source_dirs = crate::storage::configured_source_dirs(&data_root)?;
     let touched_dirs = touched_source_dirs(&source_dirs, touches);
     crate::volume::enforce_no_substitution(&data_root, &touched_dirs)?;
     let cancelled = || mutation.cancelled();
@@ -759,8 +759,8 @@ pub(crate) fn move_items_out(
                 });
             };
             publisher.progress(&last_progress);
-            let config = crate::storage::read_config_for_setup(&data_root)?;
-            let rename_style = crate::file_names::RenameStyle::from_config(config.as_ref());
+            let config = crate::storage::config(&data_root)?;
+            let rename_style = crate::file_names::RenameStyle::from_config(Some(&config));
             // Destination admission belongs to the operation itself.
             let destination = std::path::Path::new(&dest_dir);
             let cache =
@@ -923,7 +923,7 @@ pub(crate) fn empty_trash(
             // a different source that failed verification never blocks
             // emptying deleted files under an unaffected root (R3-07, R1-14).
             crate::volume::enforce_no_substitution(&data_root, std::slice::from_ref(&root))?;
-            let roots = crate::storage::load_config_file_roots(&data_root)?;
+            let roots = crate::storage::configured_file_roots(&data_root)?;
             let known = crate::trash::overview(&roots);
             if !known.iter().any(|candidate| candidate.root == root) {
                 return Err("not a known trash root".to_string());
@@ -1152,7 +1152,7 @@ fn restore_claimed<H: RestoreHost>(
         json!({ "location": location, "entries": ids.len(), "operationId": operation_id }),
         || {
             let data_root = host.data_root()?;
-            let roots = crate::storage::load_config_file_roots(&data_root)?;
+            let roots = crate::storage::configured_file_roots(&data_root)?;
             let root = crate::trash::owning_root_of(&roots, std::path::Path::new(&location))?;
             if !crate::volume_io::is_dir(&root).unwrap_or(false) {
                 return Err(format!("{} is not available", root.display()));
@@ -1178,10 +1178,10 @@ fn restore_claimed<H: RestoreHost>(
                 });
             };
             host.progress(&last_progress);
-            let config = crate::storage::read_config_for_setup(&data_root)?;
-            let style = crate::file_names::RenameStyle::from_config(config.as_ref());
+            let config = crate::storage::config(&data_root)?;
+            let style = crate::file_names::RenameStyle::from_config(Some(&config));
             let settings = crate::scanner::settings_from_config(
-                config.as_ref(),
+                Some(&config),
                 &data_root,
                 chrono::Utc::now().timestamp_millis(),
             );

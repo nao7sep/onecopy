@@ -271,7 +271,7 @@ pub fn delete_item(
     item: ItemRef,
     mode: DeleteMode,
 ) -> Result<DeleteOutcome, String> {
-    let roots = crate::storage::load_config_file_roots(app_root)?;
+    let roots = crate::storage::configured_file_roots(app_root)?;
     let identity = match item {
         ItemRef::Hash(hash) => ItemIdentity {
             hash: Some(hash.to_string()),
@@ -543,7 +543,7 @@ pub fn delete_accepted_batch(
     cancelled: &dyn Fn() -> bool,
     mut on_progress: impl FnMut(DeleteBatchProgress),
 ) -> Result<DeleteBatchOutcome, String> {
-    let roots = crate::storage::load_config_file_roots(app_root)?;
+    let roots = crate::storage::configured_file_roots(app_root)?;
     let trash_context =
         trash::TrashContext::new(trash::TrashKind::Delete, &crate::nanoid::generate()?);
     let mut unique = HashSet::new();
@@ -995,7 +995,7 @@ pub fn move_batch_reviewed(
     cancelled: &dyn Fn() -> bool,
     mut on_progress: impl FnMut(MoveBatchProgress),
 ) -> Result<MoveBatchOutcome, String> {
-    let configured = crate::storage::load_configured_roots(app_root)?;
+    let configured = crate::storage::configured_roots(app_root)?;
     let destination_root = admit_destination(dest_dir, &configured)?;
     // Ordinary Copy/Move staging lands flat in `dest_dir` (every delivery
     // target is `dest_dir.join(name)`), a folder the source walk never visits
