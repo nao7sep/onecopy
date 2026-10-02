@@ -21,13 +21,6 @@ use rusqlite::{Connection, OptionalExtension};
 const SCHEMA_REVISION: i64 = 20;
 
 const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS volumes (
-  id               INTEGER PRIMARY KEY,
-  identity         TEXT NOT NULL UNIQUE,
-  label            TEXT,
-  last_seen_at_utc TEXT
-);
-
 CREATE TABLE IF NOT EXISTS contents (
   hash            TEXT PRIMARY KEY,
   byte_size       INTEGER NOT NULL,
@@ -51,7 +44,6 @@ CREATE TABLE IF NOT EXISTS contents (
 
 CREATE TABLE IF NOT EXISTS paths (
   id               INTEGER PRIMARY KEY,
-  volume_id        INTEGER REFERENCES volumes(id),
   abs_path         TEXT NOT NULL UNIQUE,
   dir_path         TEXT NOT NULL,
   file_name        TEXT NOT NULL,
@@ -443,7 +435,6 @@ END;
 CREATE TABLE IF NOT EXISTS scan_dirs (
   id                    INTEGER PRIMARY KEY,
   root                  TEXT NOT NULL UNIQUE,
-  volume_id             INTEGER REFERENCES volumes(id),
   last_completed_at_utc TEXT,
   dirty                 INTEGER NOT NULL DEFAULT 0,
   relationship_dirty    INTEGER NOT NULL DEFAULT 0,
@@ -779,7 +770,6 @@ pub fn clear_reconstructible(
              DELETE FROM similarity_state;
              DELETE FROM scan_dirs;
              DELETE FROM recent_notifications;
-             DELETE FROM volumes;
              DELETE FROM rebuild_keeps_results;",
             )
             .map_err(|error| error.to_string())

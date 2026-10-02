@@ -43,7 +43,6 @@ fn open_creates_schema_and_is_idempotent() {
         "transcripts",
         "visibility_directories",
         "visibility_ignored_names",
-        "volumes",
     ];
     expected.sort_unstable();
     let actual: Vec<&str> = tables
