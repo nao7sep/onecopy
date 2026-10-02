@@ -34,7 +34,6 @@ fn open_creates_schema_and_is_idempotent() {
         "logical_projection_batch",
         "paths",
         "rebuild_keeps_results",
-        "recent_notifications",
         "scan_dirs",
         "similar_group_members",
         "similar_groups",

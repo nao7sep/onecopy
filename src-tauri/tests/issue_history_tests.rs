@@ -62,13 +62,13 @@ fn dismiss_all_covers_the_full_live_inbox_and_preserves_other_history() {
         index_store::upsert_issue(&conn, Some(&format!("/{n}.jpg")), "read-error", "failed")
             .unwrap();
     }
-    conn.execute_batch("INSERT INTO recent_notifications(kind, level, presentation, message, first_seen_utc, last_seen_utc) VALUES ('notice', 'error', 'timed', 'retained', '2026-09-09T00:00:00.000Z', '2026-09-09T00:00:00.000Z');").unwrap();
+    conn.execute_batch("INSERT INTO records.notices(time_utc, kind, level, presentation, message) VALUES ('2026-09-09T00:00:00.000Z', 'notice', 'error', 'timed', 'retained');").unwrap();
     assert_eq!(queries::issues(&conn, 2, None).unwrap().1.len(), 2);
     index_store::dismiss_issues(&conn, None).unwrap();
     assert_eq!(queries::issues(&conn, 2, None).unwrap().0, 0);
     assert_eq!(events(&conn, "dismissed"), 520);
     assert_eq!(
-        conn.query_row("SELECT COUNT(*) FROM recent_notifications", [], |row| row
+        conn.query_row("SELECT COUNT(*) FROM records.notices", [], |row| row
             .get::<_, i64>(
             0
         ))

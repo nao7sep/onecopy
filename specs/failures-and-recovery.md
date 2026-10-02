@@ -18,7 +18,7 @@ Technical context belongs in the application log. User-facing records use plain 
 
 A failure requiring user attention becomes an Issue in the current app run, with a retained diagnostic record. If OneCopy cannot save the promised Issue, it stops the affected work and presents the recording failure directly instead of continuing without a durable explanation.
 
-Repeated occurrences of the same visible unresolved condition update one record with a count plus useful first and latest occurrence times rather than producing an unlimited stream of duplicates. A successful retry or recheck may resolve a recoverable condition. Dismissal and resolution remove a record from the live inbox, not from retained diagnostics: the record keeps its original context and the time and reason it left the inbox. Dismiss all applies to every live entry, including entries beyond the loaded page, without changing already archived records or notification history. A later genuinely failed attempt creates a new visible record rather than reviving or modifying the dismissed or resolved one. Reading or refreshing the inbox never constitutes a new attempt, and archived records do not participate in current recovery controls or work eligibility.
+Repeated occurrences of the same visible unresolved condition show as one entry with a count plus useful first and latest occurrence times rather than an unlimited stream of duplicates; each occurrence is kept as its own record. A successful retry or recheck may resolve a recoverable condition. Dismissal and resolution remove a record from the live inbox, not from retained diagnostics: the record keeps its original context and the time and reason it left the inbox. Dismiss all applies to every live entry, including entries beyond the loaded page, without changing already archived records or notification history. A later genuinely failed attempt creates a new visible record rather than reviving or modifying the dismissed or resolved one. Reading or refreshing the inbox never constitutes a new attempt, and archived records do not participate in current recovery controls or work eligibility.
 
 ## Notifications and modals
 
@@ -46,7 +46,7 @@ A drive that stops answering (`file-operations.md`, `Drives that stop answering`
 
 Issue file paths provide in-app Reveal through Main's diagnostic-navigation contract. A failed or unavailable Reveal stays visible in the usable Issues surface without dismissing the record.
 
-Issue records are kept: each occurrence and how its Issue closed is a record, and neither restart, rescan nor rebuild deletes one. Existing notification history is not deleted when the inbox is simplified or the app restarts and follows the explicit rebuild lifetime defined by `library-maintenance.md`.
+Issue records are kept: each occurrence and how its Issue closed is a record, and neither restart, rescan nor rebuild deletes one. Every notice is kept as a record in the same way; the on-screen notices still clear each run.
 
 ## Background-worker failure
 
@@ -66,4 +66,4 @@ Every retryable failure identifies a reachable recovery boundary at the survivin
 
 Restart begins a fresh Issues inbox; entries from earlier runs stay as records. Explicit section recheck similarly retires the section's failed preparation/information/enrichment entries as rechecked, not as successfully repaired, before admitting another attempt. A new failure creates a fresh visible entry; merely changing or reopening a section does neither. Attempt eligibility and the preservation of successful results are owned by `library-maintenance.md`.
 
-Restart and recheck never replay a failed or partial destructive operation. Notification history survives ordinary restart subject to its retention policy, and completed durable steps remain completed.
+Restart and recheck never replay a failed or partial destructive operation. Notice records survive restart, and completed durable steps remain completed.

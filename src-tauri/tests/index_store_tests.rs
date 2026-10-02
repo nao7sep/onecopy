@@ -31,10 +31,6 @@ fn rebuild_clears_reconstructible_library_facts_and_closes_issues() {
          INSERT INTO paths
            (abs_path, dir_path, file_name, kind, content_hash, missing)
          VALUES ('/photos/a.jpg', '/photos', 'a.jpg', 'image', 'hash', 0);
-         INSERT INTO recent_notifications
-           (kind, path, level, presentation, message, first_seen_utc, last_seen_utc)
-         VALUES ('read-error', '/photos/a.jpg', 'error', 'persistent', 'failed',
-                 '2026-08-31T00:00:00.000Z', '2026-08-31T00:00:00.000Z');
          INSERT INTO scan_dirs (root, last_completed_at_utc)
          VALUES ('/photos', 'now');
          INSERT INTO transcripts (content_hash, model, model_version, text, segments, created_at_utc)
@@ -76,7 +72,6 @@ fn rebuild_clears_reconstructible_library_facts_and_closes_issues() {
         "similar_group_members",
         "similarity_dirty_buckets",
         "similarity_state",
-        "recent_notifications",
         "scan_dirs",
     ] {
         let count: i64 = conn

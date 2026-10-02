@@ -215,6 +215,20 @@ const SCHEMA: &str = "
         message_values TEXT
     );
     CREATE INDEX IF NOT EXISTS issue_events_identity ON issue_events(session_id, kind, path, id);
+    -- Every notice OneCopy published or recorded, in the transaction of the
+    -- Issue it raises.
+    CREATE TABLE IF NOT EXISTS notices (
+        id INTEGER PRIMARY KEY,
+        session_id TEXT,
+        time_utc TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        path TEXT,
+        level TEXT NOT NULL,
+        presentation TEXT NOT NULL,
+        message TEXT NOT NULL,
+        message_key TEXT,
+        message_values TEXT
+    );
     PRAGMA user_version = 1;";
 
 /// Attaches the records beside an index database to its connection as

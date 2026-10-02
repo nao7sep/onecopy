@@ -348,26 +348,6 @@ CREATE TABLE IF NOT EXISTS similar_group_members (
 CREATE INDEX IF NOT EXISTS idx_similar_members_content
   ON similar_group_members (content_hash);
 
--- Recent is restart-persistent notification history, not an operation plan
--- or permanent ledger. Equal notices coalesce and the owning publisher prunes
--- the table to the approved age/count window after each write.
-CREATE TABLE IF NOT EXISTS recent_notifications (
-  id               INTEGER PRIMARY KEY,
-  kind             TEXT NOT NULL,
-  path             TEXT NOT NULL DEFAULT '',
-  level            TEXT NOT NULL CHECK (level IN ('info', 'warning', 'error')),
-  presentation     TEXT NOT NULL CHECK (presentation IN ('timed', 'persistent')),
-  message          TEXT NOT NULL,
-  message_key      TEXT,
-  message_values   TEXT,
-  first_seen_utc   TEXT NOT NULL,
-  last_seen_utc    TEXT NOT NULL,
-  occurrence_count INTEGER NOT NULL DEFAULT 1,
-  UNIQUE (kind, path, level, presentation, message)
-);
-CREATE INDEX IF NOT EXISTS idx_recent_notifications_latest
-  ON recent_notifications (last_seen_utc DESC, id DESC);
-
 -- Expensive results are kept by content hash with no reference to `contents`:
 -- a rebuild clears `contents` and keeps them (`clear_reconstructible`), and
 -- they go with their content only when it leaves the library.
@@ -769,7 +749,6 @@ pub fn clear_reconstructible(
              DELETE FROM similarity_dirty_buckets;
              DELETE FROM similarity_state;
              DELETE FROM scan_dirs;
-             DELETE FROM recent_notifications;
              DELETE FROM rebuild_keeps_results;",
             )
             .map_err(|error| error.to_string())
