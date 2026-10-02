@@ -62,7 +62,8 @@ impl CachePaths {
 
     /// Full-resolution conversion of a format the webview cannot paint
     /// (HEIC/AVIF), decoded on demand for the 100% view. PNG: lossless, so
-    /// pixel-peeping stays honest; reconstructible like every other entry.
+    /// pixel-peeping stays honest. It lives for the session
+    /// ([`clear_session_renders`]).
     pub fn fullres(&self, hash: &str) -> PathBuf {
         self.root
             .join("fullres")
@@ -446,6 +447,19 @@ pub fn ensure_fullres(
         crate::fs_recovery::remove_file(&tmp, "full-resolution staging cleanup");
     }
     converted
+}
+
+/// Deletes every full-resolution render: at clean exit, and at launch for
+/// whatever an earlier session left.
+pub fn clear_session_renders(cache: &CachePaths) {
+    match std::fs::remove_dir_all(cache.root.join("fullres")) { // data root
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => logging::warn(
+            "full-resolution renders could not be cleared",
+            serde_json::json!({ "path": cache.root.join("fullres"), "error": { "message": error.to_string() } }),
+        ),
+    }
 }
 
 /// Writes `src`'s first frame at full resolution as a PNG at `output`, in a
@@ -1101,7 +1115,7 @@ pub fn startup_sweep(
         .prepare("SELECT 1 FROM contents WHERE hash = ?1")
         .map_err(|e| e.to_string())?;
 
-    for sub in ["thumbs", "previews", "fullres", "strips"] {
+    for sub in ["thumbs", "previews", "strips"] {
         if cancel_when() {
             return Ok(removed);
         }
@@ -1307,8 +1321,16 @@ pub fn write_webp(img: &DynamicImage, target: &Path, quality: f32) -> Result<(),
         .map_err(|e| crate::resource_limits::cache_write_error("WebP cache directory", e))?;
 
     let rgba = img.to_rgba8();
-    let encoded =
-        webp::Encoder::from_rgba(rgba.as_raw(), rgba.width(), rgba.height()).encode(quality);
+    // libwebp's fastest method: a little larger, much quicker; RGBA input
+    // keeps transparency.
+    let mut config = webp::WebPConfig::new()
+        .map_err(|()| "the WebP encoder could not be configured".to_string())?;
+    config.quality = quality;
+    config.alpha_compression = 1;
+    config.method = 0;
+    let encoded = webp::Encoder::from_rgba(rgba.as_raw(), rgba.width(), rgba.height())
+        .encode_advanced(&config)
+        .map_err(|error| format!("WebP encoding failed: {error:?}"))?;
 
     let stem = target
         .file_stem()

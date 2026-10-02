@@ -131,6 +131,9 @@ fn prepare_data(data_root: &Path) -> Result<PreparedData, String> {
 
     // Download staging is crash debris by definition: wipe at launch.
     crate::binaries_manager::reset_temp_dir(data_root);
+    crate::preview::clear_session_renders(&crate::preview::CachePaths::new(
+        data_root.join(crate::storage::CACHE_DIR_NAME),
+    ));
 
     Ok(PreparedData {
         cache_root: data_root.join(crate::storage::CACHE_DIR_NAME),

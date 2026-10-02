@@ -775,6 +775,40 @@ fn ensure_fullres_short_circuits_and_reports_missing_ffmpeg_honestly() {
     assert!(err.contains("Managed tools"), "{err}");
 }
 
+#[test]
+fn full_resolution_renders_last_one_session_and_previews_stay() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-session-renders-")
+        .tempdir()
+        .unwrap();
+    let cache = CachePaths::new(dir.path().join("cache"));
+    for path in [cache.fullres("abc123"), cache.preview("abc123")] {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"bytes").unwrap();
+    }
+    clear_session_renders(&cache);
+    assert!(!dir.path().join("cache").join("fullres").exists());
+    assert!(cache.preview("abc123").exists());
+    // Nothing left over is not an error.
+    clear_session_renders(&cache);
+}
+
+#[test]
+fn webp_entries_keep_transparency() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-webp-alpha-")
+        .tempdir()
+        .unwrap();
+    let target = dir.path().join("cache").join("alpha.webp");
+    let img = DynamicImage::ImageRgba8(image::RgbaImage::from_fn(8, 8, |x, _| {
+        image::Rgba([200, 40, 40, if x < 4 { 0 } else { 255 }])
+    }));
+    write_webp(&img, &target, 80.0).unwrap();
+    let decoded = image::open(&target).unwrap().to_rgba8();
+    assert_eq!(decoded.get_pixel(0, 0)[3], 0);
+    assert_eq!(decoded.get_pixel(7, 0)[3], 255);
+}
+
 // Unix-only, gated at the ITEM so Windows is honestly MISSING this coverage
 // rather than running it vacuously green: the failure is staged with a chmod
 // 0o000 that Windows has no equivalent for.
