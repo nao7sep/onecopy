@@ -109,6 +109,7 @@ pub(crate) fn rebuild_index(
     app: &AppHandle,
     discard_previews: bool,
     discard_transcripts: bool,
+    discard_faces: bool,
 ) -> Result<(), String> {
     let _rebuild = begin_reported(app)?;
     crate::scan_runtime::run_foreground(app, || {
@@ -129,7 +130,7 @@ pub(crate) fn rebuild_index(
             discard_previews,
         )?;
         let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
-        crate::index_store::clear_reconstructible(&conn, discard_transcripts)?;
+        crate::index_store::clear_reconstructible(&conn, discard_transcripts, discard_faces)?;
         crate::notifications::clear_active(app)
     })?;
     let _ = crate::source_check_runtime::start(app.clone())?;

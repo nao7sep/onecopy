@@ -316,14 +316,17 @@ fn transcription_attempt_publishes_digital_silence_without_loading_the_model() {
     let persisted = derived_state::transcript_result(&conn, "silence").unwrap();
     assert_eq!(persisted.status, derived_state::READY);
     assert_eq!(persisted.text.as_deref(), Some(""));
-    let receipt: String = conn
+    let state: String = conn
         .query_row(
-            "SELECT transcript_state FROM analysis_receipts WHERE content_hash = 'silence'",
+            &format!(
+                "SELECT {} FROM contents c WHERE c.hash = 'silence'",
+                derived_state::transcript_state_sql("c")
+            ),
             [],
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(receipt, derived_state::READY_EMPTY);
+    assert_eq!(state, derived_state::READY_EMPTY);
 }
 
 #[test]
@@ -599,15 +602,13 @@ fn one_snapshot_preserves_every_fixed_class_debt_semantic() {
            (abs_path, dir_path, file_name, kind, content_hash,
             resolved_utc_ms, resolved_source)
          SELECT '/' || hash, '/', hash, kind, hash, 120, 'metadata'
-         FROM contents;
-         INSERT INTO analysis_receipts (content_hash, face_state)
-           VALUES ('image-face-failed', 'failed');
-         INSERT INTO analysis_receipts (content_hash, transcript_state)
-           VALUES ('video-transcript-failed', 'failed');
-         INSERT INTO analysis_receipts (content_hash, transcript_state)
-           VALUES ('audio-transcript-failed', 'failed');",
+         FROM contents;",
     )
     .unwrap();
+    derived_state::record_face_failure(&conn, "image-face-failed", "/image-face-failed", "failed").unwrap();
+    for hash in ["video-transcript-failed", "audio-transcript-failed"] {
+        derived_state::record_transcript_failure(&conn, hash, &format!("/{hash}"), "failed").unwrap();
+    }
 
     let value = serde_json::to_value(
         snapshot(

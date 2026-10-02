@@ -1,7 +1,7 @@
-//! Durable result receipts for optional media analysis, plus the narrow
-//! recovery policy that may reset those reconstructible results. This is not
-//! a job queue: absence means pending, the coordinator remains the only
-//! dispatcher, and only fixed, safe classes can be retried from Issues.
+//! Durable results of optional media analysis, plus the narrow recovery
+//! policy that reopens failed ones. This is not a job queue: absence means
+//! pending, the coordinator remains the only dispatcher, and only fixed, safe
+//! classes can be retried from Issues.
 
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::Serialize;
@@ -183,21 +183,22 @@ impl WorkClass {
         }
     }
 
-    /// SQL (aliases `l` review_contents, `c` contents, `r` analysis_receipts)
-    /// selecting items whose output this class still owes and whose
-    /// prerequisite holds, whatever the gate says. Previews and similarity
-    /// have their own debt units (`preview_pending_predicates`, dirty
-    /// buckets) and are not listed here.
+    /// SQL (aliases `l` review_contents, `c` contents) selecting items whose
+    /// output this class still owes and whose prerequisite holds, whatever
+    /// the gate says. Previews and similarity have their own debt units
+    /// (`preview_pending_predicates`, dirty buckets) and are not listed here.
     pub(crate) fn owed_sql(self) -> Option<String> {
         let ready = self.prerequisite().sql();
+        let faces = face_state_sql("c");
+        let transcript = transcript_state_sql("c");
         match self {
             Self::Snapshots => Some(format!("(l.kind = 'video' AND c.strip_frames IS NULL AND {ready})")),
-            Self::Faces => Some(format!("(l.kind = 'image' AND r.face_state IS NULL AND {ready})")),
+            Self::Faces => Some(format!("(l.kind = 'image' AND {faces} IS NULL AND {ready})")),
             Self::VideoTranscripts => Some(format!(
-                "(c.kind = 'video' AND {ready} AND r.transcript_state IS NULL)"
+                "(c.kind = 'video' AND {ready} AND {transcript} IS NULL)"
             )),
             Self::AudioTranscripts => Some(format!(
-                "(c.kind = 'audio' AND {ready} AND r.transcript_state IS NULL)"
+                "(c.kind = 'audio' AND {ready} AND {transcript} IS NULL)"
             )),
             Self::Previews | Self::Similarity => None,
         }
@@ -205,15 +206,62 @@ impl WorkClass {
 
     /// SQL (same aliases) selecting items whose output for this class failed.
     fn failed_sql(self) -> Option<String> {
+        let faces = face_state_sql("c");
+        let transcript = transcript_state_sql("c");
         match self {
             Self::Previews => Some(format!("(l.kind IN ('image', 'video') AND c.derived_at_utc = '{FAILED}')")),
             Self::Snapshots => Some("(l.kind = 'video' AND c.strip_frames < 0)".to_string()),
-            Self::Faces => Some(format!("(r.face_state = '{FAILED}')")),
-            Self::VideoTranscripts => Some(format!("(c.kind = 'video' AND r.transcript_state = '{FAILED}')")),
-            Self::AudioTranscripts => Some(format!("(c.kind = 'audio' AND r.transcript_state = '{FAILED}')")),
+            Self::Faces => Some(format!("(l.kind = 'image' AND {faces} = '{FAILED}')")),
+            Self::VideoTranscripts => Some(format!("(c.kind = 'video' AND {transcript} = '{FAILED}')")),
+            Self::AudioTranscripts => Some(format!("(c.kind = 'audio' AND {transcript} = '{FAILED}')")),
             Self::Similarity => None,
         }
     }
+}
+
+/// The analysis classes whose failures are records (`records::analysis_events`).
+const FACES_CLASS: &str = "faces";
+const TRANSCRIPTS_CLASS: &str = "transcripts";
+
+/// SQL over a contents alias: whether this launch's latest analysis event
+/// for the content and class is a failure by the current model. A failure is
+/// not retried in the launch that recorded it until a recheck reopens it.
+fn failed_now_sql(alias: &str, class: &str, model: &crate::ai_dependencies::ModelIdentity) -> String {
+    let session = crate::records::session_sql();
+    format!(
+        "EXISTS (SELECT 1 FROM records.analysis_events e \
+         WHERE e.id = (SELECT MAX(x.id) FROM records.analysis_events x \
+           WHERE x.content_hash = {alias}.hash AND x.class = '{class}' AND x.session_id IS {session}) \
+         AND e.event = '{FAILED}' AND e.model = {} AND e.model_version = {})",
+        crate::records::sql_text(Some(&model.model)),
+        crate::records::sql_text(Some(&model.version)),
+    )
+}
+
+/// SQL over a contents alias: `ready` once a face check exists, `failed` per
+/// [`failed_now_sql`], else NULL (pending).
+pub fn face_state_sql(alias: &str) -> String {
+    format!(
+        "(CASE WHEN EXISTS (SELECT 1 FROM face_checks k WHERE k.content_hash = {alias}.hash) THEN '{READY}' \
+         WHEN {} THEN '{FAILED}' END)",
+        failed_now_sql(alias, FACES_CLASS, &crate::ai_dependencies::face_model())
+    )
+}
+
+/// SQL over a contents alias: the content's face score, NULL when unchecked.
+pub fn face_score_sql(alias: &str) -> String {
+    format!("(SELECT fs.score FROM face_scores fs WHERE fs.content_hash = {alias}.hash)")
+}
+
+/// SQL over a contents alias: `ready-text` or `ready-empty` once a transcript
+/// exists, `failed` per [`failed_now_sql`], else NULL (pending).
+pub fn transcript_state_sql(alias: &str) -> String {
+    format!(
+        "(CASE (SELECT TRIM(t.text) <> '' FROM transcripts t WHERE t.content_hash = {alias}.hash) \
+         WHEN 1 THEN '{READY_TEXT}' WHEN 0 THEN '{READY_EMPTY}' \
+         ELSE CASE WHEN {} THEN '{FAILED}' END END)",
+        failed_now_sql(alias, TRANSCRIPTS_CLASS, &crate::ai_dependencies::transcription_model())
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -305,8 +353,7 @@ fn work_debt_sql(ffmpeg: bool) -> String {
     format!(
         "SELECT {}
          FROM review_contents l
-         JOIN contents c ON c.hash = l.content_hash
-         LEFT JOIN analysis_receipts r ON r.content_hash = l.content_hash",
+         JOIN contents c ON c.hash = l.content_hash",
         columns.join(",\n           ")
     )
 }
@@ -478,7 +525,7 @@ fn item_state(state: &'static str, has_value: bool, reason: Option<&'static str>
     }
 }
 
-/// One backend-authored per-item projection over existing receipts and
+/// One backend-authored per-item projection over existing results and
 /// capabilities. It creates no state: runtime overlays the active item later.
 pub(crate) fn item_work_states(
     facts: ItemWorkFacts<'_>,
@@ -625,7 +672,6 @@ pub(crate) fn priority_candidates(
              SELECT h.hash FROM hinted h \
              JOIN review_contents l ON l.content_hash = h.hash \
              JOIN contents c ON c.hash = l.content_hash \
-             LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
              WHERE {predicate} ORDER BY h.priority LIMIT {limit}"
         );
         let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
@@ -650,7 +696,6 @@ pub(crate) fn priority_candidates(
     let sql = format!(
         "SELECT l.content_hash FROM review_contents l \
          JOIN contents c ON c.hash = l.content_hash \
-         LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
          WHERE l.kind = ?1 {time_clause} AND {predicate} \
          ORDER BY l.resolved_utc_ms, l.representative_path_id LIMIT {limit}"
     );
@@ -845,7 +890,6 @@ pub fn face_candidates(
              FROM review_contents l \
              JOIN contents c ON c.hash = l.content_hash \
              JOIN paths p ON p.id = l.representative_path_id \
-             LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
              WHERE {owed} \
                AND l.content_hash > ?1 AND p.missing = 0 \
              ORDER BY l.content_hash LIMIT ?2"
@@ -880,7 +924,6 @@ pub fn prioritized_face_candidates(
          JOIN review_contents l ON l.content_hash = h.hash \
          JOIN contents c ON c.hash = l.content_hash \
          JOIN paths p ON p.id = l.representative_path_id \
-         LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
          WHERE {owed} AND p.missing = 0 \
          ORDER BY h.priority LIMIT {limit}"
     );
@@ -914,7 +957,6 @@ pub fn transcript_candidates(
              FROM review_contents l \
              JOIN contents c ON c.hash = l.content_hash \
              JOIN paths p ON p.id = l.representative_path_id \
-             LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
              WHERE {owed} AND p.missing = 0 \
                AND l.content_hash > ?1 \
              ORDER BY l.content_hash LIMIT ?2"
@@ -951,7 +993,6 @@ pub fn prioritized_transcript_candidates(
          JOIN review_contents l ON l.content_hash = h.hash \
          JOIN contents c ON c.hash = l.content_hash \
          JOIN paths p ON p.id = l.representative_path_id \
-         LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
          WHERE {owed} AND p.missing = 0 \
          ORDER BY h.priority LIMIT {limit}"
     );
@@ -975,76 +1016,47 @@ pub struct TranscriptResult {
 }
 
 pub fn transcript_result(conn: &Connection, hash: &str) -> Result<TranscriptResult, String> {
-    let state: Option<String> = conn
+    if let Some(transcript) = stored_transcript(conn, hash)? {
+        return Ok(TranscriptResult {
+            status: READY,
+            text: Some(crate::transcription::render(&transcript.segments)),
+            message: None,
+        });
+    }
+    let failed: bool = conn
         .query_row(
-            "SELECT transcript_state FROM analysis_receipts WHERE content_hash = ?1",
+            &format!(
+                "SELECT {} FROM contents c WHERE c.hash = ?1",
+                failed_now_sql("c", TRANSCRIPTS_CLASS, &crate::ai_dependencies::transcription_model())
+            ),
             [hash],
             |row| row.get(0),
         )
         .optional()
         .map_err(|error| error.to_string())?
-        .flatten();
-    let ready = |transcript: Transcript| TranscriptResult {
-        status: READY,
-        text: Some(crate::transcription::render(&transcript.segments)),
-        message: None,
-    };
-    let pending = TranscriptResult {
-        status: "pending",
-        text: None,
-        message: None,
-    };
-    match state.as_deref() {
-        Some(READY_TEXT | READY_EMPTY) => match stored_transcript(conn, hash)? {
-            Some(transcript) => Ok(ready(transcript)),
-            None => {
-                conn.execute(
-                    "UPDATE analysis_receipts SET transcript_state = NULL,
-                         transcript_updated_at_utc = NULL WHERE content_hash = ?1",
-                    [hash],
-                )
-                .map_err(|error| error.to_string())?;
-                Ok(pending)
-            }
-        },
-        Some(FAILED) => {
-            let message = conn
-                .query_row(
-                    "SELECT i.message FROM active_issues i JOIN paths p ON p.abs_path = i.path
-                     WHERE i.kind = ?1 AND p.content_hash = ?2 LIMIT 1",
-                    params![TRANSCRIPT_ERROR, hash],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(|error| error.to_string())?
-                .flatten();
-            Ok(TranscriptResult {
-                status: FAILED,
-                text: None,
-                message,
-            })
-        }
-        // A transcript kept through a rebuild meets its content again.
-        _ => match stored_transcript(conn, hash)? {
-            Some(transcript) => {
-                let path: String = conn
-                    .query_row(
-                        "SELECT abs_path FROM paths
-                         WHERE content_hash = ?1 AND missing = 0 LIMIT 1",
-                        [hash],
-                        |row| row.get(0),
-                    )
-                    .map_err(|error| error.to_string())?;
-                let transaction = conn
-                    .unchecked_transaction()
-                    .map_err(|error| error.to_string())?;
-                record_transcript_receipt(&transaction, hash, &path, !transcript.text().trim().is_empty())?;
-                transaction.commit().map_err(|error| error.to_string())?;
-                Ok(ready(transcript))
-            }
-            None => Ok(pending),
-        },
+        .unwrap_or(false);
+    if !failed {
+        return Ok(TranscriptResult {
+            status: "pending",
+            text: None,
+            message: None,
+        });
     }
+    let message = conn
+        .query_row(
+            "SELECT i.message FROM active_issues i JOIN paths p ON p.abs_path = i.path
+             WHERE i.kind = ?1 AND p.content_hash = ?2 LIMIT 1",
+            params![TRANSCRIPT_ERROR, hash],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .flatten();
+    Ok(TranscriptResult {
+        status: FAILED,
+        text: None,
+        message,
+    })
 }
 
 fn stored_transcript(conn: &Connection, hash: &str) -> Result<Option<Transcript>, String> {
@@ -1270,31 +1282,95 @@ pub fn record_face_success(
     conn: &Connection,
     hash: &str,
     path: &str,
-    score: f64,
+    found: &[crate::face::FoundFace],
+    model: &crate::ai_dependencies::ModelIdentity,
 ) -> Result<bool, String> {
     let transaction = conn
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
     transaction
-        .execute(
-            "UPDATE contents SET face_score = ?2 WHERE hash = ?1",
-            params![hash, score],
-        )
+        .execute("DELETE FROM faces WHERE content_hash = ?1", [hash])
         .map_err(|error| error.to_string())?;
+    for found in found {
+        let expression = found.expression.map(|probabilities| probabilities.map(f64::from));
+        let probability = |index: usize| expression.map(|probabilities| probabilities[index]);
+        transaction
+            .execute(
+                "INSERT INTO faces
+                   (content_hash, x1, y1, x2, y2, confidence, anger, contempt, disgust, fear,
+                    happiness, neutral, sadness, surprise, model, model_version)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                params![
+                    hash,
+                    found.face.x1,
+                    found.face.y1,
+                    found.face.x2,
+                    found.face.y2,
+                    found.face.confidence,
+                    probability(0),
+                    probability(1),
+                    probability(2),
+                    probability(3),
+                    probability(4),
+                    probability(5),
+                    probability(6),
+                    probability(7),
+                    model.model,
+                    model.version,
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+    }
     transaction
         .execute(
-            "INSERT INTO analysis_receipts
-               (content_hash, face_state, face_updated_at_utc)
-             VALUES (?1, ?2, ?3)
+            "INSERT INTO face_checks (content_hash, model, model_version, face_count, checked_at_utc)
+             VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT (content_hash) DO UPDATE SET
-               face_state = excluded.face_state,
-               face_updated_at_utc = excluded.face_updated_at_utc",
-            params![hash, READY, crate::logging::now_iso_millis()],
+               model = excluded.model, model_version = excluded.model_version,
+               face_count = excluded.face_count, checked_at_utc = excluded.checked_at_utc",
+            params![
+                hash,
+                model.model,
+                model.version,
+                found.len() as i64,
+                crate::logging::now_iso_millis()
+            ],
         )
         .map_err(|error| error.to_string())?;
     let issues_changed = crate::index_store::clear_issues(&transaction, path, &[FACE_ERROR])?;
     transaction.commit().map_err(|error| error.to_string())?;
     Ok(issues_changed)
+}
+
+/// Records a failed analysis as a record beside the Issue it raises.
+fn record_analysis_failure(
+    transaction: &Connection,
+    hash: &str,
+    class: &str,
+    model: &crate::ai_dependencies::ModelIdentity,
+    path: &str,
+    message: &str,
+) -> Result<(), String> {
+    transaction
+        .execute(
+            &format!(
+                "INSERT INTO records.analysis_events
+                   (session_id, time_utc, content_hash, class, event, model, model_version, path, message)
+                 VALUES ({}, ?1, ?2, ?3, '{FAILED}', ?4, ?5, ?6, ?7)",
+                crate::records::session_sql()
+            ),
+            params![
+                crate::logging::now_iso_millis(),
+                hash,
+                class,
+                model.model,
+                model.version,
+                path,
+                message
+            ],
+        )
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 pub fn record_face_failure(
@@ -1306,23 +1382,14 @@ pub fn record_face_failure(
     let transaction = conn
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
-    transaction
-        .execute(
-            "UPDATE contents SET face_score = NULL WHERE hash = ?1",
-            [hash],
-        )
-        .map_err(|error| error.to_string())?;
-    transaction
-        .execute(
-            "INSERT INTO analysis_receipts
-               (content_hash, face_state, face_updated_at_utc)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT (content_hash) DO UPDATE SET
-               face_state = excluded.face_state,
-               face_updated_at_utc = excluded.face_updated_at_utc",
-            params![hash, FAILED, crate::logging::now_iso_millis()],
-        )
-        .map_err(|error| error.to_string())?;
+    record_analysis_failure(
+        &transaction,
+        hash,
+        FACES_CLASS,
+        &crate::ai_dependencies::face_model(),
+        path,
+        message,
+    )?;
     let issues_changed = record_derived_issue(&transaction, path, FACE_ERROR, message)?;
     transaction.commit().map_err(|error| error.to_string())?;
     Ok(issues_changed)
@@ -1338,7 +1405,6 @@ pub fn record_transcript_success(
     let transaction = conn
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
-    let text = transcript.text();
     transaction
         .execute(
             "INSERT INTO transcripts
@@ -1353,36 +1419,15 @@ pub fn record_transcript_success(
                 model.model,
                 model.version,
                 transcript.language,
-                text,
+                transcript.text(),
                 serde_json::to_string(&transcript.segments).map_err(|error| error.to_string())?,
                 crate::logging::now_iso_millis(),
             ],
         )
         .map_err(|error| error.to_string())?;
-    let issues_changed = record_transcript_receipt(&transaction, hash, path, !text.trim().is_empty())?;
+    let issues_changed = crate::index_store::clear_issues(&transaction, path, &[TRANSCRIPT_ERROR])?;
     transaction.commit().map_err(|error| error.to_string())?;
     Ok(issues_changed)
-}
-
-fn record_transcript_receipt(
-    transaction: &Connection,
-    hash: &str,
-    path: &str,
-    has_text: bool,
-) -> Result<bool, String> {
-    let state = if has_text { READY_TEXT } else { READY_EMPTY };
-    transaction
-        .execute(
-            "INSERT INTO analysis_receipts
-               (content_hash, transcript_state, transcript_updated_at_utc)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT (content_hash) DO UPDATE SET
-               transcript_state = excluded.transcript_state,
-               transcript_updated_at_utc = excluded.transcript_updated_at_utc",
-            params![hash, state, crate::logging::now_iso_millis()],
-        )
-        .map_err(|error| error.to_string())?;
-    crate::index_store::clear_issues(transaction, path, &[TRANSCRIPT_ERROR])
 }
 
 pub fn record_transcript_failure(
@@ -1394,25 +1439,22 @@ pub fn record_transcript_failure(
     let transaction = conn
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
-    transaction
-        .execute(
-            "INSERT INTO analysis_receipts
-               (content_hash, transcript_state, transcript_updated_at_utc)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT (content_hash) DO UPDATE SET
-               transcript_state = excluded.transcript_state,
-               transcript_updated_at_utc = excluded.transcript_updated_at_utc",
-            params![hash, FAILED, crate::logging::now_iso_millis()],
-        )
-        .map_err(|error| error.to_string())?;
+    record_analysis_failure(
+        &transaction,
+        hash,
+        TRANSCRIPTS_CLASS,
+        &crate::ai_dependencies::transcription_model(),
+        path,
+        message,
+    )?;
     let issues_changed = record_derived_issue(&transaction, path, TRANSCRIPT_ERROR, message)?;
     transaction.commit().map_err(|error| error.to_string())?;
     Ok(issues_changed)
 }
 
 /// A replacement attempt never invalidates the completed transcript it was
-/// meant to supersede. Only the new failure is recorded; the ready receipt and
-/// old transcript remain current until a later replacement succeeds.
+/// meant to supersede. Only the new Issue is raised; the old transcript
+/// remains current until a later replacement succeeds.
 pub fn record_transcript_replacement_failure(
     conn: &Connection,
     path: &str,
@@ -1487,18 +1529,6 @@ pub(crate) fn reset_failed_outputs_in_transaction(
             "strip_frames = NULL",
             "strip_frames = -1",
         ),
-        (
-            "analysis_receipts",
-            "content_hash",
-            "face_state = NULL, face_updated_at_utc = NULL",
-            "face_state = 'failed'",
-        ),
-        (
-            "analysis_receipts",
-            "content_hash",
-            "transcript_state = NULL, transcript_updated_at_utc = NULL",
-            "transcript_state = 'failed'",
-        ),
     ] {
         let filter = if membership.is_empty() {
             String::new()
@@ -1512,7 +1542,48 @@ pub(crate) fn reset_failed_outputs_in_transaction(
             )
             .map_err(|error| error.to_string())? as u64;
     }
+    // A failure stays a record; the user's new attempt is recorded after it.
+    for (class, state) in [
+        (FACES_CLASS, face_state_sql("c")),
+        (TRANSCRIPTS_CLASS, transcript_state_sql("c")),
+    ] {
+        let filter = if membership.is_empty() {
+            String::new()
+        } else {
+            format!(" AND c.hash{membership}")
+        };
+        count += conn
+            .execute(
+                &format!(
+                    "INSERT INTO records.analysis_events (session_id, time_utc, content_hash, class, event)
+                     SELECT {}, {}, c.hash, '{class}', 'reopened' FROM contents c
+                     WHERE {state} = '{FAILED}'{filter}",
+                    crate::records::session_sql(),
+                    crate::records::sql_text(Some(&crate::logging::now_iso_millis())),
+                ),
+                params_from_iter(values.iter()),
+            )
+            .map_err(|error| error.to_string())? as u64;
+    }
     Ok(count)
+}
+
+/// Reopens every analysis that failed in this launch. A rebuild is such a
+/// boundary: the contents it clears come back to be attempted again.
+pub(crate) fn reopen_session_analysis_failures(conn: &Connection) -> Result<(), String> {
+    let session = crate::records::session_sql();
+    conn.execute(
+        &format!(
+            "INSERT INTO records.analysis_events (session_id, time_utc, content_hash, class, event)
+             SELECT {session}, ?1, e.content_hash, e.class, 'reopened' FROM records.analysis_events e
+             WHERE e.event = '{FAILED}' AND e.id IN (
+               SELECT MAX(x.id) FROM records.analysis_events x
+               WHERE x.session_id IS {session} GROUP BY x.content_hash, x.class)"
+        ),
+        [crate::logging::now_iso_millis()],
+    )
+    .map(|_| ())
+    .map_err(|error| error.to_string())
 }
 
 pub(crate) fn preview_failed(conn: &Connection, hash: &str) -> Result<bool, String> {

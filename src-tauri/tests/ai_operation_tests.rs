@@ -9,7 +9,7 @@ use onecopy_lib::derived_work::{
     complete_transcription_attempt_with_inference, TranscriptionAttempt,
     TranscriptionAttemptOutcome,
 };
-use onecopy_lib::face::{complete_face_scoring_attempt, FaceScoringAttemptOutcome};
+use onecopy_lib::face::{complete_face_scoring_attempt, Face, FaceScoringAttemptOutcome, FoundFace};
 use onecopy_lib::transcription::{Segment, Transcript};
 use onecopy_lib::{index_store, preview};
 use rusqlite::{params, OptionalExtension};
@@ -338,13 +338,21 @@ fn face_success_empty_failure_and_cancellation_use_the_production_operation() {
         "smile.jpg",
         &|| false,
         |hash| changed.borrow_mut().push(hash.to_string()),
-        |_| Ok(0.75),
+        |_| {
+            let face = Face { confidence: 0.75, x1: 0.1, y1: 0.1, x2: 0.4, y2: 0.5 };
+            let mut expression = [0.0; 8];
+            expression[4] = 1.0;
+            Ok(vec![
+                FoundFace { face, expression: Some(expression) },
+                FoundFace { face: Face { confidence: 0.8, ..face }, expression: None },
+            ])
+        },
     )
     .unwrap();
     assert_eq!(
         smile,
         FaceScoringAttemptOutcome::Completed {
-            score: 0.75,
+            faces: 2,
             issues_changed: false
         }
     );
@@ -355,13 +363,13 @@ fn face_success_empty_failure_and_cancellation_use_the_production_operation() {
         "none.jpg",
         &|| false,
         |hash| changed.borrow_mut().push(hash.to_string()),
-        |_| Ok(0.0),
+        |_| Ok(Vec::new()),
     )
     .unwrap();
     assert_eq!(
         none,
         FaceScoringAttemptOutcome::Completed {
-            score: 0.0,
+            faces: 0,
             issues_changed: false
         }
     );
@@ -391,32 +399,32 @@ fn face_success_empty_failure_and_cancellation_use_the_production_operation() {
     .unwrap();
     assert_eq!(cancelled, FaceScoringAttemptOutcome::Cancelled);
 
-    let scores: (f64, f64) = conn
+    let score = |hash: &str| -> Option<f64> {
+        conn.query_row("SELECT score FROM face_scores WHERE content_hash = ?1", [hash], |row| row.get(0))
+            .optional()
+            .unwrap()
+    };
+    // The smiling face outweighs the more confident one it could not read.
+    assert_eq!(score("smile"), Some(0.75));
+    assert_eq!(score("none"), Some(0.0));
+    assert_eq!(score("failed"), None);
+    let stored: (i64, Option<f64>, Option<f64>) = conn
         .query_row(
-            "SELECT a.face_score, b.face_score FROM contents a, contents b
-             WHERE a.hash = 'smile' AND b.hash = 'none'",
+            "SELECT (SELECT face_count FROM face_checks WHERE content_hash = 'smile'),
+                    (SELECT happiness FROM faces WHERE content_hash = 'smile' AND confidence = 0.75),
+                    (SELECT happiness FROM faces WHERE content_hash = 'smile' AND confidence > 0.75)",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
-    assert_eq!(scores, (0.75, 0.0));
-    let failed_state: String = conn
-        .query_row(
-            "SELECT face_state FROM analysis_receipts WHERE content_hash = 'failed'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(failed_state, derived_state::FAILED);
-    let cancelled_state = conn
-        .query_row(
-            "SELECT face_state FROM analysis_receipts WHERE content_hash = 'cancelled'",
-            [],
-            |row| row.get::<_, Option<String>>(0),
-        )
-        .optional()
+    assert_eq!(stored, (2, Some(1.0), None));
+    let failures: Vec<(String, String, String)> = conn
+        .prepare("SELECT content_hash, event, message FROM records.analysis_events WHERE class = 'faces'")
         .unwrap()
-        .flatten();
-    assert_eq!(cancelled_state, None);
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(failures, [("failed".to_string(), "failed".to_string(), "detector failed".to_string())]);
     assert_eq!(*changed.borrow(), ["smile", "none", "failed"]);
 }

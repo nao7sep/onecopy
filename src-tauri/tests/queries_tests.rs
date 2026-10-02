@@ -616,9 +616,10 @@ fn item_work_projection_preserves_completed_truth_without_current_tools() {
         "photo.jpg",
     );
     conn.execute_batch(
-        "UPDATE contents SET face_score = 0.75 WHERE hash = 'photo';
-         INSERT INTO analysis_receipts (content_hash, face_state)
-           VALUES ('photo', 'ready');
+        "INSERT INTO face_checks (content_hash, model, model_version, face_count, checked_at_utc)
+           VALUES ('photo', 'm', 'v', 1, 'now');
+         INSERT INTO faces (content_hash, x1, y1, x2, y2, confidence, happiness, model, model_version)
+           VALUES ('photo', 0, 0, 1, 1, 0.75, 1.0, 'm', 'v');
          INSERT INTO similar_groups (id, bucket, created_at_utc) VALUES (1, '2026-01', 'now');
          INSERT INTO similar_group_members (group_id, content_hash) VALUES (1, 'photo');",
     )
@@ -641,8 +642,8 @@ fn item_work_projection_preserves_completed_truth_without_current_tools() {
     )
     .unwrap();
     conn.execute(
-        "INSERT INTO analysis_receipts (content_hash, transcript_state)
-         VALUES ('video', 'ready-text')",
+        "INSERT INTO transcripts (content_hash, model, model_version, text, segments, created_at_utc)
+         VALUES ('video', 'm', 'v', 'spoken', '[]', 'now')",
         [],
     )
     .unwrap();
@@ -681,7 +682,7 @@ fn item_work_projection_preserves_completed_truth_without_current_tools() {
     assert!(video.derived_work.transcripts.as_ref().unwrap().has_value);
 
     conn.execute(
-        "UPDATE analysis_receipts SET transcript_state = NULL WHERE content_hash = 'video'",
+        "DELETE FROM transcripts WHERE content_hash = 'video'",
         [],
     )
     .unwrap();

@@ -286,12 +286,17 @@ async fn rebuild_library_index(
     app: AppHandle,
     discard_previews: bool,
     discard_transcripts: bool,
+    discard_faces: bool,
 ) -> Result<(), String> {
     dispatch(move || {
         logging::boundary(
             "rebuild_library_index",
-            json!({ "discardPreviews": discard_previews, "discardTranscripts": discard_transcripts }),
-            || mutation_runtime::rebuild_index(&app, discard_previews, discard_transcripts),
+            json!({
+                "discardPreviews": discard_previews,
+                "discardTranscripts": discard_transcripts,
+                "discardFaces": discard_faces,
+            }),
+            || mutation_runtime::rebuild_index(&app, discard_previews, discard_transcripts, discard_faces),
             |_| json!({}),
         )
     })
@@ -904,9 +909,8 @@ async fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Resu
     .await
 }
 
-// The transcript's explicit output state. A missing transcript behind a
-// ready receipt is repaired back to pending here rather than displayed as a
-// false success.
+// The transcript's explicit output state: ready, failed in this launch, or
+// pending.
 #[tauri::command]
 async fn transcript_get(hash: String) -> Result<derived_state::TranscriptResult, String> {
     dispatch(move || {

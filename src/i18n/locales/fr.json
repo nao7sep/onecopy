@@ -189,6 +189,7 @@
   "settings.rebuildMessage": "OneCopy va effacer les informations de bibliothèque reconstructibles ainsi que l’historique conservé des problèmes et des notifications, puis vérifier à nouveau vos dossiers sources. Vos fichiers, vos réglages, vos outils gérés et vos choix ne changeront pas.",
   "settings.rebuildConfirm": "Reconstruire",
   "settings.rebuildAlsoDiscard": "Effacer aussi\u00a0:",
+  "settings.rebuildDiscardFaces": "Notes des visages",
   "settings.rebuildDiscardPreviews": "Aperçus et images de couverture",
   "settings.rebuildDiscardTranscripts": "Transcriptions",
   "settings.rebuildTranscriptsWarning": "Régénérer les transcriptions peut prendre longtemps et donne pratiquement le même résultat avec le même modèle et les mêmes fichiers.",

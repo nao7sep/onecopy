@@ -1242,7 +1242,6 @@ fn section_work_rows(
         filters.push(format!(
             "EXISTS (SELECT 1 FROM review_contents l \
             JOIN contents c ON c.hash = l.content_hash \
-            LEFT JOIN analysis_receipts r ON r.content_hash = c.hash \
             WHERE l.content_hash = candidates.hash AND ({pending}))"
         ));
     }
@@ -1513,6 +1512,9 @@ pub fn comparison_selection_valid(
 
 fn hashed_section_select() -> String {
     let preview_available = crate::derived_state::preview_available_predicate("c");
+    let face_state = crate::derived_state::face_state_sql("c");
+    let face_score = crate::derived_state::face_score_sql("c");
+    let transcript_state = crate::derived_state::transcript_state_sql("c");
     format!(
         "SELECT c.hash, l.representative_path_id, rp.file_name, l.resolved_utc_ms, \
             l.live_copy_count, c.width, c.height, \
@@ -1530,8 +1532,8 @@ fn hashed_section_select() -> String {
                     WHERE pri.content_hash = c.hash AND comp.missing = 0 \
                       AND pri.missing = 0), \
             c.duration_ms, c.kind, c.derived_at_utc, \
-            c.derived_version, c.strip_frames, r.face_state, c.face_score, \
-            r.transcript_state, \
+            c.derived_version, c.strip_frames, {face_state}, {face_score}, \
+            {transcript_state}, \
             EXISTS (
               SELECT 1 FROM similarity_dirty_buckets dirty
               WHERE dirty.bucket = COALESCE(
@@ -1541,8 +1543,7 @@ fn hashed_section_select() -> String {
             ) \
      FROM review_contents l \
      JOIN contents c ON c.hash = l.content_hash \
-     JOIN paths rp ON rp.id = l.representative_path_id \
-     LEFT JOIN analysis_receipts r ON r.content_hash = c.hash "
+     JOIN paths rp ON rp.id = l.representative_path_id "
     )
 }
 
@@ -1637,10 +1638,11 @@ pub fn similar_group_of(
     };
 
     let preview_available = crate::derived_state::preview_available_predicate("c");
+    let face_score = crate::derived_state::face_score_sql("c");
     let mut stmt = conn
         .prepare(&format!(
             "SELECT c.hash, representative.file_name, \
-             c.width, c.height, c.byte_size, c.sharpness, c.face_score, \
+             c.width, c.height, c.byte_size, c.sharpness, {face_score}, \
              logical.live_copy_count, \
              {preview_available} \
              FROM similar_group_members m \
@@ -1648,7 +1650,7 @@ pub fn similar_group_of(
              JOIN review_contents logical ON logical.content_hash = c.hash \
              JOIN paths representative ON representative.id = logical.representative_path_id \
              WHERE m.group_id = ?1 \
-             ORDER BY CASE WHEN ?2 THEN COALESCE(c.face_score, 0) ELSE 0 END DESC, \
+             ORDER BY CASE WHEN ?2 THEN COALESCE({face_score}, 0) ELSE 0 END DESC, \
                       c.sharpness DESC NULLS LAST, \
                       representative.abs_path COLLATE onecopy_nocase, \
                       representative.abs_path, c.hash"

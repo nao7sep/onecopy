@@ -189,6 +189,7 @@
   "settings.rebuildMessage": "OneCopy は、再構築できるライブラリ情報と、保持している問題や通知の履歴を消去してから、ソースフォルダをもう一度確認します。ファイル、設定、管理ツール、これまでの選択は変更されません。",
   "settings.rebuildConfirm": "再構築",
   "settings.rebuildAlsoDiscard": "あわせて消去するもの:",
+  "settings.rebuildDiscardFaces": "顔のスコア",
   "settings.rebuildDiscardPreviews": "プレビューとポスター画像",
   "settings.rebuildDiscardTranscripts": "文字起こし",
   "settings.rebuildTranscriptsWarning": "文字起こしを作り直すと時間がかかりますが、同じモデルと同じファイルであれば結果はほとんど変わりません。",

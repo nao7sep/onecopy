@@ -1547,10 +1547,14 @@ pub fn promote_identity(
         .map_err(|e| e.to_string())?;
 
     // Expensive results follow the identity; the real key's own result wins.
-    tx.execute(
-        "UPDATE OR IGNORE transcripts SET content_hash = ?2 WHERE content_hash = ?1",
-        params![provisional, real_hash],
-    )
+    tx.execute_batch(&format!(
+        "UPDATE OR IGNORE transcripts SET content_hash = {real} WHERE content_hash = {provisional};
+         UPDATE faces SET content_hash = {real} WHERE content_hash = {provisional}
+           AND NOT EXISTS (SELECT 1 FROM face_checks WHERE content_hash = {real});
+         UPDATE OR IGNORE face_checks SET content_hash = {real} WHERE content_hash = {provisional};",
+        real = crate::records::sql_text(Some(real_hash)),
+        provisional = crate::records::sql_text(Some(provisional)),
+    ))
     .map_err(|e| e.to_string())?;
     let strip_frames_for_rename = if already_known {
         tx.execute(

@@ -2,9 +2,10 @@
 // discarded (that is the point of the action), and provisional-key cache
 // entries are always discarded with it regardless of these choices, because
 // they name a path rather than content and cannot outlive the index row that
-// gave them meaning. Previews/posters and transcripts are additional results
-// the user may also choose to discard; both default to kept, since
-// discarding either only costs time to regenerate for no different a result.
+// gave them meaning. Previews/posters, face scores and transcripts are
+// additional results the user may also choose to discard; each defaults to
+// kept, since discarding one only costs time to regenerate for no different a
+// result.
 
 import { useState } from "react";
 import { useI18n } from "../i18n/I18nContext";
@@ -16,12 +17,17 @@ export default function RebuildIndexModal({
   onConfirm,
   onCancel,
 }: {
-  onConfirm: (options: { discardPreviews: boolean; discardTranscripts: boolean }) => void;
+  onConfirm: (options: {
+    discardPreviews: boolean;
+    discardTranscripts: boolean;
+    discardFaces: boolean;
+  }) => void;
   onCancel: () => void;
 }) {
   const { t } = useI18n();
   const [discardPreviews, setDiscardPreviews] = useState(false);
   const [discardTranscripts, setDiscardTranscripts] = useState(false);
+  const [discardFaces, setDiscardFaces] = useState(false);
 
   return (
     <ModalShell
@@ -34,7 +40,7 @@ export default function RebuildIndexModal({
         <Button
           variant="danger-solid"
           data-destructive
-          onClick={() => onConfirm({ discardPreviews, discardTranscripts })}
+          onClick={() => onConfirm({ discardPreviews, discardTranscripts, discardFaces })}
         >
           {t("settings.rebuildConfirm")}
         </Button>
@@ -46,6 +52,9 @@ export default function RebuildIndexModal({
       </p>
       <Row label={t("settings.rebuildDiscardPreviews")}>
         <Toggle checked={discardPreviews} onChange={setDiscardPreviews} />
+      </Row>
+      <Row label={t("settings.rebuildDiscardFaces")}>
+        <Toggle checked={discardFaces} onChange={setDiscardFaces} />
       </Row>
       <Row label={t("settings.rebuildDiscardTranscripts")}>
         <Toggle checked={discardTranscripts} onChange={setDiscardTranscripts} />

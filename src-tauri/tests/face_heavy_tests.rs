@@ -68,7 +68,7 @@ fn production_models_score_every_fictional_face_and_no_faceless_scene() {
         library
             .conn
             .query_row(
-                "SELECT face_score FROM contents WHERE hash = ?1",
+                "SELECT score FROM face_scores WHERE content_hash = ?1",
                 [library.hash_of(name)],
                 |row| row.get(0),
             )

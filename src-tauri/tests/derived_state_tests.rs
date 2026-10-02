@@ -16,6 +16,20 @@ fn whisper() -> onecopy_lib::ai_dependencies::ModelIdentity {
     onecopy_lib::ai_dependencies::transcription_model()
 }
 
+/// The face and transcript states the item projections read for `hash`.
+fn analysis_states(conn: &rusqlite::Connection, hash: &str) -> (Option<String>, Option<String>) {
+    conn.query_row(
+        &format!(
+            "SELECT {}, {} FROM contents c WHERE c.hash = ?1",
+            derived_state::face_state_sql("c"),
+            derived_state::transcript_state_sql("c")
+        ),
+        [hash],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .unwrap()
+}
+
 fn seeded() -> (tempfile::TempDir, rusqlite::Connection) {
     let dir = tempfile::Builder::new()
         .prefix("onecopy-derived-state-")
@@ -63,8 +77,10 @@ fn explicit_attempt_boundary_reopens_failures_without_using_or_erasing_issues() 
         "INSERT INTO contents (hash, byte_size, kind, derived_at_utc, strip_frames)
          VALUES ('waiting', 1, 'image', 'needs-ffmpeg', NULL),
                 ('ready', 1, 'video', 'ready', 8);
-         INSERT INTO analysis_receipts (content_hash, transcript_state, face_state)
-         VALUES ('ready', 'ready-empty', 'ready');",
+         INSERT INTO transcripts (content_hash, model, model_version, text, segments, created_at_utc)
+         VALUES ('ready', 'm', 'v', '', '[]', 'now');
+         INSERT INTO face_checks (content_hash, model, model_version, face_count, checked_at_utc)
+         VALUES ('ready', 'm', 'v', 0, 'now');",
     )
     .unwrap();
     assert_eq!(
@@ -75,22 +91,18 @@ fn explicit_attempt_boundary_reopens_failures_without_using_or_erasing_issues() 
         derived_state::reset_failed_outputs(&conn, FailedOutputScope::Library).unwrap(),
         0
     );
-    let preserved: (String, i64, String, String, String) = conn.query_row(
-        "SELECT c.derived_at_utc, c.strip_frames, r.transcript_state, r.face_state,
+    let preserved: (String, i64, String) = conn.query_row(
+        "SELECT c.derived_at_utc, c.strip_frames,
           (SELECT derived_at_utc FROM contents WHERE hash = 'waiting')
-         FROM contents c JOIN analysis_receipts r ON r.content_hash = c.hash WHERE c.hash = 'ready'",
-        [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+         FROM contents c WHERE c.hash = 'ready'",
+        [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     ).unwrap();
+    assert_eq!(preserved, ("ready".into(), 8, "needs-ffmpeg".into()));
     assert_eq!(
-        preserved,
-        (
-            "ready".into(),
-            8,
-            "ready-empty".into(),
-            "ready".into(),
-            "needs-ffmpeg".into()
-        )
+        analysis_states(&conn, "ready"),
+        (Some("ready".into()), Some("ready-empty".into()))
     );
+    assert_eq!(analysis_states(&conn, "face"), (None, None));
     assert_eq!(queries::issues(&conn, 20, None).unwrap().0, 0);
 }
 
@@ -112,16 +124,16 @@ fn section_attempt_reset_uses_logical_kind_and_half_open_dates_not_shared_folder
         .unwrap(),
         1
     );
-    let states: (Option<String>, String, String) = conn
+    let states: (Option<String>, String) = conn
         .query_row(
             "SELECT (SELECT derived_at_utc FROM contents WHERE hash = 'image'),
-          (SELECT face_state FROM analysis_receipts WHERE content_hash = 'face'),
           (SELECT derived_at_utc FROM contents WHERE hash = 'poster')",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!(states, (None, "failed".into(), "failed".into()));
+    assert_eq!(states, (None, "failed".into()));
+    assert_eq!(analysis_states(&conn, "face").0.as_deref(), Some("failed"));
     assert_eq!(
         queries::issues(&conn, 20, None).unwrap().0,
         6,
@@ -172,15 +184,8 @@ fn audio_transcription_is_reopened_by_its_other_files_section() {
         .unwrap(),
         1
     );
-    let states: (Option<String>, String) = conn
-        .query_row(
-            "SELECT (SELECT transcript_state FROM analysis_receipts WHERE content_hash = 'audio'),
-          (SELECT transcript_state FROM analysis_receipts WHERE content_hash = 'speech')",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(states, (None, "failed".into()));
+    assert_eq!(analysis_states(&conn, "audio").1, None);
+    assert_eq!(analysis_states(&conn, "speech").1.as_deref(), Some("failed"));
 }
 
 #[test]
@@ -193,15 +198,7 @@ fn opening_database_and_querying_section_do_not_repeat_a_failed_new_attempt() {
     let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
     for _ in 0..3 {
         queries::section_dirs(&conn, onecopy_lib::queries::SectionKind::Video, "undated", chrono_tz::UTC).unwrap();
-        assert_eq!(
-            conn.query_row(
-                "SELECT transcript_state FROM analysis_receipts WHERE content_hash = 'speech'",
-                [],
-                |row| row.get::<_, String>(0)
-            )
-            .unwrap(),
-            "failed"
-        );
+        assert_eq!(analysis_states(&conn, "speech").1.as_deref(), Some("failed"));
     }
     assert_eq!(
         derived_state::reset_failed_outputs(
@@ -254,15 +251,7 @@ fn failed_replacement_keeps_its_completed_transcript_across_reattempt_boundaries
     )
     .unwrap();
     derived_state::reset_failed_outputs(&conn, FailedOutputScope::Library).unwrap();
-    assert_eq!(
-        conn.query_row(
-            "SELECT transcript_state FROM analysis_receipts WHERE content_hash = 'speech'",
-            [],
-            |row| row.get::<_, String>(0)
-        )
-        .unwrap(),
-        "ready-text"
-    );
+    assert_eq!(analysis_states(&conn, "speech").1.as_deref(), Some("ready-text"));
     assert!(queries::issues(&conn, 20, None)
         .unwrap()
         .1
@@ -293,19 +282,11 @@ fn resource_safety_issue_is_not_attached_to_one_file() {
 #[test]
 fn successful_analysis_records_value_or_empty_and_retires_its_issue() {
     let (_dir, conn) = seeded();
-    derived_state::record_face_success(&conn, "face", "/face.jpg", 0.0).unwrap();
+    derived_state::record_face_success(&conn, "face", "/face.jpg", &[], &onecopy_lib::ai_dependencies::face_model()).unwrap();
     derived_state::record_transcript_success(&conn, "speech", "/speech.mov", &Transcript::default(), whisper()).unwrap();
 
-    let receipt: (String, String) = conn
-        .query_row(
-            "SELECT a.face_state, b.transcript_state FROM analysis_receipts a
-             JOIN analysis_receipts b ON b.content_hash = 'speech'
-             WHERE a.content_hash = 'face'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(receipt, ("ready".to_string(), "ready-empty".to_string()));
+    assert_eq!(analysis_states(&conn, "face").0.as_deref(), Some("ready"));
+    assert_eq!(analysis_states(&conn, "speech").1.as_deref(), Some("ready-empty"));
     let (_, rows) = queries::issues(&conn, 20, None).unwrap();
     assert!(!rows.iter().any(|row| matches!(
         row.kind.as_str(),
@@ -412,7 +393,7 @@ fn a_success_with_no_matching_issue_reports_no_issues_change() {
 }
 
 #[test]
-fn transcript_reads_distinguish_pending_failed_empty_and_missing_output() {
+fn transcript_reads_distinguish_pending_failed_empty_and_ready_output() {
     let (_dir, conn) = seeded();
 
     let failed = derived_state::transcript_result(&conn, "speech").unwrap();
@@ -427,7 +408,7 @@ fn transcript_reads_distinguish_pending_failed_empty_and_missing_output() {
     let pending = derived_state::transcript_result(&conn, "poster").unwrap();
     assert_eq!(pending.status, "pending");
 
-    // A transcript kept through a rebuild has no receipt yet.
+    // A transcript kept through a rebuild meets its content again.
     conn.execute(
         "INSERT INTO transcripts (content_hash, model, model_version, language, text, segments, created_at_utc)
          VALUES ('poster', 'whisper-large-v3-turbo', 'v', 'en', 'kept',
@@ -444,17 +425,6 @@ fn transcript_reads_distinguish_pending_failed_empty_and_missing_output() {
     assert_eq!(empty.status, "ready");
     assert_eq!(empty.text.as_deref(), Some(""));
 
-    conn.execute("DELETE FROM transcripts WHERE content_hash = 'speech'", []).unwrap();
-    let repaired = derived_state::transcript_result(&conn, "speech").unwrap();
-    assert_eq!(repaired.status, "pending");
-    let state: Option<String> = conn
-        .query_row(
-            "SELECT transcript_state FROM analysis_receipts WHERE content_hash = 'speech'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(state, None);
 }
 
 #[test]

@@ -20,10 +20,13 @@
 //! model it replaces put happiness at index 1. Assuming an order carried
 //! over would have scored a different emotion entirely, silently.
 //!
-//! Storage contract: `analysis_receipts.face_state` distinguishes pending,
-//! ready, and failed; `contents.face_score` holds the ready value (0 means no
-//! face, positive means a face was found). Ordering treats NULL and 0.0
-//! identically, which keeps a model-less install ordering exactly as today.
+//! Storage contract: every face found is kept with its box, confidence and
+//! all eight expression probabilities, and a per-content check row records
+//! which models looked and how many faces they found; the index's
+//! `face_scores` view computes the score from them (0 means no face). A
+//! failure is a record. Ordering treats an unchecked content and a faceless
+//! one identically, which keeps a model-less install ordering exactly as
+//! today.
 
 use std::path::Path;
 use std::sync::{Arc, Weak};
@@ -123,22 +126,30 @@ const EXPRESSION_EDGE: u32 = 260;
 const IMAGENET_MEAN: [f32; 3] = [0.485, 0.456, 0.406];
 const IMAGENET_STD: [f32; 3] = [0.229, 0.224, 0.225];
 
-/// Index of "Happiness" in the model's AffectNet class order
-/// (Anger, Contempt, Disgust, Fear, HAPPINESS, Neutral, Sadness, Surprise).
-const HAPPINESS_CLASS: usize = 4;
-const EXPRESSION_CLASSES: usize = 8;
+/// The model's AffectNet class order, which the stored probabilities keep.
+pub const EXPRESSION_CLASSES: [&str; 8] =
+    ["anger", "contempt", "disgust", "fear", "happiness", "neutral", "sadness", "surprise"];
 /// Greedy NMS overlap bound — boxes overlapping more than this are one face.
 pub const NMS_MAX_IOU: f32 = 0.3;
 
 /// One detected face: confidence plus its RELATIVE corner box on the scored
 /// image (the detector works in normalized coordinates).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Face {
     pub confidence: f32,
     pub x1: f32,
     pub y1: f32,
     pub x2: f32,
     pub y2: f32,
+}
+
+/// One face as both models saw it: the detector's box and confidence, and the
+/// expression model's probabilities in [`EXPRESSION_CLASSES`] order, absent
+/// when the face could not be read.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FoundFace {
+    pub face: Face,
+    pub expression: Option<[f32; 8]>,
 }
 
 /// Both sessions loaded once per pass — model load costs real time, one
@@ -288,10 +299,10 @@ impl FaceScorer {
         Ok(non_max_suppression(candidates))
     }
 
-    /// P(happiness) for one face crop — the expression model's contract:
-    /// 260×260 RGB, 1/255 then ImageNet-normalized, eight AffectNet logits
-    /// out, happiness at index 4.
-    pub fn smile(&mut self, img: &DynamicImage, face: &Face) -> Result<f32, String> {
+    /// The expression probabilities for one face crop — the expression
+    /// model's contract: 260×260 RGB, 1/255 then ImageNet-normalized, eight
+    /// AffectNet logits out.
+    pub fn expression(&mut self, img: &DynamicImage, face: &Face) -> Result<[f32; 8], String> {
         let (w, h) = (img.width() as f32, img.height() as f32);
         // A 15% margin each side: FER+ was trained on loose crops, and the
         // detector's boxes hug the face tightly.
@@ -333,33 +344,30 @@ impl FaceScorer {
             .ok_or("expression output vanished mid-session")?
             .try_extract_tensor::<f32>()
             .map_err(|e| e.to_string())?;
-        let probabilities = softmax(logits);
-        if probabilities.len() != EXPRESSION_CLASSES {
-            // An artifact that changed shape has almost certainly changed its
-            // class ORDER too, and scoring the wrong emotion silently is the
-            // failure this refuses to risk.
-            return Err(format!(
-                "expression model returned {} classes, not {EXPRESSION_CLASSES}",
-                probabilities.len()
-            ));
-        }
-        Ok(probabilities[HAPPINESS_CLASS])
+        // An artifact that changed shape has almost certainly changed its
+        // class ORDER too, and storing the wrong emotion silently is the
+        // failure this refuses to risk.
+        <[f32; 8]>::try_from(softmax(logits)).map_err(|probabilities| {
+            format!(
+                "expression model returned {} classes, not {}",
+                probabilities.len(),
+                EXPRESSION_CLASSES.len()
+            )
+        })
     }
 
-    /// The composite: 0.0 = no face; otherwise the best face's
-    /// `conf × (0.5 + 0.5 × P(happiness))`.
-    pub fn score(&mut self, img: &DynamicImage) -> Result<f32, String> {
-        let mut best = 0.0_f32;
+    /// Every face on the image with its expression, best-first.
+    pub fn analyze(&mut self, img: &DynamicImage) -> Result<Vec<FoundFace>, String> {
+        let mut found = Vec::new();
         for face in self.detect(img)? {
             if crate::derived_runtime::cancelled() {
                 return Err(crate::scanner::CANCELLED.to_string());
             }
-            // A failed crop degrades to the neutral-expression weight rather
-            // than sinking the photo: the face is still real.
-            let smile = self.smile(img, &face).unwrap_or(0.0);
-            best = best.max(face.confidence * (0.5 + 0.5 * smile));
+            // A face whose crop cannot be read is still a real face.
+            let expression = self.expression(img, &face).ok();
+            found.push(FoundFace { face, expression });
         }
-        Ok(best)
+        Ok(found)
     }
 }
 
@@ -411,7 +419,7 @@ pub struct FaceStats {
 
 #[derive(Debug, PartialEq)]
 pub enum FaceScoringAttemptOutcome {
-    Completed { score: f32, issues_changed: bool },
+    Completed { faces: usize, issues_changed: bool },
     Cancelled,
     Failed { message: String, issues_changed: bool },
 }
@@ -419,7 +427,7 @@ pub enum FaceScoringAttemptOutcome {
 /// Scores and publishes one already-admitted face candidate. Candidate
 /// selection, model-session reuse, priority, and pass cancellation remain with
 /// the coordinator; this operation owns preview decode, one inference result,
-/// its durable receipt, and the corresponding change callback.
+/// its durable result, and the corresponding change callback.
 pub fn complete_face_scoring_attempt(
     conn: &rusqlite::Connection,
     cache: &crate::preview::CachePaths,
@@ -427,7 +435,7 @@ pub fn complete_face_scoring_attempt(
     source_path: &str,
     cancel_when: &dyn Fn() -> bool,
     mut on_change: impl FnMut(&str),
-    inference: impl FnOnce(&DynamicImage) -> Result<f32, String>,
+    inference: impl FnOnce(&DynamicImage) -> Result<Vec<FoundFace>, String>,
 ) -> Result<FaceScoringAttemptOutcome, String> {
     let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::BackgroundWork,
         Some(crate::activity::ActivitySubject::Faces), Some(hash));
@@ -437,12 +445,17 @@ pub fn complete_face_scoring_attempt(
         .and_then(|bytes| crate::resource_limits::decode_bytes(&bytes));
     let outcome = decoded.and_then(|image| inference(&image));
     match outcome {
-        Ok(score) => {
-            let issues_changed =
-                crate::derived_state::record_face_success(conn, hash, source_path, score as f64)?;
+        Ok(found) => {
+            let issues_changed = crate::derived_state::record_face_success(
+                conn,
+                hash,
+                source_path,
+                &found,
+                &crate::ai_dependencies::face_model(),
+            )?;
             trace.finish(crate::activity::ActivityState::Succeeded, None);
             on_change(hash);
-            Ok(FaceScoringAttemptOutcome::Completed { score, issues_changed })
+            Ok(FaceScoringAttemptOutcome::Completed { faces: found.len(), issues_changed })
         }
         Err(_) if cancel_when() || crate::scanner::cancelled() => {
             trace.finish(crate::activity::ActivityState::Cancelled, None);
@@ -459,7 +472,7 @@ pub fn complete_face_scoring_attempt(
 }
 
 /// The face pass over the index — the embed pass's exact shape: images with a
-/// derived preview and no score yet, read FROM THE CACHE, scored serially
+/// derived preview and no face check yet, read FROM THE CACHE, scored serially
 /// through one session pair. Either model absent → an empty pass, silently:
 /// sharpness-only ordering is the designed fallback. Cancellable between
 /// items like every pipeline stage.
@@ -518,7 +531,7 @@ pub fn face_scores_pending(
             &path,
             stop,
             |changed| on_change(changed),
-            |image| scorer.score(image),
+            |image| scorer.analyze(image),
         )?;
         match outcome {
             FaceScoringAttemptOutcome::Completed { issues_changed, .. } => {

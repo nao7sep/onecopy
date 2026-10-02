@@ -189,6 +189,7 @@
   "settings.rebuildMessage": "OneCopy 会清除可重建的媒体库信息以及保留的问题和通知历史，然后再次检查你的源文件夹。你的文件、设置、托管工具和各项选择都不会改变。",
   "settings.rebuildConfirm": "重建",
   "settings.rebuildAlsoDiscard": "同时清除：",
+  "settings.rebuildDiscardFaces": "人脸评分",
   "settings.rebuildDiscardPreviews": "预览和封面",
   "settings.rebuildDiscardTranscripts": "转录文本",
   "settings.rebuildTranscriptsWarning": "重新生成转录文本可能需要很长时间，且在相同模型和文件下结果基本相同。",

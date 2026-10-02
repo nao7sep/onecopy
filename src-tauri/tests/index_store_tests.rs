@@ -40,17 +40,25 @@ fn rebuild_clears_reconstructible_library_facts_and_issues() {
          INSERT INTO scan_dirs (root, last_completed_at_utc)
          VALUES ('/photos', 'now');
          INSERT INTO transcripts (content_hash, model, model_version, text, segments, created_at_utc)
-         VALUES ('hash', 'm', 'v', 'kept', '[]', 'now');",
+         VALUES ('hash', 'm', 'v', 'kept', '[]', 'now');
+         INSERT INTO face_checks (content_hash, model, model_version, face_count, checked_at_utc)
+         VALUES ('hash', 'm', 'v', 1, 'now');
+         INSERT INTO faces (content_hash, x1, y1, x2, y2, confidence, model, model_version)
+         VALUES ('hash', 0, 0, 1, 1, 0.9, 'm', 'v');",
     )
     .unwrap();
 
-    index_store::clear_reconstructible(&conn, false).unwrap();
-    let transcripts = |conn: &rusqlite::Connection| -> i64 {
-        conn.query_row("SELECT COUNT(*) FROM transcripts", [], |row| row.get(0)).unwrap()
+    index_store::clear_reconstructible(&conn, false, false).unwrap();
+    let count = |table: &str| -> i64 {
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0)).unwrap()
     };
-    assert_eq!(transcripts(&conn), 1, "a rebuild keeps transcripts by default");
-    index_store::clear_reconstructible(&conn, true).unwrap();
-    assert_eq!(transcripts(&conn), 0);
+    for table in ["transcripts", "face_checks", "faces"] {
+        assert_eq!(count(table), 1, "a rebuild keeps {table} by default");
+    }
+    index_store::clear_reconstructible(&conn, true, false).unwrap();
+    assert_eq!((count("transcripts"), count("face_checks"), count("faces")), (0, 1, 1));
+    index_store::clear_reconstructible(&conn, false, true).unwrap();
+    assert_eq!((count("face_checks"), count("faces")), (0, 0));
 
     for table in [
         "contents",
@@ -74,13 +82,17 @@ fn rebuild_clears_reconstructible_library_facts_and_issues() {
 }
 
 #[test]
-fn a_transcript_goes_when_its_content_leaves_the_library() {
+fn results_go_when_their_content_leaves_the_library() {
     let root = tempfile::tempdir().unwrap();
     let conn = index_store::open(&root.path().join("index.sqlite3")).unwrap();
     conn.execute_batch(
         "INSERT INTO contents (hash, byte_size, kind) VALUES ('gone', 4, 'audio'), ('kept', 4, 'audio');
          INSERT INTO transcripts (content_hash, model, model_version, text, segments, created_at_utc)
          VALUES ('gone', 'm', 'v', 'a', '[]', 'now'), ('kept', 'm', 'v', 'b', '[]', 'now');
+         INSERT INTO face_checks (content_hash, model, model_version, face_count, checked_at_utc)
+         VALUES ('gone', 'm', 'v', 1, 'now'), ('kept', 'm', 'v', 0, 'now');
+         INSERT INTO faces (content_hash, x1, y1, x2, y2, confidence, model, model_version)
+         VALUES ('gone', 0, 0, 1, 1, 0.9, 'm', 'v');
          DELETE FROM contents WHERE hash = 'gone';",
     )
     .unwrap();
@@ -92,6 +104,10 @@ fn a_transcript_goes_when_its_content_leaves_the_library() {
         .collect::<Result<_, _>>()
         .unwrap();
     assert_eq!(left, ["kept"]);
+    let faces: (i64, i64) = conn
+        .query_row("SELECT (SELECT COUNT(*) FROM face_checks WHERE content_hash = 'gone'), (SELECT COUNT(*) FROM faces)", [], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap();
+    assert_eq!(faces, (0, 0));
 }
 
 /// (R4.1 finding 3) The section a logical item lands in must follow its

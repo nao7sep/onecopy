@@ -25,9 +25,10 @@ fn open_creates_schema_and_is_idempotent() {
         .collect();
     // Set EQUALITY, not a subset, so any table change is deliberate.
     let mut expected = vec![
-        "analysis_receipts",
         "contents",
         "evidence",
+        "face_checks",
+        "faces",
         "issues",
         "logical_contents",
         "logical_projection_batch",

@@ -426,14 +426,14 @@ export default function SettingsModal({
       ) : null}
       {confirmRebuild ? (
         <RebuildIndexModal
-          onConfirm={({ discardPreviews, discardTranscripts }) => {
+          onConfirm={({ discardPreviews, discardTranscripts, discardFaces }) => {
             setConfirmRebuild(false);
             setRebuilding(true);
             useSettingsStore.setState({
               message: message("settings.rebuildingIndex"),
               messageLevel: "info",
             });
-            void invoke("rebuild_library_index", { discardPreviews, discardTranscripts })
+            void invoke("rebuild_library_index", { discardPreviews, discardTranscripts, discardFaces })
               .then(async () => {
                 await Promise.all([
                   useSectionsStore.getState().loadCounts(),

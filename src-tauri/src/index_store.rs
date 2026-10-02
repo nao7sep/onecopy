@@ -74,10 +74,6 @@ CREATE TABLE IF NOT EXISTS contents (
   height          INTEGER,
   duration_ms     INTEGER,
   sharpness       REAL,
-  -- Face score (face.rs's contract): NULL never scored, 0.0 scored faceless,
-  -- > 0 the smile-weighted best-face confidence. Orders groups ahead of
-  -- sharpness for face-bearing members.
-  face_score      REAL,
   strip_frames    INTEGER,
   derived_at_utc  TEXT,
   -- The DERIVE_VERSION that produced this row's cache entries. Both derive
@@ -407,25 +403,6 @@ CREATE TABLE IF NOT EXISTS recent_notifications (
 CREATE INDEX IF NOT EXISTS idx_recent_notifications_latest
   ON recent_notifications (last_seen_utc DESC, id DESC);
 
--- Fixed-class output receipts, never jobs. NULL means the class is pending;
--- ready and failed are durable results, while running/paused/waiting belong
--- to the coordinator's ephemeral snapshot.
-CREATE TABLE IF NOT EXISTS analysis_receipts (
-  content_hash              TEXT PRIMARY KEY REFERENCES contents(hash),
-  face_state                TEXT CHECK (face_state IN ('ready', 'failed')),
-  face_updated_at_utc       TEXT,
-  transcript_state          TEXT CHECK (
-                              transcript_state IN
-                                ('ready-text', 'ready-empty', 'failed')
-                            ),
-  transcript_updated_at_utc TEXT
-);
-CREATE TRIGGER IF NOT EXISTS contents_analysis_after_delete
-AFTER DELETE ON contents
-BEGIN
-  DELETE FROM analysis_receipts WHERE content_hash = OLD.hash;
-END;
-
 -- Expensive results are kept by content hash with no reference to `contents`:
 -- a rebuild clears `contents` and keeps them (`clear_reconstructible`), and
 -- they go with their content only when it leaves the library.
@@ -439,6 +416,45 @@ CREATE TABLE IF NOT EXISTS transcripts (
   segments       TEXT NOT NULL,
   created_at_utc TEXT NOT NULL
 );
+-- Which face model checked a content and how many faces it found, so a
+-- content with no faces differs from one never checked.
+CREATE TABLE IF NOT EXISTS face_checks (
+  content_hash   TEXT PRIMARY KEY,
+  model          TEXT NOT NULL,
+  model_version  TEXT NOT NULL,
+  face_count     INTEGER NOT NULL,
+  checked_at_utc TEXT NOT NULL
+);
+-- One row per face found: its relative corner box, the detector's
+-- confidence, and the expression model's eight probabilities (NULL when the
+-- face could not be read).
+CREATE TABLE IF NOT EXISTS faces (
+  id            INTEGER PRIMARY KEY,
+  content_hash  TEXT NOT NULL,
+  x1            REAL NOT NULL,
+  y1            REAL NOT NULL,
+  x2            REAL NOT NULL,
+  y2            REAL NOT NULL,
+  confidence    REAL NOT NULL,
+  anger         REAL,
+  contempt      REAL,
+  disgust       REAL,
+  fear          REAL,
+  happiness     REAL,
+  neutral       REAL,
+  sadness       REAL,
+  surprise      REAL,
+  model         TEXT NOT NULL,
+  model_version TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_faces_content ON faces (content_hash);
+-- The face score (face.rs): 0 for a checked content with no faces, else the
+-- best face's confidence weighted by how much it smiles.
+CREATE VIEW IF NOT EXISTS face_scores AS
+  SELECT k.content_hash,
+         COALESCE((SELECT MAX(f.confidence * (0.5 + 0.5 * COALESCE(f.happiness, 0.0)))
+                   FROM faces f WHERE f.content_hash = k.content_hash), 0.0) AS score
+  FROM face_checks k;
 CREATE TABLE IF NOT EXISTS rebuild_keeps_results (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1)
 );
@@ -447,6 +463,8 @@ AFTER DELETE ON contents
 WHEN NOT EXISTS (SELECT 1 FROM rebuild_keeps_results)
 BEGIN
   DELETE FROM transcripts WHERE content_hash = OLD.hash;
+  DELETE FROM faces WHERE content_hash = OLD.hash;
+  DELETE FROM face_checks WHERE content_hash = OLD.hash;
 END;
 
 CREATE TABLE IF NOT EXISTS scan_dirs (
@@ -549,6 +567,10 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
             }
         }
     }
+    crate::records::attach(
+        &conn,
+        &db_file.with_file_name(crate::records::RECORDS_DB_FILE_NAME),
+    )?;
     // Enforced on every open, not only the connection that ran the upgrade:
     // a dangling `evidence` or `companion_of` row after a same-transaction
     // sibling delete (see delete_targets and forget_unconfigured_roots) must
@@ -730,13 +752,17 @@ pub(crate) fn publish_paths_batch_in(
     .map_err(|error| error.to_string())
 }
 
-/// Clears only reconstructible library facts; transcripts stay unless
-/// `discard_transcripts`. Durable configuration, managed tools, and retained
+/// Clears only reconstructible library facts; transcripts and face results
+/// stay unless their discard flag is set. Durable configuration, managed tools, and retained
 /// authored records live in separate stores and are deliberately outside this
 /// transaction. Everything projection-affecting is
 /// wiped in the same pass, so the batch guard only needs to suppress the
 /// per-row triggers while it runs; there is nothing left to republish.
-pub fn clear_reconstructible(conn: &Connection, discard_transcripts: bool) -> Result<(), String> {
+pub fn clear_reconstructible(
+    conn: &Connection,
+    discard_transcripts: bool,
+    discard_faces: bool,
+) -> Result<(), String> {
     publish_paths_batch(
         conn,
         |_tx| Ok(()),
@@ -744,9 +770,13 @@ pub fn clear_reconstructible(conn: &Connection, discard_transcripts: bool) -> Re
             if discard_transcripts {
                 tx.execute("DELETE FROM transcripts", []).map_err(|error| error.to_string())?;
             }
+            if discard_faces {
+                tx.execute_batch("DELETE FROM faces; DELETE FROM face_checks;")
+                    .map_err(|error| error.to_string())?;
+            }
+            crate::derived_state::reopen_session_analysis_failures(tx)?;
             tx.execute_batch(
                 "INSERT INTO rebuild_keeps_results (singleton) VALUES (1);
-             DELETE FROM analysis_receipts;
              DELETE FROM similar_group_members;
              DELETE FROM similar_groups;
              DELETE FROM evidence;

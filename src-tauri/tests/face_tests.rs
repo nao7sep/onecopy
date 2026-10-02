@@ -4,7 +4,7 @@
 
 use onecopy_lib::face::{self, Face};
 use onecopy_lib::{index_store, queries};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 fn db() -> Connection {
     let dir = tempfile::Builder::new().prefix("onecopy-face-db-").tempdir().unwrap();
@@ -28,6 +28,23 @@ fn seed_image(conn: &Connection, hash: &str, name: &str) {
     )
     .unwrap();
 }
+/// A face check whose best face scores `score` (no face for 0).
+fn score_faces(conn: &Connection, hash: &str, score: f64) {
+    conn.execute(
+        "INSERT INTO face_checks (content_hash, model, model_version, face_count, checked_at_utc)
+         VALUES (?1, 'm', 'v', ?2, 'now')",
+        params![hash, i64::from(score > 0.0)],
+    )
+    .unwrap();
+    if score > 0.0 {
+        conn.execute(
+            "INSERT INTO faces (content_hash, x1, y1, x2, y2, confidence, happiness, model, model_version)
+             VALUES (?1, 0, 0, 1, 1, ?2, 1.0, 'm', 'v')",
+            params![hash, score],
+        )
+        .unwrap();
+    }
+}
 fn group(conn: &Connection, hashes: &[&str]) {
     conn.execute("INSERT INTO similar_groups (id, bucket, created_at_utc) VALUES (1, 'undated', 'x')", [])
         .unwrap();
@@ -49,9 +66,12 @@ fn face_score_orders_ahead_of_sharpness_within_the_group() {
     // The sharpest member has NO face; the softest has the best face. The
     // design's promise: the smiling face wins the slot, sharpness only
     // breaks face ties.
-    conn.execute("UPDATE contents SET sharpness = 9.0, face_score = 0.0 WHERE hash = 'scenery'", []).unwrap();
-    conn.execute("UPDATE contents SET sharpness = 2.0, face_score = 0.91 WHERE hash = 'smile'", []).unwrap();
-    conn.execute("UPDATE contents SET sharpness = 4.0, face_score = 0.55 WHERE hash = 'blur'", []).unwrap();
+    conn.execute("UPDATE contents SET sharpness = 9.0 WHERE hash = 'scenery'", []).unwrap();
+    score_faces(&conn, "scenery", 0.0);
+    conn.execute("UPDATE contents SET sharpness = 2.0 WHERE hash = 'smile'", []).unwrap();
+    score_faces(&conn, "smile", 0.91);
+    conn.execute("UPDATE contents SET sharpness = 4.0 WHERE hash = 'blur'", []).unwrap();
+    score_faces(&conn, "blur", 0.55);
     group(&conn, &["smile", "blur", "scenery"]);
 
     let members = queries::similar_group_of(&conn, "scenery", true).unwrap();
@@ -69,16 +89,10 @@ fn disabled_face_policy_orders_by_sharpness_even_when_scores_exist() {
     let conn = db();
     seed_image(&conn, "smile", "a.jpg");
     seed_image(&conn, "sharp", "b.jpg");
-    conn.execute(
-        "UPDATE contents SET sharpness = 2.0, face_score = 0.91 WHERE hash = 'smile'",
-        [],
-    )
-    .unwrap();
-    conn.execute(
-        "UPDATE contents SET sharpness = 9.0, face_score = 0.0 WHERE hash = 'sharp'",
-        [],
-    )
-    .unwrap();
+    conn.execute("UPDATE contents SET sharpness = 2.0 WHERE hash = 'smile'", []).unwrap();
+    score_faces(&conn, "smile", 0.91);
+    conn.execute("UPDATE contents SET sharpness = 9.0 WHERE hash = 'sharp'", []).unwrap();
+    score_faces(&conn, "sharp", 0.0);
     group(&conn, &["smile", "sharp"]);
 
     let members = queries::similar_group_of(&conn, "smile", false).unwrap();
@@ -97,7 +111,8 @@ fn null_scores_fall_back_to_sharpness_exactly_as_before() {
     // NULL face_score throughout — a model-less install, or a faceless group
     // scored as 0.0: COALESCE makes both order purely by sharpness.
     conn.execute("UPDATE contents SET sharpness = 9.0 WHERE hash = 'sharp'", []).unwrap();
-    conn.execute("UPDATE contents SET sharpness = 1.0, face_score = 0.0 WHERE hash = 'soft'", []).unwrap();
+    conn.execute("UPDATE contents SET sharpness = 1.0 WHERE hash = 'soft'", []).unwrap();
+    score_faces(&conn, "soft", 0.0);
     group(&conn, &["sharp", "soft"]);
 
     let members = queries::similar_group_of(&conn, "sharp", true).unwrap();
@@ -114,7 +129,7 @@ fn comparison_payload_serializes_the_score_camel_cased() {
     // mirror reads `faceScore`.
     let conn = db();
     seed_image(&conn, "one", "a.jpg");
-    conn.execute("UPDATE contents SET face_score = 0.5 WHERE hash = 'one'", []).unwrap();
+    score_faces(&conn, "one", 0.5);
     group(&conn, &["one"]);
     let members = queries::similar_group_of(&conn, "one", true).unwrap();
     let json = serde_json::to_value(&members[0]).unwrap();
@@ -143,7 +158,8 @@ fn model_less_pass_is_a_silent_no_op_leaving_scores_null() {
     .unwrap();
     assert_eq!((stats.scored, stats.failed), (0, 0));
     let score: Option<f64> = conn
-        .query_row("SELECT face_score FROM contents WHERE hash = 'img'", [], |r| r.get(0))
+        .query_row("SELECT score FROM face_scores WHERE content_hash = 'img'", [], |r| r.get(0))
+        .optional()
         .unwrap();
     assert_eq!(score, None, "no models -> untouched, ordering identical to today");
 }

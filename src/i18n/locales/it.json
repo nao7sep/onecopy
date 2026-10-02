@@ -189,6 +189,7 @@
   "settings.rebuildMessage": "OneCopy cancellerà le informazioni della libreria che può ricostruire e la cronologia conservata dei problemi e delle notifiche, poi controllerà di nuovo le tue cartelle di origine. I tuoi file, le impostazioni, gli strumenti gestiti e le tue scelte non cambieranno.",
   "settings.rebuildConfirm": "Ricostruisci",
   "settings.rebuildAlsoDiscard": "Cancella anche:",
+  "settings.rebuildDiscardFaces": "Valutazioni dei volti",
   "settings.rebuildDiscardPreviews": "Anteprime e copertine",
   "settings.rebuildDiscardTranscripts": "Trascrizioni",
   "settings.rebuildTranscriptsWarning": "Rigenerare le trascrizioni può richiedere molto tempo e restituisce praticamente lo stesso risultato con lo stesso modello e gli stessi file.",

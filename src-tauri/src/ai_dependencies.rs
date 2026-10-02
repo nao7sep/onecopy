@@ -60,22 +60,34 @@ pub fn production_ffmpeg(root: &Path) -> Option<PathBuf> {
 }
 
 /// Which model produced a result, and which exact file of it: the managed
-/// dependency's id and the digest of its pinned artifact.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// dependency's id and the digest of its pinned artifact. A result of two
+/// models names both, joined by `+`.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModelIdentity {
-    pub model: &'static str,
-    pub version: &'static str,
+    pub model: String,
+    pub version: String,
 }
 
-fn model_identity(id: &'static str) -> ModelIdentity {
-    let version = binaries_manager::spec_of(id)
-        .and_then(|spec| spec.pinned.as_ref())
-        .map_or("", |pinned| pinned.sha256);
-    ModelIdentity { model: id, version }
+fn model_identity(ids: &[&str]) -> ModelIdentity {
+    let version = ids
+        .iter()
+        .map(|id| {
+            binaries_manager::spec_of(id)
+                .and_then(|spec| spec.pinned.as_ref())
+                .map_or("", |pinned| pinned.sha256)
+        })
+        .collect::<Vec<_>>()
+        .join("+");
+    ModelIdentity { model: ids.join("+"), version }
 }
 
 pub fn transcription_model() -> ModelIdentity {
-    model_identity(WHISPER)
+    model_identity(&[WHISPER])
+}
+
+/// The detector finds the faces; the expression model reads each one.
+pub fn face_model() -> ModelIdentity {
+    model_identity(&[ULTRAFACE, HSEMOTION])
 }
 
 pub fn production_transcription(root: &Path) -> TranscriptionDependencies {

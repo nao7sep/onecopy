@@ -189,6 +189,7 @@
   "settings.rebuildMessage": "OneCopy borrará la información de la biblioteca que puede reconstruir y el historial conservado de incidencias y notificaciones, y luego comprobará de nuevo tus carpetas de origen. Tus archivos, tu configuración, tus herramientas gestionadas y tus decisiones no cambiarán.",
   "settings.rebuildConfirm": "Reconstruir",
   "settings.rebuildAlsoDiscard": "También descartar:",
+  "settings.rebuildDiscardFaces": "Puntuaciones de caras",
   "settings.rebuildDiscardPreviews": "Vistas previas y portadas",
   "settings.rebuildDiscardTranscripts": "Transcripciones",
   "settings.rebuildTranscriptsWarning": "Volver a generar las transcripciones puede tardar mucho y da un resultado prácticamente igual con el mismo modelo y los mismos archivos.",

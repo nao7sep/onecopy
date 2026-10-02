@@ -189,6 +189,7 @@
   "settings.rebuildMessage": "OneCopy очистит сведения библиотеки, которые можно построить заново, и сохранённую историю проблем и уведомлений, затем снова проверит ваши исходные папки. Ваши файлы, настройки, управляемые компоненты и выбранные параметры не изменятся.",
   "settings.rebuildConfirm": "Перестроить",
   "settings.rebuildAlsoDiscard": "Также очистить:",
+  "settings.rebuildDiscardFaces": "Оценки лиц",
   "settings.rebuildDiscardPreviews": "Изображения для просмотра и постеры",
   "settings.rebuildDiscardTranscripts": "Расшифровки",
   "settings.rebuildTranscriptsWarning": "Повторное создание расшифровок может занять много времени и даёт практически тот же результат с той же моделью и теми же файлами.",

@@ -365,8 +365,10 @@ describe("Settings categories", () => {
     // its highlighted caution note (Phase 9 developer decision).
     const previews = screen.getByLabelText("Previews and posters") as HTMLInputElement;
     const transcripts = screen.getByLabelText("Transcripts") as HTMLInputElement;
+    const faces = screen.getByLabelText("Face scores") as HTMLInputElement;
     expect(previews.checked).toBe(false);
     expect(transcripts.checked).toBe(false);
+    expect(faces.checked).toBe(false);
     expect(
       screen.getByText(/Regenerating transcripts can take a long time/),
     ).toBeTruthy();
@@ -377,7 +379,7 @@ describe("Settings categories", () => {
       expect(invokeCalls.some((call) => call.command === "rebuild_library_index")).toBe(true),
     );
     const call = invokeCalls.find((call) => call.command === "rebuild_library_index");
-    expect(call?.args).toEqual({ discardPreviews: false, discardTranscripts: false });
+    expect(call?.args).toEqual({ discardPreviews: false, discardTranscripts: false, discardFaces: false });
   });
 
   it("passes the chosen rebuild options through to the backend command", async () => {
@@ -386,13 +388,14 @@ describe("Settings categories", () => {
     fireEvent.click(screen.getByRole("button", { name: /Rebuild library index/ }));
     fireEvent.click(screen.getByLabelText("Previews and posters"));
     fireEvent.click(screen.getByLabelText("Transcripts"));
+    fireEvent.click(screen.getByLabelText("Face scores"));
     fireEvent.click(screen.getByRole("button", { name: "Rebuild" }));
 
     await waitFor(() =>
       expect(invokeCalls.some((call) => call.command === "rebuild_library_index")).toBe(true),
     );
     const call = invokeCalls.find((call) => call.command === "rebuild_library_index");
-    expect(call?.args).toEqual({ discardPreviews: true, discardTranscripts: true });
+    expect(call?.args).toEqual({ discardPreviews: true, discardTranscripts: true, discardFaces: true });
   });
 
   it("groups related controls without changing any draft value on tab changes", () => {

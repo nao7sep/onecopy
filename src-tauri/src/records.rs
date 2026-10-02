@@ -182,7 +182,50 @@ const SCHEMA: &str = "
         detail_json TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS trash_actions_content ON trash_actions(content_hash);
+    -- Written through the index connection that attaches this database, in
+    -- the same transaction as the index change it belongs to.
+    CREATE TABLE IF NOT EXISTS analysis_events (
+        id INTEGER PRIMARY KEY,
+        session_id TEXT,
+        time_utc TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        class TEXT NOT NULL,
+        -- 'failed', or 'reopened' when the user asked for a new attempt.
+        event TEXT NOT NULL,
+        model TEXT,
+        model_version TEXT,
+        path TEXT,
+        message TEXT
+    );
+    CREATE INDEX IF NOT EXISTS analysis_events_latest ON analysis_events(content_hash, class, session_id, id);
     PRAGMA user_version = 1;";
+
+/// Attaches the records beside an index database to its connection as
+/// `records`, so an index transaction can write the records it produces.
+pub fn attach(connection: &Connection, path: &Path) -> Result<(), String> {
+    static READY: Mutex<Vec<std::path::PathBuf>> = Mutex::new(Vec::new());
+    {
+        let mut ready = READY.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !ready.iter().any(|known| known == path) {
+            drop(open(path)?);
+            ready.push(path.to_path_buf());
+        }
+    }
+    connection
+        .execute("ATTACH DATABASE ?1 AS records", [path.to_string_lossy()])
+        .map(|_| ())
+        .map_err(|error| format!("attach records: {error}"))
+}
+
+/// This launch's session as an SQL literal, for statements that write or
+/// read records through an attached index connection.
+pub fn session_sql() -> String {
+    sql_text(crate::logging::session_id())
+}
+
+pub fn sql_text(value: Option<&str>) -> String {
+    value.map_or_else(|| "NULL".to_string(), |text| format!("'{}'", text.replace('\'', "''")))
+}
 
 /// Deletes transient records older than the fixed age, and clears the
 /// operation projection's links to the activity events it deleted.

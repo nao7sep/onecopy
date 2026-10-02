@@ -189,6 +189,7 @@
   "settings.rebuildMessage": "O OneCopy vai limpar as informações da biblioteca que podem ser recriadas e o histórico guardado de problemas e notificações, e depois verificar as suas pastas de origem de novo. Seus arquivos, configurações, ferramentas gerenciadas e escolhas não vão mudar.",
   "settings.rebuildConfirm": "Recriar",
   "settings.rebuildAlsoDiscard": "Também descartar:",
+  "settings.rebuildDiscardFaces": "Avaliações de rostos",
   "settings.rebuildDiscardPreviews": "Prévias e capas",
   "settings.rebuildDiscardTranscripts": "Transcrições",
   "settings.rebuildTranscriptsWarning": "Gerar as transcrições de novo pode demorar bastante e traz praticamente o mesmo resultado com o mesmo modelo e os mesmos arquivos.",

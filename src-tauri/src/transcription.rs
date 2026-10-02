@@ -72,7 +72,7 @@ pub fn is_cancelled() -> bool {
 }
 
 /// Owns the commit point between a completed inference and publication of its
-/// transcript and durable receipt. Cancellation/shutdown and publication
+/// transcript. Cancellation/shutdown and publication
 /// serialize on the transcription claim: whichever reaches this boundary
 /// first wins, so a late inference result can never become a false success.
 pub(crate) fn publish_if_active<T>(
