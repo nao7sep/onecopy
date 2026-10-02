@@ -27,7 +27,7 @@ fn draft(operation_id: Option<&str>) -> ActivityDraft {
 fn recorder(session: &str) -> (tempfile::TempDir, ActivityRecorder) {
     let temp = tempfile::tempdir().unwrap();
     let recorder =
-        ActivityRecorder::new(session.to_string(), temp.path().join("activity.sqlite3")).unwrap();
+        ActivityRecorder::new(session.to_string(), temp.path().join("records.sqlite3")).unwrap();
     (temp, recorder)
 }
 
@@ -230,10 +230,10 @@ fn operation_pages_keep_start_and_duration_outside_the_latest_raw_slice() {
 }
 
 #[test]
-fn projection_reads_use_seek_indexes_and_reject_corrupt_upgrades_without_partial_changes() {
+fn projection_reads_use_seek_indexes() {
     let (temp, recorder) = recorder("one");
     drop(recorder);
-    let conn = rusqlite::Connection::open(temp.path().join("activity.sqlite3")).unwrap();
+    let conn = rusqlite::Connection::open(temp.path().join("records.sqlite3")).unwrap();
     for (query, expected) in [
         ("SELECT * FROM activity_operations WHERE last_id > 1 ORDER BY last_id LIMIT 101", "activity_operations_changed"),
         ("SELECT * FROM activity_operations WHERE first_id < 100 ORDER BY first_id DESC LIMIT 101", "INTEGER PRIMARY KEY"),
@@ -245,31 +245,9 @@ fn projection_reads_use_seek_indexes_and_reject_corrupt_upgrades_without_partial
         assert!(details.contains(expected), "{details}");
         assert!(!details.contains("SCAN "), "{details}");
     }
-    conn.execute_batch("DROP TRIGGER activity_project_insert; DROP TABLE activity_operations;
-        ALTER TABLE activity_events DROP COLUMN user_visible; PRAGMA user_version = 0;
-        INSERT INTO activity_events(session_id, sequence, event_time_utc, monotonic_ms, owner, kind, draft_json)
-        VALUES('old',1,'2026-09-09T00:00:00.000Z',0,'settings','started','broken');").unwrap();
-    assert!(onecopy_lib::activity_history::initialize(&conn).is_err());
-    assert_eq!(
-        conn.query_row("SELECT COUNT(*) FROM activity_events", [], |row| row
-            .get::<_, i64>(0))
-            .unwrap(),
-        1
-    );
-    assert_eq!(
-        conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
-            .unwrap(),
-        0
-    );
-    assert_eq!(
-        conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('activity_events') WHERE name = 'user_visible'",
-            [],
-            |row| row.get::<_, i64>(0)
-        )
-        .unwrap(),
-        0
-    );
+    conn.pragma_update(None, "user_version", 2).unwrap();
+    drop(conn);
+    assert!(onecopy_lib::records::open(&temp.path().join("records.sqlite3")).is_err());
 }
 
 #[test]
@@ -316,44 +294,41 @@ fn forward_operation_cursor_catches_every_burst_and_changes_to_old_rows() {
 }
 
 #[test]
-fn operation_projection_upgrade_keeps_old_events_and_separates_sessions() {
-    let temp = tempfile::tempdir().unwrap();
-    let db = temp.path().join("activity.sqlite3");
-    let original = ActivityRecorder::new("one".into(), db.clone()).unwrap();
-    let mut work = draft(Some("same"));
+fn the_purge_drops_old_start_and_progress_events_and_keeps_every_operation_readable() {
+    let (_temp, recorder) = recorder("one");
+    let at = |day: u32| format!("2026-06-{day:02}T00:00:00.000Z");
+    let mut work = draft(Some("old"));
     work.owner = ActivityOwner::ManagedTools;
-    original
-        .record_at(work, "2026-09-07T00:00:00.000Z".into(), 2)
-        .unwrap();
-    original
-        .record_at(
-            draft(Some("internal")),
-            "2026-09-07T00:00:00.001Z".into(),
-            3,
-        )
-        .unwrap();
-    drop(original);
-    // Restore the original history schema, retaining its event exactly.
-    let conn = rusqlite::Connection::open(&db).unwrap();
-    conn.execute_batch(
-        "DROP TRIGGER activity_project_insert; DROP TABLE activity_operations;
-        ALTER TABLE activity_events DROP COLUMN user_visible; PRAGMA user_version = 0;",
-    )
-    .unwrap();
-    drop(conn);
-    let next = ActivityRecorder::new("two".into(), db).unwrap();
-    next.record_at(draft(Some("same")), "2026-09-08T00:00:00.000Z".into(), 1)
-        .unwrap();
-    let page = next.operations(None, None, 100).unwrap();
-    assert_eq!(page.operations.len(), 2);
-    assert_eq!(page.operations[1].first.session_id, "one");
-    assert_eq!(page.operations[1].first.sequence, 1);
-    assert_eq!(page.operations[1].first.monotonic_ms, 2);
-    assert_eq!(
-        next.page(None, 100).unwrap().0.len(),
-        3,
-        "internal raw history is retained without ordinary rows"
-    );
+    recorder.record_at(work.clone(), at(1), 1).unwrap();
+    let mut tick = work.clone();
+    tick.kind = ActivityKind::Progressed;
+    tick.done = Some(1);
+    tick.total = Some(2);
+    recorder.record_at(tick, at(2), 2).unwrap();
+    let mut end = work.clone();
+    end.kind = ActivityKind::Completed;
+    end.current = Some(ActivityState::Succeeded);
+    recorder.record_at(end, at(3), 3).unwrap();
+    let mut crashed = draft(Some("crashed"));
+    crashed.owner = ActivityOwner::ManagedTools;
+    recorder.record_at(crashed, at(4), 4).unwrap();
+    let mut recent = draft(Some("recent"));
+    recent.owner = ActivityOwner::ManagedTools;
+    recorder.record_at(recent, at(28), 5).unwrap();
+
+    let now = chrono::DateTime::parse_from_rfc3339("2026-09-25T00:00:00Z").unwrap().with_timezone(&chrono::Utc);
+    assert_eq!(recorder.purge_transient(now).unwrap(), 3);
+
+    let page = recorder.operations(None, None, 100).unwrap();
+    let ids = page.operations.iter().map(|row| row.latest.draft.operation_id.clone().unwrap()).collect::<Vec<_>>();
+    assert_eq!(ids, ["recent", "old"]);
+    let old = &page.operations[1];
+    assert_eq!(old.first.draft.kind, ActivityKind::Completed);
+    assert_eq!(old.event_count, 1);
+    assert!(old.started.is_none());
+    assert_eq!(old.progress.as_ref().map(|event| event.draft.kind), Some(ActivityKind::Completed));
+    assert_eq!(recorder.events(old.id, None, 100).unwrap().0.len(), 1);
+    assert!(page.operations[0].started.is_some());
 }
 
 // R4.4 E5: a target hidden entirely by review-visibility policy resolves to

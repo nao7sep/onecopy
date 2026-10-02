@@ -1,6 +1,6 @@
 //! The scan index: one SQLite file, `index.sqlite3`, under the storage root.
 //! Scan facts, derived caches, and retained diagnostic history. Whole-file
-//! lifecycle archives preserve this store alongside the activity database.
+//! lifecycle archives preserve this store.
 //!
 //! Current dogfood indexes and diagnostic records survive schema upgrades.
 //! Earlier disposable schema generations may still require reconstruction.

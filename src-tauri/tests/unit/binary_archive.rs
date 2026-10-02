@@ -21,12 +21,12 @@ fn read_archive(root: &Path) -> (Manifest, Vec<(String, Vec<u8>)>) {
 }
 
 #[test]
-fn both_sqlite_snapshots_restore_and_unchanged_content_deduplicates() {
+fn sqlite_snapshots_restore_and_unchanged_content_deduplicates() {
     let root = tempfile::tempdir().unwrap();
     stores(root.path());
     assert!(run(root.path()).unwrap());
     let (manifest, entries) = read_archive(root.path());
-    assert_eq!(entries.len(), 2);
+    assert_eq!(entries.len(), crate::storage::ARCHIVED_STORES.len());
     assert!(manifest.written_at_utc.ends_with('Z'));
     for (name, bytes) in entries {
         let entry = manifest.entries.iter().find(|entry| entry.entry_name == name).unwrap();
@@ -52,7 +52,7 @@ fn snapshots_include_committed_wal_bytes_without_copying_live_database_files() {
     run(root.path()).unwrap();
     let (manifest, entries) = read_archive(root.path());
     assert_eq!(entries.len(), 1);
-    assert!(manifest.entries[1].skipped.is_some());
+    assert!(manifest.entries[0].skipped.is_none());
     let restored = root.path().join("restored.sqlite3");
     std::fs::write(&restored, &entries[0].1).unwrap();
     let database = Connection::open(restored).unwrap();

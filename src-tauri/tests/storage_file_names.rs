@@ -5,7 +5,7 @@
 // `state.json` and guards it against silently merging with, or drifting into,
 // the durable `config.json`, the index, or the backup store.
 
-use onecopy_lib::activity::ACTIVITY_DB_FILE_NAME;
+use onecopy_lib::records::RECORDS_DB_FILE_NAME;
 use onecopy_lib::backup_store::BACKUPS_DB_FILE_NAME;
 use onecopy_lib::file_identity::INSTALLATION_ID_FILE_NAME;
 use onecopy_lib::paths::{
@@ -48,8 +48,8 @@ fn backup_store_stays_backups_sqlite3() {
 }
 
 #[test]
-fn activity_store_stays_activity_sqlite3() {
-    assert_eq!(ACTIVITY_DB_FILE_NAME, "activity.sqlite3");
+fn records_store_stays_records_sqlite3() {
+    assert_eq!(RECORDS_DB_FILE_NAME, "records.sqlite3");
 }
 
 #[test]
@@ -83,7 +83,7 @@ fn every_store_has_its_own_file() {
         PREVIEW_WINDOW_FILE_NAME,
         INDEX_DB_FILE_NAME,
         BACKUPS_DB_FILE_NAME,
-        ACTIVITY_DB_FILE_NAME,
+        RECORDS_DB_FILE_NAME,
         DEPENDENCIES_FILE_NAME,
         SOURCE_VOLUMES_FILE_NAME,
         CACHE_DIR_NAME,

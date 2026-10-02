@@ -1,8 +1,8 @@
-//! Causal activity history. The Rust core validates, orders,
-//! and persists diagnostic events. Neither this database nor its UI
-//! participates in application behavior.
+//! Causal activity history. The Rust core validates, orders, and records
+//! diagnostic events in `records.sqlite3`. Neither the records nor their UI
+//! participate in application behavior.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
@@ -10,7 +10,6 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-pub const ACTIVITY_DB_FILE_NAME: &str = "activity.sqlite3";
 const DEFAULT_PAGE_SIZE: usize = 100;
 const MAX_PAGE_SIZE: usize = 500;
 const MAX_ID_LEN: usize = 64;
@@ -199,7 +198,7 @@ struct RecorderState {
 
 impl ActivityRecorder {
     pub fn new(session_id: String, database_path: PathBuf) -> Result<Self, String> {
-        let connection = open_database(&database_path)?;
+        let connection = crate::records::open(&database_path)?;
         let next_sequence = connection
             .query_row(
                 "SELECT MAX(sequence) FROM activity_events WHERE session_id = ?1",
@@ -280,6 +279,16 @@ impl ActivityRecorder {
         )
     }
 
+    /// Deletes the transient activity events (see `records::purge_transient`).
+    pub fn purge_transient(&self, now: chrono::DateTime<chrono::Utc>) -> Result<usize, String> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| "activity history is unavailable".to_string())?;
+        let state = state.as_ref().ok_or("activity history is closed")?;
+        crate::records::purge_transient(&state.connection, now)
+    }
+
     pub fn page(
         &self,
         before: Option<i64>,
@@ -327,36 +336,6 @@ impl ActivityRecorder {
         let state = state.as_ref().ok_or("activity history is closed")?;
         crate::activity_history::events(&state.connection, operation, before, limit)
     }
-}
-
-fn open_database(path: &Path) -> Result<Connection, String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    let connection = Connection::open(path).map_err(|error| error.to_string())?;
-    static JOURNAL: crate::sqlite::JournalSetup = crate::sqlite::JournalSetup::new();
-    JOURNAL.configure(&connection, std::time::Duration::from_secs(5))?;
-    connection
-        .pragma_update(None, "synchronous", "NORMAL")
-        .map_err(|error| error.to_string())?;
-    connection.execute_batch(
-        "CREATE TABLE IF NOT EXISTS activity_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT NOT NULL,
-            sequence INTEGER NOT NULL,
-            event_time_utc TEXT NOT NULL,
-            monotonic_ms INTEGER NOT NULL,
-            operation_id TEXT,
-            owner TEXT NOT NULL,
-            kind TEXT NOT NULL,
-            draft_json TEXT NOT NULL,
-            UNIQUE(session_id, sequence)
-        );
-        CREATE INDEX IF NOT EXISTS activity_events_operation ON activity_events(session_id, operation_id, id);
-        CREATE INDEX IF NOT EXISTS activity_events_time ON activity_events(id DESC);"
-    ).map_err(|error| error.to_string())?;
-    crate::activity_history::initialize(&connection)?;
-    Ok(connection)
 }
 
 fn read_page(
@@ -441,6 +420,12 @@ pub fn init(database_path: PathBuf) {
     };
     match ActivityRecorder::new(session_id.to_string(), database_path) {
         Ok(recorder) => {
+            if let Err(error) = recorder.purge_transient(chrono::Utc::now()) {
+                crate::logging::warn(
+                    "transient records purge failed",
+                    json!({ "error": { "message": error } }),
+                );
+            }
             if RECORDER.set(recorder).is_err() {
                 crate::logging::warn("activity history already initialized", json!({}));
             }

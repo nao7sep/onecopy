@@ -4,7 +4,7 @@ use super::*;
 fn debug_diagnostics_do_not_create_ordinary_work_rows() {
     let temp = tempfile::tempdir().unwrap();
     let recorder =
-        ActivityRecorder::new("one".into(), temp.path().join("activity.sqlite3")).unwrap();
+        ActivityRecorder::new("one".into(), temp.path().join("records.sqlite3")).unwrap();
     let draft = ActivityDraft::new(ActivityOwner::Selection, ActivityKind::Changed);
     recorder
         .record_with_visibility(draft, "2026-09-09T00:00:00.000Z".into(), 0, false)

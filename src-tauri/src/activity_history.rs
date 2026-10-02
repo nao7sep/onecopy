@@ -60,67 +60,6 @@ pub struct OperationPage {
     pub monotonic_now_ms: u64,
 }
 
-pub fn initialize(conn: &Connection) -> Result<(), String> {
-    let revision: i64 = conn
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .map_err(|e| e.to_string())?;
-    if revision > 1 {
-        return Err("Activity history was written by a newer OneCopy version.".into());
-    }
-    if revision == 1 {
-        return Ok(());
-    }
-    // The original events remain untouched. Both backfill and the writer's
-    // projection trigger commit together, so an interrupted upgrade is retriable.
-    conn.execute_batch("BEGIN IMMEDIATE;
-        ALTER TABLE activity_events ADD COLUMN user_visible INTEGER NOT NULL DEFAULT 1;
-        UPDATE activity_events SET user_visible = 0
-          WHERE json_extract(draft_json, '$.owner') NOT IN
-            ('sourceCheck','fileInformation','mutation','managedTools','settings','transcript');
-        CREATE TABLE activity_operations (
-            first_id INTEGER PRIMARY KEY,
-            last_id INTEGER NOT NULL,
-            started_id INTEGER,
-            progress_id INTEGER,
-            event_count INTEGER NOT NULL,
-            session_id TEXT NOT NULL,
-            operation_id TEXT,
-            target_hash TEXT,
-            UNIQUE(session_id, operation_id)
-        );
-        CREATE INDEX activity_operations_changed ON activity_operations(last_id);
-        INSERT INTO activity_operations
-          SELECT MIN(id), MAX(id),
-            MIN(CASE WHEN json_extract(draft_json, '$.kind') IN ('admitted','queued','started','opened') THEN id END),
-            MAX(CASE WHEN json_extract(draft_json, '$.done') IS NOT NULL OR json_extract(draft_json, '$.itemCount') IS NOT NULL THEN id END),
-            COUNT(*), session_id, operation_id, NULL
-          FROM activity_events WHERE user_visible = 1
-          GROUP BY session_id, operation_id, CASE WHEN operation_id IS NULL THEN id ELSE 0 END;
-        CREATE TRIGGER activity_project_insert AFTER INSERT ON activity_events WHEN NEW.user_visible = 1 BEGIN
-          INSERT INTO activity_operations(first_id, last_id, started_id, progress_id, event_count, session_id, operation_id, target_hash)
-          VALUES (NEW.id, NEW.id,
-            CASE WHEN json_extract(NEW.draft_json, '$.kind') IN ('admitted','queued','started','opened') THEN NEW.id END,
-            CASE WHEN json_extract(NEW.draft_json, '$.done') IS NOT NULL OR json_extract(NEW.draft_json, '$.itemCount') IS NOT NULL THEN NEW.id END,
-            1, NEW.session_id, NEW.operation_id, json_extract(NEW.draft_json, '$.targetHash'))
-          ON CONFLICT(session_id, operation_id) DO UPDATE SET
-            last_id = excluded.last_id,
-            started_id = COALESCE(activity_operations.started_id, excluded.started_id),
-            progress_id = COALESCE(excluded.progress_id, activity_operations.progress_id),
-            event_count = activity_operations.event_count + 1,
-            target_hash = COALESCE(excluded.target_hash, activity_operations.target_hash);
-        END;
-        PRAGMA user_version = 1;
-        COMMIT;")
-        .map_err(|error| {
-            if !conn.is_autocommit() {
-                if let Err(rollback) = conn.execute_batch("ROLLBACK") {
-                    crate::logging::error("activity upgrade rollback failed", serde_json::json!({"error": rollback.to_string()}));
-                }
-            }
-            error.to_string()
-        })
-}
-
 pub fn event_from_row(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<ActivityEvent> {
     let draft: String = row.get(offset + 5)?;
     Ok(ActivityEvent {

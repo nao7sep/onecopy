@@ -56,6 +56,7 @@ pub mod presentation_runtime;
 pub mod progress_throttle;
 pub mod preview;
 pub mod queries;
+pub mod records;
 pub mod resolution;
 pub mod resource_limits;
 pub mod scan_runtime;

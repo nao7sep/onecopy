@@ -15,8 +15,6 @@ use std::path::Path;
 
 /// Modules whose filesystem access is only OneCopy's own data folder.
 const DATA_ROOT_MODULES: &[(&str, &str)] = &[
-    ("activity.rs", "activity history store"),
-    ("activity_history.rs", "activity history store"),
     ("ai_acceleration.rs", "managed runtime files"),
     ("ai_dependencies.rs", "managed model files"),
     ("backup_store.rs", "managed-text backups"),
@@ -32,6 +30,7 @@ const DATA_ROOT_MODULES: &[(&str, &str)] = &[
     ("instance_owner.rs", "instance lock"),
     ("logging.rs", "session logs"),
     ("paths.rs", "data folder layout"),
+    ("records.rs", "records database"),
     ("sqlite.rs", "index database"),
     ("startup.rs", "data folder preparation"),
     ("storage.rs", "config and state files"),
