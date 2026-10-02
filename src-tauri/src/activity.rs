@@ -446,9 +446,7 @@ fn record_visible(
     let Some(recorder) = RECORDER.get() else {
         return Ok(None);
     };
-    let event = recorder.record_now(draft, user_visible)?;
-    crate::logging::debug("activity", json!({ "activity": event }));
-    Ok(Some(event))
+    Ok(Some(recorder.record_now(draft, user_visible)?))
 }
 
 impl ActivityDraft {

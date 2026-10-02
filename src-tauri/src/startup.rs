@@ -48,7 +48,7 @@ pub(crate) struct StartupState {
     pub(crate) data_root: PathBuf,
     pub(crate) cache_root: PathBuf,
     pub(crate) setup_config: Option<Value>,
-    pub(crate) log_path: PathBuf,
+    pub(crate) records_path: PathBuf,
     pub(crate) started: Instant,
 }
 
@@ -144,15 +144,13 @@ fn prepare_data(data_root: &Path) -> Result<PreparedData, String> {
 fn prepare(app: &tauri::App, debug_enabled: bool) -> Result<StartupState, String> {
     let started = Instant::now();
     let data_root = crate::paths::resolve_data_root(app.handle())?;
-    let log_path = data_root
-        .join(crate::paths::LOGS_DIR_NAME)
-        .join(crate::logging::session_filename());
-    crate::logging::init(&log_path, debug_enabled);
+    let records_path = data_root.join(crate::records::RECORDS_DB_FILE_NAME);
+    crate::logging::init(&records_path, &data_root.join(crate::paths::LOGS_DIR_NAME), debug_enabled);
     crate::binary_archive::launch(&data_root);
     if let Some(session_id) = crate::logging::session_id() {
-        crate::records::init(&data_root.join(crate::records::RECORDS_DB_FILE_NAME), session_id);
+        crate::records::init(&records_path, session_id);
     }
-    crate::activity::init(data_root.join(crate::records::RECORDS_DB_FILE_NAME));
+    crate::activity::init(records_path.clone());
     crate::logging::install_panic_hook();
 
     // The backup store is best-effort by contract and records its own failure.
@@ -168,7 +166,7 @@ fn prepare(app: &tauri::App, debug_enabled: bool) -> Result<StartupState, String
         data_root,
         cache_root,
         setup_config,
-        log_path,
+        records_path,
         started,
     })
 }
@@ -207,7 +205,7 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
         data_root,
         cache_root,
         setup_config,
-        log_path,
+        records_path,
         started,
     } = state;
 
@@ -395,7 +393,7 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
             "version": env!("CARGO_PKG_VERSION"),
             "build": if cfg!(debug_assertions) { "debug" } else { "release" },
             "debugLogging": debug_enabled,
-            "logPath": log_path.to_string_lossy(),
+            "recordsPath": records_path.to_string_lossy(),
             "os": std::env::consts::OS,
             "arch": std::env::consts::ARCH,
             "setupMs": started.elapsed().as_millis() as u64,

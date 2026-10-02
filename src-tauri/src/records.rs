@@ -215,6 +215,16 @@ const SCHEMA: &str = "
         message_values TEXT
     );
     CREATE INDEX IF NOT EXISTS issue_events_identity ON issue_events(session_id, kind, path, id);
+    -- Every log line, as the logging conventions shape it, kept for good.
+    CREATE TABLE IF NOT EXISTS log_lines (
+        id INTEGER PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        time_utc TEXT NOT NULL,
+        level TEXT NOT NULL,
+        message TEXT NOT NULL,
+        line TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS log_lines_session ON log_lines(session_id, id);
     -- Every notice OneCopy published or recorded, in the transaction of the
     -- Issue it raises.
     CREATE TABLE IF NOT EXISTS notices (

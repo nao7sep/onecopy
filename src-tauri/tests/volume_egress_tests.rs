@@ -27,7 +27,7 @@ const DATA_ROOT_MODULES: &[(&str, &str)] = &[
     ("i18n.rs", "config language"),
     ("index_store.rs", "index database"),
     ("instance_owner.rs", "instance lock"),
-    ("logging.rs", "session logs"),
+    ("logging.rs", "records fallback log files"),
     ("paths.rs", "data folder layout"),
     ("records.rs", "records database"),
     ("sqlite.rs", "index database"),

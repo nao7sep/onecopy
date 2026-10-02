@@ -1,38 +1,27 @@
-// Per-session JSON Lines logger. The privileged Rust core owns the log file;
-// the sandboxed webview frontend forwards structured log objects to it (see
-// `emit_forwarded` and the `log_event` command in lib.rs). Self-contained and
-// dependency-free by design, per the logging conventions.
+// The application logger. Each line is a record in `records.sqlite3`
+// (logging conventions); the sandboxed webview frontend forwards structured
+// log objects to it (see `emit_forwarded` and the `log_event` command in
+// lib.rs). Self-contained by design, per the logging conventions.
 //
-// Design (mirrors ~/code/company/conventions/...-logging-conventions.md):
-//   - One file per process launch: ~/.onecopy/logs/<yyyymmdd-hhmmss-fff-utc.log>.
-//     Strictly that stamp — no pid or id suffix. Two launches in the same UTC
-//     millisecond collide on the name; the file is opened with exclusive
-//     create, so the second launch's open fails and it degrades to the
-//     stderr fallback rather than interleaving two sessions into one file.
-//   - One JSON object per line: { time, level, message, ...fields }.
+//   - One JSON object per line: { time, level, message, sessionId, ...fields },
+//     stored whole beside its time, level, message and session. The session
+//     is this launch, named by its start time.
 //   - `time` is UTC ISO 8601 with milliseconds and `Z`, generated here without a
 //     date crate (no new heavy deps) via a hand-rolled civil-time conversion.
 //   - Four levels. `debug` is developer-only and never written unless the debug
 //     gate is on (a dev build, or ONECOPY_DEBUG=1).
-//   - Every line is written straight through to the OS (unbuffered), so the
-//     convention's "last lines before a crash must reach disk" holds for free:
-//     once a line is logged the OS has it, surviving a panic, SIGKILL, or any
-//     signal — no buffer can strand it, and there is no flush to forget. (Log
-//     volume is human-paced and IO-bounded, so per-line writes cost nothing
-//     meaningful; only a kernel panic or power loss, which no userspace flush
-//     would prevent either, can lose an unsynced page.)
+//   - One writer thread owns the records connection, so a caller never waits
+//     on a database lock, including one its own thread holds through an
+//     attached index connection. `flush` waits, bounded, for queued lines.
 //   - Nothing is redacted (logging conventions).
-//   - If the file cannot be opened or written, it degrades to stderr and never
-//     panics — the app must never crash because logging failed. A mid-session
-//     write failure permanently switches to the stderr fallback (the dead
-//     handle is dropped and never retried), and the line that failed to write
-//     is re-emitted to stderr so its content is never lost.
+//   - A line the records cannot take goes to this launch's text file under
+//     `logs/`, then to stderr; logging never panics and never stops the app.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::path::Path;
-use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::{Path, PathBuf};
+use std::sync::{mpsc, OnceLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value};
 
@@ -124,73 +113,143 @@ fn filename_stamp(ms: i64) -> String {
     format!("{y:04}{mo:02}{d:02}-{h:02}{mi:02}{s:02}-{ms3:03}-utc")
 }
 
-// `<yyyymmdd-hhmmss-fff-utc.log>` for the current launch — the plain UTC stamp
-// (with milliseconds) and no other suffix; a same-millisecond collision is
-// accepted rather than engineered around.
-pub fn session_filename() -> String {
-    format!("{}.log", filename_stamp(now_unix_millis()))
-}
-
 // --- The logger itself ---
 
-struct Inner {
-    // Unbuffered: each line is written straight to the file so a crash or signal
-    // can never strand buffered lines. `None` means file logging failed at open
-    // and we degrade to stderr.
-    writer: Option<File>,
+enum Queued {
+    Line(Line),
+    Flush(mpsc::Sender<()>),
+}
+
+struct Line {
+    session_id: String,
+    time: String,
+    level: String,
+    message: String,
+    text: String,
 }
 
 pub struct Logger {
-    inner: Mutex<Inner>,
+    sender: Option<mpsc::Sender<Queued>>,
     debug_enabled: bool,
     session_id: String,
 }
 
 static LOGGER: OnceLock<Logger> = OnceLock::new();
 
-// Opens the session file (creating ~/.onecopy/logs/ if needed) and installs the
-// process-global logger. On any failure it installs a logger that writes to
-// stderr instead, so logging calls always have somewhere to go. Call once.
-pub fn init(file_path: &Path, debug_enabled: bool) {
-    let writer = open_writer(file_path);
-    let logger = Logger {
-        inner: Mutex::new(Inner { writer }),
+/// Writes queued lines into the records, falling back to the session's text
+/// file and then stderr for a line the records cannot take.
+struct Writer {
+    records: Option<rusqlite::Connection>,
+    fallback_path: PathBuf,
+    fallback: Option<File>,
+}
+
+impl Writer {
+    fn write(&mut self, line: &Line) {
+        let stored = match &self.records {
+            Some(connection) => connection
+                .execute(
+                    "INSERT INTO log_lines (session_id, time_utc, level, message, line)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    rusqlite::params![line.session_id, line.time, line.level, line.message, line.text],
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+            None => Err("records are unavailable".to_string()),
+        };
+        if let Err(error) = stored {
+            self.write_fallback(line, &error);
+        }
+    }
+
+    // not recorded: the fallback text file is append-mode diagnostic output.
+    fn write_fallback(&mut self, line: &Line, reason: &str) {
+        if self.fallback.is_none() {
+            let opened = self
+                .fallback_path
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| OpenOptions::new().create(true).append(true).open(&self.fallback_path));
+            match opened {
+                Ok(file) => self.fallback = Some(file),
+                Err(error) => {
+                    eprintln!("[onecopy:logging] {reason}; {}: {error}", self.fallback_path.display());
+                    eprintln!("{}", line.text);
+                    return;
+                }
+            }
+        }
+        let written = self
+            .fallback
+            .as_mut()
+            .map(|file| file.write_all(format!("{}\n", line.text).as_bytes()));
+        if let Some(Err(error)) = written {
+            self.fallback = None;
+            eprintln!("[onecopy:logging] {reason}; {}: {error}", self.fallback_path.display());
+            eprintln!("{}", line.text);
+        }
+    }
+}
+
+impl Logger {
+    /// Starts the writer thread over `records_path`, with `fallback_path` for
+    /// lines the records cannot take.
+    fn start(records_path: &Path, fallback_path: PathBuf, debug_enabled: bool, session_id: String) -> Self {
+        let (sender, receiver) = mpsc::channel::<Queued>();
+        let records_path = records_path.to_path_buf();
+        let spawned = std::thread::Builder::new()
+            .name("onecopy-log-writer".to_string())
+            .spawn(move || {
+                let records = crate::records::open(&records_path)
+                    .map_err(|error| eprintln!("[onecopy:logging] records unavailable: {error}"))
+                    .ok();
+                let mut writer = Writer { records, fallback_path, fallback: None };
+                for queued in receiver {
+                    match queued {
+                        Queued::Line(line) => writer.write(&line),
+                        Queued::Flush(done) => {
+                            let _ = done.send(());
+                        }
+                    }
+                }
+            });
+        let sender = match spawned {
+            Ok(_) => Some(sender),
+            Err(error) => {
+                eprintln!("[onecopy:logging] could not start the log writer: {error}; logging to stderr");
+                None
+            }
+        };
+        Logger { sender, debug_enabled, session_id }
+    }
+
+    /// Waits up to `timeout` for every line queued so far to be written.
+    fn flush(&self, timeout: Duration) -> bool {
+        let Some(sender) = &self.sender else { return true };
+        let (done, finished) = mpsc::channel();
+        sender.send(Queued::Flush(done)).is_ok() && finished.recv_timeout(timeout).is_ok()
+    }
+}
+
+// Installs the process-global logger for this launch: lines go to the
+// records at `records_path`, and to a text file under `logs_dir` named by the
+// launch when the records cannot take one. Call once.
+pub fn init(records_path: &Path, logs_dir: &Path, debug_enabled: bool) {
+    let started = now_unix_millis();
+    let logger = Logger::start(
+        records_path,
+        logs_dir.join(format!("{}.log", filename_stamp(started))),
         debug_enabled,
-        session_id: crate::nanoid::generate().unwrap_or_else(|_| {
-            format!("p{}-{}", std::process::id(), now_unix_millis())
-        }),
-    };
+        iso_millis(started),
+    );
     if LOGGER.set(logger).is_err() {
         eprintln!("[onecopy:logging] logger already initialized; ignoring re-init");
     }
 }
 
-fn open_writer(file_path: &Path) -> Option<File> {
-    if let Some(parent) = file_path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            eprintln!(
-                "[onecopy:logging] could not create {}: {e}; logging to stderr",
-                parent.display()
-            );
-            return None;
-        }
-    }
-    // not recorded: session logs are append-mode diagnostic output.
-    // Exclusive create: a session file is always fresh, never appended into.
-    // Two launches landing on the same millisecond stamp are the one case this
-    // can legitimately fail on live filesystems; the second one loses the race
-    // and falls through to the stderr fallback below rather than interleaving
-    // both sessions into a single file.
-    match OpenOptions::new().create_new(true).write(true).open(file_path) {
-        Ok(file) => Some(file),
-        Err(e) => {
-            eprintln!(
-                "[onecopy:logging] could not open {}: {e}; logging to stderr",
-                file_path.display()
-            );
-            None
-        }
-    }
+/// Waits, bounded, until every line logged so far is stored.
+pub fn flush(timeout: Duration) -> bool {
+    global().is_none_or(|logger| logger.flush(timeout))
 }
 
 fn global() -> Option<&'static Logger> {
@@ -206,47 +265,32 @@ pub fn session_id() -> Option<&'static str> {
 }
 
 impl Logger {
-    // Serializes and writes one envelope as a single line. Both emit() and
-    // emit_forwarded() funnel through here, so every line in the file passes
-    // the identical write contract.
+    // Serializes and queues one envelope as a single line. Both emit() and
+    // emit_forwarded() funnel through here, so every line passes the
+    // identical write contract.
     fn write_envelope(&self, obj: Map<String, Value>) {
         let mut obj = obj;
         obj.insert(
             "sessionId".to_string(),
             Value::String(self.session_id.clone()),
         );
-        let value = Value::Object(obj);
-        let mut line = match serde_json::to_string(&value) {
-            Ok(line) => line,
+        let text_of = |key: &str| obj.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
+        let (time, level, message) = (text_of("time"), text_of("level"), text_of("message"));
+        let text = match serde_json::to_string(&Value::Object(obj)) {
+            Ok(text) => text,
             Err(e) => {
                 eprintln!("[onecopy:logging] serialize failed: {e}");
                 return;
             }
         };
-        line.push('\n');
-        // Recover from a poisoned mutex: a prior panic-while-writing must not
-        // wedge logging shut, least of all the panic hook trying to record it.
-        let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        match inner.writer.as_mut() {
-            // One write_all per line; the file is opened via exclusive create
-            // and this is the only writer in the process, so lines never
-            // interleave. The bytes reach the OS immediately — no buffer,
-            // nothing to flush.
-            Some(writer) => {
-                if let Err(e) = writer.write_all(line.as_bytes()) {
-                    // The handle is dead (disk full, permissions revoked, the
-                    // device went away). Never retry it: drop it permanently so
-                    // every later call takes the `None` branch below, and
-                    // re-emit this very line to stderr right now so its content
-                    // is degraded-to, not silently swallowed.
-                    eprintln!(
-                        "[onecopy:logging] write failed: {e}; switching to stderr fallback"
-                    );
-                    inner.writer = None;
-                    eprint!("{line}");
+        let line = Line { session_id: self.session_id.clone(), time, level, message, text };
+        match &self.sender {
+            Some(sender) => {
+                if let Err(mpsc::SendError(Queued::Line(line))) = sender.send(Queued::Line(line)) {
+                    eprintln!("{}", line.text);
                 }
             }
-            None => eprint!("{line}"),
+            None => eprintln!("{}", line.text),
         }
     }
 
@@ -438,8 +482,9 @@ pub(crate) fn install_panic_hook() {
                 }
             }),
         );
-        // The error line is already on disk (the logger is unbuffered); defer to
-        // the previous hook so the process still aborts and prints as usual.
+        // Let the error line reach the records before deferring to the
+        // previous hook, so the process still aborts and prints as usual.
+        flush(Duration::from_secs(2));
         default_hook(info);
     }));
 }

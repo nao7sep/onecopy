@@ -128,6 +128,7 @@ pub(crate) fn quiesce(app: &AppHandle) {
                 }
                 drop(released);
                 crate::activity::record_shutdown();
+                crate::logging::flush(std::time::Duration::from_secs(2));
                 if clean {
                     if let Ok(cache_root) = crate::paths::cache_root() {
                         crate::preview::clear_session_renders(&crate::preview::CachePaths::new(cache_root));
