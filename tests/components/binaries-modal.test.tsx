@@ -347,9 +347,9 @@ describe("the two lifecycles", () => {
   it("presents rolling ffmpeg builds by date while retaining comparison state", () => {
     seed([
       entry("ffmpeg", "update-available", {
-        installedVersion: "Latest Auto-Build (2026-08-23 13:03)",
+        installedVersion: "autobuild-2026-08-23-13-03",
         facts: {
-          latestKnownVersion: "Latest Auto-Build (2026-08-24 14:04)",
+          latestKnownVersion: "autobuild-2026-08-24-14-04",
           lastCheckedAtUtc: "2026-08-24T14:05:00.000Z",
         },
       }),
@@ -358,7 +358,7 @@ describe("the two lifecycles", () => {
 
     expect(document.body.textContent).toContain("Build 2026-08-23 13:03");
     expect(document.body.textContent).toContain("2026-08-24 14:04 available");
-    expect(document.body.textContent).not.toContain("Latest Auto-Build");
+    expect(document.body.textContent).not.toContain("autobuild");
   });
 
   it("offers the check only on the entry that has an upstream", () => {

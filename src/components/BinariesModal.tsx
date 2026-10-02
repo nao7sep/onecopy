@@ -47,8 +47,10 @@ function statusLabel(entry: DependencyState, t: Translator["t"]): string {
   return entry.status === "up-to-date" ? t("binaries.upToDate") : t("binaries.installed");
 }
 
+/** The version's display form (managed-runtime-dependencies conventions). */
 function displayArtifactIdentity(identity: string): string {
-  return identity.match(/^Latest Auto-Build \((.+)\)$/)?.[1] ?? identity;
+  const build = identity.match(/^autobuild-(\d{4}-\d{2}-\d{2})-(\d{2})-(\d{2})$/);
+  return build === null ? identity : `${build[1]} ${build[2]}:${build[3]}`;
 }
 
 /** The one line of version fact a row shows. A present entry whose version could

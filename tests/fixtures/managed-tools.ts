@@ -18,11 +18,11 @@ export function managedToolsFixture(
     id: "ffmpeg", label: "ffmpeg", kind: "binary",
     status: identity === "unreadable" ? "installed-unchecked" : "update-available",
     installedVersion: identity === "unreadable" ? null : platform === "windows"
-      ? "Latest Auto-Build (2026-09-01 12:00)" : "9.0",
+      ? "autobuild-2026-09-01-12-00" : "9.0",
     facts: {
       latestKnownVersion: identity === "long"
         ? "synthetic-build-with-an-intentionally-long-identity-for-layout-verification-1234567890"
-        : platform === "windows" ? "Latest Auto-Build (2026-09-08 12:00)" : "9.1",
+        : platform === "windows" ? "autobuild-2026-09-08-12-00" : "9.1",
       lastCheckedAtUtc: "2026-09-09T00:00:00.000Z",
     },
     path: "", requiredForCore: true, checkable: true, released: null, downloadBytes: null,
