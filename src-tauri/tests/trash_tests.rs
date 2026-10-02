@@ -624,6 +624,33 @@ fn empty_notices_a_file_added_within_the_same_mtime_granule() {
     assert_eq!((current.files, current.bytes), (2, 1000));
 }
 
+#[test]
+fn each_trash_action_is_also_a_record() {
+    let f = fixture("records");
+    let records = f.source.parent().unwrap().join("records.sqlite3");
+    onecopy_lib::records::init(&records, "trash-records-test");
+    let file = f.source.join("recorded.jpg");
+    std::fs::write(&file, b"bytes").unwrap();
+
+    let record = trash_file(&file, &f.source, Some("hash-recorded"), &ctx()).unwrap();
+
+    let conn = rusqlite::Connection::open(&records).unwrap();
+    let (session, action, operation, hash, original, stored, detail): (String, String, String, String, String, String, String) = conn
+        .query_row(
+            "SELECT session_id, action, operation_id, content_hash, original_path, stored_path, detail_json
+             FROM trash_actions WHERE original_path = ?1",
+            [file.to_string_lossy()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
+        )
+        .unwrap();
+    assert_eq!(session, "trash-records-test");
+    assert_eq!((action.as_str(), operation.as_str(), hash.as_str()), ("trashed", "test-operation", "hash-recorded"));
+    assert_eq!(original, file.to_string_lossy());
+    assert_eq!(stored, record.stored_path);
+    let detail: serde_json::Value = serde_json::from_str(&detail).unwrap();
+    assert_eq!(detail["storedName"], "recorded.jpg");
+}
+
 fn ctx() -> TrashContext {
     TrashContext::new(TrashKind::Delete, "test-operation")
 }

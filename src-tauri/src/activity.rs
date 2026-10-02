@@ -279,16 +279,6 @@ impl ActivityRecorder {
         )
     }
 
-    /// Deletes the transient activity events (see `records::purge_transient`).
-    pub fn purge_transient(&self, now: chrono::DateTime<chrono::Utc>) -> Result<usize, String> {
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| "activity history is unavailable".to_string())?;
-        let state = state.as_ref().ok_or("activity history is closed")?;
-        crate::records::purge_transient(&state.connection, now)
-    }
-
     pub fn page(
         &self,
         before: Option<i64>,
@@ -420,12 +410,6 @@ pub fn init(database_path: PathBuf) {
     };
     match ActivityRecorder::new(session_id.to_string(), database_path) {
         Ok(recorder) => {
-            if let Err(error) = recorder.purge_transient(chrono::Utc::now()) {
-                crate::logging::warn(
-                    "transient records purge failed",
-                    json!({ "error": { "message": error } }),
-                );
-            }
             if RECORDER.set(recorder).is_err() {
                 crate::logging::warn("activity history already initialized", json!({}));
             }

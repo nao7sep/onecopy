@@ -318,10 +318,12 @@ fn commit_trash(
     before_move: impl FnOnce(&Path),
 ) -> Result<TrashedRecord, TrashError> {
     before_move(&plan.stored);
-    crate::fs_publish::rename_no_replace(source, &plan.stored).map_err(|error| TrashError {
+    let moved = crate::fs_publish::rename_no_replace(source, &plan.stored).map_err(|error| TrashError {
         message: format!("trash move failed for {}: {error}", source.display()),
         outcome_unknown: volume_io::outcome_unknown(&error),
-    })?;
+    });
+    record_trash_action(&plan.record, moved.as_ref().err());
+    moved?;
     if let Err(error) = crate::fs_publish::sync_directory(&plan.day_dir) {
         crate::logging::warn(
             "trash directory sync failed after the move completed",
@@ -333,6 +335,21 @@ fn commit_trash(
     }
 
     Ok(plan.record)
+}
+
+fn record_trash_action(record: &TrashedRecord, failure: Option<&TrashError>) {
+    let mut detail = json!(record);
+    if let Some(failure) = failure {
+        detail["error"] = json!({ "message": failure.message, "outcomeUnknown": failure.outcome_unknown });
+    }
+    crate::records::trash_action(crate::records::TrashAction {
+        action: if failure.is_some() { "trash-failed" } else { "trashed" },
+        operation_id: Some(&record.operation),
+        content_hash: record.content_hash.as_deref(),
+        original_path: Some(&record.original_path),
+        stored_path: &record.stored_path,
+        detail,
+    });
 }
 
 /// A file's modification time in whole milliseconds since the Unix epoch,
@@ -439,8 +456,8 @@ fn suffixed_name(target: &Path, counter: u32) -> PathBuf {
 /// it describes, keeping the folder self-contained and hand-deletable.
 fn append_manifest(day_dir: &Path, record: &TrashedRecord) -> Result<(), String> {
     let line = serde_json::to_string(record).map_err(|e| e.to_string())?;
-    // not recorded: the manifest is trash-side audit data, append-mode by
-    // construction, never managed text.
+    // not recorded: a sidecar of the trashed files beside it
+    // (data-backup conventions); each action is a record instead.
     volume_io::append_line_synced(&day_dir.join(MANIFEST_FILE_NAME), line)
         .map_err(|e| e.to_string())
 }
@@ -712,6 +729,14 @@ pub fn append_restored(day_dir: &Path, stored_name: &str, restored_to: &str) {
         "storedName": stored_name,
         "restoredTo": restored_to,
         "restoredAtUtc": logging::now_iso_millis(),
+    });
+    crate::records::trash_action(crate::records::TrashAction {
+        action: "restored",
+        operation_id: None,
+        content_hash: None,
+        original_path: None,
+        stored_path: &day_dir.join(stored_name).to_string_lossy(),
+        detail: line.clone(),
     });
     if let Err(error) =
         volume_io::append_line_synced(&day_dir.join(MANIFEST_FILE_NAME), line.to_string())
@@ -1241,7 +1266,22 @@ pub fn empty_root_with_progress(
                 plan_changed: false,
             });
         }
-        if let Err(error) = volume_io::remove_file(&path) {
+        let removed = volume_io::remove_file(&path);
+        if recoverable || removed.is_err() {
+            crate::records::trash_action(crate::records::TrashAction {
+                action: if removed.is_ok() { "removed" } else { "remove-failed" },
+                operation_id: None,
+                content_hash: None,
+                original_path: None,
+                stored_path: &path.to_string_lossy(),
+                detail: json!({
+                    "root": root,
+                    "bytes": bytes,
+                    "error": removed.as_ref().err().map(|error| json!({ "message": error.to_string() })),
+                }),
+            });
+        }
+        if let Err(error) = removed {
             snapshot.failures += 1;
             record_failure(&path, &error.to_string())?;
             crate::logging::warn(

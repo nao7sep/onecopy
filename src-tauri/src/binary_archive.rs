@@ -69,6 +69,7 @@ pub(crate) fn clean_exit() {
     let Ok(root) = crate::paths::data_root() else { return; };
     complete(move || {
         crate::activity::close();
+        crate::records::close();
         crate::backup_store::close();
         finish_archive(&root)
     });

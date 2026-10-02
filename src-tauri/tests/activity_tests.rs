@@ -295,7 +295,7 @@ fn forward_operation_cursor_catches_every_burst_and_changes_to_old_rows() {
 
 #[test]
 fn the_purge_drops_old_start_and_progress_events_and_keeps_every_operation_readable() {
-    let (_temp, recorder) = recorder("one");
+    let (temp, recorder) = recorder("one");
     let at = |day: u32| format!("2026-06-{day:02}T00:00:00.000Z");
     let mut work = draft(Some("old"));
     work.owner = ActivityOwner::ManagedTools;
@@ -317,7 +317,8 @@ fn the_purge_drops_old_start_and_progress_events_and_keeps_every_operation_reada
     recorder.record_at(recent, at(28), 5).unwrap();
 
     let now = chrono::DateTime::parse_from_rfc3339("2026-09-25T00:00:00Z").unwrap().with_timezone(&chrono::Utc);
-    assert_eq!(recorder.purge_transient(now).unwrap(), 3);
+    let records = onecopy_lib::records::open(&temp.path().join("records.sqlite3")).unwrap();
+    assert_eq!(onecopy_lib::records::purge_transient(&records, now).unwrap(), 3);
 
     let page = recorder.operations(None, None, 100).unwrap();
     let ids = page.operations.iter().map(|row| row.latest.draft.operation_id.clone().unwrap()).collect::<Vec<_>>();
