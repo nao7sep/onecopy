@@ -1,7 +1,8 @@
 //! Brings the index to the saved library settings: the visibility policy and
 //! the settings that dates and companion relationships are resolved with.
+//! `config.json` alone owns them.
 //!
-//! The index records which settings it was projected with, so applying is
+//! The index stamps which settings it was projected with, so applying is
 //! idempotent and a difference is durable index debt. A Settings apply that
 //! cannot be admitted in time leaves that debt for the file-information owner,
 //! which applies it at its next turn, including after a restart.
@@ -30,7 +31,8 @@ impl ResolutionPolicy {
 
 fn recorded(conn: &Connection) -> Result<Option<ResolutionPolicy>, String> {
     conn.query_row(
-        "SELECT default_timezone, good_range_start_year, pairing_enabled FROM resolution_policy",
+        "SELECT default_timezone, good_range_start_year, pairing_enabled FROM library_choices
+         WHERE default_timezone IS NOT NULL",
         [],
         |row| {
             Ok(ResolutionPolicy {
@@ -46,13 +48,8 @@ fn recorded(conn: &Connection) -> Result<Option<ResolutionPolicy>, String> {
 
 fn record(conn: &Connection, policy: &ResolutionPolicy) -> Result<(), String> {
     conn.execute(
-        "INSERT INTO resolution_policy
-           (singleton, default_timezone, good_range_start_year, pairing_enabled)
-         VALUES (1, ?1, ?2, ?3)
-         ON CONFLICT(singleton) DO UPDATE SET
-           default_timezone = excluded.default_timezone,
-           good_range_start_year = excluded.good_range_start_year,
-           pairing_enabled = excluded.pairing_enabled",
+        "UPDATE library_choices SET default_timezone = ?1, good_range_start_year = ?2,
+           pairing_enabled = ?3",
         params![
             policy.default_timezone,
             policy.good_range_start_year,

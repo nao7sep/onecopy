@@ -29,12 +29,12 @@ fn open_creates_schema_and_is_idempotent() {
         "evidence",
         "face_checks",
         "faces",
+        "library_choices",
         "logical_contents",
         "logical_projection_batch",
         "paths",
         "rebuild_keeps_results",
         "recent_notifications",
-        "resolution_policy",
         "scan_dirs",
         "similar_group_members",
         "similar_groups",
@@ -43,7 +43,6 @@ fn open_creates_schema_and_is_idempotent() {
         "transcripts",
         "visibility_directories",
         "visibility_ignored_names",
-        "visibility_policy",
         "volumes",
     ];
     expected.sort_unstable();

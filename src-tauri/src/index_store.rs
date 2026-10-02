@@ -20,18 +20,6 @@ use rusqlite::{Connection, OptionalExtension};
 // Ordinary reads do not replay DDL.
 const SCHEMA_REVISION: i64 = 20;
 
-/// The settings dates and companion relationships were resolved with
-/// (`library_settings`). Launch adopts the saved settings for an index that
-/// has not recorded any.
-const RESOLUTION_POLICY_SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS resolution_policy (
-  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-  default_timezone TEXT NOT NULL,
-  good_range_start_year INTEGER NOT NULL,
-  pairing_enabled INTEGER NOT NULL
-);
-";
-
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS volumes (
   id               INTEGER PRIMARY KEY,
@@ -135,11 +123,19 @@ CREATE TABLE IF NOT EXISTS logical_projection_batch (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1)
 );
 
-CREATE TABLE IF NOT EXISTS visibility_policy (
+-- The library choices this index was built with, a stamp of `config.json`,
+-- which alone owns them (`library_settings`): the visibility triggers read
+-- the hidden flags here, and the resolution columns stay NULL until launch
+-- adopts the saved settings. The ignored names below are refilled from the
+-- settings whenever they differ.
+CREATE TABLE IF NOT EXISTS library_choices (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-  hidden_flags INTEGER NOT NULL
+  hidden_flags INTEGER NOT NULL,
+  default_timezone TEXT,
+  good_range_start_year INTEGER,
+  pairing_enabled INTEGER
 );
-INSERT OR IGNORE INTO visibility_policy VALUES (1, 0);
+INSERT OR IGNORE INTO library_choices (singleton, hidden_flags) VALUES (1, 0);
 CREATE TABLE IF NOT EXISTS visibility_ignored_names (
   name TEXT PRIMARY KEY COLLATE onecopy_nocase
 ) WITHOUT ROWID;
@@ -156,7 +152,7 @@ CREATE TRIGGER IF NOT EXISTS paths_visibility_after_insert
 AFTER INSERT ON paths
 BEGIN
   UPDATE paths SET review_visible =
-    (visibility_flags & (SELECT hidden_flags FROM visibility_policy)) = 0
+    (visibility_flags & (SELECT hidden_flags FROM library_choices)) = 0
     AND NOT EXISTS (SELECT 1 FROM visibility_ignored_names WHERE name = paths.file_name)
   WHERE id = NEW.id;
 END;
@@ -164,7 +160,7 @@ CREATE TRIGGER IF NOT EXISTS paths_visibility_after_update
 AFTER UPDATE OF visibility_flags, file_name ON paths
 BEGIN
   UPDATE paths SET review_visible =
-    (visibility_flags & (SELECT hidden_flags FROM visibility_policy)) = 0
+    (visibility_flags & (SELECT hidden_flags FROM library_choices)) = 0
     AND NOT EXISTS (SELECT 1 FROM visibility_ignored_names WHERE name = paths.file_name)
   WHERE id = NEW.id;
 END;
@@ -515,7 +511,6 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
                     .map_err(|error| error.to_string())?;
             }
             conn.execute_batch(SCHEMA).map_err(|error| error.to_string())?;
-            conn.execute_batch(RESOLUTION_POLICY_SCHEMA).map_err(|error| error.to_string())?;
             crate::visibility_index::apply_policy_in_transaction(
                 &conn,
                 &crate::visibility::Policy::from_config(&serde_json::json!({}))?,

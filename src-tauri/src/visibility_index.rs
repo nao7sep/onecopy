@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub fn apply_policy(conn: &Connection, policy: &Policy) -> Result<(), String> {
-    // IMMEDIATE: `apply_policy_in_transaction` reads `visibility_policy`
+    // IMMEDIATE: `apply_policy_in_transaction` reads `library_choices`
     // before it writes, so a DEFERRED transaction would take a read
     // snapshot and only later upgrade to a write lock, letting a concurrent
     // commit fail at once with SQLITE_BUSY instead of waiting on the busy
@@ -21,7 +21,7 @@ pub fn apply_policy(conn: &Connection, policy: &Policy) -> Result<(), String> {
 /// Whether the index's review projection already follows `policy`.
 pub fn policy_applied(conn: &Connection, policy: &Policy) -> Result<bool, String> {
     let flags: i64 = conn
-        .query_row("SELECT hidden_flags FROM visibility_policy", [], |row| {
+        .query_row("SELECT hidden_flags FROM library_choices", [], |row| {
             row.get(0)
         })
         .map_err(|error| error.to_string())?;
@@ -44,7 +44,7 @@ pub(crate) fn apply_policy_in_transaction(
         return Ok(());
     }
     conn.execute(
-        "UPDATE visibility_policy SET hidden_flags = ?1",
+        "UPDATE library_choices SET hidden_flags = ?1",
         [policy.hidden_flags],
     )
     .map_err(|error| error.to_string())?;
@@ -61,7 +61,7 @@ pub(crate) fn apply_policy_in_transaction(
             conn.execute(
                 "INSERT OR IGNORE INTO batch_touched_hashes
                    SELECT content_hash FROM paths WHERE content_hash IS NOT NULL AND review_visible != (
-                     (visibility_flags & (SELECT hidden_flags FROM visibility_policy)) = 0
+                     (visibility_flags & (SELECT hidden_flags FROM library_choices)) = 0
                      AND NOT EXISTS (SELECT 1 FROM visibility_ignored_names WHERE name = paths.file_name))",
                 [],
             )
@@ -71,10 +71,10 @@ pub(crate) fn apply_policy_in_transaction(
         |conn| {
             conn.execute(
                 "UPDATE paths SET review_visible =
-                   (visibility_flags & (SELECT hidden_flags FROM visibility_policy)) = 0
+                   (visibility_flags & (SELECT hidden_flags FROM library_choices)) = 0
                    AND NOT EXISTS (SELECT 1 FROM visibility_ignored_names WHERE name = paths.file_name)
                  WHERE review_visible != (
-                   (visibility_flags & (SELECT hidden_flags FROM visibility_policy)) = 0
+                   (visibility_flags & (SELECT hidden_flags FROM library_choices)) = 0
                    AND NOT EXISTS (SELECT 1 FROM visibility_ignored_names WHERE name = paths.file_name))",
                 [],
             )
