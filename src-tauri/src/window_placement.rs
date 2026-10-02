@@ -402,7 +402,7 @@ pub(crate) fn save(state: &PlacementState) {
     };
     let result = serde_json::to_value(placement)
         .map_err(|error| error.to_string())
-        .and_then(|value| storage::save_window_state(&value));
+        .and_then(|value| storage::save_window_state(&crate::paths::data_root()?, &value));
     if let Err(error) = result {
         warn("window placement could not be saved", error);
     } else {
@@ -418,7 +418,7 @@ pub(crate) fn save_preview(state: &PlacementState) {
     };
     let result = serde_json::to_value(placement)
         .map_err(|error| error.to_string())
-        .and_then(|value| storage::save_preview_window_state(&value));
+        .and_then(|value| storage::save_preview_window_state(&crate::paths::data_root()?, &value));
     if let Err(error) = result {
         warn("Preview window placement could not be saved", error);
     } else {

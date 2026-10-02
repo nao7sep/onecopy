@@ -45,6 +45,8 @@ fn durable_text_records_and_dependency_facts_and_volatile_state_do_not() {
         &serde_json::json!({ "zoomLevel": 1.2 }),
     )
     .unwrap();
+    storage::save_window_state(root.path(), &serde_json::json!({ "x": 10 })).unwrap();
+    storage::save_preview_window_state(root.path(), &serde_json::json!({ "x": 20 })).unwrap();
     storage::patch_json_store(
         &root.path().join(storage::CONFIG_FILE_NAME),
         &serde_json::json!({ "theme": "dark" }),
@@ -70,7 +72,15 @@ fn durable_text_records_and_dependency_facts_and_volatile_state_do_not() {
     assert!(paths_recorded
         .iter()
         .any(|path| path.ends_with(storage::CONFIG_FILE_NAME)));
-    assert!(!paths_recorded
-        .iter()
-        .any(|path| path.ends_with(storage::STATE_FILE_NAME)));
+    for state in [
+        storage::STATE_FILE_NAME,
+        storage::WINDOW_FILE_NAME,
+        storage::PREVIEW_WINDOW_FILE_NAME,
+    ] {
+        assert!(root.path().join(state).is_file(), "{state} was written");
+        assert!(
+            !paths_recorded.iter().any(|path| path.ends_with(state)),
+            "{state} is never recorded"
+        );
+    }
 }

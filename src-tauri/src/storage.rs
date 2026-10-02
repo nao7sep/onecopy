@@ -376,8 +376,7 @@ pub fn read_window_state_for_setup(root: &Path) -> Result<Option<JsonValue>, Str
     Ok(read.value)
 }
 
-pub fn save_window_state(state: &JsonValue) -> Result<(), String> {
-    let root = paths::data_root()?;
+pub fn save_window_state(root: &Path, state: &JsonValue) -> Result<(), String> {
     atomic_write_json(&root.join(WINDOW_FILE_NAME), state, false)
 }
 
@@ -392,8 +391,7 @@ pub fn read_preview_window_state_for_setup(root: &Path) -> Result<Option<JsonVal
     Ok(read.value)
 }
 
-pub fn save_preview_window_state(state: &JsonValue) -> Result<(), String> {
-    let root = paths::data_root()?;
+pub fn save_preview_window_state(root: &Path, state: &JsonValue) -> Result<(), String> {
     atomic_write_json(&root.join(PREVIEW_WINDOW_FILE_NAME), state, false)
 }
 
