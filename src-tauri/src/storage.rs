@@ -397,17 +397,16 @@ pub fn save_preview_window_state(root: &Path, state: &JsonValue) -> Result<(), S
 
 pub fn load_from_root(root: &Path) -> Result<LoadedAppData, String> {
     let mut quarantines = take_pending_quarantines();
-    let config_read = read_config_optional(&root.join(CONFIG_FILE_NAME))?;
+    let config = {
+        let mut held = HELD_CONFIG.lock().unwrap_or_else(|p| p.into_inner());
+        let (config, quarantined) = held_or_read(&mut held, root)?;
+        quarantines.extend(quarantined);
+        config
+    };
     let state_read = read_json_optional(&root.join(STATE_FILE_NAME))?;
-    let config = config_read.value;
-    if let Some(record) = config_read.quarantined {
-        quarantines.push(record);
-    }
     if let Some(record) = state_read.quarantined {
         quarantines.push(record);
     }
-    let config = config.unwrap_or_else(|| effective_config(None));
-    hold_config(root, &config);
     Ok(LoadedAppData {
         config,
         config_defaults: effective_config(None),
@@ -495,10 +494,48 @@ fn register_volume_roots(config: Option<&JsonValue>) {
 /// The settings this process holds for one storage root: every set's
 /// effective value, read once and changed only by saves (config-sets
 /// conventions). Keyed by root so a different root is read afresh.
-static HELD_CONFIG: std::sync::Mutex<Option<(PathBuf, JsonValue)>> = std::sync::Mutex::new(None);
+type HeldConfig = Option<(PathBuf, JsonValue)>;
+static HELD_CONFIG: std::sync::Mutex<HeldConfig> = std::sync::Mutex::new(None);
 
-fn hold_config(root: &Path, effective: &JsonValue) {
-    *HELD_CONFIG.lock().unwrap_or_else(|p| p.into_inner()) = Some((root.to_path_buf(), effective.clone()));
+/// The held settings for `root`, reading and holding them first when another
+/// root or nothing is held, with the quarantine that read performed, if any.
+fn held_or_read(held: &mut HeldConfig, root: &Path) -> Result<(JsonValue, Option<QuarantineRecord>), String> {
+    if let Some((held_root, effective)) = held.as_ref() {
+        if held_root == root {
+            return Ok((effective.clone(), None));
+        }
+    }
+    let read = read_config_optional(&root.join(CONFIG_FILE_NAME))?;
+    let effective = read.value.unwrap_or_else(|| effective_config(None));
+    *held = Some((root.to_path_buf(), effective.clone()));
+    Ok((effective, read.quarantined))
+}
+
+/// The held settings for the reads that come before the window shows: the
+/// interface language, read before this process owns the instance lock, and
+/// the theme. The first call reads `config.json` and holds it. A file that
+/// cannot be read or is not a settings object is neither held nor touched,
+/// because setting a store aside belongs to the lock owner's load; the
+/// built-ins answer until that load holds what it recovers.
+pub fn held_config(root: &Path) -> JsonValue {
+    let mut held = HELD_CONFIG.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some((held_root, effective)) = held.as_ref() {
+        if held_root == root {
+            return effective.clone();
+        }
+    }
+    let stored = match std::fs::read(root.join(CONFIG_FILE_NAME)) {
+        Ok(bytes) => match serde_json::from_slice::<JsonValue>(&bytes) {
+            Ok(document) if document.is_object() => Some(document),
+            _ => return effective_config(None),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => return effective_config(None),
+    };
+    let effective = effective_config(stored.as_ref());
+    register_volume_roots(Some(&effective));
+    *held = Some((root.to_path_buf(), effective.clone()));
+    effective
 }
 
 /// A save's resulting settings plus the quarantine its first read performed,
@@ -519,15 +556,7 @@ pub fn save_config(root: &Path, changes: &JsonValue) -> Result<SaveOutcome, Stri
         .as_object()
         .ok_or_else(|| "settings changes must be a JSON object".to_string())?;
     let mut held = HELD_CONFIG.lock().unwrap_or_else(|p| p.into_inner());
-    let mut quarantined = None;
-    let mut effective = match held.as_ref() {
-        Some((held_root, effective)) if held_root == root => effective.clone(),
-        _ => {
-            let read = read_config_optional(&root.join(CONFIG_FILE_NAME))?;
-            quarantined = read.quarantined;
-            read.value.unwrap_or_else(|| effective_config(None))
-        }
-    };
+    let (mut effective, quarantined) = held_or_read(&mut held, root)?;
     let builtins = effective_config(None);
     for (key, value) in fields {
         let Some(builtin) = builtins.get(key) else { continue };

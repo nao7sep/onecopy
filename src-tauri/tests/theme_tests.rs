@@ -1,9 +1,5 @@
-use std::fs;
 
-use onecopy_lib::storage::CONFIG_FILE_NAME;
-use onecopy_lib::theme::{
-    config_window_theme, read_saved_window_theme, window_background, window_theme_for, ThemeState,
-};
+use onecopy_lib::theme::{config_window_theme, window_background, window_theme_for, ThemeState};
 use serde_json::json;
 use tauri::window::Color;
 use tauri::Theme;
@@ -27,24 +23,6 @@ fn the_config_theme_field_decides_and_anything_else_follows_the_os() {
     assert_eq!(config_window_theme(&json!({ "theme": true })), None);
     assert_eq!(config_window_theme(&json!({})), None);
     assert_eq!(config_window_theme(&json!([])), None);
-}
-
-#[test]
-fn reading_the_saved_theme_never_changes_the_config() {
-    let root = tempfile::tempdir().expect("temp dir");
-    let config = root.path().join(CONFIG_FILE_NAME);
-    assert_eq!(read_saved_window_theme(root.path()), None);
-    assert!(!config.exists());
-
-    fs::write(&config, "{corrupt").expect("write config");
-    assert_eq!(read_saved_window_theme(root.path()), None);
-    assert_eq!(
-        fs::read_to_string(&config).expect("read config"),
-        "{corrupt"
-    );
-
-    fs::write(&config, r#"{"theme":"light","sourceDirs":[]}"#).expect("write config");
-    assert_eq!(read_saved_window_theme(root.path()), Some(Theme::Light));
 }
 
 #[test]

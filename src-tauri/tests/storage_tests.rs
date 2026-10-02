@@ -399,6 +399,26 @@ fn a_corrupt_state_is_reported_without_disturbing_a_good_config() {
     assert!(loaded.state.is_none(), "view state starts fresh");
 }
 
+// Theme and language are read from the held settings before the window
+// shows, some of it before this process owns the instance lock, so that read
+// never sets a store aside: the lock owner's load does, and reports it.
+#[test]
+#[serial(quarantine_journal)]
+fn the_settings_held_before_the_window_shows_never_touch_the_file() {
+    let root = temp_dir("held-before-window");
+    let config = root.join(CONFIG_FILE_NAME);
+    std::fs::write(&config, br#"{"theme":"light","language":"ko"}"#).unwrap();
+    let held = held_config(&root);
+    assert_eq!((held["theme"].as_str(), held["language"].as_str()), (Some("light"), Some("ko")));
+
+    let corrupt = temp_dir("held-before-window-corrupt");
+    std::fs::write(corrupt.join(CONFIG_FILE_NAME), b"{corrupt").unwrap();
+    assert_eq!(held_config(&corrupt), effective_config(None));
+    assert_eq!(std::fs::read(corrupt.join(CONFIG_FILE_NAME)).unwrap(), b"{corrupt");
+    let loaded = load_from_root(&corrupt).unwrap();
+    assert_eq!(loaded.quarantines.len(), 1, "the owner's load sets it aside and reports it");
+}
+
 // D-L4: the watcher used to read config through `load_app_data`, which
 // drains the pending quarantine list for the frontend's `load_from_root` to
 // report — and the watcher has no reporting surface, so it silently dropped

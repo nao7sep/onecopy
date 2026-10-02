@@ -1,14 +1,11 @@
 // Integration tests for the natively resolved interface language: which tag the
-// computer's languages resolve to, how a saved choice is normalized and read
-// from config.json, and that the native menu's text exists in every catalogue.
+// computer's languages resolve to, how a saved choice is normalized and taken
+// from the settings, and that the native menu's text exists in every catalogue.
 
 use std::fs;
 use std::path::Path;
 
-use onecopy_lib::i18n::{
-    catalogue, normalize_preference, read_saved_preference, saved_preference, system_language,
-    LANGUAGES,
-};
+use onecopy_lib::i18n::{catalogue, config_preference, normalize_preference, system_language, LANGUAGES};
 use onecopy_lib::menu::KEYS;
 use onecopy_lib::startup::LAUNCH_FAILURE_KEYS;
 use serde_json::json;
@@ -53,29 +50,11 @@ fn preference_normalizes_like_the_frontend() {
 }
 
 #[test]
-fn saved_preference_reads_the_language_field() {
-    assert_eq!(saved_preference(r#"{"language":"de","theme":"dark"}"#), Some("de"));
-    assert_eq!(saved_preference(r#"{"language":"system"}"#), None);
-    assert_eq!(saved_preference(r#"{"language":7}"#), None);
-    assert_eq!(saved_preference(r#"{"theme":"dark"}"#), None);
-    assert_eq!(saved_preference("not json"), None);
-}
-
-#[test]
-fn the_saved_choice_comes_from_config_without_touching_it() {
-    let dir = std::env::temp_dir().join(format!("onecopy-i18n-{}", std::process::id()));
-    fs::create_dir_all(&dir).unwrap();
-    let config = dir.join("config.json");
-    let config_text = json!({ "language": "ko", "theme": "dark" }).to_string();
-    fs::write(&config, &config_text).unwrap();
-
-    assert_eq!(read_saved_preference(&dir), Some("ko"));
-    assert_eq!(fs::read_to_string(&config).unwrap(), config_text);
-
-    fs::remove_file(&config).unwrap();
-    assert_eq!(read_saved_preference(&dir), None);
-    assert_eq!(read_saved_preference(&dir.join("missing")), None);
-    fs::remove_dir_all(&dir).unwrap();
+fn the_saved_choice_is_the_settings_language() {
+    assert_eq!(config_preference(&json!({ "language": "de", "theme": "dark" })), Some("de"));
+    assert_eq!(config_preference(&json!({ "language": "system" })), None);
+    assert_eq!(config_preference(&json!({ "language": 7 })), None);
+    assert_eq!(config_preference(&json!({ "theme": "dark" })), None);
 }
 
 #[test]

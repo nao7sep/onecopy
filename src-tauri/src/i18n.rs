@@ -7,7 +7,6 @@
 //! The computer's language is read once, at launch, before anything can
 //! override it; System resolves against that reading for the whole session.
 
-use std::path::Path;
 use std::sync::Mutex;
 
 use serde_json::{Map, Value as JsonValue};
@@ -53,19 +52,9 @@ pub fn normalize_preference(value: Option<&str>) -> Option<&'static str> {
     LANGUAGES.iter().copied().find(|tag| *tag == value)
 }
 
-/// The preference saved in a config document's body; anything unparseable is
-/// System.
-pub fn saved_preference(config: &str) -> Option<&'static str> {
-    let value: JsonValue = serde_json::from_str(config).ok()?;
-    normalize_preference(value.get("language")?.as_str())
-}
-
-/// The choice saved in `config.json` under the storage root. Reads the file
-/// without touching it; anything missing, unreadable, or unparseable is
-/// System, and recovery stays with the startup path that owns the document.
-pub fn read_saved_preference(root: &Path) -> Option<&'static str> {
-    let config = std::fs::read_to_string(root.join(crate::storage::CONFIG_FILE_NAME)).ok()?;
-    saved_preference(&config)
+/// The preference the settings hold.
+pub fn config_preference(config: &JsonValue) -> Option<&'static str> {
+    normalize_preference(config.get("language").and_then(JsonValue::as_str))
 }
 
 /// The language the computer and the saved choice settle on at launch, and the
@@ -79,13 +68,13 @@ pub struct LanguageState {
 }
 
 impl LanguageState {
-    /// Reads the computer's languages and the saved choice. Must run before the
-    /// macOS override in `align_appkit`, which would otherwise be read back as
-    /// the computer's language.
-    pub fn detect(root: Option<&Path>) -> Self {
+    /// Reads the computer's languages and takes the saved choice from the
+    /// settings. Must run before the macOS override in `align_appkit`, which
+    /// would otherwise be read back as the computer's language.
+    pub fn detect(config: Option<&JsonValue>) -> Self {
         let locales: Vec<String> = sys_locale::get_locales().collect();
         let system_language = system_language(locales.iter().map(String::as_str));
-        let preference = root.and_then(read_saved_preference);
+        let preference = config.and_then(config_preference);
         LanguageState {
             system_language,
             system_locale: locales.into_iter().next(),

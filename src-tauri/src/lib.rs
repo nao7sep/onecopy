@@ -1423,8 +1423,10 @@ pub fn run() {
 
     // The interface language is resolved before Tauri builds the app: AppKit
     // settles its own language when the application object is created, and the
-    // native menu is built from this reading.
-    let language = i18n::LanguageState::detect(paths::data_root_before_launch().as_deref());
+    // native menu is built from this reading. The theme comes from the same
+    // held settings in setup, before Main is shown.
+    let settings = paths::data_root_before_launch().map(|root| storage::held_config(&root));
+    let language = i18n::LanguageState::detect(settings.as_ref());
     let launch_language = language.current();
     #[cfg(target_os = "macos")]
     i18n::align_appkit(language.current());
@@ -1535,8 +1537,7 @@ pub fn run() {
             // the hook itself is deliberately infallible.
             app.manage(startup::initialize(app, debug_enabled));
             window_placement::load_preview(&setup_preview_placement_state);
-            let saved_theme = paths::data_root_before_launch()
-                .and_then(|root| theme::read_saved_window_theme(&root));
+            let saved_theme = settings.as_ref().and_then(theme::config_window_theme);
             app.state::<theme::ThemeState>().set(saved_theme);
             if let Some(window) = app.get_webview_window("main") {
                 // Before Main is shown, so its first frame and title bar already

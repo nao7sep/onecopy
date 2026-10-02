@@ -6,14 +6,11 @@
 //! loading, and re-applies it to every open window when a config save changes
 //! it — so no page resolves System or applies a theme itself.
 
-use std::path::Path;
 use std::sync::Mutex;
 
 use serde_json::Value;
 use tauri::window::Color;
 use tauri::{AppHandle, Manager, Runtime, Theme, Webview, Window};
-
-use crate::storage::CONFIG_FILE_NAME;
 
 /// The window theme for a saved preference: `Some` for "light" or "dark",
 /// `None` (follow the OS) for anything else — the rule the settings store's
@@ -26,16 +23,9 @@ pub fn window_theme_for(preference: &str) -> Option<Theme> {
     }
 }
 
-/// The window theme a config document asks for.
+/// The window theme the settings ask for.
 pub fn config_window_theme(config: &Value) -> Option<Theme> {
     window_theme_for(config.get("theme")?.as_str()?)
-}
-
-/// Reads the saved choice without touching the file. A missing, unreadable, or
-/// corrupt config follows the OS; its recovery stays with the startup path.
-pub fn read_saved_window_theme(data_root: &Path) -> Option<Theme> {
-    let bytes = std::fs::read(data_root.join(CONFIG_FILE_NAME)).ok()?;
-    config_window_theme(&serde_json::from_slice(&bytes).ok()?)
 }
 
 /// The window background behind each page — App.css's --background in each
