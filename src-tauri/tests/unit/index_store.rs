@@ -29,7 +29,6 @@ fn open_creates_schema_and_is_idempotent() {
         "evidence",
         "face_checks",
         "faces",
-        "issues",
         "logical_contents",
         "logical_projection_batch",
         "paths",

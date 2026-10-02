@@ -201,7 +201,7 @@ fn large_families_group_whole_with_no_cap() {
     assert_eq!(stats.groups, 1, "one family, however large");
     assert_eq!(stats.grouped_items, 75);
     let issues: i64 = conn
-        .query_row("SELECT COUNT(*) FROM issues", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM active_issues", [], |r| r.get(0))
         .unwrap();
     assert_eq!(issues, 0, "a large family is not a problem to report");
 }

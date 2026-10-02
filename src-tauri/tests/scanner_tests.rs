@@ -233,7 +233,7 @@ fn an_incomplete_walk_preserves_known_rows_and_keeps_the_root_dirty() {
     assert_eq!(count(&f.conn, "SELECT missing FROM paths"), 0);
     assert_eq!(count(&f.conn, "SELECT dirty FROM scan_dirs"), 1);
     assert_eq!(
-        count(&f.conn, "SELECT COUNT(*) FROM issues WHERE kind = 'walk-error'"),
+        count(&f.conn, "SELECT COUNT(*) FROM active_issues WHERE kind = 'walk-error'"),
         1
     );
 
@@ -243,7 +243,7 @@ fn an_incomplete_walk_preserves_known_rows_and_keeps_the_root_dirty() {
     assert_eq!(repaired.marked_missing, 1);
     assert_eq!(count(&f.conn, "SELECT dirty FROM scan_dirs"), 0);
     assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM active_issues"), 0);
-    assert!(count(&f.conn, "SELECT COUNT(*) FROM issues WHERE closure = 'resolved'") > 0);
+    assert!(count(&f.conn, "SELECT COUNT(*) FROM records.issue_events WHERE event = 'resolved'") > 0);
 }
 
 #[test]
@@ -292,7 +292,7 @@ fn source_restat_refreshes_changed_files_and_retires_missing_path_issues() {
         1
     );
     assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM active_issues WHERE kind = 'stat-error'"), 0);
-    assert!(count(&f.conn, "SELECT COUNT(*) FROM issues WHERE closure = 'resolved'") > 0);
+    assert!(count(&f.conn, "SELECT COUNT(*) FROM records.issue_events WHERE event = 'resolved'") > 0);
 }
 
 #[test]
@@ -434,7 +434,7 @@ fn diverged_copies_surface_as_a_copies_disagree_issue() {
     // One row PER FILE — (kind, path) identity needs a real anchor, and
     // naming the disagreeing files is what lets the user act on the finding.
     assert_eq!(
-        count(&f.conn, "SELECT COUNT(*) FROM issues WHERE kind = 'copies-disagree'"),
+        count(&f.conn, "SELECT COUNT(*) FROM active_issues WHERE kind = 'copies-disagree'"),
         2
     );
     // Both files keep their own distinct contents rows.
@@ -446,7 +446,7 @@ fn diverged_copies_surface_as_a_copies_disagree_issue() {
     let (message_key, message): (String, String) = f
         .conn
         .query_row(
-            "SELECT message_key, message FROM issues WHERE kind = 'copies-disagree' LIMIT 1",
+            "SELECT message_key, message FROM active_issues WHERE kind = 'copies-disagree' LIMIT 1",
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -459,7 +459,7 @@ fn diverged_copies_surface_as_a_copies_disagree_issue() {
     let stats2 = hash_pending(&f.conn, &test_cache(&f)).unwrap();
     let _ = stats2;
     assert_eq!(
-        count(&f.conn, "SELECT COUNT(*) FROM issues WHERE kind = 'copies-disagree'"),
+        count(&f.conn, "SELECT COUNT(*) FROM active_issues WHERE kind = 'copies-disagree'"),
         2,
         "a recurrence updates rows in place"
     );
@@ -740,7 +740,7 @@ fn source_check_continues_after_an_unavailable_root() {
     assert_eq!(
         f.conn
             .query_row(
-                "SELECT path FROM issues WHERE kind = 'walk-error'",
+                "SELECT path FROM active_issues WHERE kind = 'walk-error'",
                 [],
                 |row| row.get::<_, String>(0),
             )
@@ -794,7 +794,7 @@ fn source_check_skips_only_a_substituted_root() {
     let path = f
         .conn
         .query_row(
-            "SELECT path FROM issues WHERE kind = 'walk-error'",
+            "SELECT path FROM active_issues WHERE kind = 'walk-error'",
             [],
             |row| row.get::<_, String>(0),
         )
@@ -885,7 +885,7 @@ fn apple_double_sidecars_beside_their_real_file_are_never_indexed() {
     );
     assert_eq!(stats.marked_missing, 1);
     assert_eq!(
-        count(&f.conn, "SELECT COUNT(*) FROM issues"),
+        count(&f.conn, "SELECT COUNT(*) FROM active_issues"),
         0,
         "an excluded path is treated as absent, never a failure"
     );

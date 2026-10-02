@@ -72,7 +72,7 @@ fn seeded() -> (tempfile::TempDir, rusqlite::Connection) {
 fn explicit_attempt_boundary_reopens_failures_without_using_or_erasing_issues() {
     let (_dir, conn) = seeded();
     // Dismissal/history cannot decide whether an output is eligible again.
-    conn.execute("DELETE FROM issues", []).unwrap();
+    index_store::dismiss_issues(&conn, None).unwrap();
     conn.execute_batch(
         "INSERT INTO contents (hash, byte_size, kind, derived_at_utc, strip_frames)
          VALUES ('waiting', 1, 'image', 'needs-ffmpeg', NULL),

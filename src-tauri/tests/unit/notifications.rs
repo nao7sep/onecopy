@@ -48,10 +48,10 @@ fn informational_notices_are_not_issues_and_dismissal_does_not_erase_history() {
 
 #[test]
 fn notification_and_issue_recording_fail_as_one_transaction() {
-    for blocked in ["issues", "recent_notifications"] {
+    for (trigger, blocked) in [("records.reject_insert", "issue_events"), ("reject_insert", "recent_notifications")] {
         let directory = tempfile::tempdir().unwrap();
         let conn = crate::index_store::open(&directory.path().join("index.sqlite3")).unwrap();
-        conn.execute_batch(&format!("CREATE TRIGGER reject_insert BEFORE INSERT ON {blocked} BEGIN SELECT RAISE(ABORT, 'fixture write failure'); END;")).unwrap();
+        conn.execute_batch(&format!("CREATE TRIGGER {trigger} BEFORE INSERT ON {blocked} BEGIN SELECT RAISE(ABORT, 'fixture write failure'); END;")).unwrap();
         assert!(record_recent(&conn, &NotificationRequest {
             kind: "failed".into(), path: None, level: NotificationLevel::Error,
             presentation: NotificationPresentation::Persistent, message: "Failed action.".into(),

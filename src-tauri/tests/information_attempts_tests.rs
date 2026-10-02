@@ -65,7 +65,7 @@ fn independent_read_failures_settle_without_completing_information_or_repeating(
         assert_eq!(scanner::extract_pending(&conn).unwrap().failed, 0);
     }
     assert_eq!(
-        conn.query_row("SELECT SUM(occurrence_count) FROM issues", [], |row| row
+        conn.query_row("SELECT SUM(occurrence_count) FROM active_issues", [], |row| row
             .get::<_, i64>(0))
             .unwrap(),
         2
@@ -92,7 +92,7 @@ fn section_recheck_reopens_both_stages_and_success_clears_the_condition() {
     );
     assert_eq!(
         conn.query_row(
-            "SELECT COUNT(*) FROM issues WHERE closure = 'resolved'",
+            "SELECT COUNT(*) FROM records.issue_events WHERE event = 'resolved'",
             [],
             |row| row.get::<_, i64>(0)
         )
@@ -194,7 +194,7 @@ fn failed_live_photo_backfill_does_not_claim_success_or_repeat() {
 #[test]
 fn a_recording_failure_does_not_silently_settle_the_input() {
     let (_root, conn, path, _cache) = missing_file();
-    conn.execute_batch("CREATE TRIGGER reject_issue BEFORE INSERT ON issues BEGIN SELECT RAISE(ABORT, 'fixture recording failure'); END;").unwrap();
+    conn.execute_batch("CREATE TRIGGER records.reject_issue BEFORE INSERT ON issue_events BEGIN SELECT RAISE(ABORT, 'fixture recording failure'); END;").unwrap();
     let id = conn
         .query_row("SELECT id FROM paths", [], |row| row.get::<_, i64>(0))
         .unwrap();

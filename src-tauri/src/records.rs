@@ -198,6 +198,23 @@ const SCHEMA: &str = "
         message TEXT
     );
     CREATE INDEX IF NOT EXISTS analysis_events_latest ON analysis_events(content_hash, class, session_id, id);
+    -- An Issue is the run of these events for one (kind, path) in one launch:
+    -- each occurrence, then how it closed. Written like `analysis_events`.
+    CREATE TABLE IF NOT EXISTS issue_events (
+        id INTEGER PRIMARY KEY,
+        session_id TEXT,
+        time_utc TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        -- '' for a condition with no file.
+        path TEXT NOT NULL,
+        -- 'occurred', or how the Issue closed: 'resolved', 'dismissed',
+        -- 'rechecked' or 'rebuilt'.
+        event TEXT NOT NULL,
+        message TEXT,
+        message_key TEXT,
+        message_values TEXT
+    );
+    CREATE INDEX IF NOT EXISTS issue_events_identity ON issue_events(session_id, kind, path, id);
     PRAGMA user_version = 1;";
 
 /// Attaches the records beside an index database to its connection as
@@ -213,8 +230,29 @@ pub fn attach(connection: &Connection, path: &Path) -> Result<(), String> {
     }
     connection
         .execute("ATTACH DATABASE ?1 AS records", [path.to_string_lossy()])
-        .map(|_| ())
-        .map_err(|error| format!("attach records: {error}"))
+        .map_err(|error| format!("attach records: {error}"))?;
+    // This launch's open Issues: each (kind, path) whose latest event is an
+    // occurrence, identified by the first occurrence since it last closed.
+    connection
+        .execute_batch(&format!(
+            "CREATE TEMP VIEW IF NOT EXISTS active_issues AS
+             WITH events AS (
+               SELECT * FROM records.issue_events WHERE session_id IS {session}
+             ), closed AS (
+               SELECT kind, path, MAX(id) AS id FROM events WHERE event <> 'occurred' GROUP BY kind, path
+             ), open AS (
+               SELECT e.kind, e.path, MIN(e.id) AS id, MAX(e.id) AS latest, COUNT(*) AS occurrence_count,
+                      MIN(e.time_utc) AS first_seen_utc, MAX(e.time_utc) AS last_seen_utc
+               FROM events e LEFT JOIN closed c ON c.kind = e.kind AND c.path = e.path
+               WHERE e.event = 'occurred' AND e.id > COALESCE(c.id, 0)
+               GROUP BY e.kind, e.path
+             )
+             SELECT o.id, o.path, o.kind, l.message, l.message_key, l.message_values,
+                    o.first_seen_utc, o.last_seen_utc, o.occurrence_count
+             FROM open o JOIN records.issue_events l ON l.id = o.latest;",
+            session = session_sql()
+        ))
+        .map_err(|error| format!("records views: {error}"))
 }
 
 /// This launch's session as an SQL literal, for statements that write or

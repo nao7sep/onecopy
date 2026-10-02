@@ -23,7 +23,7 @@ fn newer_unknown_schema_is_not_destructively_downgraded() {
 }
 
 #[test]
-fn rebuild_clears_reconstructible_library_facts_and_issues() {
+fn rebuild_clears_reconstructible_library_facts_and_closes_issues() {
     let root = tempfile::tempdir().unwrap();
     let conn = index_store::open(&root.path().join("index.sqlite3")).unwrap();
     conn.execute_batch(
@@ -31,8 +31,6 @@ fn rebuild_clears_reconstructible_library_facts_and_issues() {
          INSERT INTO paths
            (abs_path, dir_path, file_name, kind, content_hash, missing)
          VALUES ('/photos/a.jpg', '/photos', 'a.jpg', 'image', 'hash', 0);
-         INSERT INTO issues (path, kind, message, first_seen_utc, last_seen_utc)
-         VALUES ('/photos/a.jpg', 'read-error', 'failed', 'now', 'now');
          INSERT INTO recent_notifications
            (kind, path, level, presentation, message, first_seen_utc, last_seen_utc)
          VALUES ('read-error', '/photos/a.jpg', 'error', 'persistent', 'failed',
@@ -47,8 +45,18 @@ fn rebuild_clears_reconstructible_library_facts_and_issues() {
          VALUES ('hash', 0, 0, 1, 1, 0.9, 'm', 'v');",
     )
     .unwrap();
+    index_store::upsert_issue(&conn, Some("/photos/a.jpg"), "read-error", "failed").unwrap();
 
     index_store::clear_reconstructible(&conn, false, false).unwrap();
+    let rebuilt: (i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM active_issues),
+                    (SELECT COUNT(*) FROM records.issue_events WHERE event = 'rebuilt')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(rebuilt, (0, 1), "a rebuild closes the open Issues and keeps their records");
     let count = |table: &str| -> i64 {
         conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0)).unwrap()
     };
@@ -68,7 +76,6 @@ fn rebuild_clears_reconstructible_library_facts_and_issues() {
         "similar_group_members",
         "similarity_dirty_buckets",
         "similarity_state",
-        "issues",
         "recent_notifications",
         "scan_dirs",
     ] {

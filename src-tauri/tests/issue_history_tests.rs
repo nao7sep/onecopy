@@ -6,6 +6,16 @@ fn db() -> (tempfile::TempDir, rusqlite::Connection) {
     (root, conn)
 }
 
+/// How many Issue events of `event` the records hold.
+fn events(conn: &rusqlite::Connection, event: &str) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM records.issue_events WHERE event = ?1",
+        [event],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
 #[test]
 fn dismiss_keeps_the_record_and_a_new_attempt_never_revives_it() {
     let (root, conn) = db();
@@ -22,35 +32,27 @@ fn dismiss_keeps_the_record_and_a_new_attempt_never_revives_it() {
     let new = queries::issues(&conn, 10, None).unwrap().1.remove(0);
     assert_ne!(new.id, original.id);
     assert_eq!(new.occurrence_count, 1);
-    let retained: (String, String, String, i64, String, String) = conn.query_row(
-        "SELECT message, first_seen_utc, last_seen_utc, occurrence_count, closure, closed_at_utc FROM issues WHERE id = ?1",
-        [original.id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
-    ).unwrap();
-    assert_eq!(retained.0, "latest detail");
-    assert_eq!(retained.1, original.first_seen_utc);
-    assert_eq!(retained.2, original.last_seen_utc);
-    assert_eq!(retained.3, 2);
-    assert_eq!(retained.4, "dismissed");
-    assert!(retained.5.ends_with('Z'));
+    let history: Vec<(String, Option<String>)> = conn
+        .prepare("SELECT event, message FROM records.issue_events WHERE path = '/a.jpg' ORDER BY id")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        history,
+        [
+            ("occurred".to_string(), Some("original".to_string())),
+            ("occurred".to_string(), Some("latest detail".to_string())),
+            ("dismissed".to_string(), None),
+            ("occurred".to_string(), Some("new attempt".to_string())),
+        ]
+    );
+    assert_eq!(original.occurrence_count, 2);
+    assert_eq!(original.message.as_deref(), Some("latest detail"));
     index_store::clear_issues(&conn, "/a.jpg", &["read-error"]).unwrap();
     index_store::dismiss_issues(&conn, None).unwrap();
-    let closure: (String, String) = conn
-        .query_row(
-            "SELECT closure, closed_at_utc FROM issues WHERE id = ?1",
-            [original.id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(closure, (retained.4, retained.5));
-    assert_eq!(
-        conn.query_row(
-            "SELECT closure FROM issues WHERE id = ?1",
-            [new.id],
-            |row| row.get::<_, String>(0)
-        )
-        .unwrap(),
-        "resolved"
-    );
+    assert_eq!((events(&conn, "dismissed"), events(&conn, "resolved")), (1, 1));
 }
 
 #[test]
@@ -64,15 +66,7 @@ fn dismiss_all_covers_the_full_live_inbox_and_preserves_other_history() {
     assert_eq!(queries::issues(&conn, 2, None).unwrap().1.len(), 2);
     index_store::dismiss_issues(&conn, None).unwrap();
     assert_eq!(queries::issues(&conn, 2, None).unwrap().0, 0);
-    assert_eq!(
-        conn.query_row(
-            "SELECT COUNT(*) FROM issues WHERE closure = 'dismissed'",
-            [],
-            |row| row.get::<_, i64>(0)
-        )
-        .unwrap(),
-        520
-    );
+    assert_eq!(events(&conn, "dismissed"), 520);
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM recent_notifications", [], |row| row
             .get::<_, i64>(
@@ -110,28 +104,29 @@ fn archived_failures_do_not_reopen_work() {
         1
     );
     assert_eq!(information_attempts::reset_library(&conn).unwrap(), 1);
-    assert_eq!(
-        conn.query_row("SELECT COUNT(*) FROM issues", [], |row| row
-            .get::<_, i64>(0))
-            .unwrap(),
-        3
-    );
+    assert_eq!(events(&conn, "occurred"), 3);
 }
 
 #[test]
 fn failed_dismissal_leaves_live_diagnostics_visible() {
     let (_root, conn) = db();
     index_store::upsert_issue(&conn, None, "read-error", "failed").unwrap();
-    conn.execute_batch("CREATE TRIGGER reject_close BEFORE UPDATE OF closed_at_utc ON issues BEGIN SELECT RAISE(ABORT, 'fixture write failure'); END;").unwrap();
+    conn.execute_batch("CREATE TRIGGER records.reject_close BEFORE INSERT ON issue_events WHEN NEW.event = 'dismissed' BEGIN SELECT RAISE(ABORT, 'fixture write failure'); END;").unwrap();
     assert!(index_store::dismiss_issues(&conn, None).is_err());
     assert_eq!(queries::issues(&conn, 10, None).unwrap().0, 1);
 }
 
 #[test]
-fn only_startup_admission_begins_a_new_run_and_keeps_all_history() {
+fn each_launch_starts_a_fresh_inbox_and_keeps_earlier_launches_issues() {
     let (root, conn) = db();
+    conn.execute(
+        "INSERT INTO records.issue_events (session_id, time_utc, kind, path, event, message)
+         VALUES ('an earlier launch', '2026-10-01T00:00:00.000Z', 'decode-error', '/a.jpg', 'occurred', 'failed')",
+        [],
+    )
+    .unwrap();
+    assert_eq!(queries::issues(&conn, 10, None).unwrap().0, 0);
     index_store::upsert_issue(&conn, Some("/a.jpg"), "decode-error", "failed").unwrap();
-    let old_id = queries::issues(&conn, 10, None).unwrap().1[0].id;
     drop(conn);
     let conn = index_store::open(&root.path().join("index.sqlite3")).unwrap();
     assert_eq!(
@@ -139,19 +134,7 @@ fn only_startup_admission_begins_a_new_run_and_keeps_all_history() {
         1,
         "connection opens are not app starts"
     );
-    attempt_boundaries::begin_run(&conn).unwrap();
-    assert_eq!(queries::issues(&conn, 10, None).unwrap().0, 0);
-    assert_eq!(
-        conn.query_row(
-            "SELECT closure FROM issues WHERE id = ?1",
-            [old_id],
-            |row| row.get::<_, String>(0)
-        )
-        .unwrap(),
-        "app-restart"
-    );
-    index_store::upsert_issue(&conn, Some("/a.jpg"), "decode-error", "failed again").unwrap();
-    assert_ne!(queries::issues(&conn, 10, None).unwrap().1[0].id, old_id);
+    assert_eq!(events(&conn, "occurred"), 2);
 }
 
 fn section_fixture(conn: &rusqlite::Connection) {
@@ -188,24 +171,7 @@ fn section_attempt_retires_only_its_preparation_failures_and_never_claims_repair
     let live = queries::issues(&conn, 20, None).unwrap();
     assert_eq!(live.0, 3);
     assert!(live.1.iter().any(|row| row.kind == "delete-error"));
-    assert_eq!(
-        conn.query_row(
-            "SELECT COUNT(*) FROM issues WHERE closure = 'rechecked'",
-            [],
-            |row| row.get::<_, i64>(0)
-        )
-        .unwrap(),
-        3
-    );
-    assert_eq!(
-        conn.query_row(
-            "SELECT COUNT(*) FROM issues WHERE closure = 'resolved'",
-            [],
-            |row| row.get::<_, i64>(0)
-        )
-        .unwrap(),
-        0
-    );
+    assert_eq!((events(&conn, "rechecked"), events(&conn, "resolved")), (3, 0));
     assert_eq!(
         conn.query_row(
             "SELECT SUM(metadata_attempt_failed + hash_attempt_failed) FROM paths",
@@ -229,12 +195,7 @@ fn section_attempt_retires_only_its_preparation_failures_and_never_claims_repair
         .find(|row| row.path.as_deref() == Some("/same/photo.jpg") && row.kind == "decode-error")
         .unwrap();
     assert_eq!(fresh.occurrence_count, 1);
-    assert_eq!(
-        conn.query_row("SELECT COUNT(*) FROM issues", [], |row| row
-            .get::<_, i64>(0))
-            .unwrap(),
-        7
-    );
+    assert_eq!(events(&conn, "occurred"), 7);
 }
 
 #[test]

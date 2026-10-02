@@ -237,7 +237,7 @@ fn a_file_removed_while_its_walk_was_parked_is_absent_not_a_failure() {
     let conn = crate::index_store::open(&db).unwrap();
     let issues: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM issues WHERE kind = ?1 AND closed_at_utc IS NULL",
+            "SELECT COUNT(*) FROM active_issues WHERE kind = ?1",
             [crate::scanner::STAT_ERROR],
             |row| row.get(0),
         )

@@ -46,7 +46,7 @@ A drive that stops answering (`file-operations.md`, `Drives that stop answering`
 
 Issue file paths provide in-app Reveal through Main's diagnostic-navigation contract. A failed or unavailable Reveal stays visible in the usable Issues surface without dismissing the record.
 
-Retained Issue records and existing notification history are not deleted when the inbox is simplified or the app restarts. They are reconstructible library diagnostics rather than a permanent operation ledger and follow the explicit rebuild lifetime defined by `library-maintenance.md`.
+Issue records are kept: each occurrence and how its Issue closed is a record, and neither restart, rescan nor rebuild deletes one. Existing notification history is not deleted when the inbox is simplified or the app restarts and follows the explicit rebuild lifetime defined by `library-maintenance.md`.
 
 ## Background-worker failure
 
@@ -64,6 +64,6 @@ Every retryable failure identifies a reachable recovery boundary at the survivin
 
 ## Restart behavior
 
-Restart begins a fresh Issues inbox and retains prior entries with an app-restart closure reason. Explicit section recheck similarly retires the section's failed preparation/information/enrichment entries as rechecked, not as successfully repaired, before admitting another attempt. A new failure creates a fresh visible entry; merely changing or reopening a section does neither. Attempt eligibility and the preservation of successful results are owned by `library-maintenance.md`.
+Restart begins a fresh Issues inbox; entries from earlier runs stay as records. Explicit section recheck similarly retires the section's failed preparation/information/enrichment entries as rechecked, not as successfully repaired, before admitting another attempt. A new failure creates a fresh visible entry; merely changing or reopening a section does neither. Attempt eligibility and the preservation of successful results are owned by `library-maintenance.md`.
 
 Restart and recheck never replay a failed or partial destructive operation. Notification history survives ordinary restart subject to its retention policy, and completed durable steps remain completed.

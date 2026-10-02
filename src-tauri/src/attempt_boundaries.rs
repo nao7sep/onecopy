@@ -1,4 +1,4 @@
-//! Explicit admission retires diagnostics and reopens failed receipts atomically.
+//! Explicit admission retires diagnostics and reopens failed outputs atomically.
 //! Ordinary database reads and section navigation never call these boundaries.
 
 use crate::{derived_state, index_store, information_attempts};
@@ -8,7 +8,6 @@ pub fn begin_run(conn: &Connection) -> Result<(), String> {
     let transaction = conn
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
-    index_store::begin_issue_run(&transaction)?;
     transaction.execute("UPDATE paths SET visibility_checked = 0 WHERE visibility_checked = -1", [])
         .map_err(|error| error.to_string())?;
     information_attempts::reset_library(&transaction)?;
@@ -28,29 +27,26 @@ pub fn recheck_section(
     let transaction = conn
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
-    transaction
-        .execute(
-            &format!(
-                "UPDATE issues SET closure = 'rechecked', closed_at_utc = ?4
-         WHERE closed_at_utc IS NULL
-           AND path IN (SELECT abs_path FROM paths WHERE id IN ({members}))
-           AND kind IN (?5, ?6, ?7, ?8, ?9, ?10, ?11)"
-            ),
-            params![
-                kind,
-                bounds.map(|(start, _)| start),
-                bounds.map(|(_, end)| end),
-                crate::logging::now_iso_millis(),
-                crate::scanner::READ_ERROR,
-                crate::scanner::METADATA_READ_ERROR,
-                derived_state::PREVIEW_ERROR,
-                derived_state::VIDEO_POSTER_ERROR,
-                derived_state::VIDEO_STRIP_ERROR,
-                derived_state::FACE_ERROR,
-                derived_state::TRANSCRIPT_ERROR,
-            ],
-        )
-        .map_err(|error| error.to_string())?;
+    index_store::close_issues(
+        &transaction,
+        "rechecked",
+        &format!(
+            "path IN (SELECT abs_path FROM paths WHERE id IN ({members}))
+             AND kind IN (?4, ?5, ?6, ?7, ?8, ?9, ?10)"
+        ),
+        params![
+            kind,
+            bounds.map(|(start, _)| start),
+            bounds.map(|(_, end)| end),
+            crate::scanner::READ_ERROR,
+            crate::scanner::METADATA_READ_ERROR,
+            derived_state::PREVIEW_ERROR,
+            derived_state::VIDEO_POSTER_ERROR,
+            derived_state::VIDEO_STRIP_ERROR,
+            derived_state::FACE_ERROR,
+            derived_state::TRANSCRIPT_ERROR,
+        ],
+    )?;
     information_attempts::reset_section(&transaction, kind, bounds)?;
     let reopened = derived_state::reset_failed_outputs_in_transaction(
         &transaction,

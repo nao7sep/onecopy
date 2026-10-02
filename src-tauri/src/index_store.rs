@@ -1,6 +1,7 @@
 //! The scan index: one SQLite file, `index.sqlite3`, under the storage root.
-//! Scan facts, derived caches, and retained diagnostic history. Whole-file
-//! lifecycle archives preserve this store.
+//! Scan facts, derived caches, and expensive analysis results. Whole-file
+//! lifecycle archives preserve this store; its Issues and analysis failures
+//! are records in the attached `records.sqlite3`.
 //!
 //! An index written by an earlier schema revision is rebuilt from the files.
 //!
@@ -29,30 +30,6 @@ CREATE TABLE IF NOT EXISTS resolution_policy (
   good_range_start_year INTEGER NOT NULL,
   pairing_enabled INTEGER NOT NULL
 );
-";
-
-const ISSUE_SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS issues (
-  id             INTEGER PRIMARY KEY,
-  path           TEXT NOT NULL DEFAULT '',
-  kind           TEXT NOT NULL,
-  message        TEXT,
-  message_key    TEXT,
-  message_values TEXT,
-  first_seen_utc TEXT NOT NULL,
-  last_seen_utc  TEXT NOT NULL,
-  occurrence_count INTEGER NOT NULL DEFAULT 1,
-  closed_at_utc  TEXT,
-  closure        TEXT CHECK (closure IN ('dismissed', 'resolved', 'app-restart', 'rechecked')),
-  CHECK ((closed_at_utc IS NULL) = (closure IS NULL))
-);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_issues_live_identity
-  ON issues (kind, path) WHERE closed_at_utc IS NULL;
-CREATE INDEX IF NOT EXISTS idx_issues_first_seen
-  ON issues (first_seen_utc, id) WHERE closed_at_utc IS NULL;
-CREATE VIEW IF NOT EXISTS active_issues AS
-  SELECT id, path, kind, message, message_key, message_values, first_seen_utc, last_seen_utc, occurrence_count
-  FROM issues WHERE closed_at_utc IS NULL;
 ";
 
 const SCHEMA: &str = "
@@ -538,7 +515,6 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
                     .map_err(|error| error.to_string())?;
             }
             conn.execute_batch(SCHEMA).map_err(|error| error.to_string())?;
-            conn.execute_batch(ISSUE_SCHEMA).map_err(|error| error.to_string())?;
             conn.execute_batch(RESOLUTION_POLICY_SCHEMA).map_err(|error| error.to_string())?;
             crate::visibility_index::apply_policy_in_transaction(
                 &conn,
@@ -582,12 +558,42 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
 
 // EXCEPTION (tests-folder conventions): the schema-shape test stays in-file
 // because it asserts the private SCHEMA constant's effect on a fresh file,
-/// Coalesces one live condition by (kind, path). Closed records stay immutable;
-/// a new failed attempt after dismissal or resolution gets a new identity.
-/// `path` None anchors to '' so rootless conditions also coalesce. Returns
-/// whether this call actually opened a new live entry — a repeated failure of
-/// an already-open issue only bumps its occurrence count, which callers must
-/// not treat as an Issues-surface change (C-M3).
+/// Whether this launch's Issue for (kind, path) is open: its latest event is
+/// an occurrence.
+fn issue_open(conn: &Connection, kind: &str, path: &str) -> Result<bool, String> {
+    let latest: Option<String> = conn
+        .query_row(
+            &format!(
+                "SELECT event FROM records.issue_events
+                 WHERE session_id IS {} AND kind = ?1 AND path = ?2 ORDER BY id DESC LIMIT 1",
+                crate::records::session_sql()
+            ),
+            rusqlite::params![kind, path],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(latest.as_deref() == Some("occurred"))
+}
+
+fn record_issue_event(conn: &Connection, kind: &str, path: &str, event: &str) -> Result<(), String> {
+    conn.execute(
+        &format!(
+            "INSERT INTO records.issue_events (session_id, time_utc, kind, path, event)
+             VALUES ({}, ?1, ?2, ?3, ?4)",
+            crate::records::session_sql()
+        ),
+        rusqlite::params![crate::logging::now_iso_millis(), kind, path, event],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+/// Records one occurrence of a condition, identified by (kind, path). `path`
+/// None anchors to '' so rootless conditions also coalesce. Returns whether
+/// this call opened a new Issue — a repeated failure of an open one only adds
+/// an occurrence, which callers must not treat as an Issues-surface change
+/// (C-M3).
 pub fn upsert_issue(
     conn: &Connection,
     path: Option<&str>,
@@ -611,83 +617,72 @@ pub fn upsert_issue_with_descriptor(
     message_values_json: Option<&str>,
     message: &str,
 ) -> Result<bool, String> {
-    let now = crate::logging::now_iso_millis();
     let path = path.unwrap_or("");
-    let existing: Option<i64> = conn
-        .query_row(
-            "SELECT id FROM issues WHERE kind = ?1 AND path = ?2 AND closed_at_utc IS NULL",
-            rusqlite::params![kind, path],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?;
-    match existing {
-        Some(id) => {
-            conn.execute(
-                "UPDATE issues SET message = ?2, message_key = ?3, message_values = ?4,
-                     last_seen_utc = ?5, occurrence_count = occurrence_count + 1
-                 WHERE id = ?1",
-                rusqlite::params![id, message, message_key, message_values_json, now],
-            )
-            .map_err(|e| e.to_string())?;
-            Ok(false)
-        }
-        None => {
-            conn.execute(
-                "INSERT INTO issues (path, kind, message, message_key, message_values, \
-                 first_seen_utc, last_seen_utc) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
-                rusqlite::params![path, kind, message, message_key, message_values_json, now],
-            )
-            .map_err(|e| e.to_string())?;
-            Ok(true)
-        }
-    }
+    let opened = !issue_open(conn, kind, path)?;
+    conn.execute(
+        &format!(
+            "INSERT INTO records.issue_events
+               (session_id, time_utc, kind, path, event, message, message_key, message_values)
+             VALUES ({}, ?1, ?2, ?3, 'occurred', ?4, ?5, ?6)",
+            crate::records::session_sql()
+        ),
+        rusqlite::params![
+            crate::logging::now_iso_millis(),
+            kind,
+            path,
+            message,
+            message_key,
+            message_values_json
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(opened)
 }
 
-/// Retires resolved live conditions without erasing their diagnostic context.
-/// Returns whether any row was actually resolved, so callers can tell a real
-/// resolution from a no-op clear of an already-closed or absent issue (C-M3).
+/// Resolves open conditions. Returns whether any Issue was actually
+/// resolved, so callers can tell a real resolution from a no-op clear of an
+/// already-closed or absent issue (C-M3).
 pub fn clear_issues(conn: &Connection, path: &str, kinds: &[&str]) -> Result<bool, String> {
-    let now = crate::logging::now_iso_millis();
     let mut changed = false;
     for kind in kinds {
-        let rows = conn
-            .execute(
-                "UPDATE issues SET closure = 'resolved', closed_at_utc = ?3
-                 WHERE kind = ?1 AND path = ?2 AND closed_at_utc IS NULL",
-                rusqlite::params![kind, path, now],
-            )
-            .map_err(|e| e.to_string())?;
-        changed |= rows > 0;
+        if issue_open(conn, kind, path)? {
+            record_issue_event(conn, kind, path, "resolved")?;
+            changed = true;
+        }
     }
     Ok(changed)
 }
 
-/// Whether live conditions exist; retained history never causes cleanup work.
+/// Closes every open Issue `predicate` (SQL over `kind` and `path`, with
+/// `params`) selects, recording how it closed.
+pub(crate) fn close_issues(
+    conn: &Connection,
+    closure: &str,
+    predicate: &str,
+    params: &[&dyn rusqlite::ToSql],
+) -> Result<(), String> {
+    conn.execute(
+        &format!(
+            "INSERT INTO records.issue_events (session_id, time_utc, kind, path, event)
+             SELECT {}, {}, kind, path, '{closure}' FROM active_issues WHERE {predicate}",
+            crate::records::session_sql(),
+            crate::records::sql_text(Some(&crate::logging::now_iso_millis())),
+        ),
+        params,
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+/// Whether any Issue is open; closed records never cause cleanup work.
 pub fn any_issues(conn: &Connection) -> Result<bool, String> {
     conn.query_row("SELECT EXISTS (SELECT 1 FROM active_issues)", [], |r| r.get(0))
         .map_err(|error| error.to_string())
 }
 
-/// Dismiss one live record or the complete live inbox, not just a loaded page.
+/// Dismiss one open Issue or the complete inbox, not just a loaded page.
 pub fn dismiss_issues(conn: &Connection, id: Option<i64>) -> Result<(), String> {
-    conn.execute(
-        "UPDATE issues SET closure = 'dismissed', closed_at_utc = ?2
-         WHERE closed_at_utc IS NULL AND (?1 IS NULL OR id = ?1)",
-        rusqlite::params![id, crate::logging::now_iso_millis()],
-    ).map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-/// Startup admission, never ordinary connection opening, begins the next inbox.
-pub fn begin_issue_run(conn: &Connection) -> Result<(), String> {
-    conn.execute(
-        "UPDATE issues SET closure = 'app-restart', closed_at_utc = ?1
-         WHERE closed_at_utc IS NULL",
-        [crate::logging::now_iso_millis()],
-    ).map_err(|error| error.to_string())?;
-    Ok(())
+    close_issues(conn, "dismissed", "(?1 IS NULL OR id = ?1)", &[&id])
 }
 
 /// The only way to write more than one `paths` row's projection-affecting
@@ -752,8 +747,8 @@ pub(crate) fn publish_paths_batch_in(
     .map_err(|error| error.to_string())
 }
 
-/// Clears only reconstructible library facts; transcripts and face results
-/// stay unless their discard flag is set. Durable configuration, managed tools, and retained
+/// Clears only reconstructible library facts and closes the open Issues;
+/// transcripts and face results stay unless their discard flag is set. Durable configuration, managed tools, and retained
 /// authored records live in separate stores and are deliberately outside this
 /// transaction. Everything projection-affecting is
 /// wiped in the same pass, so the batch guard only needs to suppress the
@@ -775,6 +770,7 @@ pub fn clear_reconstructible(
                     .map_err(|error| error.to_string())?;
             }
             crate::derived_state::reopen_session_analysis_failures(tx)?;
+            close_issues(tx, "rebuilt", "1", &[])?;
             tx.execute_batch(
                 "INSERT INTO rebuild_keeps_results (singleton) VALUES (1);
              DELETE FROM similar_group_members;
@@ -787,7 +783,6 @@ pub fn clear_reconstructible(
              DELETE FROM similarity_dirty_buckets;
              DELETE FROM similarity_state;
              DELETE FROM scan_dirs;
-             DELETE FROM issues;
              DELETE FROM recent_notifications;
              DELETE FROM volumes;
              DELETE FROM rebuild_keeps_results;",

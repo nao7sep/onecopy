@@ -87,7 +87,7 @@ fn videos_wait_when_ffmpeg_is_absent_and_never_get_checkpointed() {
         "a blocked video must stay pending, not be checkpointed"
     );
     let issues: i64 = conn
-        .query_row("SELECT COUNT(*) FROM issues", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM active_issues", [], |r| r.get(0))
         .unwrap();
     assert_eq!(issues, 0, "nothing is wrong with the file — no issue row");
 

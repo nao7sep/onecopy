@@ -1196,7 +1196,7 @@ fn a_changed_copy_is_delivered_as_it_exists_when_the_operation_runs() {
     assert_eq!(std::fs::read(dest.join("r.jpg")).unwrap(), b"rotten!-bytes");
     let issues: i64 = f
         .conn
-        .query_row("SELECT COUNT(*) FROM issues", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM active_issues", [], |r| r.get(0))
         .unwrap();
     assert_eq!(
         issues, 0,
@@ -1239,7 +1239,7 @@ fn a_failed_copy_keeps_its_row_and_records_an_issue() {
     let issues: i64 = f
         .conn
         .query_row(
-            "SELECT COUNT(*) FROM issues WHERE kind = 'delete-error'",
+            "SELECT COUNT(*) FROM active_issues WHERE kind = 'delete-error'",
             [],
             |r| r.get(0),
         )
@@ -1420,7 +1420,7 @@ fn destination_write_failure_stops_the_unstarted_remainder_and_records_an_issue(
     let issues: i64 = f
         .conn
         .query_row(
-            "SELECT COUNT(*) FROM issues WHERE kind = 'copy-error'",
+            "SELECT COUNT(*) FROM active_issues WHERE kind = 'copy-error'",
             [],
             |row| row.get(0),
         )
@@ -1746,7 +1746,7 @@ fn move_skips_a_changed_copy_and_never_destroys_the_unchanged_one() {
         assert_eq!(outcome.post_action.deleted_files, 1);
         let issues: Vec<String> = f
             .conn
-            .prepare("SELECT path FROM issues WHERE kind = 'copy-error'")
+            .prepare("SELECT path FROM active_issues WHERE kind = 'copy-error'")
             .unwrap()
             .query_map([], |row| row.get(0))
             .unwrap()

@@ -182,29 +182,6 @@ fn sidebar_count_queries_seek_month_and_edge_indexes() {
 }
 
 #[test]
-fn issues_page_seeks_oldest_diagnostics_without_sorting() {
-    let (_dir, conn) = seeded();
-    let mut statement = conn
-        .prepare(&format!("EXPLAIN QUERY PLAN {ISSUES_PAGE_SQL}"))
-        .unwrap();
-    let details: Vec<String> = statement
-        .query_map([500], |row| row.get(3))
-        .unwrap()
-        .map(Result::unwrap)
-        .collect();
-    assert!(
-        details
-            .iter()
-            .any(|line| line.contains("idx_issues_first_seen")),
-        "Issues page lost its oldest-first index: {details:?}"
-    );
-    assert!(
-        details.iter().all(|line| !line.contains("USE TEMP B-TREE")),
-        "Issues page reintroduced whole-table sorting: {details:?}"
-    );
-}
-
-#[test]
 fn section_count_cache_tracks_sqlite_revision_and_timezone() {
     let (dir, writer) = seeded();
     writer

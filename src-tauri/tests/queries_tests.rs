@@ -990,8 +990,8 @@ fn issues_page_oldest_first_with_the_full_total() {
     let conn = db();
     for i in 1..=5 {
         conn.execute(
-            "INSERT INTO issues (path, kind, message, first_seen_utc, last_seen_utc) \
-             VALUES (?1, 'decode-error', ?2, ?3, ?3)",
+            "INSERT INTO records.issue_events (time_utc, kind, path, event, message) \
+             VALUES (?3, 'decode-error', ?1, 'occurred', ?2)",
             params![
                 format!("/root/{i}.jpg"),
                 format!("failure {i}"),
@@ -1017,8 +1017,8 @@ fn issues_beyond_the_first_page_are_reachable_with_a_keyset_cursor() {
     let conn = db();
     for i in 1..=5 {
         conn.execute(
-            "INSERT INTO issues (path, kind, message, first_seen_utc, last_seen_utc) \
-             VALUES (?1, 'decode-error', ?2, ?3, ?3)",
+            "INSERT INTO records.issue_events (time_utc, kind, path, event, message) \
+             VALUES (?3, 'decode-error', ?1, 'occurred', ?2)",
             params![
                 format!("/root/{i}.jpg"),
                 format!("failure {i}"),

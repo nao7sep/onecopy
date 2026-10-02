@@ -537,7 +537,7 @@ fn derive_pending_processes_images_once_and_flags_decode_failures() {
 
     let issue_count: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM issues WHERE kind = 'decode-error'",
+            "SELECT COUNT(*) FROM active_issues WHERE kind = 'decode-error'",
             [],
             |r| r.get(0),
         )
@@ -644,7 +644,7 @@ fn stills_needing_ffmpeg_wait_for_it_instead_of_failing() {
     // Waiting on a tool is not a bad file: no issue row, and the marker is
     // distinct from `failed` so installing ffmpeg is enough to derive it.
     let issues: i64 = conn
-        .query_row("SELECT COUNT(*) FROM issues", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM active_issues", [], |r| r.get(0))
         .unwrap();
     assert_eq!(issues, 0);
     let marker: String = conn
@@ -692,7 +692,7 @@ fn windows_native_decode_limit_waits_for_ffmpeg_instead_of_failing_the_file() {
         NEEDS_FFMPEG,
     );
     assert_eq!(
-        conn.query_row("SELECT COUNT(*) FROM issues", [], |row| row.get::<_, i64>(0))
+        conn.query_row("SELECT COUNT(*) FROM active_issues", [], |row| row.get::<_, i64>(0))
             .unwrap(),
         0,
     );
@@ -824,7 +824,7 @@ fn an_unwritable_cache_pauses_the_pass_instead_of_failing_every_item() {
         )
         .unwrap();
     assert_eq!(failed_rows, 0, "the item must not be recorded as permanently broken");
-    let issues: i64 = conn.query_row("SELECT COUNT(*) FROM issues", [], |r| r.get(0)).unwrap();
+    let issues: i64 = conn.query_row("SELECT COUNT(*) FROM active_issues", [], |r| r.get(0)).unwrap();
     assert_eq!(issues, 0, "the derive pass itself records no per-item Issue for this condition");
 
     // Space returns: the same pending row derives normally on the next pass.

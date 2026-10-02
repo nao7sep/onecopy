@@ -95,7 +95,7 @@ fn restat_skips_apple_double_sidecars_beside_their_real_file() {
         )
         .unwrap();
     assert_eq!(missing, 1);
-    let issues: i64 = conn.query_row("SELECT COUNT(*) FROM issues", [], |r| r.get(0)).unwrap();
+    let issues: i64 = conn.query_row("SELECT COUNT(*) FROM active_issues", [], |r| r.get(0)).unwrap();
     assert_eq!(issues, 0, "an excluded path is absent, never a failure");
 
     // The real file gone leaves the sidecar as ordinary content: it is
@@ -212,7 +212,7 @@ fn an_unreadable_directory_never_turns_known_files_into_missing_rows() {
     assert_eq!(missing, 0, "failed enumeration proves nothing about absence");
     let issues: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM issues WHERE kind = 'walk-error' AND path = ?1",
+            "SELECT COUNT(*) FROM active_issues WHERE kind = 'walk-error' AND path = ?1",
             [onecopy_lib::winpath::for_fs(&root).to_string_lossy().as_ref()],
             |row| row.get(0),
         )
@@ -340,7 +340,7 @@ fn restat_keeps_trash_lookalikes_but_never_opens_deleted_storage() {
     let excluded = lookalike.join(".onecopy-trash").join("day");
     assert_eq!(restat_dir(&conn, &excluded, &lists(), &[excluded.to_string_lossy().into_owned()], &no_data_root()).unwrap(), 0);
     let counts: (i64, i64) = conn.query_row(
-        "SELECT (SELECT COUNT(*) FROM paths), (SELECT COUNT(*) FROM issues)",
+        "SELECT (SELECT COUNT(*) FROM paths), (SELECT COUNT(*) FROM active_issues)",
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),
     ).unwrap();

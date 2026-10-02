@@ -360,7 +360,7 @@ fn cancelling_a_restore_while_it_waits_for_background_work_changes_nothing() {
     assert!(!root.join("trip").exists(), "no folder recreated");
     assert_eq!(std::fs::read(&manifest).unwrap(), manifest_before, "no restored line");
     let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME)).unwrap();
-    let issues: i64 = conn.query_row("SELECT COUNT(*) FROM issues", [], |row| row.get(0)).unwrap();
+    let issues: i64 = conn.query_row("SELECT COUNT(*) FROM active_issues", [], |row| row.get(0)).unwrap();
     assert_eq!(issues, 0, "no Issue recorded");
 }
 

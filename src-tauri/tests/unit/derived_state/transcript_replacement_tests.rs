@@ -24,7 +24,7 @@ fn replacement_failure_preserves_the_completed_transcript_and_records_the_attemp
         .unwrap();
     let issue: (String, String, String) = conn
         .query_row(
-            "SELECT kind, message, message_key FROM issues WHERE path = '/media.mov'",
+            "SELECT kind, message, message_key FROM active_issues WHERE path = '/media.mov'",
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )

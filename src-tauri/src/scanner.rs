@@ -64,22 +64,21 @@ pub(crate) fn mark_path_missing(conn: &Connection, path: &str) -> Result<(), Str
 }
 
 /// Closes the path-scan Issues of every path `path_predicate` (SQL over
-/// `path`, its parameters numbered from `?3`) selects.
+/// `path`, its parameters numbered from `?2`) selects.
 fn close_path_scan_issues(
     conn: &Connection,
     path_predicate: &str,
     path_params: &[&dyn rusqlite::ToSql],
 ) -> Result<(), String> {
-    let now = crate::logging::now_iso_millis();
-    let sql = format!(
-        "UPDATE issues SET closure = 'resolved', closed_at_utc = ?1 \
-         WHERE closed_at_utc IS NULL AND kind = ?2 AND {path_predicate}"
-    );
     for kind in PATH_SCAN_ISSUES {
-        let mut values: Vec<&dyn rusqlite::ToSql> = vec![&now, kind];
+        let mut values: Vec<&dyn rusqlite::ToSql> = vec![kind];
         values.extend_from_slice(path_params);
-        conn.execute(&sql, values.as_slice())
-            .map_err(|error| error.to_string())?;
+        crate::index_store::close_issues(
+            conn,
+            "resolved",
+            &format!("kind = ?1 AND {path_predicate}"),
+            &values,
+        )?;
     }
     Ok(())
 }
@@ -134,7 +133,7 @@ pub(crate) fn mark_missing_under(conn: &Connection, dir: &str) -> Result<u64, St
         // Let a concurrent writer in between pages (see `re_resolve_all_with_progress`).
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
-    close_path_scan_issues(conn, "path LIKE ?3 ESCAPE '!'", &[&prefix])?;
+    close_path_scan_issues(conn, "path LIKE ?2 ESCAPE '!'", &[&prefix])?;
     Ok(changed)
 }
 
@@ -1420,13 +1419,12 @@ fn walk_root_with_progress(
         // A complete walk also proves that old entry failures beneath this
         // root no longer exist, including when the failed entry itself was
         // removed and therefore yielded no success event above.
-        conn.execute(
-            "UPDATE issues SET closure = 'resolved', closed_at_utc = ?4 \
-             WHERE closed_at_utc IS NULL AND kind = ?1 \
-             AND (path = ?2 OR path LIKE ?3 ESCAPE '!')",
-            params![WALK_ERROR, root_str, placeholders_root, logging::now_iso_millis()],
-        )
-        .map_err(|error| error.to_string())?;
+        crate::index_store::close_issues(
+            conn,
+            "resolved",
+            "kind = ?1 AND (path = ?2 OR path LIKE ?3 ESCAPE '!')",
+            params![WALK_ERROR, root_str, placeholders_root],
+        )?;
 
         // Successful files cleared their own stat row above. The remaining
         // stale rows can only name entries a complete traversal proved gone;

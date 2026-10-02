@@ -382,7 +382,7 @@ impl Fixture {
     fn issue_keys(&self) -> Vec<(String, String)> {
         let mut statement = self
             .conn
-            .prepare("SELECT kind, COALESCE(message_key, '') FROM issues ORDER BY id")
+            .prepare("SELECT kind, COALESCE(message_key, '') FROM active_issues ORDER BY id")
             .unwrap();
         statement
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
