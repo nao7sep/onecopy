@@ -4,6 +4,7 @@ import {
   matchSystemLanguage,
   type Language,
 } from "../i18n/languages";
+import { loadCatalogue } from "../i18n/catalogues";
 
 // If the appearance read never completes (a slow core, or window-appearance's
 // own 5 s bound), the window must not paint in English regardless of what the
@@ -28,7 +29,8 @@ interface LanguageState {
   /** The computer's first preferred locale, for regional date and number
    * formats when it shares the interface language. */
   systemLocale: string | null;
-  apply: (input: LanguageInput) => void;
+  /** Takes the language once its catalogue is loaded. */
+  apply: (input: LanguageInput) => Promise<void>;
 }
 
 // Every window learns the language from the same appearance read it already
@@ -40,10 +42,14 @@ export const useLanguageStore = create<LanguageState>((set) => {
     language: fallback,
     systemLanguage: fallback,
     systemLocale: null,
-    apply: (input) => set({
-      language: isLanguage(input.language) ? input.language : fallback,
-      systemLanguage: isLanguage(input.systemLanguage) ? input.systemLanguage : fallback,
-      systemLocale: typeof input.systemLocale === "string" ? input.systemLocale : null,
-    }),
+    apply: async (input) => {
+      const language = isLanguage(input.language) ? input.language : fallback;
+      await loadCatalogue(language);
+      set({
+        language,
+        systemLanguage: isLanguage(input.systemLanguage) ? input.systemLanguage : fallback,
+        systemLocale: typeof input.systemLocale === "string" ? input.systemLocale : null,
+      });
+    },
   };
 });

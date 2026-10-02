@@ -5,7 +5,13 @@
 // installed here. Tests that need a specific platform stub it themselves.
 
 import { afterEach, beforeEach, vi } from "vitest";
-import { CATALOGUES } from "../src/i18n/catalogues";
+import en from "../src/i18n/locales/en.json";
+import { loadCatalogue } from "../src/i18n/catalogues";
+import { LANGUAGES } from "../src/i18n/languages";
+
+// The app loads a catalogue when a language is chosen; specs render any
+// language directly, so every catalogue is loaded before they run.
+await Promise.all(LANGUAGES.map(loadCatalogue));
 
 if (typeof globalThis.navigator === "undefined") {
   vi.stubGlobal("navigator", { platform: "", userAgent: "" });
@@ -74,7 +80,7 @@ vi.mock("@tauri-apps/plugin-opener", async () => {
 // because a key is a string and React renders any string. Specs mount their
 // own roots, so an observer watches the document while each one runs.
 
-const CATALOGUE_KEYS = new Set(Object.keys(CATALOGUES.en));
+const CATALOGUE_KEYS = new Set(Object.keys(en));
 const READ_ATTRIBUTES = ["title", "aria-label", "aria-description", "placeholder", "alt", "label"];
 const KEY_LIKE = /[A-Za-z]\w*(?:\.\w+)+/g;
 

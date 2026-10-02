@@ -1,5 +1,5 @@
 import { Fragment, createElement, type ReactNode } from "react";
-import { CATALOGUES, type Catalogue, type MessageKey } from "./catalogues";
+import { catalogueFor, type Catalogue, type MessageKey } from "./catalogues";
 import type { Language } from "./languages";
 
 // A value is plain text, a number formatted for the locale, or another
@@ -44,7 +44,7 @@ export type Translator = {
 };
 
 export function createTranslator(language: Language, locale: string = language): Translator {
-  const catalogue: Catalogue = CATALOGUES[language];
+  const catalogue: Catalogue = catalogueFor(language);
   const numberFormat = new Intl.NumberFormat(locale);
   const percentFormat = new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 0 });
   const dateTimeFormats = new Map<string, Intl.DateTimeFormat>();

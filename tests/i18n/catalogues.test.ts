@@ -1,8 +1,8 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { CATALOGUES } from "../../src/i18n/catalogues";
-import { LANGUAGES, type Language } from "../../src/i18n/languages";
+import { loadCatalogue } from "../../src/i18n/catalogues";
+import { LANGUAGES, LANGUAGE_NAMES, type Language } from "../../src/i18n/languages";
 import { createTranslator } from "../../src/i18n/translate";
 
 // The catalogue gate. English defines the key set; every other language must
@@ -15,7 +15,9 @@ type Catalogue = Record<string, Entry>;
 
 // Read through the app's own imports, so a change to any catalogue selects
 // this gate as a related test.
-const catalogues = CATALOGUES as unknown as Record<Language, Catalogue>;
+const catalogues = Object.fromEntries(
+  await Promise.all(LANGUAGES.map(async (language) => [language, await loadCatalogue(language)])),
+) as unknown as Record<Language, Catalogue>;
 
 const english = catalogues.en;
 const translations = LANGUAGES.filter((language) => language !== "en");
@@ -208,7 +210,7 @@ describe("catalogues", () => {
   });
 
   it("names every language differently, in its own words", () => {
-    const names = LANGUAGES.map((language) => catalogues[language]["language.name"]);
+    const names = LANGUAGES.map((language) => LANGUAGE_NAMES[language]);
     expect(new Set(names).size).toBe(LANGUAGES.length);
   });
 

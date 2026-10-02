@@ -7,6 +7,21 @@ export const LANGUAGES = ["en", "de", "es", "fr", "it", "pt-BR", "ru", "ja", "ko
 
 export type Language = (typeof LANGUAGES)[number];
 
+// Each language's own name, for the pickers, so listing them loads no
+// catalogue.
+export const LANGUAGE_NAMES: Readonly<Record<Language, string>> = {
+  en: "English",
+  de: "Deutsch",
+  es: "Español",
+  fr: "Français",
+  it: "Italiano",
+  "pt-BR": "Português",
+  ru: "Русский",
+  ja: "日本語",
+  ko: "한국어",
+  "zh-Hans": "中文",
+};
+
 // The saved choice. System follows the computer's language on every launch.
 export type LanguagePreference = "system" | Language;
 

@@ -27,9 +27,9 @@ import { message } from "../i18n/translate";
 import { recordActionFailure } from "../state/notifications-store";
 import OperationResult from "./ui/OperationResult";
 import { timeZoneOptions } from "../utils/timezones";
-import { CATALOGUES, type MessageKey } from "../i18n/catalogues";
+import { type MessageKey } from "../i18n/catalogues";
 import { useI18n } from "../i18n/I18nContext";
-import { LANGUAGES, normalizeLanguagePreference } from "../i18n/languages";
+import { LANGUAGES, LANGUAGE_NAMES, normalizeLanguagePreference } from "../i18n/languages";
 
 /** The core's text-preview choices (`text_preview::Options`); the limit
  * keeps the gate itself bounded (C-L2). */
@@ -861,7 +861,7 @@ export default function SettingsModal({
               <option value="system">{t("settings.languageSystem")}</option>
               {LANGUAGES.map((language) => (
                 <option key={language} value={language} lang={language}>
-                  {CATALOGUES[language]["language.name"] as string}
+                  {LANGUAGE_NAMES[language]}
                 </option>
               ))}
             </Select>

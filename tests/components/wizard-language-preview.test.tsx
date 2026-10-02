@@ -28,25 +28,25 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("wizard language preview", () => {
-  it("shows the wizard's own text in the chosen language without touching the document or the shared store", () => {
+  it("shows the wizard's own text in the chosen language without touching the document or the shared store", async () => {
     render(<Wizard />);
     expect(screen.getByText("Setup")).toBeTruthy();
 
     fireEvent.change(screen.getByRole("combobox"), { target: { value: "ja" } });
 
-    // The wizard's own subtree follows the choice at once...
-    expect(screen.getByText("セットアップ")).toBeTruthy();
+    // The wizard's own subtree follows the choice once its catalogue loads...
+    expect(await screen.findByText("セットアップ")).toBeTruthy();
     // ...but nothing outside it does.
     expect(document.documentElement.lang).toBe("en");
     expect(useLanguageStore.getState().language).toBe("en");
   });
 
-  it("leaves the shared language store untouched after Cancel on a re-run", () => {
+  it("leaves the shared language store untouched after Cancel on a re-run", async () => {
     useWizardStore.setState({ reconfigure: true });
     render(<Wizard />);
 
     fireEvent.change(screen.getByRole("combobox"), { target: { value: "ja" } });
-    const cancelButton = screen.getByText("キャンセル");
+    const cancelButton = await screen.findByText("キャンセル");
     expect(cancelButton).toBeTruthy();
 
     fireEvent.click(cancelButton);
@@ -59,8 +59,7 @@ describe("wizard language preview", () => {
   // R5.5 C1: the wizard offers the SAME choice as Settings -- System plus
   // exactly the ten supported languages, each named in its own words.
   it("lists System plus the ten languages, each named in its own words", async () => {
-    const { CATALOGUES } = await import("../../src/i18n/catalogues");
-    const { LANGUAGES } = await import("../../src/i18n/languages");
+    const { LANGUAGES, LANGUAGE_NAMES } = await import("../../src/i18n/languages");
     render(<Wizard />);
 
     const select = screen.getByRole("combobox") as HTMLSelectElement;
@@ -71,7 +70,7 @@ describe("wizard language preview", () => {
     for (const language of LANGUAGES) {
       const option = options.find((candidate) => candidate.value === language)!;
       expect(option).toBeTruthy();
-      expect(option.textContent).toBe(CATALOGUES[language]["language.name"]);
+      expect(option.textContent).toBe(LANGUAGE_NAMES[language]);
       expect(option.getAttribute("lang")).toBe(language);
     }
   });

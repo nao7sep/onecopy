@@ -11,9 +11,12 @@ import { requestSeq } from "./request-seq";
 import { message, type Message } from "../i18n/translate";
 import { recordActionFailure } from "./notifications-store";
 import {
+  effectiveLanguage,
   normalizeLanguagePreference,
   type LanguagePreference,
 } from "../i18n/languages";
+import { loadCatalogue } from "../i18n/catalogues";
+import { useLanguageStore } from "./language-store";
 import {
   optionalFeatureSetup,
   type OptionalFeatureChoices,
@@ -59,7 +62,8 @@ interface WizardState {
   setStep: (step: 1 | 2 | 3) => void;
   setOptionalFeature: (id: OptionalFeatureId, enabled: boolean) => void;
   setTimezone: (name: string) => void;
-  setLanguage: (preference: LanguagePreference) => void;
+  /** Stages a language once its catalogue is loaded for the preview. */
+  setLanguage: (preference: LanguagePreference) => Promise<void>;
   /** Abandons a re-run, changing nothing. Never available on a first run. */
   cancel: () => void;
   recheckPresence: () => Promise<void>;
@@ -168,7 +172,10 @@ export const useWizardStore = create<WizardState>((set, get) => ({
     set({ timezone: name, error: null });
   },
 
-  setLanguage: (preference) => set({ language: preference }),
+  setLanguage: async (preference) => {
+    await loadCatalogue(effectiveLanguage(preference, useLanguageStore.getState().systemLanguage));
+    set({ language: preference });
+  },
 
   cancel: () => {
     // Nothing was written on the way through — every step edits store state

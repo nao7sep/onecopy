@@ -119,8 +119,7 @@ describe("Settings categories", () => {
   // R5.5 C1: the language picker lists System plus exactly the ten supported
   // languages, each named in its own words rather than a fixed English list.
   it("lists System plus the ten languages, each named in its own words", async () => {
-    const { CATALOGUES } = await import("../../src/i18n/catalogues");
-    const { LANGUAGES } = await import("../../src/i18n/languages");
+    const { LANGUAGES, LANGUAGE_NAMES } = await import("../../src/i18n/languages");
     render(<SettingsModal open onClose={() => {}} />);
     fireEvent.click(screen.getByRole("tab", { name: "Appearance" }));
 
@@ -132,7 +131,7 @@ describe("Settings categories", () => {
     for (const language of LANGUAGES) {
       const option = options.find((candidate) => candidate.value === language)!;
       expect(option).toBeTruthy();
-      expect(option.textContent).toBe(CATALOGUES[language]["language.name"]);
+      expect(option.textContent).toBe(LANGUAGE_NAMES[language]);
       expect(option.getAttribute("lang")).toBe(language);
     }
   });

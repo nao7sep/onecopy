@@ -93,7 +93,7 @@ fn embeds_exactly_the_catalogues_in_the_locales_folder() {
     listed.sort();
     assert_eq!(listed, on_disk);
     for tag in LANGUAGES {
-        assert!(catalogue(tag).has("language.name"), "{tag} is not embedded");
+        assert!(catalogue(tag).has("nativeMenu.about"), "{tag} is not embedded");
     }
 }
 

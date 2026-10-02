@@ -8,10 +8,12 @@ import { Plus } from "lucide-react";
 import { Row, Toggle } from "./ui/Field";
 import type { OptionalFeatureId } from "../models/optionalFeatures";
 import OperationResult from "./ui/OperationResult";
-import { CATALOGUES } from "../i18n/catalogues";
 import { I18nProvider, useI18n } from "../i18n/I18nContext";
-import { LANGUAGES, effectiveLanguage, formattingLocale, normalizeLanguagePreference } from "../i18n/languages";
+import { LANGUAGES, LANGUAGE_NAMES, effectiveLanguage, formattingLocale, normalizeLanguagePreference } from "../i18n/languages";
 import { useLanguageStore } from "../state/language-store";
+import { message } from "../i18n/translate";
+import { log, toErrorFields } from "../repositories";
+import { recordInterfaceFailure } from "../utils/failureSurface";
 
 const WIZARD_STEPS = 3;
 
@@ -110,12 +112,17 @@ function WizardContent() {
             <select
               className="mb-6 rounded-md border border-input-border bg-surface px-2 py-1 text-sm text-ink"
               value={language}
-              onChange={(e) => setLanguage(normalizeLanguagePreference(e.target.value))}
+              onChange={(e) => {
+                void setLanguage(normalizeLanguagePreference(e.target.value)).catch((error) => {
+                  log.warn("language preview failed", toErrorFields(error));
+                  recordInterfaceFailure(message("app.appearanceUpdateFailed"));
+                });
+              }}
             >
               <option value="system">{t("settings.languageSystem")}</option>
               {LANGUAGES.map((tag) => (
                 <option key={tag} value={tag} lang={tag}>
-                  {CATALOGUES[tag]["language.name"] as string}
+                  {LANGUAGE_NAMES[tag]}
                 </option>
               ))}
             </select>

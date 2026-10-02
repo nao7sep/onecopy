@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CATALOGUES } from "../../src/i18n/catalogues";
+import { loadCatalogue } from "../../src/i18n/catalogues";
 import { LANGUAGES, type Language } from "../../src/i18n/languages";
 
 // Localization-conventions: within one language, one concept keeps one term.
@@ -14,7 +14,9 @@ import { LANGUAGES, type Language } from "../../src/i18n/languages";
 type Entry = string | Record<string, string>;
 type Catalogue = Record<string, Entry>;
 
-const catalogues = CATALOGUES as unknown as Record<Language, Catalogue>;
+const catalogues = Object.fromEntries(
+  await Promise.all(LANGUAGES.map(async (language) => [language, await loadCatalogue(language)])),
+) as unknown as Record<Language, Catalogue>;
 
 function text(entry: Entry | undefined): string {
   if (entry === undefined) return "";

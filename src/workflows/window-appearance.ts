@@ -81,8 +81,9 @@ export const installWindowAppearance = createEventInstaller(async (listeners) =>
     try {
       const preferences = await readPreferences();
       if (current !== request) return;
+      await useLanguageStore.getState().apply(preferences);
+      if (current !== request) return;
       applyUiFont(preferences.uiFontFamily);
-      useLanguageStore.getState().apply(preferences);
       applyWindowTitle(useLanguageStore.getState().language);
       useWindowPreferencesStore.getState().apply(preferences);
     } catch (error) {

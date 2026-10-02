@@ -1,13 +1,4 @@
-import de from "./locales/de.json";
 import en from "./locales/en.json";
-import es from "./locales/es.json";
-import fr from "./locales/fr.json";
-import it from "./locales/it.json";
-import ja from "./locales/ja.json";
-import ko from "./locales/ko.json";
-import ptBR from "./locales/pt-BR.json";
-import ru from "./locales/ru.json";
-import zhHans from "./locales/zh-Hans.json";
 import type { Language } from "./languages";
 
 // English defines the key set; every other catalogue carries every key, with
@@ -20,15 +11,34 @@ export type CatalogueEntry = string | Readonly<Record<string, string>>;
 
 export type Catalogue = Readonly<Record<MessageKey, CatalogueEntry>>;
 
-export const CATALOGUES: Readonly<Record<Language, Catalogue>> = {
-  en,
-  de,
-  es,
-  fr,
-  it,
-  "pt-BR": ptBR,
-  ru,
-  ja,
-  ko,
-  "zh-Hans": zhHans,
+// One dynamic import per catalogue, so each language is its own chunk and
+// only the interface language and English are loaded (localization-stack
+// conventions). English is static: it is the fallback.
+const LOADERS: Readonly<Record<Language, () => Promise<Catalogue>>> = {
+  en: () => Promise.resolve(en),
+  de: () => import("./locales/de.json").then((module) => module.default),
+  es: () => import("./locales/es.json").then((module) => module.default),
+  fr: () => import("./locales/fr.json").then((module) => module.default),
+  it: () => import("./locales/it.json").then((module) => module.default),
+  "pt-BR": () => import("./locales/pt-BR.json").then((module) => module.default),
+  ru: () => import("./locales/ru.json").then((module) => module.default),
+  ja: () => import("./locales/ja.json").then((module) => module.default),
+  ko: () => import("./locales/ko.json").then((module) => module.default),
+  "zh-Hans": () => import("./locales/zh-Hans.json").then((module) => module.default),
 };
+
+const loaded = new Map<Language, Catalogue>([["en", en]]);
+
+/** Loads a language's catalogue once; a language change awaits this. */
+export async function loadCatalogue(language: Language): Promise<Catalogue> {
+  const known = loaded.get(language);
+  if (known !== undefined) return known;
+  const catalogue = await LOADERS[language]();
+  loaded.set(language, catalogue);
+  return catalogue;
+}
+
+/** The catalogue a translator reads: the language's once loaded, else English. */
+export function catalogueFor(language: Language): Catalogue {
+  return loaded.get(language) ?? en;
+}
