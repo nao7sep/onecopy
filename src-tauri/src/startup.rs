@@ -47,14 +47,12 @@ impl StartupGate {
 pub(crate) struct StartupState {
     pub(crate) data_root: PathBuf,
     pub(crate) cache_root: PathBuf,
-    pub(crate) setup_config: Option<Value>,
     pub(crate) records_path: PathBuf,
     pub(crate) started: Instant,
 }
 
 struct PreparedData {
     cache_root: PathBuf,
-    setup_config: Option<Value>,
 }
 
 fn spawn_launch_worker(
@@ -114,12 +112,14 @@ fn prepare_data(data_root: &Path) -> Result<PreparedData, String> {
     let conn = crate::index_store::open(
         &data_root.join(crate::storage::INDEX_DB_FILE_NAME),
     )?;
-    let config = crate::storage::read_config_for_setup(data_root)?;
-    crate::visibility_index::apply_policy(&conn, &crate::visibility::Policy::from_config(config.as_ref().unwrap_or(&json!({})))?)?;
+    // The one load of the settings, now that this process owns the instance
+    // lock; every later read takes the copy it holds.
+    let config = crate::storage::config(data_root)?;
+    crate::visibility_index::apply_policy(&conn, &crate::visibility::Policy::from_config(&config)?)?;
     crate::library_settings::adopt_unrecorded(
         &conn,
         &crate::scanner::settings_from_config(
-            config.as_ref(),
+            Some(&config),
             data_root,
             chrono::Utc::now().timestamp_millis(),
         ),
@@ -137,7 +137,6 @@ fn prepare_data(data_root: &Path) -> Result<PreparedData, String> {
 
     Ok(PreparedData {
         cache_root: data_root.join(crate::storage::CACHE_DIR_NAME),
-        setup_config: crate::storage::read_config_for_setup(data_root)?,
     })
 }
 
@@ -156,16 +155,12 @@ fn prepare(app: &tauri::App, debug_enabled: bool) -> Result<StartupState, String
     // The backup store is best-effort by contract and records its own failure.
     crate::backup_store::init(data_root.join(crate::backup_store::BACKUPS_DB_FILE_NAME));
 
-    let PreparedData {
-        cache_root,
-        setup_config,
-    } = prepare_data(&data_root)?;
+    let PreparedData { cache_root } = prepare_data(&data_root)?;
     crate::paths::settle_data_root(data_root.clone())?;
 
     Ok(StartupState {
         data_root,
         cache_root,
-        setup_config,
         records_path,
         started,
     })
@@ -204,14 +199,13 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
     let StartupState {
         data_root,
         cache_root,
-        setup_config,
         records_path,
         started,
     } = state;
 
     let derived_handle = app.handle().clone();
     let sleep_handle = app.handle().clone();
-    let keep_awake = crate::sleep_prevention::configured(setup_config.as_ref());
+    let sleep_root = data_root.clone();
     // Before derived work can write anything, so the sweep can tell this
     // run's cache writes from what earlier runs left.
     let launched = std::time::SystemTime::now();
@@ -259,12 +253,12 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
     let watcher_service = {
         let handle = app.handle().clone();
         let root = data_root.clone();
-        let config = setup_config.clone();
         RuntimeService {
             name: "source watcher",
             issue_kind: "watcher-failed",
             start: Box::new(move || {
-                let settings = crate::scanner::settings_from_config(config.as_ref(), &root, 0);
+                let config = crate::storage::config(&root)?;
+                let settings = crate::scanner::settings_from_config(Some(&config), &root, 0);
                 crate::watcher::start(handle, settings.source_dirs).map(|_| ())
             }),
         }
@@ -273,14 +267,12 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
     let update_service = {
         let root = data_root.clone();
         let handle = app.handle().clone();
-        let config = setup_config;
         RuntimeService {
             name: "managed-tool update check",
             issue_kind: "update-check-worker-failed",
             start: Box::new(move || {
-                let check_at_launch = config
-                    .as_ref()
-                    .and_then(|value| value.get("checkUpdatesAtLaunch"))
+                let check_at_launch = crate::storage::config(&root)?
+                    .get("checkUpdatesAtLaunch")
                     .and_then(Value::as_bool)
                     .unwrap_or(crate::storage::DefaultConfig::default().check_updates_at_launch);
                 if !check_at_launch {
@@ -370,7 +362,13 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
             RuntimeService {
                 name: "sleep prevention",
                 issue_kind: "sleep-prevention-failed",
-                start: Box::new(move || crate::sleep_prevention::start(sleep_handle, keep_awake)),
+                start: Box::new(move || {
+                    let config = crate::storage::config(&sleep_root)?;
+                    crate::sleep_prevention::start(
+                        sleep_handle,
+                        crate::sleep_prevention::configured(Some(&config)),
+                    )
+                }),
             },
             RuntimeService {
                 name: "derived work",

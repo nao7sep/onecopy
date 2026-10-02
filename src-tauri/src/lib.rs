@@ -184,7 +184,7 @@ async fn appearance_preferences(app: AppHandle) -> Result<Value, String> {
             "appearance_preferences",
             json!({}),
             || {
-                let preferences = storage::read_appearance_preferences(&paths::data_root()?)?;
+                let preferences = storage::appearance_preferences(&paths::data_root()?)?;
                 // The language the core settled on at launch, plus what the computer
                 // asked for, so a window paints its first text in the right language
                 // and formats dates the computer's way when they share a language.
@@ -566,7 +566,7 @@ async fn resolve_library_path(path: String) -> Result<Option<queries::LibraryTar
         queries::resolve_library_path(
             &conn,
             &path,
-            &storage::load_config_source_dirs(&data_root)?,
+            &storage::configured_source_dirs(&data_root)?,
             queries::display_timezone(),
         )
     })
@@ -697,9 +697,7 @@ async fn text_preview(
                 let data_root = paths::data_root()?;
                 let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
                 let path = indexed_file::live_path(&conn, hash.as_deref(), path_id)?;
-                let limits = text_preview::Limits::from_config(
-                    storage::read_config_for_setup(&data_root)?.as_ref(),
-                );
+                let limits = text_preview::Limits::from_config(Some(&*storage::config(&data_root)?));
                 text_preview::preview_file(&path, limits.max_bytes, &limits.fallback_encoding, encoding.as_deref())
             },
             |body| match body {
@@ -863,8 +861,8 @@ async fn ensure_preview(
             json!({ "hash": hash }),
             || {
                 let data_root = paths::data_root()?;
-                let config = storage::read_config_for_setup(&data_root)?;
-                derived_work::ensure_preview(&app, &data_root, config.as_ref(), &hash)
+                let config = storage::config(&data_root)?;
+                derived_work::ensure_preview(&app, &data_root, Some(&config), &hash)
             },
             |result| {
                 json!({
@@ -1067,7 +1065,7 @@ async fn trash_overview() -> Result<Vec<trash::TrashRootInfo>, String> {
             json!({}),
             || {
                 let data_root = paths::data_root()?;
-                let roots = storage::load_config_file_roots(&data_root)?;
+                let roots = storage::configured_file_roots(&data_root)?;
                 Ok(trash::overview(&roots))
             },
             |roots| json!({ "roots": roots.len() }),
@@ -1081,7 +1079,7 @@ async fn trash_reveal(app: AppHandle, root: String) -> Result<(), String> {
     dispatch(move || {
         use tauri_plugin_opener::OpenerExt;
         let data_root = paths::data_root()?;
-        let roots = storage::load_config_file_roots(&data_root)?;
+        let roots = storage::configured_file_roots(&data_root)?;
         let path = std::path::PathBuf::from(&root);
         let path = trash::ensure_root_for_reveal(&roots, &path)?;
         app.opener()
@@ -1101,7 +1099,7 @@ async fn trash_entries(root: String) -> Result<trash::TrashListing, String> {
             json!({ "root": root }),
             || {
                 let data_root = paths::data_root()?;
-                let roots = storage::load_config_file_roots(&data_root)?;
+                let roots = storage::configured_file_roots(&data_root)?;
                 let owning = trash::owning_root_of(&roots, std::path::Path::new(&root))?;
                 trash::list_root(&owning, &data_root)
             },
@@ -1264,10 +1262,8 @@ async fn get_similar_group(hash: String) -> Result<Vec<queries::GroupMember>, St
             || {
                 let data_root = paths::data_root()?;
                 let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-                let config = storage::read_config_for_setup(&data_root)?;
-                let use_face_score = config
-                    .as_ref()
-                    .and_then(|value| value.get("scoreFaces"))
+                let use_face_score = storage::config(&data_root)?
+                    .get("scoreFaces")
                     .and_then(Value::as_bool)
                     .unwrap_or_else(|| storage::DefaultConfig::default().score_faces);
                 queries::similar_group_of(&conn, &hash, use_face_score)

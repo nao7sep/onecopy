@@ -22,7 +22,7 @@ pub fn save_config(app: &AppHandle, mut changes: Value, report_failure: bool) ->
         || {
             let data_root = paths::data_root()?;
             let previous_source_dirs = if changes.get("sourceDirs").is_some() {
-                Some(storage::load_config_source_dirs(&data_root)?)
+                Some(storage::configured_source_dirs(&data_root)?)
             } else {
                 None
             };

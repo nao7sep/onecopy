@@ -34,6 +34,7 @@
 //! very bytes quarantine exists to preserve.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -282,10 +283,10 @@ pub struct QuarantineRecord {
 }
 
 /// Every read reports its own quarantine outcome in its result. The one
-/// exception needing a buffer: a pre-window setup read can set a store aside
-/// before any webview exists to report to, so `read_config_for_setup` parks
-/// the record here and the frontend's `load_from_root` picks it up. Nothing
-/// else feeds or drains this.
+/// exception needing a buffer: the startup load of the settings, and the
+/// pre-window state reads, can set a store aside before any webview exists to
+/// report to, so they park the record here and the frontend's
+/// `load_from_root` picks it up. Nothing else feeds or drains this.
 static PENDING_QUARANTINES: std::sync::Mutex<Vec<QuarantineRecord>> =
     std::sync::Mutex::new(Vec::new());
 
@@ -300,19 +301,11 @@ pub fn load_app_data() -> Result<LoadedAppData, String> {
     load_from_root(&paths::data_root()?)
 }
 
-/// Preferences needed by auxiliary windows are a read-only projection, not
-/// another application bootstrap. It never materializes, repairs, or drains
-/// quarantine notices owned by Main.
-pub fn read_appearance_preferences(root: &Path) -> Result<JsonValue, String> {
-    let config: JsonValue = match std::fs::read(root.join(CONFIG_FILE_NAME)) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| error.to_string())?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
-        Err(error) => return Err(error.to_string()),
-    };
-    if !config.is_object() {
-        return Err("Appearance requires a configuration object".to_string());
-    }
-    let config = effective_config(Some(&config));
+/// Preferences needed by auxiliary windows: a read-only projection of the
+/// settings in memory. It never repairs a store or drains the quarantine
+/// notices owned by Main.
+pub fn appearance_preferences(root: &Path) -> Result<JsonValue, String> {
+    let config = config(root)?;
     Ok(serde_json::json!({
         "uiFontFamily": config.get("uiFontFamily"),
         "enlargeSmallImagesInPreview": config.get("enlargeSmallImagesInPreview"),
@@ -324,7 +317,7 @@ pub fn read_appearance_preferences(root: &Path) -> Result<JsonValue, String> {
 
 /// Projects `LanguageState`'s CURRENT values into an appearance-preferences
 /// document, the way the `appearance_preferences` command does after calling
-/// `read_appearance_preferences` above. Kept apart from that command's
+/// `appearance_preferences` above. Kept apart from that command's
 /// `app.state::<i18n::LanguageState>()` lookup so the actual contract —
 /// a language a settings save just set is what the very next read returns —
 /// is directly testable against a `LanguageState` a test constructs itself,
@@ -336,20 +329,6 @@ pub fn with_language_fields(mut preferences: JsonValue, state: &crate::i18n::Lan
         object.insert("systemLocale".into(), serde_json::json!(state.system_locale));
     }
     preferences
-}
-
-/// Reads config for the pre-window setup paths. A quarantine here happens
-/// before any reporting surface exists, so its record is parked for the
-/// frontend's `load_from_root` to publish.
-pub fn read_config_for_setup(root: &Path) -> Result<Option<JsonValue>, String> {
-    let read = read_config_optional(&root.join(CONFIG_FILE_NAME))?;
-    if let Some(record) = read.quarantined {
-        PENDING_QUARANTINES
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .push(record);
-    }
-    Ok(read.value)
 }
 
 /// Reads volatile state for a pre-frontend runtime decision while preserving
@@ -396,13 +375,8 @@ pub fn save_preview_window_state(root: &Path, state: &JsonValue) -> Result<(), S
 }
 
 pub fn load_from_root(root: &Path) -> Result<LoadedAppData, String> {
+    let config = (*config(root)?).clone();
     let mut quarantines = take_pending_quarantines();
-    let config = {
-        let mut held = HELD_CONFIG.lock().unwrap_or_else(|p| p.into_inner());
-        let (config, quarantined) = held_or_read(&mut held, root)?;
-        quarantines.extend(quarantined);
-        config
-    };
     let state_read = read_json_optional(&root.join(STATE_FILE_NAME))?;
     if let Some(record) = state_read.quarantined {
         quarantines.push(record);
@@ -420,28 +394,22 @@ pub fn load_from_root(root: &Path) -> Result<LoadedAppData, String> {
     })
 }
 
-/// The configured source roots, read straight from `config.json` under a data
-/// root. Used by the startup resume, which decides before any AppHandle-bound
-/// load and needs only this one key.
-pub fn load_config_source_dirs(data_root: &Path) -> Result<Vec<String>, String> {
-    let config = read_config_for_setup(data_root)?;
-    Ok(config
-        .as_ref()
-        .and_then(|c| c.get("sourceDirs"))
-        .and_then(|v| v.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|e| e.as_str())
-                .map(|s| s.to_string())
-                .collect()
-        })
-        .unwrap_or_default())
+/// The configured source roots, as the settings in memory list them.
+pub fn configured_source_dirs(data_root: &Path) -> Result<Vec<String>, String> {
+    Ok(config(data_root)?
+        .get("sourceDirs")
+        .and_then(JsonValue::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(JsonValue::as_str)
+        .map(str::to_string)
+        .collect())
 }
 
 /// All roots whose own permission boundary must contain recoverable deleted
 /// files. The returned set is an operation-planning snapshot.
-pub fn load_config_file_roots(data_root: &Path) -> Result<Vec<PathBuf>, String> {
-    Ok(load_configured_roots(data_root)?.all())
+pub fn configured_file_roots(data_root: &Path) -> Result<Vec<PathBuf>, String> {
+    Ok(configured_roots(data_root)?.all())
 }
 
 /// The configured source and destination roots, each in configured order.
@@ -464,8 +432,8 @@ impl ConfiguredRoots {
     }
 }
 
-pub fn load_configured_roots(data_root: &Path) -> Result<ConfiguredRoots, String> {
-    Ok(configured_roots_in(read_config_for_setup(data_root)?.as_ref()))
+pub fn configured_roots(data_root: &Path) -> Result<ConfiguredRoots, String> {
+    Ok(configured_roots_in(Some(&*config(data_root)?)))
 }
 
 fn configured_roots_in(config: Option<&JsonValue>) -> ConfiguredRoots {
@@ -493,22 +461,45 @@ fn register_volume_roots(config: Option<&JsonValue>) {
 
 /// The settings this process holds for one storage root: every set's
 /// effective value, read once and changed only by saves (config-sets
-/// conventions). Keyed by root so a different root is read afresh.
-type HeldConfig = Option<(PathBuf, JsonValue)>;
+/// conventions). Keyed by root so a different root is read afresh. Held as a
+/// shared snapshot: a reader clones the `Arc` and works without the lock, and
+/// a save installs a new snapshot whole, so every read that starts after a
+/// save sees it and work already running keeps the settings it started with.
+type HeldConfig = Option<(PathBuf, Arc<JsonValue>)>;
 static HELD_CONFIG: std::sync::Mutex<HeldConfig> = std::sync::Mutex::new(None);
 
 /// The held settings for `root`, reading and holding them first when another
 /// root or nothing is held, with the quarantine that read performed, if any.
-fn held_or_read(held: &mut HeldConfig, root: &Path) -> Result<(JsonValue, Option<QuarantineRecord>), String> {
+fn held_or_read(held: &mut HeldConfig, root: &Path) -> Result<(Arc<JsonValue>, Option<QuarantineRecord>), String> {
     if let Some((held_root, effective)) = held.as_ref() {
         if held_root == root {
-            return Ok((effective.clone(), None));
+            return Ok((Arc::clone(effective), None));
         }
     }
     let read = read_config_optional(&root.join(CONFIG_FILE_NAME))?;
-    let effective = read.value.unwrap_or_else(|| effective_config(None));
-    *held = Some((root.to_path_buf(), effective.clone()));
+    let effective = Arc::new(read.value.unwrap_or_else(|| effective_config(None)));
+    *held = Some((root.to_path_buf(), Arc::clone(&effective)));
     Ok((effective, read.quarantined))
+}
+
+/// The settings in memory, which every read of a set goes through. The first
+/// call for a root is the one load: the lock owner's startup load
+/// (`startup::prepare_data`), unless [`held_config`] already held a readable
+/// file before the lock. That load sets an unreadable file aside and parks
+/// the record for Main's `load_from_root` to report. Every later call returns
+/// the held snapshot; the file is not read again.
+pub fn config(root: &Path) -> Result<Arc<JsonValue>, String> {
+    let (effective, quarantined) = {
+        let mut held = HELD_CONFIG.lock().unwrap_or_else(|p| p.into_inner());
+        held_or_read(&mut held, root)?
+    };
+    if let Some(record) = quarantined {
+        PENDING_QUARANTINES
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(record);
+    }
+    Ok(effective)
 }
 
 /// The held settings for the reads that come before the window shows: the
@@ -521,7 +512,7 @@ pub fn held_config(root: &Path) -> JsonValue {
     let mut held = HELD_CONFIG.lock().unwrap_or_else(|p| p.into_inner());
     if let Some((held_root, effective)) = held.as_ref() {
         if held_root == root {
-            return effective.clone();
+            return JsonValue::clone(effective);
         }
     }
     let stored = match std::fs::read(root.join(CONFIG_FILE_NAME)) {
@@ -534,7 +525,7 @@ pub fn held_config(root: &Path) -> JsonValue {
     };
     let effective = effective_config(stored.as_ref());
     register_volume_roots(Some(&effective));
-    *held = Some((root.to_path_buf(), effective.clone()));
+    *held = Some((root.to_path_buf(), Arc::new(effective.clone())));
     effective
 }
 
@@ -556,7 +547,8 @@ pub fn save_config(root: &Path, changes: &JsonValue) -> Result<SaveOutcome, Stri
         .as_object()
         .ok_or_else(|| "settings changes must be a JSON object".to_string())?;
     let mut held = HELD_CONFIG.lock().unwrap_or_else(|p| p.into_inner());
-    let (mut effective, quarantined) = held_or_read(&mut held, root)?;
+    let (current, quarantined) = held_or_read(&mut held, root)?;
+    let mut effective = JsonValue::clone(&current);
     let builtins = effective_config(None);
     for (key, value) in fields {
         let Some(builtin) = builtins.get(key) else { continue };
@@ -573,7 +565,7 @@ pub fn save_config(root: &Path, changes: &JsonValue) -> Result<SaveOutcome, Stri
         .map(|(key, _)| (key.clone(), effective[key.as_str()].clone()))
         .collect::<serde_json::Map<_, _>>();
     atomic_write_json(&root.join(CONFIG_FILE_NAME), &JsonValue::Object(stored), true)?;
-    *held = Some((root.to_path_buf(), effective.clone()));
+    *held = Some((root.to_path_buf(), Arc::new(effective.clone())));
     crate::sleep_prevention::configure(&effective);
     register_volume_roots(Some(&effective));
     Ok(SaveOutcome { effective, quarantined })
@@ -815,6 +807,50 @@ fn atomic_temp_name(file_name: &str) -> Result<String, String> {
         .and_then(|s| s.to_str())
         .unwrap_or(file_name);
     Ok(format!("{}-{}.tmp", stem, nanoid::generate()?))
+}
+
+// Disk reads of the settings for the callers not yet moved to `config`.
+
+/// Reads config for the pre-window setup paths. A quarantine here happens
+/// before any reporting surface exists, so its record is parked for the
+/// frontend's `load_from_root` to publish.
+pub fn read_config_for_setup(root: &Path) -> Result<Option<JsonValue>, String> {
+    let read = read_config_optional(&root.join(CONFIG_FILE_NAME))?;
+    if let Some(record) = read.quarantined {
+        PENDING_QUARANTINES
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(record);
+    }
+    Ok(read.value)
+}
+
+/// The configured source roots, read straight from `config.json` under a data
+/// root. Used by the startup resume, which decides before any AppHandle-bound
+/// load and needs only this one key.
+pub fn load_config_source_dirs(data_root: &Path) -> Result<Vec<String>, String> {
+    let config = read_config_for_setup(data_root)?;
+    Ok(config
+        .as_ref()
+        .and_then(|c| c.get("sourceDirs"))
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|e| e.as_str())
+                .map(|s| s.to_string())
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// All roots whose own permission boundary must contain recoverable deleted
+/// files. The returned set is an operation-planning snapshot.
+pub fn load_config_file_roots(data_root: &Path) -> Result<Vec<PathBuf>, String> {
+    Ok(load_configured_roots(data_root)?.all())
+}
+
+pub fn load_configured_roots(data_root: &Path) -> Result<ConfiguredRoots, String> {
+    Ok(configured_roots_in(read_config_for_setup(data_root)?.as_ref()))
 }
 
 #[cfg(test)]

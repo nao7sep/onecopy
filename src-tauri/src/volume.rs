@@ -305,8 +305,8 @@ pub struct SourceDirsStatus {
 // for since-removed dirs are pruned; a volume without a readable identity
 // degrades to presence-only, logged at debug.
 pub fn verify_source_dirs(data_root: &Path) -> Result<SourceDirsStatus, String> {
-    let config = storage::read_config_for_setup(data_root)?;
-    let settings = crate::scanner::settings_from_config(config.as_ref(), data_root, 0);
+    let config = storage::config(data_root)?;
+    let settings = crate::scanner::settings_from_config(Some(&config), data_root, 0);
     let mut status = SourceDirsStatus::default();
     for dir in &settings.source_dirs {
         let path = std::path::Path::new(dir);

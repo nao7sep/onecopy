@@ -16,26 +16,15 @@ fn temp_dir(label: &str) -> PathBuf {
 }
 
 #[test]
-fn appearance_reads_only_preferences_without_repairing_or_loading_other_stores() {
+#[serial(backup_store)]
+fn appearance_reads_only_preferences_from_the_settings_in_memory() {
     let root = tempfile::tempdir().unwrap();
-    assert_eq!(
-        read_appearance_preferences(root.path()).unwrap(),
-        // No config yet: the auxiliary windows read the core's defaults.
-        serde_json::json!({
-            "uiFontFamily": "",
-            "enlargeSmallImagesInPreview": true,
-            "enlargeSmallImagesInQuickView": true,
-            "videoTranscriptionEnabled": true,
-            "audioTranscriptionEnabled": true,
-        })
-    );
-    assert!(!root.path().join(CONFIG_FILE_NAME).exists());
     let config = root.path().join(CONFIG_FILE_NAME);
     let bytes = br#"{"theme":"dark","uiFontFamily":"Iosevka","enlargeSmallImagesInPreview":false,"enlargeSmallImagesInQuickView":false,"videoTranscriptionEnabled":false,"audioTranscriptionEnabled":true,"sourceDirs":["/private"],"verifyAfterCopy":false}"#;
     std::fs::write(&config, bytes).unwrap();
     std::fs::write(root.path().join(STATE_FILE_NAME), b"{ invalid state").unwrap();
     assert_eq!(
-        read_appearance_preferences(root.path()).unwrap(),
+        appearance_preferences(root.path()).unwrap(),
         serde_json::json!({
             "uiFontFamily": "Iosevka",
             "enlargeSmallImagesInPreview": false,
@@ -49,11 +38,9 @@ fn appearance_reads_only_preferences_without_repairing_or_loading_other_stores()
         std::fs::read(root.path().join(STATE_FILE_NAME)).unwrap(),
         b"{ invalid state"
     );
-    for bytes in [b"{ invalid config".as_slice(), b"[]".as_slice()] {
-        std::fs::write(&config, bytes).unwrap();
-        assert!(read_appearance_preferences(root.path()).is_err());
-        assert_eq!(std::fs::read(&config).unwrap(), bytes);
-    }
+    // A save reaches the next read through the held settings.
+    save_config(root.path(), &serde_json::json!({ "uiFontFamily": "" })).unwrap();
+    assert_eq!(appearance_preferences(root.path()).unwrap()["uiFontFamily"], "");
 }
 
 #[test]

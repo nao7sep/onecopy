@@ -4,7 +4,6 @@
 
 use std::path::Path;
 
-use serde_json::json;
 
 use crate::{paths, storage, trash, visibility};
 
@@ -18,8 +17,7 @@ pub struct DirEntry {
 }
 
 pub fn list_subdirs(data_root: &Path, path: &str) -> Result<Vec<DirEntry>, String> {
-    let config = storage::read_config_for_setup(data_root)?;
-    let policy = visibility::Policy::from_config(config.as_ref().unwrap_or(&json!({})))?;
+    let policy = visibility::Policy::from_config(&*storage::config(data_root)?)?;
     list_subdirs_at(Path::new(path), &policy, data_root)
 }
 
