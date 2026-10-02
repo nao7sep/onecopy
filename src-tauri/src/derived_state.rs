@@ -7,7 +7,7 @@ use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::Serialize;
 use serde_json::json;
 
-use crate::preview::CachePaths;
+use crate::transcription::Transcript;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WorkClass {
@@ -974,11 +974,7 @@ pub struct TranscriptResult {
     pub message: Option<String>,
 }
 
-pub fn transcript_result(
-    conn: &Connection,
-    cache: &CachePaths,
-    hash: &str,
-) -> Result<TranscriptResult, String> {
+pub fn transcript_result(conn: &Connection, hash: &str) -> Result<TranscriptResult, String> {
     let state: Option<String> = conn
         .query_row(
             "SELECT transcript_state FROM analysis_receipts WHERE content_hash = ?1",
@@ -988,27 +984,28 @@ pub fn transcript_result(
         .optional()
         .map_err(|error| error.to_string())?
         .flatten();
+    let ready = |transcript: Transcript| TranscriptResult {
+        status: READY,
+        text: Some(crate::transcription::render(&transcript.segments)),
+        message: None,
+    };
+    let pending = TranscriptResult {
+        status: "pending",
+        text: None,
+        message: None,
+    };
     match state.as_deref() {
-        Some(READY_TEXT | READY_EMPTY) => match std::fs::read_to_string(cache.transcript(hash)) {
-            Ok(text) => Ok(TranscriptResult {
-                status: READY,
-                text: Some(text),
-                message: None,
-            }),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        Some(READY_TEXT | READY_EMPTY) => match stored_transcript(conn, hash)? {
+            Some(transcript) => Ok(ready(transcript)),
+            None => {
                 conn.execute(
                     "UPDATE analysis_receipts SET transcript_state = NULL,
                          transcript_updated_at_utc = NULL WHERE content_hash = ?1",
                     [hash],
                 )
                 .map_err(|error| error.to_string())?;
-                Ok(TranscriptResult {
-                    status: "pending",
-                    text: None,
-                    message: None,
-                })
+                Ok(pending)
             }
-            Err(error) => Err(format!("transcript cache read failed: {error}")),
         },
         Some(FAILED) => {
             let message = conn
@@ -1027,8 +1024,9 @@ pub fn transcript_result(
                 message,
             })
         }
-        _ => match std::fs::read_to_string(cache.transcript(hash)) {
-            Ok(text) => {
+        // A transcript kept through a rebuild meets its content again.
+        _ => match stored_transcript(conn, hash)? {
+            Some(transcript) => {
                 let path: String = conn
                     .query_row(
                         "SELECT abs_path FROM paths
@@ -1037,21 +1035,35 @@ pub fn transcript_result(
                         |row| row.get(0),
                     )
                     .map_err(|error| error.to_string())?;
-                record_transcript_success(conn, hash, &path, !text.trim().is_empty())?;
-                Ok(TranscriptResult {
-                    status: READY,
-                    text: Some(text),
-                    message: None,
-                })
+                let transaction = conn
+                    .unchecked_transaction()
+                    .map_err(|error| error.to_string())?;
+                record_transcript_receipt(&transaction, hash, &path, !transcript.text().trim().is_empty())?;
+                transaction.commit().map_err(|error| error.to_string())?;
+                Ok(ready(transcript))
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(TranscriptResult {
-                status: "pending",
-                text: None,
-                message: None,
-            }),
-            Err(error) => Err(format!("transcript cache read failed: {error}")),
+            None => Ok(pending),
         },
     }
+}
+
+fn stored_transcript(conn: &Connection, hash: &str) -> Result<Option<Transcript>, String> {
+    let row: Option<(Option<String>, String)> = conn
+        .query_row(
+            "SELECT language, segments FROM transcripts WHERE content_hash = ?1",
+            [hash],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    row.map(|(language, segments)| {
+        Ok(Transcript {
+            language,
+            segments: serde_json::from_str(&segments)
+                .map_err(|error| format!("stored transcript is unreadable: {error}"))?,
+        })
+    })
+    .transpose()
 }
 
 /// Returns whether this success actually resolved a live Issue, so the
@@ -1320,12 +1332,45 @@ pub fn record_transcript_success(
     conn: &Connection,
     hash: &str,
     path: &str,
-    has_text: bool,
+    transcript: &Transcript,
+    model: crate::ai_dependencies::ModelIdentity,
 ) -> Result<bool, String> {
-    let state = if has_text { READY_TEXT } else { READY_EMPTY };
     let transaction = conn
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
+    let text = transcript.text();
+    transaction
+        .execute(
+            "INSERT INTO transcripts
+               (content_hash, model, model_version, language, text, segments, created_at_utc)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT (content_hash) DO UPDATE SET
+               model = excluded.model, model_version = excluded.model_version,
+               language = excluded.language, text = excluded.text,
+               segments = excluded.segments, created_at_utc = excluded.created_at_utc",
+            params![
+                hash,
+                model.model,
+                model.version,
+                transcript.language,
+                text,
+                serde_json::to_string(&transcript.segments).map_err(|error| error.to_string())?,
+                crate::logging::now_iso_millis(),
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    let issues_changed = record_transcript_receipt(&transaction, hash, path, !text.trim().is_empty())?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(issues_changed)
+}
+
+fn record_transcript_receipt(
+    transaction: &Connection,
+    hash: &str,
+    path: &str,
+    has_text: bool,
+) -> Result<bool, String> {
+    let state = if has_text { READY_TEXT } else { READY_EMPTY };
     transaction
         .execute(
             "INSERT INTO analysis_receipts
@@ -1337,10 +1382,7 @@ pub fn record_transcript_success(
             params![hash, state, crate::logging::now_iso_millis()],
         )
         .map_err(|error| error.to_string())?;
-    let issues_changed =
-        crate::index_store::clear_issues(&transaction, path, &[TRANSCRIPT_ERROR])?;
-    transaction.commit().map_err(|error| error.to_string())?;
-    Ok(issues_changed)
+    crate::index_store::clear_issues(transaction, path, &[TRANSCRIPT_ERROR])
 }
 
 pub fn record_transcript_failure(
@@ -1370,7 +1412,7 @@ pub fn record_transcript_failure(
 
 /// A replacement attempt never invalidates the completed transcript it was
 /// meant to supersede. Only the new failure is recorded; the ready receipt and
-/// old cache remain current until a later replacement succeeds.
+/// old transcript remain current until a later replacement succeeds.
 pub fn record_transcript_replacement_failure(
     conn: &Connection,
     path: &str,

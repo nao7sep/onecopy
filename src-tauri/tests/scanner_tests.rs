@@ -1754,51 +1754,6 @@ fn tiff_fallback_reads_the_separate_explicit_offset() {
 }
 
 #[test]
-fn offset_evidence_upgrade_resumes_metadata_without_rehashing_or_losing_results() {
-    use onecopy_lib::metadata::MetadataTimestamp;
-    let Fixture { _dir, root, conn } = fixture("offset-upgrade");
-    let file = root.join("photo.tif");
-    std::fs::write(&file, tiff_with_exif(b"+09:00\0")).unwrap();
-    walk_root(&conn, &root, &lists()).unwrap();
-    let cache = onecopy_lib::preview::CachePaths::new(_dir.path().join("cache"));
-    hash_pending(&conn, &cache).unwrap();
-    extract_pending(&conn).unwrap();
-    resolve_from_evidence(&conn, &resolution_config(), ResolveScope::PendingOnly).unwrap();
-    let hash: String = conn.query_row("SELECT content_hash FROM paths", [], |row| row.get(0)).unwrap();
-    let naive = serde_json::to_string(&MetadataTimestamp::Naive {
-        year: 2016, month: 3, day: 5, hour: 12, minute: 34, second: 56,
-    }).unwrap();
-    conn.execute("UPDATE evidence SET raw = ?1, offset_known = 0 WHERE source = 'metadata'", [&naive]).unwrap();
-    conn.execute_batch("UPDATE contents SET derived_at_utc = 'preserved', face_score = 0.8;
-        UPDATE paths SET resolved_source = 'metadata'; PRAGMA user_version = 13;").unwrap();
-    index_store::upsert_issue(&conn, None, "fixture-issue", "retained").unwrap();
-    drop(conn);
-
-    let db = _dir.path().join("index.sqlite3");
-    let conn = index_store::open(&db).unwrap();
-    assert!(pending_index_work_exists(&conn).unwrap());
-    assert_eq!(conn.query_row("SELECT date_state FROM logical_contents", [], |row| row.get::<_, String>(0)).unwrap(), "pending");
-    assert_eq!(hash_pending(&conn, &cache).unwrap().full_hashed, 0);
-    // Another open before completion cannot consume the durable repair debt.
-    drop(conn);
-    let conn = index_store::open(&db).unwrap();
-    assert_eq!(extract_pending(&conn).unwrap().extracted, 1);
-    let mut config = resolution_config();
-    config.default_timezone = chrono_tz::America::New_York;
-    resolve_from_evidence(&conn, &config, ResolveScope::PendingOnly).unwrap();
-    let expected = chrono::NaiveDate::from_ymd_opt(2016, 3, 5).unwrap()
-        .and_hms_opt(3, 34, 56).unwrap().and_utc().timestamp_millis();
-    assert_eq!(conn.query_row("SELECT content_hash, resolved_utc_ms FROM paths", [],
-        |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))).unwrap(), (hash, expected));
-    assert_eq!(conn.query_row("SELECT derived_at_utc, face_score FROM contents", [],
-        |row| Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))).unwrap(), ("preserved".into(), 0.8));
-    assert_eq!(conn.query_row("SELECT COUNT(*) FROM issues", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
-    drop(conn);
-    let conn = index_store::open(&db).unwrap();
-    assert_eq!(extract_pending(&conn).unwrap().extracted, 0);
-}
-
-#[test]
 fn exif_datetime_and_camera_are_extracted_and_win_resolution() {
     // ResolvedSource::Metadata was never produced from a REAL file anywhere in
     // the suite: resolution_tests hand-builds MetadataTimestamp values and the

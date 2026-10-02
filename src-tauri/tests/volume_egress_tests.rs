@@ -22,7 +22,6 @@ const DATA_ROOT_MODULES: &[(&str, &str)] = &[
     ("binaries.rs", "managed tools"),
     ("binaries_acquisition.rs", "managed tool downloads"),
     ("binaries_manager.rs", "managed tools"),
-    ("derived_state.rs", "transcript cache"),
     ("face.rs", "preview cache and face models"),
     ("github_release.rs", "release-check state"),
     ("i18n.rs", "config language"),
@@ -35,7 +34,7 @@ const DATA_ROOT_MODULES: &[(&str, &str)] = &[
     ("startup.rs", "data folder preparation"),
     ("storage.rs", "config and state files"),
     ("theme.rs", "config theme"),
-    ("transcription.rs", "transcription temp audio and transcript cache"),
+    ("transcription.rs", "transcription temp audio"),
     ("viewer_sequence.rs", "viewer temp files"),
     ("window_placement.rs", "window state"),
 ];

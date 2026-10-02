@@ -1,8 +1,20 @@
 // Fixed-class output receipts and explicit attempt boundaries.
 
 use onecopy_lib::preview::CachePaths;
+use onecopy_lib::transcription::{Segment, Transcript};
 use onecopy_lib::{derived_state, index_store, queries};
 use derived_state::FailedOutputScope;
+
+fn spoken(text: &str) -> Transcript {
+    Transcript {
+        language: Some("en".to_string()),
+        segments: vec![Segment { start_ms: 0, end_ms: 1_000, text: text.to_string() }],
+    }
+}
+
+fn whisper() -> onecopy_lib::ai_dependencies::ModelIdentity {
+    onecopy_lib::ai_dependencies::transcription_model()
+}
 
 fn seeded() -> (tempfile::TempDir, rusqlite::Connection) {
     let dir = tempfile::Builder::new()
@@ -234,7 +246,7 @@ fn requested_preview_honors_failure_until_explicit_reset_even_if_file_is_now_val
 #[test]
 fn failed_replacement_keeps_its_completed_transcript_across_reattempt_boundaries() {
     let (_dir, conn) = seeded();
-    derived_state::record_transcript_success(&conn, "speech", "/speech.mov", true).unwrap();
+    derived_state::record_transcript_success(&conn, "speech", "/speech.mov", &spoken("kept"), whisper()).unwrap();
     derived_state::record_transcript_replacement_failure(
         &conn,
         "/speech.mov",
@@ -282,7 +294,7 @@ fn resource_safety_issue_is_not_attached_to_one_file() {
 fn successful_analysis_records_value_or_empty_and_retires_its_issue() {
     let (_dir, conn) = seeded();
     derived_state::record_face_success(&conn, "face", "/face.jpg", 0.0).unwrap();
-    derived_state::record_transcript_success(&conn, "speech", "/speech.mov", false).unwrap();
+    derived_state::record_transcript_success(&conn, "speech", "/speech.mov", &Transcript::default(), whisper()).unwrap();
 
     let receipt: (String, String) = conn
         .query_row(
@@ -401,10 +413,9 @@ fn a_success_with_no_matching_issue_reports_no_issues_change() {
 
 #[test]
 fn transcript_reads_distinguish_pending_failed_empty_and_missing_output() {
-    let (dir, conn) = seeded();
-    let cache = CachePaths::new(dir.path().join("cache"));
+    let (_dir, conn) = seeded();
 
-    let failed = derived_state::transcript_result(&conn, &cache, "speech").unwrap();
+    let failed = derived_state::transcript_result(&conn, "speech").unwrap();
     assert_eq!(failed.status, "failed");
     // The Issue's `message` is now the raw recorded diagnostic; OneCopy's own
     // sentence lives behind the Issue's `message_key` instead, so this field
@@ -413,26 +424,28 @@ fn transcript_reads_distinguish_pending_failed_empty_and_missing_output() {
     // display — it shows its own translated `transcript.couldNotFinish`.
     assert_eq!(failed.message.as_deref(), Some("decoder failed"));
 
-    let pending = derived_state::transcript_result(&conn, &cache, "poster").unwrap();
+    let pending = derived_state::transcript_result(&conn, "poster").unwrap();
     assert_eq!(pending.status, "pending");
 
-    let legacy = cache.transcript("poster");
-    std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
-    std::fs::write(&legacy, "[0:01] kept\n").unwrap();
-    let adopted = derived_state::transcript_result(&conn, &cache, "poster").unwrap();
+    // A transcript kept through a rebuild has no receipt yet.
+    conn.execute(
+        "INSERT INTO transcripts (content_hash, model, model_version, language, text, segments, created_at_utc)
+         VALUES ('poster', 'whisper-large-v3-turbo', 'v', 'en', 'kept',
+           '[{\"startMs\":1000,\"endMs\":2000,\"text\":\"kept\"}]', '2026-10-02T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+    let adopted = derived_state::transcript_result(&conn, "poster").unwrap();
     assert_eq!(adopted.status, "ready");
     assert_eq!(adopted.text.as_deref(), Some("[0:01] kept\n"));
 
-    let target = cache.transcript("speech");
-    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
-    std::fs::write(&target, "").unwrap();
-    derived_state::record_transcript_success(&conn, "speech", "/speech.mov", false).unwrap();
-    let empty = derived_state::transcript_result(&conn, &cache, "speech").unwrap();
+    derived_state::record_transcript_success(&conn, "speech", "/speech.mov", &Transcript::default(), whisper()).unwrap();
+    let empty = derived_state::transcript_result(&conn, "speech").unwrap();
     assert_eq!(empty.status, "ready");
     assert_eq!(empty.text.as_deref(), Some(""));
 
-    std::fs::remove_file(target).unwrap();
-    let repaired = derived_state::transcript_result(&conn, &cache, "speech").unwrap();
+    conn.execute("DELETE FROM transcripts WHERE content_hash = 'speech'", []).unwrap();
+    let repaired = derived_state::transcript_result(&conn, "speech").unwrap();
     assert_eq!(repaired.status, "pending");
     let state: Option<String> = conn
         .query_row(

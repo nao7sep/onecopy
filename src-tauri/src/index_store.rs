@@ -2,8 +2,7 @@
 //! Scan facts, derived caches, and retained diagnostic history. Whole-file
 //! lifecycle archives preserve this store.
 //!
-//! Current dogfood indexes and diagnostic records survive schema upgrades.
-//! Earlier disposable schema generations may still require reconstruction.
+//! An index written by an earlier schema revision is rebuilt from the files.
 //!
 //! The unit model: `contents` holds one row per unique content hash (the
 //! logical file every view shows); `paths` holds one row per physical path,
@@ -17,9 +16,8 @@ use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension};
 
-// Ordinary reads do not replay DDL. Current durable dogfood generations use
-// explicit transactional upgrades rather than discarding diagnostic history.
-const SCHEMA_REVISION: i64 = 19;
+// Ordinary reads do not replay DDL.
+const SCHEMA_REVISION: i64 = 20;
 
 /// The settings dates and companion relationships were resolved with
 /// (`library_settings`). Launch adopts the saved settings for an index that
@@ -428,6 +426,29 @@ BEGIN
   DELETE FROM analysis_receipts WHERE content_hash = OLD.hash;
 END;
 
+-- Expensive results are kept by content hash with no reference to `contents`:
+-- a rebuild clears `contents` and keeps them (`clear_reconstructible`), and
+-- they go with their content only when it leaves the library.
+CREATE TABLE IF NOT EXISTS transcripts (
+  content_hash   TEXT PRIMARY KEY,
+  model          TEXT NOT NULL,
+  model_version  TEXT NOT NULL,
+  language       TEXT,
+  text           TEXT NOT NULL,
+  -- JSON array of {startMs, endMs, text}.
+  segments       TEXT NOT NULL,
+  created_at_utc TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS rebuild_keeps_results (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1)
+);
+CREATE TRIGGER IF NOT EXISTS contents_results_after_delete
+AFTER DELETE ON contents
+WHEN NOT EXISTS (SELECT 1 FROM rebuild_keeps_results)
+BEGIN
+  DELETE FROM transcripts WHERE content_hash = OLD.hash;
+END;
+
 CREATE TABLE IF NOT EXISTS scan_dirs (
   id                    INTEGER PRIMARY KEY,
   root                  TEXT NOT NULL UNIQUE,
@@ -475,249 +496,36 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
                 .map_err(|error| error.to_string())?;
             match current {
                 SCHEMA_REVISION => return Ok(()),
-                13..=18 => {}
-                9..=12 => {
-                    if current == 9 {
-                        conn.execute_batch(
-                        "ALTER TABLE paths ADD COLUMN hash_attempt_failed INTEGER NOT NULL DEFAULT 0;
-                         ALTER TABLE paths ADD COLUMN metadata_attempt_failed INTEGER NOT NULL DEFAULT 0;"
-                        ).map_err(|error| error.to_string())?;
-                    }
-                    if current < 12 {
-                        conn.execute_batch(
-                        "DROP VIEW IF EXISTS active_issues;
-                         ALTER TABLE issues RENAME TO issues_before_history;
-                         DROP INDEX IF EXISTS idx_issues_first_seen;
-                         DROP INDEX IF EXISTS idx_issues_live_identity;"
-                        ).map_err(|error| error.to_string())?;
-                    conn.execute_batch(ISSUE_SCHEMA).map_err(|error| error.to_string())?;
-                    let columns = if current == 11 {
-                        "id, path, kind, message, first_seen_utc, last_seen_utc, occurrence_count, closed_at_utc, closure"
-                    } else {
-                        "id, path, kind, message, first_seen_utc, last_seen_utc, occurrence_count"
-                    };
-                    conn.execute_batch(&format!(
-                        "INSERT INTO issues ({columns}) SELECT {columns} FROM issues_before_history;
-                         DROP TABLE issues_before_history;"
-                    )).map_err(|error| error.to_string())?;
-                    }
-                    conn.execute_batch(
-                        "ALTER TABLE paths ADD COLUMN visibility_flags INTEGER NOT NULL DEFAULT 0;
-                         ALTER TABLE paths ADD COLUMN own_visibility_flags INTEGER NOT NULL DEFAULT 0;
-                         ALTER TABLE paths ADD COLUMN visibility_checked INTEGER NOT NULL DEFAULT 0;
-                         ALTER TABLE paths ADD COLUMN review_visible INTEGER NOT NULL DEFAULT 1;
-                         ALTER TABLE logical_contents ADD COLUMN visible_copy_count INTEGER NOT NULL DEFAULT 1;
-                         UPDATE logical_contents SET visible_copy_count = live_copy_count;
-                         DROP INDEX idx_paths_unhashed_other_section;
-                         DROP INDEX idx_logical_contents_section;
-                         DROP INDEX idx_logical_contents_work;
-                         DROP VIEW logical_content_projection;
-                         DROP TRIGGER paths_logical_after_insert_v2;
-                         DROP TRIGGER paths_logical_after_update_v2;
-                         DROP TRIGGER paths_logical_after_delete_v2;"
-                    ).map_err(|error| error.to_string())?;
-                    conn.execute_batch(SCHEMA).map_err(|error| error.to_string())?;
+                current if current > SCHEMA_REVISION => {
+                    return Err(format!("unsupported index schema revision: {current}"))
                 }
-                0..=8 => {
-                    // Only the earlier disposable index generations retain
-                    // the old reconstruction path. Revision 9 and later carry
-                    // diagnostic history that must survive this upgrade.
-                    conn.execute_batch(
-                        "
-             DROP TABLE IF EXISTS analysis_receipts;
-             DROP TABLE IF EXISTS similar_group_members;
-             DROP TABLE IF EXISTS similar_groups;
-             DROP TABLE IF EXISTS similarity_state;
-             DROP TABLE IF EXISTS similarity_dirty_buckets;
-             DROP TABLE IF EXISTS evidence;
-             DROP VIEW IF EXISTS logical_content_projection;
-             DROP TABLE IF EXISTS logical_projection_batch;
-             DROP TABLE IF EXISTS logical_contents;
-             DROP TABLE IF EXISTS paths;
-             DROP TABLE IF EXISTS contents;
-             DROP TABLE IF EXISTS scan_dirs;
-             DROP VIEW IF EXISTS active_issues;
-             DROP TABLE IF EXISTS issues;
-             DROP TABLE IF EXISTS recent_notifications;
-             DROP TABLE IF EXISTS volumes;
-             DROP TABLE IF EXISTS source_volumes;
-             PRAGMA user_version = 0;",
-                    )
-                    .map_err(|error| error.to_string())?;
-                    conn.execute_batch(SCHEMA)
-                        .map_err(|error| error.to_string())?;
-                    conn.execute_batch(ISSUE_SCHEMA)
-                        .map_err(|error| error.to_string())?;
-                }
-                _ => return Err(format!("unsupported index schema revision: {current}")),
+                _ => {}
             }
-            if current < 13 {
-                crate::visibility_index::apply_policy_in_transaction(
-                    &conn, &crate::visibility::Policy::from_config(&serde_json::json!({}))?
-                )?;
-            }
-            if (9..=13).contains(&current) {
-                // Older fallback extraction omitted the separate EXIF offset.
-                // Parser provenance was not retained, so any completed naive
-                // image evidence may be affected. Reuse normal checkpointed
-                // metadata completion once; do not rehash, erase evidence, or
-                // invalidate finished outputs and diagnostic history.
-                publish_paths_batch_in(
-                    &conn,
-                    |conn| {
-                        conn.execute_batch(
-                            "CREATE TEMP TABLE offset_repair_paths (id INTEGER PRIMARY KEY, content_hash TEXT);
-                             INSERT INTO offset_repair_paths SELECT id, content_hash FROM paths
-                               WHERE indexed_at_utc IS NOT NULL AND kind IN ('image', 'companion')
-                                 AND EXISTS (SELECT 1 FROM evidence e WHERE e.path_id = paths.id
-                                   AND e.source = 'metadata' AND e.offset_known = 0);
-                             INSERT OR IGNORE INTO batch_touched_hashes
-                               SELECT content_hash FROM offset_repair_paths WHERE content_hash IS NOT NULL;",
-                        )
-                        .map_err(|error| error.to_string())
-                    },
-                    |conn| {
-                        conn.execute_batch(
-                            "UPDATE paths SET indexed_at_utc = NULL, resolved_utc_ms = NULL,
-                                resolved_source = NULL, date_only = 0
-                               WHERE id IN (SELECT id FROM offset_repair_paths);
-                             DROP TABLE offset_repair_paths;",
-                        )
-                        .map_err(|error| error.to_string())
-                    },
-                )?;
-            }
-            if (9..=14).contains(&current) {
-                // Empty content carries no identity evidence: earlier
-                // revisions collapsed every zero-byte file into one logical
-                // item, so deleting one empty file acted on all of them. The
-                // shared empty identities go; the next identity pass settles
-                // each zero-byte file individually. Their evidence and
-                // diagnostic history stay attached to their paths.
-                publish_paths_batch_in(
-                    &conn,
-                    |conn| {
-                        conn.execute_batch(
-                            "CREATE TEMP TABLE empty_identities (hash TEXT PRIMARY KEY);
-                             INSERT INTO empty_identities SELECT hash FROM contents
-                               WHERE byte_size = 0 AND hash NOT GLOB 'p*';
-                             INSERT OR IGNORE INTO batch_touched_hashes SELECT hash FROM empty_identities;",
-                        )
-                        .map_err(|error| error.to_string())
-                    },
-                    |conn| {
-                        conn.execute_batch(
-                            "UPDATE evidence SET content_hash = NULL
-                               WHERE content_hash IN (SELECT hash FROM empty_identities);
-                             UPDATE paths SET content_hash = NULL, prehash = NULL
-                               WHERE content_hash IN (SELECT hash FROM empty_identities);
-                             DELETE FROM similar_group_members
-                               WHERE content_hash IN (SELECT hash FROM empty_identities);
-                             DELETE FROM contents WHERE hash IN (SELECT hash FROM empty_identities);
-                             DROP TABLE empty_identities;",
-                        )
-                        .map_err(|error| error.to_string())
-                    },
-                )?;
-            }
-            if current < 16 {
-                conn.execute_batch(RESOLUTION_POLICY_SCHEMA)
-                    .map_err(|error| error.to_string())?;
-            }
-            if (9..=16).contains(&current) {
-                // Roots walked before this revision learn their configured
-                // spelling at their next walk.
-                let present: bool = conn
-                    .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('scan_dirs') \
-                         WHERE name = 'configured_root')",
-                        [],
-                        |row| row.get(0),
-                    )
-                    .map_err(|error| error.to_string())?;
-                if !present {
-                    conn.execute_batch("ALTER TABLE scan_dirs ADD COLUMN configured_root TEXT;")
-                        .map_err(|error| error.to_string())?;
-                }
-            }
-            if current < 18 {
-                // The projection's `kind` now follows the representative
-                // copy's own kind instead of `contents.kind` (fixed by
-                // whichever copy was hashed first). The view text only
-                // changes on a fresh CREATE, so drop it and its dependent
-                // triggers before re-running SCHEMA, then republish every
-                // logical item from the corrected view.
-                conn.execute_batch(
-                    "DROP TRIGGER IF EXISTS paths_logical_after_insert_v2;
-                     DROP TRIGGER IF EXISTS paths_logical_after_update_v2;
-                     DROP TRIGGER IF EXISTS paths_logical_after_delete_v2;
-                     DROP VIEW IF EXISTS logical_content_projection;",
+            // An earlier revision is not upgraded: the index is rebuilt from
+            // the files, starting empty.
+            let objects = conn
+                .prepare(
+                    "SELECT type, name FROM sqlite_master
+                     WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'",
                 )
+                .and_then(|mut statement| {
+                    statement
+                        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                })
                 .map_err(|error| error.to_string())?;
-                conn.execute_batch(SCHEMA)
+            for (kind, name) in objects {
+                let kind = if kind == "view" { "VIEW" } else { "TABLE" };
+                conn.execute_batch(&format!("DROP {kind} IF EXISTS \"{}\"", name.replace('"', "\"\"")))
                     .map_err(|error| error.to_string())?;
-                publish_paths_batch_in(
-                    &conn,
-                    |conn| {
-                        conn.execute(
-                            "INSERT OR IGNORE INTO batch_touched_hashes SELECT hash FROM contents",
-                            [],
-                        )
-                        .map(|_| ())
-                        .map_err(|error| error.to_string())
-                    },
-                    |_conn| Ok(()),
-                )?;
             }
-            if current < 19 {
-                // Issues and notices now carry a message descriptor (a
-                // catalogue key plus values) beside the recorded text, so
-                // they render in the current interface language instead of
-                // staying frozen in whatever language was active when they
-                // were recorded (R5.5 D-L12). Existing rows keep only their
-                // recorded text — a NULL key means "show it as recorded",
-                // exactly today's behavior — because there is no language
-                // they were actually composed in to recover a key from.
-                //
-                // Guarded by presence, not just `current < 19`: the 0..=8 and
-                // 9..=12 branches above already recreate `issues` fresh from
-                // today's ISSUE_SCHEMA (columns included) before falling
-                // through to this block, so an unconditional ALTER here would
-                // fail on a duplicate column for those paths.
-                let issues_have_message_key: bool = conn
-                    .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('issues') \
-                         WHERE name = 'message_key')",
-                        [],
-                        |row| row.get(0),
-                    )
-                    .map_err(|error| error.to_string())?;
-                if !issues_have_message_key {
-                    conn.execute_batch(
-                        "ALTER TABLE issues ADD COLUMN message_key TEXT;
-                         ALTER TABLE issues ADD COLUMN message_values TEXT;
-                         DROP VIEW IF EXISTS active_issues;",
-                    )
-                    .map_err(|error| error.to_string())?;
-                    conn.execute_batch(ISSUE_SCHEMA)
-                        .map_err(|error| error.to_string())?;
-                }
-                let notifications_have_message_key: bool = conn
-                    .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('recent_notifications') \
-                         WHERE name = 'message_key')",
-                        [],
-                        |row| row.get(0),
-                    )
-                    .map_err(|error| error.to_string())?;
-                if !notifications_have_message_key {
-                    conn.execute_batch(
-                        "ALTER TABLE recent_notifications ADD COLUMN message_key TEXT;
-                         ALTER TABLE recent_notifications ADD COLUMN message_values TEXT;",
-                    )
-                    .map_err(|error| error.to_string())?;
-                }
-            }
+            conn.execute_batch(SCHEMA).map_err(|error| error.to_string())?;
+            conn.execute_batch(ISSUE_SCHEMA).map_err(|error| error.to_string())?;
+            conn.execute_batch(RESOLUTION_POLICY_SCHEMA).map_err(|error| error.to_string())?;
+            crate::visibility_index::apply_policy_in_transaction(
+                &conn,
+                &crate::visibility::Policy::from_config(&serde_json::json!({}))?,
+            )?;
             conn.pragma_update(None, "user_version", SCHEMA_REVISION)
                 .map_err(|error| error.to_string())?;
             Ok::<(), String>(())
@@ -884,7 +692,7 @@ pub fn publish_paths_batch(
 }
 
 /// [`publish_paths_batch`] inside a write transaction the caller already
-/// holds (the schema upgrade and the visibility apply).
+/// holds (the visibility apply).
 pub(crate) fn publish_paths_batch_in(
     conn: &Connection,
     collect_hashes: impl FnOnce(&Connection) -> Result<(), String>,
@@ -922,18 +730,23 @@ pub(crate) fn publish_paths_batch_in(
     .map_err(|error| error.to_string())
 }
 
-/// Clears only reconstructible library facts. Durable configuration, managed
-/// tools, and retained authored records live in separate stores and are
-/// deliberately outside this transaction. Everything projection-affecting is
+/// Clears only reconstructible library facts; transcripts stay unless
+/// `discard_transcripts`. Durable configuration, managed tools, and retained
+/// authored records live in separate stores and are deliberately outside this
+/// transaction. Everything projection-affecting is
 /// wiped in the same pass, so the batch guard only needs to suppress the
 /// per-row triggers while it runs; there is nothing left to republish.
-pub fn clear_reconstructible(conn: &Connection) -> Result<(), String> {
+pub fn clear_reconstructible(conn: &Connection, discard_transcripts: bool) -> Result<(), String> {
     publish_paths_batch(
         conn,
         |_tx| Ok(()),
         |tx| {
+            if discard_transcripts {
+                tx.execute("DELETE FROM transcripts", []).map_err(|error| error.to_string())?;
+            }
             tx.execute_batch(
-                "DELETE FROM analysis_receipts;
+                "INSERT INTO rebuild_keeps_results (singleton) VALUES (1);
+             DELETE FROM analysis_receipts;
              DELETE FROM similar_group_members;
              DELETE FROM similar_groups;
              DELETE FROM evidence;
@@ -946,7 +759,8 @@ pub fn clear_reconstructible(conn: &Connection) -> Result<(), String> {
              DELETE FROM scan_dirs;
              DELETE FROM issues;
              DELETE FROM recent_notifications;
-             DELETE FROM volumes;",
+             DELETE FROM volumes;
+             DELETE FROM rebuild_keeps_results;",
             )
             .map_err(|error| error.to_string())
         },

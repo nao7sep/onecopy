@@ -1884,7 +1884,7 @@ fn prepare_transcription_attempt(
     }
 
     if !attempt.replace_existing {
-        let existing = crate::derived_state::transcript_result(attempt.conn, attempt.cache, &hash)?;
+        let existing = crate::derived_state::transcript_result(attempt.conn, &hash)?;
         if existing.status == crate::derived_state::READY {
             return Ok(TranscriptionPreparation::Terminal(
                 TranscriptionAttemptOutcome::Completed {
@@ -1901,23 +1901,20 @@ fn prepare_transcription_attempt(
 fn finish_transcription_attempt(
     attempt: &TranscriptionAttempt<'_>,
     hash: String,
-    result: Result<String, String>,
+    result: Result<crate::transcription::Transcript, String>,
 ) -> Result<TranscriptionAttemptOutcome, String> {
-    let result = result.and_then(|text| {
-        crate::transcription::publish_transcript(&attempt.cache.transcript(&hash), &text)?;
-        Ok(text)
-    });
     match result {
-        Ok(text) => {
+        Ok(transcript) => {
             let issues_changed = crate::derived_state::record_transcript_success(
                 attempt.conn,
                 &hash,
                 attempt.source_path,
-                !text.trim().is_empty(),
+                &transcript,
+                crate::ai_dependencies::transcription_model(),
             )?;
             Ok(TranscriptionAttemptOutcome::Completed {
                 hash,
-                text,
+                text: crate::transcription::render(&transcript.segments),
                 issues_changed,
             })
         }
@@ -1956,7 +1953,7 @@ fn finish_transcription_attempt(
 
 /// Complete one production transcription attempt. Requested and automatic
 /// runs keep their own admission, priority, and preemption; this operation
-/// owns the common identity, cache reuse, dependency, engine claim,
+/// owns the common identity, result reuse, dependency, engine claim,
 /// generation, durable-result, and terminal-classification boundary, and
 /// [`run_transcription`] publishes its events for both.
 pub fn complete_transcription_attempt(
@@ -2091,7 +2088,7 @@ pub fn complete_transcription_attempt_with_inference(
     mut on_identity: impl FnMut(&str),
     on_started: impl FnOnce(&str),
     mut on_progress: impl FnMut(&str, i32),
-    inference: impl FnOnce(&mut dyn FnMut(i32)) -> Result<String, String>,
+    inference: impl FnOnce(&mut dyn FnMut(i32)) -> Result<crate::transcription::Transcript, String>,
 ) -> Result<TranscriptionAttemptOutcome, String> {
     let hash = match prepare_transcription_attempt(&attempt, &mut on_identity)? {
         TranscriptionPreparation::Ready(hash) => hash,

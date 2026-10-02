@@ -3,11 +3,10 @@
 //! dependency registry. The two media kinds keep separate product policy and
 //! queues while this module owns their common extraction and inference engine.
 //!
-//! The transcript is DERIVED data keyed by content hash, cached in the
-//! `transcripts/` subtree like every other derived entry — reconstructible,
-//! swept, moved, and re-keyed on identity promotion. The engine loads per
-//! job and is dropped with it, so memory (~2–2.5 GB for large-v3-turbo)
-//! exists only while a transcription runs.
+//! The transcript is kept in the index by content hash (data-lifecycle
+//! conventions: an expensive result is data). The engine loads per job and is
+//! dropped with it, so memory (~2–2.5 GB for large-v3-turbo) exists only
+//! while a transcription runs.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -73,7 +72,7 @@ pub fn is_cancelled() -> bool {
 }
 
 /// Owns the commit point between a completed inference and publication of its
-/// cache entry plus durable receipt. Cancellation/shutdown and publication
+/// transcript and durable receipt. Cancellation/shutdown and publication
 /// serialize on the transcription claim: whichever reaches this boundary
 /// first wins, so a late inference result can never become a false success.
 pub(crate) fn publish_if_active<T>(
@@ -192,10 +191,33 @@ pub fn has_audible_signal(pcm: &[f32]) -> bool {
         .any(|sample| sample.is_finite() && sample.abs() > PCM_SILENCE_PEAK)
 }
 
-/// One transcribed segment, ready for display.
+/// One transcribed segment with its timing in the media.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Segment {
     pub start_ms: i64,
+    pub end_ms: i64,
     pub text: String,
+}
+
+/// What one transcription produced: the language the model detected, when it
+/// reports one, and the timed segments. Silence produces no segments.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Transcript {
+    pub language: Option<String>,
+    pub segments: Vec<Segment>,
+}
+
+impl Transcript {
+    /// The spoken text alone, one segment per line, for search.
+    pub fn text(&self) -> String {
+        self.segments
+            .iter()
+            .filter(|segment| !segment.text.is_empty())
+            .map(|segment| segment.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
 
 /// Runs the whisper engine over PCM. Language auto-detected (the developer's
@@ -206,7 +228,7 @@ pub fn run_whisper(
     pcm: &[f32],
     acceleration: crate::ai_acceleration::Mode,
     mut on_progress: impl FnMut(i32) + 'static,
-) -> Result<Vec<Segment>, String> {
+) -> Result<Transcript, String> {
     use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
     crate::resource_limits::require_available(
@@ -260,14 +282,16 @@ pub fn run_whisper(
         // whisper timestamps are in centiseconds.
         segments.push(Segment {
             start_ms: segment.start_timestamp() * 10,
+            end_ms: segment.end_timestamp() * 10,
             text: text.trim().to_string(),
         });
     }
-    Ok(segments)
+    let language = whisper_rs::get_lang_str(state.full_lang_id_from_state()).map(str::to_owned);
+    Ok(Transcript { language, segments })
 }
 
-/// Renders segments as the cached transcript: one `[m:ss] text` line each —
-/// the timestamps are what let a reader jump the scene strip to the moment.
+/// Renders segments for display: one `[m:ss] text` line each — the
+/// timestamps are what let a reader jump the scene strip to the moment.
 pub fn render(segments: &[Segment]) -> String {
     let mut out = String::new();
     for segment in segments {
@@ -293,37 +317,12 @@ pub(crate) fn generate_transcript_claimed(
     media: &Path,
     acceleration: crate::ai_acceleration::Mode,
     on_progress: impl FnMut(i32) + 'static,
-) -> Result<String, String> {
+) -> Result<Transcript, String> {
     let pcm = extract_pcm(ffmpeg, media, temp_dir)?;
-    let text = if !has_audible_signal(&pcm) {
-        String::new()
-    } else {
-        render(&run_whisper(
-            model,
-            &pcm,
-            acceleration,
-            on_progress,
-        )?)
-    };
-    Ok(text)
-}
-
-pub(crate) fn publish_transcript(target: &Path, text: &str) -> Result<(), String> {
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    if !has_audible_signal(&pcm) {
+        return Ok(Transcript::default());
     }
-    // not recorded: a transcript is a re-derivable cache artifact colocated
-    // with binary preview media.
-    let tmp = target.with_extension(format!("{}.tmp", crate::nanoid::generate()?));
-    std::fs::write(&tmp, text.as_bytes()).map_err(|e| {
-        crate::fs_recovery::remove_file(&tmp, "transcript staging write cleanup");
-        e.to_string()
-    })?;
-    crate::fs_publish::replace_existing(&tmp, &target).map_err(|e| {
-        crate::fs_recovery::remove_file(&tmp, "transcript publication cleanup");
-        e.to_string()
-    })?;
-    Ok(())
+    run_whisper(model, &pcm, acceleration, on_progress)
 }
 
 // EXCEPTION to tests-folder conventions: this test pins the private lock that

@@ -127,10 +127,9 @@ pub(crate) fn rebuild_index(
         crate::preview::purge_for_rebuild(
             &crate::preview::CachePaths::new(data_root.join(crate::storage::CACHE_DIR_NAME)),
             discard_previews,
-            discard_transcripts,
         )?;
         let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
-        crate::index_store::clear_reconstructible(&conn)?;
+        crate::index_store::clear_reconstructible(&conn, discard_transcripts)?;
         crate::notifications::clear_active(app)
     })?;
     let _ = crate::source_check_runtime::start(app.clone())?;

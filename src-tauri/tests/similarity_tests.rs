@@ -423,7 +423,7 @@ fn grouping_ignores_retired_exclusion_files_and_preserves_their_bytes() {
         assert_eq!(rebuild_groups(&conn, &config()).unwrap().grouped_items, 2);
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
     }
-    index_store::clear_reconstructible(&conn).unwrap();
+    index_store::clear_reconstructible(&conn, false).unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), b"{ invalid retired data");
 }
 

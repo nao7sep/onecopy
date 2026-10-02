@@ -109,9 +109,13 @@ fn transcription_attempt_owns_cached_publication_and_dependency_classification()
     }
 
     let cache = onecopy_lib::preview::CachePaths::new(dir.path().join("cache"));
-    let transcript = cache.transcript("cached");
-    std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
-    std::fs::write(&transcript, "already complete").unwrap();
+    conn.execute(
+        "INSERT INTO transcripts (content_hash, model, model_version, text, segments, created_at_utc)
+         VALUES ('cached', 'm', 'v', 'already complete',
+           '[{\"startMs\":0,\"endMs\":1000,\"text\":\"already complete\"}]', 'now')",
+        [],
+    )
+    .unwrap();
     let starts = Cell::new(0);
 
     let completed = complete_transcription_attempt(
@@ -137,13 +141,13 @@ fn transcription_attempt_owns_cached_publication_and_dependency_classification()
         completed,
         TranscriptionAttemptOutcome::Completed {
             hash: "cached".to_string(),
-            text: "already complete".to_string(),
+            text: "[0:00] already complete\n".to_string(),
             issues_changed: false,
         }
     );
-    let published = derived_state::transcript_result(&conn, &cache, "cached").unwrap();
+    let published = derived_state::transcript_result(&conn, "cached").unwrap();
     assert_eq!(published.status, derived_state::READY);
-    assert_eq!(published.text.as_deref(), Some("already complete"));
+    assert_eq!(published.text.as_deref(), Some("[0:00] already complete\n"));
     assert_eq!(starts.get(), 0);
 
     let cancelled = complete_transcription_attempt(
@@ -196,7 +200,7 @@ fn transcription_attempt_owns_cached_publication_and_dependency_classification()
         unavailable,
         TranscriptionAttemptOutcome::Unavailable { ref hash, .. } if hash == "uncached"
     ));
-    let pending = derived_state::transcript_result(&conn, &cache, "uncached").unwrap();
+    let pending = derived_state::transcript_result(&conn, "uncached").unwrap();
     assert_eq!(pending.status, "pending");
     assert_eq!(pending.message, None);
     assert_eq!(starts.get(), 0);
@@ -309,7 +313,7 @@ fn transcription_attempt_publishes_digital_silence_without_loading_the_model() {
             issues_changed: false,
         }
     );
-    let persisted = derived_state::transcript_result(&conn, &cache, "silence").unwrap();
+    let persisted = derived_state::transcript_result(&conn, "silence").unwrap();
     assert_eq!(persisted.status, derived_state::READY);
     assert_eq!(persisted.text.as_deref(), Some(""));
     let receipt: String = conn

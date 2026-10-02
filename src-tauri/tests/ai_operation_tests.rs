@@ -10,6 +10,7 @@ use onecopy_lib::derived_work::{
     TranscriptionAttemptOutcome,
 };
 use onecopy_lib::face::{complete_face_scoring_attempt, FaceScoringAttemptOutcome};
+use onecopy_lib::transcription::{Segment, Transcript};
 use onecopy_lib::{index_store, preview};
 use rusqlite::{params, OptionalExtension};
 
@@ -28,8 +29,22 @@ fn insert(conn: &rusqlite::Connection, hash: &str, kind: &str, path: &str) {
     .unwrap();
 }
 
+fn spoken(text: &str) -> Transcript {
+    Transcript {
+        language: Some("en".to_string()),
+        segments: vec![Segment { start_ms: 0, end_ms: 1_500, text: text.to_string() }],
+    }
+}
+
+/// The stored transcript's plain text, if one was kept.
+fn stored_text(conn: &rusqlite::Connection, hash: &str) -> Option<String> {
+    conn.query_row("SELECT text FROM transcripts WHERE content_hash = ?1", [hash], |row| row.get(0))
+        .optional()
+        .unwrap()
+}
+
 enum TranscriptResult {
-    Text(String),
+    Text(Transcript),
     Failure(String),
     Cancelled,
 }
@@ -40,7 +55,7 @@ struct TranscriptScenario {
 }
 
 impl TranscriptScenario {
-    fn run(self, on_progress: &mut dyn FnMut(i32)) -> Result<String, String> {
+    fn run(self, on_progress: &mut dyn FnMut(i32)) -> Result<Transcript, String> {
         for value in self.progress {
             on_progress(value);
         }
@@ -93,7 +108,7 @@ fn audio_and_video_use_one_transcript_publication_and_restart_contract() {
             |on_progress| {
                 TranscriptScenario {
                     progress: vec![0, 25, 100],
-                    result: TranscriptResult::Text("[0:00] canonical speech\n".to_string()),
+                    result: TranscriptResult::Text(spoken("canonical speech")),
                 }
                 .run(on_progress)
             },
@@ -114,9 +129,19 @@ fn audio_and_video_use_one_transcript_publication_and_restart_contract() {
 
     let reopened = index_store::open(&db).unwrap();
     for hash in ["audio", "video"] {
-        let result = derived_state::transcript_result(&reopened, &cache, hash).unwrap();
+        let result = derived_state::transcript_result(&reopened, hash).unwrap();
         assert_eq!(result.status, derived_state::READY);
         assert_eq!(result.text.as_deref(), Some("[0:00] canonical speech\n"));
+        let (model, language, segments): (String, Option<String>, String) = reopened
+            .query_row(
+                "SELECT model, language, segments FROM transcripts WHERE content_hash = ?1",
+                [hash],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(model, "whisper-large-v3-turbo");
+        assert_eq!(language.as_deref(), Some("en"));
+        assert_eq!(segments, r#"[{"startMs":0,"endMs":1500,"text":"canonical speech"}]"#);
     }
 }
 
@@ -141,7 +166,7 @@ fn cancellation_wins_over_a_late_success_before_transcript_publication() {
         |_| {},
         |_| {},
         |_, _| {},
-        |_| Ok("late result".to_string()),
+        |_| Ok(spoken("late result")),
     )
     .unwrap();
 
@@ -151,9 +176,9 @@ fn cancellation_wins_over_a_late_success_before_transcript_publication() {
             hash: "late".to_string(),
         }
     );
-    assert!(!cache.transcript("late").exists());
+    assert_eq!(stored_text(&conn, "late"), None);
     assert_eq!(
-        derived_state::transcript_result(&conn, &cache, "late")
+        derived_state::transcript_result(&conn, "late")
             .unwrap()
             .status,
         "pending"
@@ -174,17 +199,14 @@ fn transcript_empty_failure_cancellation_retry_and_replacement_share_one_owner()
         |_| {},
         |_| {},
         |_, _| {},
-        |_| Ok(String::new()),
+        |_| Ok(Transcript::default()),
     )
     .unwrap();
     assert!(matches!(
         empty,
         TranscriptionAttemptOutcome::Completed { ref text, .. } if text.is_empty()
     ));
-    assert_eq!(
-        std::fs::read_to_string(cache.transcript("empty")).unwrap(),
-        ""
-    );
+    assert_eq!(stored_text(&conn, "empty").as_deref(), Some(""));
 
     let failed = complete_transcription_attempt_with_inference(
         transcript_attempt(&conn, &cache, root.path(), "failed", "failed.flac", false),
@@ -199,14 +221,14 @@ fn transcript_empty_failure_cancellation_retry_and_replacement_share_one_owner()
         TranscriptionAttemptOutcome::Failed { ref message, .. }
             if message == "deterministic failure"
     ));
-    assert!(!cache.transcript("failed").exists());
+    assert_eq!(stored_text(&conn, "failed"), None);
 
     let retried = complete_transcription_attempt_with_inference(
         transcript_attempt(&conn, &cache, root.path(), "failed", "failed.flac", false),
         |_| {},
         |_| {},
         |_, _| {},
-        |_| Ok("[0:00] recovered\n".to_string()),
+        |_| Ok(spoken("recovered")),
     )
     .unwrap();
     assert!(matches!(
@@ -241,7 +263,7 @@ fn transcript_empty_failure_cancellation_retry_and_replacement_share_one_owner()
             hash: "cancelled".to_string(),
         }
     );
-    assert!(!cache.transcript("cancelled").exists());
+    assert_eq!(stored_text(&conn, "cancelled"), None);
 
     complete_transcription_attempt_with_inference(
         transcript_attempt(
@@ -255,7 +277,7 @@ fn transcript_empty_failure_cancellation_retry_and_replacement_share_one_owner()
         |_| {},
         |_| {},
         |_, _| {},
-        |_| Ok("[0:00] retained result\n".to_string()),
+        |_| Ok(spoken("retained result")),
     )
     .unwrap();
     let replacement = complete_transcription_attempt_with_inference(
@@ -284,12 +306,9 @@ fn transcript_empty_failure_cancellation_retry_and_replacement_share_one_owner()
         TranscriptionAttemptOutcome::Failed { ref message, .. }
             if message == "replacement failed"
     ));
+    assert_eq!(stored_text(&conn, "replacement").as_deref(), Some("retained result"));
     assert_eq!(
-        std::fs::read_to_string(cache.transcript("replacement")).unwrap(),
-        "[0:00] retained result\n"
-    );
-    assert_eq!(
-        derived_state::transcript_result(&conn, &cache, "replacement")
+        derived_state::transcript_result(&conn, "replacement")
             .unwrap()
             .status,
         derived_state::READY

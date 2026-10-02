@@ -904,17 +904,15 @@ async fn transcribe(app: AppHandle, hash: String, replace: Option<bool>) -> Resu
     .await
 }
 
-// The transcript's explicit output state. A missing cache entry behind a
+// The transcript's explicit output state. A missing transcript behind a
 // ready receipt is repaired back to pending here rather than displayed as a
 // false success.
 #[tauri::command]
 async fn transcript_get(hash: String) -> Result<derived_state::TranscriptResult, String> {
     dispatch(move || {
         let data_root = paths::data_root()?;
-        let cache_root = paths::cache_root()?;
-        let cache = preview::CachePaths::new(cache_root);
         let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
-        derived_state::transcript_result(&conn, &cache, &hash)
+        derived_state::transcript_result(&conn, &hash)
     })
     .await
 }

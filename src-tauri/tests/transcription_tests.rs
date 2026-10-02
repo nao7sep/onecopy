@@ -29,9 +29,9 @@ fn one_claim_blocks_every_contender_without_cross_cancelling() {
 #[test]
 fn rendering_formats_timestamps_and_drops_empty_segments() {
     let segments = vec![
-        Segment { start_ms: 1_000, text: "hello".into() },
-        Segment { start_ms: 0, text: String::new() }, // engine noise — dropped
-        Segment { start_ms: 75_000, text: "world".into() },
+        Segment { start_ms: 1_000, end_ms: 2_000, text: "hello".into() },
+        Segment { start_ms: 0, end_ms: 0, text: String::new() }, // engine noise — dropped
+        Segment { start_ms: 75_000, end_ms: 76_000, text: "world".into() },
     ];
     assert_eq!(render(&segments), "[0:01] hello\n[1:15] world\n");
     assert_eq!(render(&[]), "", "no speech is a successful empty transcript");

@@ -70,14 +70,6 @@ impl CachePaths {
             .join(format!("{hash}.png"))
     }
 
-    /// A video's on-demand transcript (Design: Video handling) — derived
-    /// data like everything else here, keyed by the content hash.
-    pub fn transcript(&self, hash: &str) -> PathBuf {
-        self.root
-            .join("transcripts")
-            .join(Self::shard(hash))
-            .join(format!("{hash}.txt"))
-    }
 }
 
 pub struct DerivedFacts {
@@ -1041,7 +1033,6 @@ pub fn rename_entries(cache: &CachePaths, old: &str, new: &str, strip_frames: i6
         (cache.thumb(old), cache.thumb(new)),
         (cache.preview(old), cache.preview(new)),
         (cache.fullres(old), cache.fullres(new)),
-        (cache.transcript(old), cache.transcript(new)),
     ];
     for i in 0..strip_frames.max(0) as u32 {
         moves.push((
@@ -1110,7 +1101,7 @@ pub fn startup_sweep(
         .prepare("SELECT 1 FROM contents WHERE hash = ?1")
         .map_err(|e| e.to_string())?;
 
-    for sub in ["thumbs", "previews", "fullres", "transcripts", "strips"] {
+    for sub in ["thumbs", "previews", "fullres", "strips"] {
         if cancel_when() {
             return Ok(removed);
         }
@@ -1188,20 +1179,13 @@ pub fn startup_sweep(
 }
 
 /// What an index rebuild discards from the cache. Entries under a real
-/// content hash depend only on those bytes and are reused; the caller
-/// (Settings' rebuild dialog) decides whether previews/posters and
-/// transcripts are worth reusing this time or should be regenerated anyway.
+/// content hash depend only on those bytes and are reused unless the caller
+/// (Settings' rebuild dialog) asks for previews and posters to be regenerated.
 /// Entries under a provisional key (`p<path id>`) are never content-addressed
 /// — path ids restart after a rebuild, so another file would inherit them —
-/// so they are always discarded regardless of those choices. They live in the
-/// `p?` shards, which no content hash names; transcripts have no provisional
-/// form (transcription resolves the real hash first), so this only applies to
-/// thumbs/previews/fullres/strips.
-pub fn purge_for_rebuild(
-    cache: &CachePaths,
-    discard_previews: bool,
-    discard_transcripts: bool,
-) -> Result<(), String> {
+/// so they are always discarded. They live in the `p?` shards, which no
+/// content hash names.
+pub fn purge_for_rebuild(cache: &CachePaths, discard_previews: bool) -> Result<(), String> {
     let remove = |path: &Path| match std::fs::remove_dir_all(path) { // data root
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -1210,9 +1194,6 @@ pub fn purge_for_rebuild(
             path.display()
         )),
     };
-    if discard_transcripts {
-        remove(&cache.root.join("transcripts"))?;
-    }
     for tree in ["thumbs", "previews", "fullres", "strips"] {
         let tree = cache.root.join(tree);
         if discard_previews {

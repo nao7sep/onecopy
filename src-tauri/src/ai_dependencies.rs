@@ -59,6 +59,25 @@ pub fn production_ffmpeg(root: &Path) -> Option<PathBuf> {
     production_path(root, FFMPEG)
 }
 
+/// Which model produced a result, and which exact file of it: the managed
+/// dependency's id and the digest of its pinned artifact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModelIdentity {
+    pub model: &'static str,
+    pub version: &'static str,
+}
+
+fn model_identity(id: &'static str) -> ModelIdentity {
+    let version = binaries_manager::spec_of(id)
+        .and_then(|spec| spec.pinned.as_ref())
+        .map_or("", |pinned| pinned.sha256);
+    ModelIdentity { model: id, version }
+}
+
+pub fn transcription_model() -> ModelIdentity {
+    model_identity(WHISPER)
+}
+
 pub fn production_transcription(root: &Path) -> TranscriptionDependencies {
     TranscriptionDependencies {
         ffmpeg: production_ffmpeg(root),

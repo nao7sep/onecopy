@@ -32,6 +32,7 @@ fn open_creates_schema_and_is_idempotent() {
         "logical_contents",
         "logical_projection_batch",
         "paths",
+        "rebuild_keeps_results",
         "recent_notifications",
         "resolution_policy",
         "scan_dirs",
@@ -39,6 +40,7 @@ fn open_creates_schema_and_is_idempotent() {
         "similar_groups",
         "similarity_dirty_buckets",
         "similarity_state",
+        "transcripts",
         "visibility_directories",
         "visibility_ignored_names",
         "visibility_policy",
@@ -115,7 +117,7 @@ fn foreign_keys_are_enforced_on_an_ordinary_open_not_only_on_an_upgrade() {
 }
 
 #[test]
-fn an_earlier_disposable_schema_reconstructs_old_rows() {
+fn an_index_from_an_earlier_revision_is_rebuilt_from_the_files() {
     let dir = tempfile::Builder::new()
         .prefix("onecopy-index-upgrade-")
         .tempdir()
@@ -124,7 +126,7 @@ fn an_earlier_disposable_schema_reconstructs_old_rows() {
     let conn = open(&db).unwrap();
     conn.execute("INSERT INTO contents (hash, byte_size, kind) VALUES ('h1', 10, 'image')", [])
         .unwrap();
-    conn.pragma_update(None, "user_version", 8)
+    conn.pragma_update(None, "user_version", SCHEMA_REVISION - 1)
         .unwrap();
     drop(conn);
 
@@ -140,25 +142,3 @@ fn an_earlier_disposable_schema_reconstructs_old_rows() {
     );
 }
 
-#[test]
-fn revision_15_upgrade_adds_the_resolution_policy_table() {
-    let dir = tempfile::Builder::new()
-        .prefix("onecopy-index-")
-        .tempdir()
-        .unwrap();
-    let db = dir.path().join("index.sqlite3");
-    let conn = open(&db).unwrap();
-    conn.execute_batch("DROP TABLE resolution_policy; PRAGMA user_version = 15;")
-        .unwrap();
-    drop(conn);
-
-    let conn = open(&db).unwrap();
-    let exists: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'resolution_policy'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(exists, 1);
-}

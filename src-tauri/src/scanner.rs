@@ -1546,6 +1546,12 @@ pub fn promote_identity(
         )
         .map_err(|e| e.to_string())?;
 
+    // Expensive results follow the identity; the real key's own result wins.
+    tx.execute(
+        "UPDATE OR IGNORE transcripts SET content_hash = ?2 WHERE content_hash = ?1",
+        params![provisional, real_hash],
+    )
+    .map_err(|e| e.to_string())?;
     let strip_frames_for_rename = if already_known {
         tx.execute(
             "UPDATE paths SET content_hash = ?2 WHERE content_hash = ?1",

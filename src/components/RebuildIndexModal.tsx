@@ -2,10 +2,9 @@
 // discarded (that is the point of the action), and provisional-key cache
 // entries are always discarded with it regardless of these choices, because
 // they name a path rather than content and cannot outlive the index row that
-// gave them meaning. Previews/posters and transcripts are additional,
-// separately reconstructible caches the user may also choose to discard;
-// both default to kept, since discarding either only costs time to
-// regenerate for no different a result.
+// gave them meaning. Previews/posters and transcripts are additional results
+// the user may also choose to discard; both default to kept, since
+// discarding either only costs time to regenerate for no different a result.
 
 import { useState } from "react";
 import { useI18n } from "../i18n/I18nContext";
