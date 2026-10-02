@@ -324,8 +324,8 @@ pub fn settings_from_config(config: Option<&serde_json::Value>, data_root: &Path
 pub fn work_capabilities(
     data_root: &Path,
 ) -> Result<crate::derived_state::WorkCapabilities, String> {
-    let config = crate::storage::read_config_for_setup(data_root)?;
-    Ok(settings_from_config(config.as_ref(), data_root).capabilities())
+    let config = crate::storage::config(data_root)?;
+    Ok(settings_from_config(Some(&config), data_root).capabilities())
 }
 
 /// The work capabilities every item projection reads its preparation state
@@ -865,8 +865,8 @@ struct Pass {
 
 fn open_pass() -> Result<Pass, String> {
     let data_root = crate::paths::data_root()?;
-    let config = crate::storage::read_config_for_setup(&data_root)?;
-    let settings = settings_from_config(config.as_ref(), &data_root);
+    let config = crate::storage::config(&data_root)?;
+    let settings = settings_from_config(Some(&config), &data_root);
     let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
     let cache = CachePaths::new(settings.cache_root.clone());
     let projection = crate::queries::ItemProjectionContext {
@@ -2356,9 +2356,9 @@ pub fn request_transcription(
     replacement: bool,
 ) -> Result<(), String> {
     let cache_root = crate::paths::cache_root()?;
-    let config = crate::storage::read_config_for_setup(&data_root)?;
+    let config = crate::storage::config(&data_root)?;
     let acceleration =
-        crate::ai_acceleration::resolve(config.as_ref(), crate::ai_acceleration::TRANSCRIPTION)?;
+        crate::ai_acceleration::resolve(Some(&config), crate::ai_acceleration::TRANSCRIPTION)?;
     let class = {
         let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
         let kind: String = conn
