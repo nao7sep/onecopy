@@ -263,7 +263,7 @@ fn saving_over_a_non_object_config_preserves_it_first() {
 }
 
 #[test]
-#[serial(backup_store)]
+#[serial(backup_store, quarantine_journal)]
 fn first_run_writes_nothing_and_a_save_writes_every_set_that_differs() {
     let dir = temp_dir("sparse");
     let loaded = load_from_root(&dir).unwrap();
@@ -287,7 +287,7 @@ fn first_run_writes_nothing_and_a_save_writes_every_set_that_differs() {
 }
 
 #[test]
-#[serial(backup_store)]
+#[serial(backup_store, quarantine_journal)]
 fn resetting_similarity_removes_the_whole_set_from_the_file() {
     let dir = temp_dir("reset-set");
     let path = dir.join(CONFIG_FILE_NAME);
