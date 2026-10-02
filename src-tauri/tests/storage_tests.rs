@@ -127,7 +127,7 @@ fn loading_config_removes_the_obsolete_copy_verification_preference() {
     )
     .unwrap();
 
-    let loaded = read_config_for_setup(&root).unwrap().unwrap();
+    let loaded = config(&root).unwrap();
     assert!(loaded.get("verifyAfterCopy").is_none());
     let untouched: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(untouched["verifyAfterCopy"], false);
@@ -406,32 +406,24 @@ fn the_settings_held_before_the_window_shows_never_touch_the_file() {
     assert_eq!(loaded.quarantines.len(), 1, "the owner's load sets it aside and reports it");
 }
 
-// D-L4: the watcher used to read config through `load_app_data`, which
-// drains the pending quarantine list for the frontend's `load_from_root` to
-// report — and the watcher has no reporting surface, so it silently dropped
-// any quarantine that happened to land during its read. `read_config_for_setup`
-// is the unserialized-reader path every other background worker uses: it can
-// still park a quarantine record, but it does not drain the list, so the
-// record stays pending for the real `load_from_root` call to report.
+// A worker can be the first to read the settings for a root. Its read sets a
+// corrupt store aside like the startup load, and it does not drain the
+// pending list, so the record waits for Main's `load_from_root` to report.
 #[test]
 #[serial(quarantine_journal)]
-fn an_unserialized_config_read_leaves_its_quarantine_pending_for_load_from_root() {
-    let root = temp_dir("quarantine-watcher-read");
-    let config = root.join("config.json");
-    std::fs::write(&config, b"{ not json").unwrap();
+fn a_settings_read_that_loads_leaves_its_quarantine_pending_for_load_from_root() {
+    let root = temp_dir("quarantine-worker-read");
+    let config_path = root.join("config.json");
+    std::fs::write(&config_path, b"{ not json").unwrap();
 
-    // Simulates the watcher's own read: it must set the corrupt store aside
-    // and return no stored copy...
-    let watcher_read = read_config_for_setup(&root).unwrap();
-    assert!(watcher_read.is_none(), "no replacement is seeded");
+    assert_eq!(*config(&root).unwrap(), effective_config(None));
+    assert!(!config_path.exists(), "no replacement is seeded");
 
-    // ...but the quarantine record it produced must still be waiting for
-    // the real frontend load, not silently consumed here.
     let loaded = load_from_root(&root).unwrap();
     assert_eq!(
         loaded.quarantines.len(),
         1,
-        "the watcher's read must not drain the quarantine meant for Main"
+        "the worker's read must not drain the quarantine meant for Main"
     );
     assert_eq!(loaded.quarantines[0].file, "config.json");
 }

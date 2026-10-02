@@ -329,7 +329,7 @@ fn reading_the_settings_registers_each_configured_root() {
         .unwrap(),
     )
     .unwrap();
-    onecopy_lib::storage::load_configured_roots(data_root.path()).unwrap();
+    onecopy_lib::storage::configured_roots(data_root.path()).unwrap();
 
     let elsewhere = volume_io::lane_name(&base.join("home").join("x.jpg"));
     assert_ne!(volume_io::lane_name(&source.join("a.jpg")), elsewhere);

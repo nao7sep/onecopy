@@ -809,50 +809,6 @@ fn atomic_temp_name(file_name: &str) -> Result<String, String> {
     Ok(format!("{}-{}.tmp", stem, nanoid::generate()?))
 }
 
-// Disk reads of the settings for the callers not yet moved to `config`.
-
-/// Reads config for the pre-window setup paths. A quarantine here happens
-/// before any reporting surface exists, so its record is parked for the
-/// frontend's `load_from_root` to publish.
-pub fn read_config_for_setup(root: &Path) -> Result<Option<JsonValue>, String> {
-    let read = read_config_optional(&root.join(CONFIG_FILE_NAME))?;
-    if let Some(record) = read.quarantined {
-        PENDING_QUARANTINES
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .push(record);
-    }
-    Ok(read.value)
-}
-
-/// The configured source roots, read straight from `config.json` under a data
-/// root. Used by the startup resume, which decides before any AppHandle-bound
-/// load and needs only this one key.
-pub fn load_config_source_dirs(data_root: &Path) -> Result<Vec<String>, String> {
-    let config = read_config_for_setup(data_root)?;
-    Ok(config
-        .as_ref()
-        .and_then(|c| c.get("sourceDirs"))
-        .and_then(|v| v.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|e| e.as_str())
-                .map(|s| s.to_string())
-                .collect()
-        })
-        .unwrap_or_default())
-}
-
-/// All roots whose own permission boundary must contain recoverable deleted
-/// files. The returned set is an operation-planning snapshot.
-pub fn load_config_file_roots(data_root: &Path) -> Result<Vec<PathBuf>, String> {
-    Ok(load_configured_roots(data_root)?.all())
-}
-
-pub fn load_configured_roots(data_root: &Path) -> Result<ConfiguredRoots, String> {
-    Ok(configured_roots_in(read_config_for_setup(data_root)?.as_ref()))
-}
-
 #[cfg(test)]
 // EXCEPTION to the tests-live-in-tests/ rule (tests-folder
 // conventions, Rust form): the quarantine/temp-name grammar and the

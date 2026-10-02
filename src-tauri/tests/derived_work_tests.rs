@@ -749,8 +749,8 @@ fn an_unsupported_saved_acceleration_fails_only_its_own_engine() {
 
     // Browsing and preview preparation read the same settings and still work.
     let capabilities = onecopy_lib::derived_work::work_capabilities(dir.path()).unwrap();
-    let config = onecopy_lib::storage::read_config_for_setup(dir.path()).unwrap();
-    let settings = settings_from_config(config.as_ref(), dir.path());
+    let config = onecopy_lib::storage::config(dir.path()).unwrap();
+    let settings = settings_from_config(Some(&config), dir.path());
     assert!(settings.transcription_acceleration.is_ok());
     assert!(settings.face_acceleration.is_err());
     assert_eq!(

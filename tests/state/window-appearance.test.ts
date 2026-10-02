@@ -19,7 +19,7 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); window.history.pushState(null, "", "/"); });
 
 it("initializes the font without Main bootstrap, then follows saved changes", async () => {
-  // The core answers with effective values (storage::read_appearance_preferences).
+  // The core answers with effective values (storage::appearance_preferences).
   const effective = {
     enlargeSmallImagesInPreview: true,
     enlargeSmallImagesInQuickView: true,
