@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zip::write::SimpleFileOptions;
 
-const ARCHIVES: &str = "backups/archives";
+const ARCHIVES: &str = "backups";
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
