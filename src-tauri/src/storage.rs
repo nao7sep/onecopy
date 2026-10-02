@@ -207,8 +207,8 @@ impl Default for SimilaritySettings {
     }
 }
 
-/// Known set keys and built-ins have one owner: `DefaultConfig`.
-/// A malformed copy is absent as a whole, never filled member by member.
+/// Known set keys and built-ins have one owner: `DefaultConfig`. The one
+/// check on read (config-sets conventions' reading and healing).
 pub fn effective_config(stored: Option<&JsonValue>) -> JsonValue {
     let mut effective = serde_json::to_value(DefaultConfig::default()).expect("the default config serializes");
     for (key, builtin) in effective.as_object_mut().expect("defaults are an object") {
@@ -216,10 +216,10 @@ pub fn effective_config(stored: Option<&JsonValue>) -> JsonValue {
             if valid_set(key, value, builtin) {
                 *builtin = value.clone();
             } else {
-                static WARNED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
-                if WARNED.lock().unwrap_or_else(|p| p.into_inner()).insert(key.clone()) {
-                    logging::warn("invalid config set; using built-in", serde_json::json!({ "key": key }));
-                }
+                logging::warn(
+                    "invalid config set; using built-in",
+                    serde_json::json!({ "key": key, "value": value }),
+                );
             }
         }
     }
