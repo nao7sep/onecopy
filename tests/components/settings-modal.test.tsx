@@ -158,10 +158,9 @@ describe("Settings categories", () => {
     expect(screen.getAllByRole("button", { name: "Move up" })[0].textContent).toBe("Move up");
   });
 
-  // R5.5 C5: the screen order is machine-local state outside the Settings
-  // draft entirely -- a move writes immediately through `patch_state`, and
-  // neither Discard nor Save (which only ever sends `patch_config` from the
-  // draft) can see or revert it.
+  // The screen order is a setting outside the Settings draft: a move is saved
+  // immediately, and neither Discard nor Save (which sends only the draft's
+  // changed sets) can see or revert it.
   it("keeps the screen order outside the Settings draft: Save never sends it, and it survives Discard", async () => {
     setMonitors([0, 1].map((index) => ({
       name: `Fixture ${index}`, position: { x: index * 1920, y: 0 },
@@ -179,7 +178,7 @@ describe("Settings categories", () => {
     await waitFor(() => expect(screen.queryAllByRole("button", { name: "Move down" }).length).toBeGreaterThan(0));
 
     const hasScreenPriority = (call: { command: string; args: Record<string, unknown> }) =>
-      call.command === "patch_state" &&
+      call.command === "patch_config" &&
       "screenPriority" in ((call.args.patch as Record<string, unknown>) ?? {});
 
     fireEvent.click(screen.getAllByRole("button", { name: "Move down" })[0]);
@@ -193,7 +192,7 @@ describe("Settings categories", () => {
     await waitFor(() => expect(invokeCalls.some((call) => call.command === "patch_config")).toBe(true));
 
     const configWrite = invokeCalls.find((call) => call.command === "patch_config");
-    expect(configWrite?.args.patch).not.toHaveProperty("screenPriority");
+    expect(configWrite?.args.patch).toHaveProperty("hideDotNames");
     expect(invokeCalls.some(hasScreenPriority)).toBe(false);
     // The move already landed and nothing here reverted it.
     expect((screenWrite?.args.patch as Record<string, unknown>)).toHaveProperty("screenPriority");
@@ -248,7 +247,7 @@ describe("Settings categories", () => {
       size: { width: 1920, height: 1080 }, scaleFactor: 1,
     })));
     mockCommands({
-      patch_state: () => Promise.reject(new TypeError("EACCES writing state.json")),
+      patch_config: () => Promise.reject(new TypeError("EACCES writing config.json")),
       record_recent_notification: () => ({ id: 1 }),
     });
     render(<SettingsModal open onClose={() => {}} />);
@@ -258,7 +257,7 @@ describe("Settings categories", () => {
     await act(async () => move.click());
 
     expect(await screen.findByText("Couldn’t save the screen order.")).toBeTruthy();
-    const write = invokeCalls.find((call) => call.command === "patch_state");
+    const write = invokeCalls.find((call) => call.command === "patch_config");
     expect(write?.args.reportFailure).toBe(false);
     await waitFor(() =>
       expect(invokeCalls.filter((call) => call.command === "record_recent_notification")).toHaveLength(1),

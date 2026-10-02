@@ -129,6 +129,9 @@ pub struct DefaultConfig {
     /// Indirect, bulk, and permanent consequences always review regardless;
     /// those rules are not configurable.
     pub confirm_trash_delete: bool,
+    /// Auxiliary display order as monitor keys, first preferred; an unlisted
+    /// display follows in system order. Saved the moment it is reordered.
+    pub screen_priority: Vec<String>,
     /// Source directories to scan (wizard-configured; absolute paths).
     pub source_dirs: Vec<String>,
     /// Destination roots for the move/copy-out tree (absolute paths).
@@ -180,6 +183,7 @@ impl Default for DefaultConfig {
             maximum_images_in_comparison: 16,
             notification_display_seconds: 6,
             confirm_trash_delete: true,
+            screen_priority: Vec::new(),
             source_dirs: Vec::new(),
             destination_roots: Vec::new(),
             destination_conflict_rename_style: if cfg!(target_os = "windows") {

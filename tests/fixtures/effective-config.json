@@ -29,6 +29,7 @@
   "pairingEnabled": true,
   "previewLongEdgePx": 1600,
   "scoreFaces": true,
+  "screenPriority": [],
   "showFaceStars": true,
   "similarPhotoAnalysisEnabled": true,
   "sourceDirs": [],

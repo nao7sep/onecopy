@@ -104,6 +104,7 @@ fn default_config_serializes_with_camel_case_and_expected_defaults() {
     assert_eq!(value["showFaceStars"], serde_json::json!(true));
     assert_eq!(value["maximumImagesInComparison"], serde_json::json!(16));
     assert_eq!(value["notificationDisplaySeconds"], serde_json::json!(6));
+    assert_eq!(value["screenPriority"], serde_json::json!([]));
     assert_eq!(
         value["destinationConflictRenameStyle"],
         if cfg!(target_os = "windows") {
@@ -121,7 +122,6 @@ fn default_config_serializes_with_camel_case_and_expected_defaults() {
         "videoExtensions",
         "companionExtensions",
         "filenamePatterns",
-        "screenPriority",
         "scenesGridColumns",
         "scenesGridRows",
     ] {

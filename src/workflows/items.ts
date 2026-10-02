@@ -25,8 +25,8 @@ type RescanSectionOutcome =
 
 let installed = false;
 
-function appWindowState(): Record<string, unknown> {
-  return useAppStore.getState().appData?.state ?? {};
+function appConfig(): Record<string, unknown> {
+  return useAppStore.getState().appData?.config ?? {};
 }
 
 function selectedCount(state: ReturnType<typeof useItemsStore.getState>): number {
@@ -52,7 +52,7 @@ function projectAnchor(): void {
   // (see `openFailed` on the preview store); otherwise every subsequent
   // anchor change would retry — and re-fail — the same broken open.
   if (preview.follow && preview.placement === null && !preview.openFailed) {
-    void preview.open(payload, detail, appWindowState());
+    void preview.open(payload, detail, appConfig());
   } else {
     preview.anchorChanged(payload, detail);
   }

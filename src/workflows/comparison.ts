@@ -40,8 +40,8 @@ import { isHashKey } from "../models/items";
 
 let mainRecoveryAfterFamily: AnchorContext | null = null;
 
-function appState(): Record<string, unknown> {
-  return useAppStore.getState().appData?.state ?? {};
+function appConfig(): Record<string, unknown> {
+  return useAppStore.getState().appData?.config ?? {};
 }
 
 function configConfirmsTrash(): boolean {
@@ -94,7 +94,7 @@ export async function openComparison(
       hash,
       entryAnchor,
       maximumImages(),
-      appState(),
+      appConfig(),
     );
   if (result === "opened") {
     await focusComparison();

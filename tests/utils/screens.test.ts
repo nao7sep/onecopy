@@ -3,7 +3,7 @@ import {
   describePosition,
   monitorKey,
   orderMonitors,
-  priorityFromState,
+  priorityFromConfig,
 } from "../../src/utils/screens";
 import { inEnglish } from "../helpers/i18n";
 
@@ -49,9 +49,9 @@ describe("screen priority ordering", () => {
   });
 
   it("reads only string lists out of state", () => {
-    expect(priorityFromState({ screenPriority: ["A", 1, "B"] })).toEqual(["A", "B"]);
-    expect(priorityFromState({})).toEqual([]);
-    expect(priorityFromState(null)).toEqual([]);
+    expect(priorityFromConfig({ screenPriority: ["A", 1, "B"] })).toEqual(["A", "B"]);
+    expect(priorityFromConfig({})).toEqual([]);
+    expect(priorityFromConfig(null)).toEqual([]);
   });
 });
 

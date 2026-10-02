@@ -14,7 +14,7 @@ import {
   describePosition,
   monitorKey,
   orderMonitors,
-  priorityFromState,
+  priorityFromConfig,
 } from "../utils/screens";
 import ModalShell from "./ModalShell";
 import ConfirmModal from "./ConfirmModal";
@@ -38,9 +38,9 @@ interface TextPreviewOptions {
   maxAllowedBytes: number;
 }
 
-/** Auxiliary display priority. Persisted as app STATE, not part of the config
- * draft — screen identifiers are machine-specific and reordering applies
- * immediately, like a pane width. Meaningful only with two or more monitors. */
+/** Auxiliary display priority. A setting of its own, outside the draft:
+ * reordering is saved the moment it happens. Meaningful only with two or more
+ * monitors. */
 function ScreensSection() {
   const { t } = useI18n();
   const [monitors, setMonitors] = useState<Monitor[]>([]);
@@ -48,8 +48,8 @@ function ScreensSection() {
   const [screenError, setScreenError] = useState<MessageKey | null>(null);
   const [identifying, setIdentifying] = useState(false);
   const mounted = useRef(false);
-  const priority = priorityFromState(
-    useAppStore((s) => s.appData?.state) ?? null,
+  const priority = priorityFromConfig(
+    useAppStore((s) => s.appData?.config) ?? null,
   );
   useEffect(() => {
     mounted.current = true;
@@ -86,7 +86,7 @@ function ScreensSection() {
       .getState()
       // This row shows the failure itself, so the core stays quiet: one failed
       // write is one notice and one Issue.
-      .patchState({ screenPriority: keys }, { immediate: true, reportFailure: false })
+      .patchConfig({ screenPriority: keys }, { reportFailure: false })
       .catch((error) => {
         log.error("screen priority save failed", toErrorFields(error));
         setScreenError("settings.screenOrderSaveFailed");

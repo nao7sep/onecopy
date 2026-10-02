@@ -25,7 +25,7 @@ import {
   type ComparisonCardInteraction,
 } from "../models/comparisonSession";
 import { log, reportWindowCall, toErrorFields } from "../repositories";
-import { monitorKey, orderMonitors, priorityFromState } from "../utils/screens";
+import { monitorKey, orderMonitors, priorityFromConfig } from "../utils/screens";
 import { requestSeq } from "./request-seq";
 import { message, type Message } from "../i18n/translate";
 import { documentTranslator } from "../i18n/I18nContext";
@@ -90,7 +90,7 @@ interface ComparisonState extends ComparisonDecisionDraft {
     hash: string,
     entryAnchor?: string | null,
     maximumImages?: number,
-    screenState?: Record<string, unknown>,
+    config?: Record<string, unknown>,
   ) => Promise<ComparisonOpenResult>;
   selectSlot: (slotIndex: number, mode: ComparisonCardInteraction) => void;
   setDisplayAspect: (slice: number, aspect: number) => void;
@@ -278,12 +278,12 @@ function pageForAnchor(
 }
 
 async function resolveMonitors(
-  screenState: Record<string, unknown>,
+  config: Record<string, unknown>,
 ): Promise<{ hostAspect: number; others: MonitorList }> {
   try {
     const monitors = orderMonitors(
       await availableMonitors(),
-      priorityFromState(screenState),
+      priorityFromConfig(config),
     );
     const hosting = await currentMonitor();
     const hostKey = hosting === null ? null : monitorKey(hosting);
@@ -563,13 +563,13 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
     hash,
     entryAnchor = hash,
     maximumImages = 16,
-    screenState = {},
+    config = {},
   ) => {
     const fresh = groupLoad.begin();
     try {
       const [members, displays] = await Promise.all([
         invoke<GroupMember[]>("get_similar_group", { hash }),
-        resolveMonitors(screenState),
+        resolveMonitors(config),
       ]);
       if (!fresh()) return "opened";
       if (members.length < 2) {

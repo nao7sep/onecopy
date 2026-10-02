@@ -21,7 +21,7 @@ import {
   allocatePreviewPlacement,
   type PreviewBounds,
 } from "../models/previewPlacement";
-import { orderMonitors, priorityFromState } from "../utils/screens";
+import { orderMonitors, priorityFromConfig } from "../utils/screens";
 import type { ItemDetail } from "../models/items";
 import { message, type Message } from "../i18n/translate";
 import { documentTranslator } from "../i18n/I18nContext";
@@ -80,14 +80,14 @@ interface PreviewState {
   open: (
     payload: PreviewPayload,
     detail: ItemDetail | null,
-    windowState?: Record<string, unknown>,
+    config?: Record<string, unknown>,
   ) => Promise<void>;
   /** Closes the surface (either placement) and turns follow off. */
   close: () => void;
   /** Moves the open surface to the other placement, and remembers the choice. */
   setPlacementPreference: (
     preference: PlacementPreference,
-    windowState?: Record<string, unknown>,
+    config?: Record<string, unknown>,
   ) => Promise<void>;
   /** Restores the persisted follow flag without opening anything yet. */
   restoreFollow: (on: boolean, preference: PlacementPreference) => void;
@@ -139,14 +139,14 @@ async function outerBounds(window: {
   };
 }
 
-async function placePreviewWindow(state: Record<string, unknown>): Promise<void> {
+async function placePreviewWindow(config: Record<string, unknown>): Promise<void> {
   const main = getCurrentWindow();
   const [monitors, mainBounds] = await Promise.all([
     availableMonitors(),
     outerBounds(main),
   ]);
   const allocation = allocatePreviewPlacement(
-    orderMonitors(monitors, priorityFromState(state)),
+    orderMonitors(monitors, priorityFromConfig(config)),
     mainBounds,
   );
   if (allocation === null) return;
@@ -156,7 +156,7 @@ async function placePreviewWindow(state: Record<string, unknown>): Promise<void>
   });
 }
 
-async function ensurePreviewWindow(state: Record<string, unknown>): Promise<void> {
+async function ensurePreviewWindow(config: Record<string, unknown>): Promise<void> {
   const existing = await WebviewWindow.getByLabel("preview");
   if (existing !== null) {
     previewWindowOpen = true;
@@ -177,7 +177,7 @@ async function ensurePreviewWindow(state: Record<string, unknown>): Promise<void
   });
   try {
     await waitForWindowCreated(window, "Preview");
-    await placePreviewWindow(state);
+    await placePreviewWindow(config);
     // The surface closing by any route (Escape in it, red button) clears the
     // follow flag — otherwise P looks broken afterwards.
     await window.once("tauri://destroyed", () => {
@@ -354,7 +354,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     }
   },
 
-  open: async (payload, detail, windowState = {}) => {
+  open: async (payload, detail, config = {}) => {
     const request = ++surfaceRequest;
     cancelPublication();
     try {
@@ -369,7 +369,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
             recordStaleSurface(request);
             return;
           }
-          await ensurePreviewWindow(windowState);
+          await ensurePreviewWindow(config);
           if (request !== surfaceRequest) {
             recordStaleSurface(request);
             return;
@@ -417,7 +417,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     }
   },
 
-  setPlacementPreference: async (preference, windowState = {}) => {
+  setPlacementPreference: async (preference, config = {}) => {
     const request = ++surfaceRequest;
     const { follow, placementPreference } = get();
     set({ placementPreference: preference });
@@ -445,7 +445,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
           return;
         }
         if (next === "window" && current !== null) {
-          await ensurePreviewWindow(windowState);
+          await ensurePreviewWindow(config);
           if (request !== surfaceRequest) {
             recordStaleSurface(request);
             return;

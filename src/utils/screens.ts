@@ -100,8 +100,8 @@ export function orderMonitors<T extends MonitorLike>(monitors: T[], priority: st
   return [...monitors].sort((a, b) => rank(a) - rank(b));
 }
 
-/** Reads the persisted priority list out of the app state document. */
-export function priorityFromState(state: Record<string, unknown> | null | undefined): string[] {
-  const value = state?.screenPriority;
+/** Reads the saved priority list out of the effective configuration. */
+export function priorityFromConfig(config: Record<string, unknown> | null | undefined): string[] {
+  const value = config?.screenPriority;
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
 }

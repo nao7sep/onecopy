@@ -5,7 +5,7 @@
 - When two or more displays are connected, OneCopy keeps a user-arranged priority order over them, reachable in Settings under Appearance. One display makes the order meaningless, and OneCopy offers nothing to arrange.
 - The order names displays, not slots. A display is identified by its reported name together with where it sits, because a matched pair reports one name and one resolution and would otherwise be a single entry. Rearranging the displays in the operating system's own layout therefore produces new entries.
 - The order covers every connected display. One the saved order does not name — newly attached, or one whose position changed — follows every named display, in the order the system reports them.
-- The order is machine-local workspace state rather than a configured value, since a display identity means nothing on another computer. It is not part of the Settings draft: a move takes effect at once and needs no Save, and discarding unsaved settings does not undo it.
+- The order is a setting of its own, kept in the settings file so the backup history holds it. It is not part of the Settings draft: a move is saved at once and needs no Save, and discarding unsaved settings does not undo it.
 
 ## Arranging it
 
