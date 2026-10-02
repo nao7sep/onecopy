@@ -759,14 +759,13 @@ pub(crate) fn apply_library_settings(app: &AppHandle) -> Result<LibrarySettingsO
         // configuration instead of finishing with the old one.
         restart_source_walks();
         let data_root = crate::paths::data_root()?;
-        let config = crate::storage::read_config_for_setup(&data_root)?;
+        let config = crate::storage::config(&data_root)?;
         let settings = crate::scanner::settings_from_config(
-            config.as_ref(),
+            Some(&config),
             &data_root,
             chrono::Utc::now().timestamp_millis(),
         );
-        let visibility =
-            crate::visibility::Policy::from_config(config.as_ref().unwrap_or(&serde_json::json!({})))?;
+        let visibility = crate::visibility::Policy::from_config(&config)?;
         let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
         let resolved = crate::library_settings::apply(&conn, &settings, &visibility, &|_| {})?;
         crate::derived_work::wake();
@@ -807,9 +806,9 @@ pub(crate) fn recheck_section(
 ) -> Result<RescanSectionOutcome, String> {
     let result = run_section(app, || {
         let data_root = crate::paths::data_root()?;
-        let config = crate::storage::read_config_for_setup(&data_root)?;
+        let config = crate::storage::config(&data_root)?;
         let settings = crate::scanner::settings_from_config(
-            config.as_ref(),
+            Some(&config),
             &data_root,
             chrono::Utc::now().timestamp_millis(),
         );

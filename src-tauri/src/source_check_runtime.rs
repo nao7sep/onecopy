@@ -239,7 +239,7 @@ fn run(app: &AppHandle) -> Result<crate::scanner::ScanSummary, String> {
     // or applied Settings makes it start again with the current configuration.
     let summary = loop {
         let settings = crate::scanner::settings_from_config(
-            crate::storage::read_config_for_setup(&data_root)?.as_ref(),
+            Some(&*crate::storage::config(&data_root)?),
             &data_root,
             chrono::Utc::now().timestamp_millis(),
         );

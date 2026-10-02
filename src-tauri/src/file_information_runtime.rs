@@ -248,14 +248,13 @@ fn run_requested(app: &AppHandle) -> Result<Option<crate::scanner::ScanSummary>,
     }
     REQUESTED.store(false, Ordering::SeqCst);
     let data_root = crate::paths::data_root()?;
-    let config = crate::storage::read_config_for_setup(&data_root)?;
+    let config = crate::storage::config(&data_root)?;
     let settings = crate::scanner::settings_from_config(
-        config.as_ref(),
+        Some(&config),
         &data_root,
         chrono::Utc::now().timestamp_millis(),
     );
-    let visibility =
-        crate::visibility::Policy::from_config(config.as_ref().unwrap_or(&json!({})))?;
+    let visibility = crate::visibility::Policy::from_config(&config)?;
     let db_file = data_root.join(crate::storage::INDEX_DB_FILE_NAME);
     let progress = crate::scan_runtime::progress_emitter(
         app.clone(),

@@ -47,7 +47,7 @@ fn owns_generation(generation: u64) -> bool {
 
 pub fn restart_from_config(app: tauri::AppHandle) -> Result<(), String> {
     let data_root = crate::paths::data_root()?;
-    let source_dirs = crate::storage::load_config_source_dirs(&data_root)?;
+    let source_dirs = crate::storage::configured_source_dirs(&data_root)?;
     start(app, source_dirs).map(|_| ())
 }
 
@@ -633,14 +633,12 @@ fn process_dirty_claimed(
 ) -> Result<WatchPass, String> {
     let _awake = crate::sleep_prevention::begin_work();
     let data_root = crate::paths::data_root()?;
-    // Config only, through the same unserialized-reader path every other
-    // background worker uses. `storage::load_app_data` drains the pending
-    // quarantine list for the frontend's `load_from_root` to publish; the
-    // watcher has no reporting surface for it and would otherwise consume
-    // (and drop) a quarantine notice meant for Main.
-    let config = crate::storage::read_config_for_setup(&data_root)?;
+    // The settings in memory only: `storage::load_app_data` drains the
+    // pending quarantine list for Main to report, and the watcher has no
+    // reporting surface of its own.
+    let config = crate::storage::config(&data_root)?;
     let settings = scanner::settings_from_config(
-        config.as_ref(),
+        Some(&config),
         &data_root,
         chrono::Utc::now().timestamp_millis(),
     );
