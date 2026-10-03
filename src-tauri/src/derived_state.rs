@@ -1112,7 +1112,7 @@ pub fn record_preview_success(
         )
         .map_err(|error| error.to_string())?;
     let issues_changed = crate::index_store::clear_issues(&transaction, path, &[PREVIEW_ERROR])?;
-    transaction.commit().map_err(|error| error.to_string())?;
+    crate::records::commit(transaction).map_err(|error| error.to_string())?;
     Ok(issues_changed)
 }
 
@@ -1142,7 +1142,7 @@ fn record_content_failure(
         )
         .map_err(|error| error.to_string())?;
     let issues_changed = record_derived_issue(&transaction, path, issue_kind, message)?;
-    transaction.commit().map_err(|error| error.to_string())?;
+    crate::records::commit(transaction).map_err(|error| error.to_string())?;
     Ok(issues_changed)
 }
 
@@ -1224,7 +1224,7 @@ pub fn record_poster_success(
         .map_err(|error| error.to_string())?;
     let issues_changed =
         crate::index_store::clear_issues(&transaction, path, &[VIDEO_POSTER_ERROR])?;
-    transaction.commit().map_err(|error| error.to_string())?;
+    crate::records::commit(transaction).map_err(|error| error.to_string())?;
     Ok(issues_changed)
 }
 
@@ -1254,7 +1254,7 @@ pub fn record_strip_success(
         .map_err(|error| error.to_string())?;
     let issues_changed =
         crate::index_store::clear_issues(&transaction, path, &[VIDEO_STRIP_ERROR])?;
-    transaction.commit().map_err(|error| error.to_string())?;
+    crate::records::commit(transaction).map_err(|error| error.to_string())?;
     Ok(issues_changed)
 }
 
@@ -1274,7 +1274,7 @@ pub fn record_strip_failure(
         )
         .map_err(|error| error.to_string())?;
     let issues_changed = record_derived_issue(&transaction, path, VIDEO_STRIP_ERROR, message)?;
-    transaction.commit().map_err(|error| error.to_string())?;
+    crate::records::commit(transaction).map_err(|error| error.to_string())?;
     Ok(issues_changed)
 }
 
@@ -1338,7 +1338,7 @@ pub fn record_face_success(
         )
         .map_err(|error| error.to_string())?;
     let issues_changed = crate::index_store::clear_issues(&transaction, path, &[FACE_ERROR])?;
-    transaction.commit().map_err(|error| error.to_string())?;
+    crate::records::commit(transaction).map_err(|error| error.to_string())?;
     Ok(issues_changed)
 }
 
@@ -1369,7 +1369,7 @@ fn record_analysis_failure(
                 message
             ],
         )
-        .map(|_| ())
+        .map(|_| crate::records::wrote(transaction))
         .map_err(|error| error.to_string())
 }
 
@@ -1391,7 +1391,7 @@ pub fn record_face_failure(
         message,
     )?;
     let issues_changed = record_derived_issue(&transaction, path, FACE_ERROR, message)?;
-    transaction.commit().map_err(|error| error.to_string())?;
+    crate::records::commit(transaction).map_err(|error| error.to_string())?;
     Ok(issues_changed)
 }
 
@@ -1426,7 +1426,7 @@ pub fn record_transcript_success(
         )
         .map_err(|error| error.to_string())?;
     let issues_changed = crate::index_store::clear_issues(&transaction, path, &[TRANSCRIPT_ERROR])?;
-    transaction.commit().map_err(|error| error.to_string())?;
+    crate::records::commit(transaction).map_err(|error| error.to_string())?;
     Ok(issues_changed)
 }
 
@@ -1448,7 +1448,7 @@ pub fn record_transcript_failure(
         message,
     )?;
     let issues_changed = record_derived_issue(&transaction, path, TRANSCRIPT_ERROR, message)?;
-    transaction.commit().map_err(|error| error.to_string())?;
+    crate::records::commit(transaction).map_err(|error| error.to_string())?;
     Ok(issues_changed)
 }
 
@@ -1489,7 +1489,7 @@ pub fn reset_failed_outputs(
 ) -> Result<u64, String> {
     let transaction = conn.unchecked_transaction().map_err(|error| error.to_string())?;
     let count = reset_failed_outputs_in_transaction(&transaction, scope)?;
-    transaction.commit().map_err(|error| error.to_string())?;
+    crate::records::commit(transaction).map_err(|error| error.to_string())?;
     Ok(count)
 }
 
@@ -1552,7 +1552,7 @@ pub(crate) fn reset_failed_outputs_in_transaction(
         } else {
             format!(" AND c.hash{membership}")
         };
-        count += conn
+        let reopened = conn
             .execute(
                 &format!(
                     "INSERT INTO records.analysis_events (session_id, time_utc, content_hash, class, event)
@@ -1563,7 +1563,11 @@ pub(crate) fn reset_failed_outputs_in_transaction(
                 ),
                 params_from_iter(values.iter()),
             )
-            .map_err(|error| error.to_string())? as u64;
+            .map_err(|error| error.to_string())?;
+        if reopened > 0 {
+            crate::records::wrote(conn);
+        }
+        count += reopened as u64;
     }
     Ok(count)
 }
@@ -1582,7 +1586,7 @@ pub(crate) fn reopen_session_analysis_failures(conn: &Connection) -> Result<(), 
         ),
         [crate::logging::now_iso_millis()],
     )
-    .map(|_| ())
+    .map(|reopened| if reopened > 0 { crate::records::wrote(conn) })
     .map_err(|error| error.to_string())
 }
 

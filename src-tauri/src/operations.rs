@@ -184,7 +184,7 @@ impl AcceptedFiles {
                     .map(|(path_id, abs_path, _, _)| (path_id, abs_path)),
             );
         }
-        transaction.commit().map_err(|error| error.to_string())?;
+        crate::records::commit(transaction).map_err(|error| error.to_string())?;
         Ok(Self { files })
     }
 
@@ -406,7 +406,7 @@ fn delete_targets(
                         orphaned = true;
                     }
                 }
-                tx.commit().map_err(|e| e.to_string())?;
+                crate::records::commit(tx).map_err(|e| e.to_string())?;
                 if orphaned {
                     preview::remove_entries(cache, current_hash.as_deref().unwrap_or_default());
                 }

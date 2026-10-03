@@ -429,7 +429,7 @@ pub fn begin_scoped_index_repair(
             )
             .map_err(|error| error.to_string())?;
     }
-    transaction.commit().map_err(|error| error.to_string())?;
+    crate::records::commit(transaction).map_err(|error| error.to_string())?;
     Ok(roots)
 }
 
@@ -1610,7 +1610,7 @@ pub fn promote_identity(
     // can see the just-vacated provisional key as orphaned and delete the
     // file this function is about to rename out from under it.
     let _identity_lock = crate::preview::lock_cache_identity();
-    tx.commit().map_err(|e| e.to_string())?;
+    crate::records::commit(tx).map_err(|e| e.to_string())?;
 
     if let Some(strip_frames) = strip_frames_for_rename {
         crate::preview::rename_entries(cache, provisional, real_hash, strip_frames);
@@ -2698,7 +2698,7 @@ fn pair_companions_with_progress(
             .map(|count| count as u64)
             .map_err(|error| error.to_string())
     })()?;
-    transaction.commit().map_err(|error| error.to_string())?;
+    crate::records::commit(transaction).map_err(|error| error.to_string())?;
 
     let mut after_id = 0i64;
     loop {

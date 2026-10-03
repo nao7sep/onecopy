@@ -15,7 +15,7 @@ pub fn apply_policy(conn: &Connection, policy: &Policy) -> Result<(), String> {
     let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
         .map_err(|error| error.to_string())?;
     apply_policy_in_transaction(&tx, policy)?;
-    tx.commit().map_err(|error| error.to_string())
+    crate::records::commit(tx).map_err(|error| error.to_string())
 }
 
 /// Whether the index's review projection already follows `policy`.
@@ -176,7 +176,7 @@ impl DirectoryFacts {
                 },
             )?;
             self.changed_files += changed_files;
-            tx.commit().map_err(|error| error.to_string())?;
+            crate::records::commit(tx).map_err(|error| error.to_string())?;
         }
         self.flags.insert(dir.to_path_buf(), flags);
         Ok(())

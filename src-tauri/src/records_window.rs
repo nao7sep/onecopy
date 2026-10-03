@@ -77,9 +77,9 @@ pub fn retitle(app: &AppHandle, language: &str) -> Result<(), String> {
     }
 }
 
-/// Tells the open window that a record was stored. It runs as a records
-/// commit lands, so it never logs: a log line would itself be a stored record
-/// and signal again.
+/// Tells the open window that a record was stored. It runs right after the
+/// writer's commit, so the window's next read sees the record. It never logs:
+/// a log line would itself be a stored record and signal again.
 pub fn notify_changed(app: &AppHandle) {
     if app_lifecycle::shutting_down() || app.get_webview_window(LABEL).is_none() {
         return;

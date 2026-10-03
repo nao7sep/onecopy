@@ -551,7 +551,7 @@ fn record_issue_event(conn: &Connection, kind: &str, path: &str, event: &str) ->
         ),
         rusqlite::params![crate::logging::now_iso_millis(), kind, path, event],
     )
-    .map(|_| ())
+    .map(|_| crate::records::wrote(conn))
     .map_err(|e| e.to_string())
 }
 
@@ -602,6 +602,7 @@ pub fn upsert_issue_with_descriptor(
         ],
     )
     .map_err(|e| e.to_string())?;
+    crate::records::wrote(conn);
     Ok(opened)
 }
 
@@ -636,7 +637,7 @@ pub(crate) fn close_issues(
         ),
         params,
     )
-    .map(|_| ())
+    .map(|closed| if closed > 0 { crate::records::wrote(conn) })
     .map_err(|e| e.to_string())
 }
 
@@ -671,7 +672,7 @@ pub fn publish_paths_batch(
     let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
         .map_err(|error| error.to_string())?;
     publish_paths_batch_in(&tx, collect_hashes, write)?;
-    tx.commit().map_err(|error| error.to_string())
+    crate::records::commit(tx).map_err(|error| error.to_string())
 }
 
 /// [`publish_paths_batch`] inside a write transaction the caller already

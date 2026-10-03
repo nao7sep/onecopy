@@ -135,8 +135,9 @@ fn record_notice(
             ],
         )
         .map_err(|error| error.to_string())?;
+    crate::records::wrote(&transaction);
     let id = transaction.last_insert_rowid();
-    transaction.commit().map_err(|error| error.to_string())?;
+    crate::records::commit(transaction).map_err(|error| error.to_string())?;
     Ok(NotificationRecord {
         id,
         kind: request.kind.clone(),

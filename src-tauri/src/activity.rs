@@ -256,6 +256,7 @@ impl ActivityRecorder {
                 user_visible,
             ],
         ).map_err(|error| error.to_string())?;
+        crate::records::wrote(&state.connection);
         Ok(ActivityEvent {
             event_id: state.connection.last_insert_rowid(),
             session_id: self.session_id.clone(),

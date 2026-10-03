@@ -64,7 +64,7 @@ pub fn failed(
         None,
         error,
     )?;
-    transaction.commit().map_err(|error| error.to_string())
+    crate::records::commit(transaction).map_err(|error| error.to_string())
 }
 
 pub fn reset_library(conn: &Connection) -> Result<u64, String> {

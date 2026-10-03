@@ -2,8 +2,8 @@
 //! conventions). The app process is its only writer.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::cell::Cell;
+use std::sync::{Mutex, OnceLock};
 
 use rusqlite::{params, Connection};
 use serde_json::{json, Value as JsonValue};
@@ -58,7 +58,9 @@ fn write(
 ) {
     let time = crate::logging::now_iso_millis();
     let result = match STORE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_ref() {
-        Some(store) => insert(&store.connection, &store.session_id, &time).map_err(|error| error.to_string()),
+        Some(store) => insert(&store.connection, &store.session_id, &time)
+            .map(|_| wrote(&store.connection))
+            .map_err(|error| error.to_string()),
         None => Err("records are not open".to_string()),
     };
     if let Err(error) = result {
@@ -107,8 +109,16 @@ pub fn trash_action(action: TrashAction<'_>) {
     });
 }
 
-/// Called after a commit that stored a record. Set once, at app setup.
+/// Called after each commit that stored a record. Set once, at app setup.
 static STORED: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
+
+thread_local! {
+    /// This thread wrote a record inside a transaction that has not yet
+    /// committed. A transaction lives on the thread that runs it; one that
+    /// rolls back leaves the mark to the thread's next commit, which then
+    /// signals once more than needed.
+    static UNCOMMITTED: Cell<bool> = const { Cell::new(false) };
+}
 
 /// Sets what runs after each commit that stores a record: the Records
 /// window's live signal. The listener must not log, because a log line is
@@ -119,34 +129,31 @@ pub fn on_stored(listener: impl Fn() + Send + Sync + 'static) {
     }
 }
 
-/// Watches a connection that writes records into the database it knows as
-/// `database`: a transaction that inserted a row there calls the stored-record
-/// listener as it commits. SQLite has no hook after a commit lands; the
-/// listener only signals, and its reader re-reads a second later.
-fn watch_stored(connection: &Connection, database: &'static str) -> Result<(), String> {
-    let inserted = Arc::new(AtomicBool::new(false));
-    let marked = inserted.clone();
-    connection
-        .update_hook(Some(move |action, name: &str, _table: &str, _row| {
-            if action == rusqlite::hooks::Action::SQLITE_INSERT && name == database {
-                marked.store(true, Ordering::Relaxed);
-            }
-        }))
-        .map_err(|error| error.to_string())?;
-    let committed = inserted.clone();
-    connection
-        .commit_hook(Some(move || {
-            if committed.swap(false, Ordering::Relaxed) {
-                if let Some(listener) = STORED.get() {
-                    listener();
-                }
-            }
-            false
-        }))
-        .map_err(|error| error.to_string())?;
-    connection
-        .rollback_hook(Some(move || inserted.store(false, Ordering::Relaxed)))
-        .map_err(|error| error.to_string())
+fn signal_stored() {
+    if let Some(listener) = STORED.get() {
+        listener();
+    }
+}
+
+/// Called by the code that just wrote a record through `connection`. Outside
+/// a transaction the write has committed, so the record is readable now;
+/// inside one it is readable once `commit` commits that transaction.
+pub fn wrote(connection: &Connection) {
+    if connection.is_autocommit() {
+        signal_stored();
+    } else {
+        UNCOMMITTED.with(|uncommitted| uncommitted.set(true));
+    }
+}
+
+/// Commits a transaction that may have written records, then signals them
+/// stored. A transaction that wrote none signals nothing.
+pub fn commit(transaction: rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
+    transaction.commit()?;
+    if UNCOMMITTED.with(|uncommitted| uncommitted.replace(false)) {
+        signal_stored();
+    }
+    Ok(())
 }
 
 pub fn open(path: &Path) -> Result<Connection, String> {
@@ -168,7 +175,6 @@ pub fn open(path: &Path) -> Result<Connection, String> {
     connection
         .execute_batch(SCHEMA)
         .map_err(|error| error.to_string())?;
-    watch_stored(&connection, "main")?;
     Ok(connection)
 }
 
@@ -306,7 +312,6 @@ pub fn attach(connection: &Connection, path: &Path) -> Result<(), String> {
     connection
         .execute("ATTACH DATABASE ?1 AS records", [path.to_string_lossy()])
         .map_err(|error| format!("attach records: {error}"))?;
-    watch_stored(connection, "records")?;
     // This launch's open Issues: each (kind, path) whose latest event is an
     // occurrence, identified by the first occurrence since it last closed.
     connection

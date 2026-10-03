@@ -153,7 +153,7 @@ impl Writer {
                      VALUES (?1, ?2, ?3, ?4, ?5)",
                     rusqlite::params![line.session_id, line.time, line.level, line.message, line.text],
                 )
-                .map(|_| ())
+                .map(|_| crate::records::wrote(connection))
                 .map_err(|error| error.to_string()),
             None => Err("records are unavailable".to_string()),
         };

@@ -15,7 +15,7 @@ pub fn begin_run(conn: &Connection) -> Result<(), String> {
         &transaction,
         derived_state::FailedOutputScope::Library,
     )?;
-    transaction.commit().map_err(|error| error.to_string())
+    crate::records::commit(transaction).map_err(|error| error.to_string())
 }
 
 pub fn recheck_section(
@@ -52,6 +52,6 @@ pub fn recheck_section(
         &transaction,
         derived_state::FailedOutputScope::Section { kind, bounds },
     )?;
-    transaction.commit().map_err(|error| error.to_string())?;
+    crate::records::commit(transaction).map_err(|error| error.to_string())?;
     Ok(reopened)
 }
