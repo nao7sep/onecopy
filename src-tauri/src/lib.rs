@@ -57,6 +57,8 @@ pub mod progress_throttle;
 pub mod preview;
 pub mod queries;
 pub mod records;
+pub mod records_view;
+pub mod records_window;
 pub mod resolution;
 pub mod resource_limits;
 pub mod scan_runtime;
@@ -1389,6 +1391,46 @@ async fn activity_events(
     dispatch(move || activity::events(operation, before, limit)).await
 }
 
+// The Records window (records_window.rs). Its reads log nothing on success:
+// each log line is a stored record whose signal would start the next read.
+#[tauri::command]
+async fn open_records_window(app: AppHandle) -> Result<(), String> {
+    dispatch(move || records_window::open(&app)).await
+}
+
+fn records_reader() -> Result<rusqlite::Connection, String> {
+    records_view::open_reader(&paths::data_root()?.join(records::RECORDS_DB_FILE_NAME))
+}
+
+#[tauri::command]
+async fn records_page(query: records_view::RecordsQuery) -> Result<records_view::RecordsPage, String> {
+    dispatch(move || records_view::page(&records_reader()?, &query)).await
+}
+
+#[tauri::command]
+async fn records_detail(
+    kind: records_view::RecordKind,
+    id: i64,
+) -> Result<Option<records_view::RecordDetail>, String> {
+    dispatch(move || records_view::detail(&records_reader()?, kind, id)).await
+}
+
+#[tauri::command]
+async fn records_sources() -> Result<records_view::RecordSources, String> {
+    dispatch(|| records_view::sources(&records_reader()?, logging::session_id())).await
+}
+
+// The list pane's saved width in `state.json`, read before the window's first
+// frame; a drag's end saves it through `patch_state`.
+#[tauri::command]
+async fn records_list_width(app: AppHandle) -> Result<Option<f64>, String> {
+    dispatch(move || {
+        let state = store_patch::read_state(&app)?;
+        Ok(state.and_then(|state| state.get("recordsListWidth").and_then(Value::as_f64)))
+    })
+    .await
+}
+
 // Control-like command: hands off to Tauri's own exit machinery, which the
 // ExitRequested/Exit handlers below drive; no index or filesystem access here.
 #[tauri::command]
@@ -1429,10 +1471,13 @@ pub fn run() {
 
     let placement_state = window_placement::new_state();
     let preview_placement_state = window_placement::new_state();
+    let records_placement_state = window_placement::new_state();
     let event_placement_state = placement_state.clone();
     let event_preview_placement_state = preview_placement_state.clone();
+    let event_records_placement_state = records_placement_state.clone();
     let setup_placement_state = placement_state.clone();
     let setup_preview_placement_state = preview_placement_state.clone();
+    let setup_records_placement_state = records_placement_state.clone();
     let builder = tauri::Builder::default()
         // Process ownership is the FIRST plugin setup. Its OS file lock is the
         // atomic authority; a secondary routes activation to the owner and exits
@@ -1444,6 +1489,9 @@ pub fn run() {
         .manage(window_placement::PreviewPlacementState(
             preview_placement_state.clone(),
         ))
+        .manage(window_placement::RecordsPlacementState(
+            records_placement_state.clone(),
+        ))
         .manage(theme::ThemeState::default())
         .manage(language)
         .on_window_event(move |window, event| {
@@ -1452,6 +1500,7 @@ pub fn run() {
                 event,
                 &event_placement_state,
                 &event_preview_placement_state,
+                &event_records_placement_state,
             );
             // Under System the OS appearance can change while the app runs; keep
             // the backing behind each page in step. (macOS reports only OS
@@ -1531,8 +1580,12 @@ pub fn run() {
             // crosses a callback that cannot unwind and becomes SIGABRT. The
             // application bootstrap therefore records Ready/Blocked state and
             // the hook itself is deliberately infallible.
+            // Before the records open, so no stored record goes unsignalled.
+            let records_app = app.handle().clone();
+            records::on_stored(move || records_window::notify_changed(&records_app));
             app.manage(startup::initialize(app, debug_enabled));
             window_placement::load_preview(&setup_preview_placement_state);
+            window_placement::load_records(&setup_records_placement_state);
             let saved_theme = settings.as_ref().and_then(theme::config_window_theme);
             app.state::<theme::ThemeState>().set(saved_theme);
             if let Some(window) = app.get_webview_window("main") {
@@ -1636,6 +1689,11 @@ pub fn run() {
             activity_record,
             activity_page,
             activity_events,
+            open_records_window,
+            records_page,
+            records_detail,
+            records_sources,
+            records_list_width,
             request_app_exit,
             check_github_release
         ])
@@ -1678,6 +1736,9 @@ pub fn run() {
                     &preview_placement_state,
                 );
             }
+            if let Some(window) = app_handle.get_webview_window(records_window::LABEL) {
+                window_placement::capture(&window.as_ref().window(), &records_placement_state);
+            }
             if app_lifecycle::exit_ready() {
                 return;
             }
@@ -1687,7 +1748,29 @@ pub fn run() {
         tauri::RunEvent::Exit => {
             window_placement::save(&placement_state);
             window_placement::save_preview(&preview_placement_state);
+            window_placement::save_records(&records_placement_state);
             logging::info("app shutdown", json!({ "reason": "exit" }));
+        }
+        // A Dock click brings a minimized Main back even while another window,
+        // such as Records, is still showing; AppKit itself only does so when
+        // no window is visible.
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Reopen { .. } => {
+            if let Some(window) = app_handle.get_webview_window("main") {
+                let away = window.is_minimized().unwrap_or(false) || !window.is_visible().unwrap_or(true);
+                if away {
+                    if let Err(error) = window
+                        .unminimize()
+                        .and_then(|()| window.show())
+                        .and_then(|()| window.set_focus())
+                    {
+                        logging::warn(
+                            "Main could not be brought back on reopen",
+                            json!({ "error": { "message": error.to_string() } }),
+                        );
+                    }
+                }
+            }
         }
         _ => {}
     });

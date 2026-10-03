@@ -87,6 +87,13 @@ fn every_menu_key_is_in_every_language() {
 }
 
 #[test]
+fn the_records_window_title_is_in_every_language() {
+    for language in LANGUAGES {
+        assert!(catalogue(language).has(onecopy_lib::records_window::TITLE_KEY), "{language} lacks the Records title");
+    }
+}
+
+#[test]
 fn every_launch_failure_key_is_in_every_language() {
     for language in LANGUAGES {
         let text = catalogue(language);

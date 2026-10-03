@@ -8,6 +8,7 @@
 //! - `state.json`        — volatile UI/session state.           not recorded (volatile state and nothing else; written via the unrecorded atomic path)
 //! - `window.json`       — volatile Main placement state.       not recorded (volatile state; unrecorded atomic path)
 //! - `preview-window.json` — volatile Preview placement state.  not recorded (volatile state; unrecorded atomic path)
+//! - `records-window.json` — volatile Records placement state.  not recorded (volatile state; unrecorded atomic path)
 //! - `index.sqlite3`     — scan facts, caches, diagnostics.    archived (binary store)
 //! - `records.sqlite3`   — what happened, logs included.        not archived (records)
 //! - `source-volumes.json` — destructive-operation trust baselines. RECORDED (managed safety text)
@@ -45,6 +46,7 @@ pub const CONFIG_FILE_NAME: &str = "config.json";
 pub const STATE_FILE_NAME: &str = "state.json";
 pub const WINDOW_FILE_NAME: &str = "window.json";
 pub const PREVIEW_WINDOW_FILE_NAME: &str = "preview-window.json";
+pub const RECORDS_WINDOW_FILE_NAME: &str = "records-window.json";
 pub const INDEX_DB_FILE_NAME: &str = "index.sqlite3";
 pub const CACHE_DIR_NAME: &str = "cache";
 
@@ -372,6 +374,28 @@ pub fn read_preview_window_state_for_setup(root: &Path) -> Result<Option<JsonVal
 
 pub fn save_preview_window_state(root: &Path, state: &JsonValue) -> Result<(), String> {
     atomic_write_json(&root.join(PREVIEW_WINDOW_FILE_NAME), state, false)
+}
+
+pub fn read_records_window_state_for_setup(root: &Path) -> Result<Option<JsonValue>, String> {
+    let read = read_json_optional(&root.join(RECORDS_WINDOW_FILE_NAME))?;
+    if let Some(record) = read.quarantined {
+        PENDING_QUARANTINES
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(record);
+    }
+    Ok(read.value)
+}
+
+pub fn save_records_window_state(root: &Path, state: &JsonValue) -> Result<(), String> {
+    atomic_write_json(&root.join(RECORDS_WINDOW_FILE_NAME), state, false)
+}
+
+/// Reads `state.json` for a surface other than Main's startup load. A store
+/// this read sets aside is returned beside the value for its caller to report.
+pub fn read_state(root: &Path) -> Result<(Option<JsonValue>, Option<QuarantineRecord>), String> {
+    let read = read_json_optional(&root.join(STATE_FILE_NAME))?;
+    Ok((read.value, read.quarantined))
 }
 
 pub fn load_from_root(root: &Path) -> Result<LoadedAppData, String> {

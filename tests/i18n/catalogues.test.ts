@@ -43,6 +43,9 @@ const SAME_AS_ENGLISH: Partial<Record<Language, readonly string[]>> = {
     "acceleration.modeMetal",
     "activity.durationMs",
     "activity.durationSeconds",
+    "records.levelInfo",
+    "records.levelDebug",
+    "records.details",
   ],
   es: [
     "app.zoom",
@@ -57,6 +60,7 @@ const SAME_AS_ENGLISH: Partial<Record<Language, readonly string[]>> = {
     "acceleration.modeMetal",
     "activity.durationMs",
     "activity.durationSeconds",
+    "records.levelError",
   ],
   fr: [
     "deletedFiles.copies",
@@ -88,6 +92,9 @@ const SAME_AS_ENGLISH: Partial<Record<Language, readonly string[]>> = {
     "item.transcriptBadge",
     "activity.durationMs",
     "activity.durationSeconds",
+    "records.kindNotice",
+    "records.message",
+    "records.action",
   ],
   it: [
     "app.zoom",
@@ -105,6 +112,8 @@ const SAME_AS_ENGLISH: Partial<Record<Language, readonly string[]>> = {
     "acceleration.modeMetal",
     "activity.durationMs",
     "activity.durationSeconds",
+    "records.levelInfo",
+    "records.levelDebug",
   ],
   "pt-BR": [
     "app.zoom",

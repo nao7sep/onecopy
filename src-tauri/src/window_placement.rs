@@ -82,8 +82,20 @@ pub(crate) type PlacementState = Arc<Mutex<Option<Placement>>>;
 
 pub(crate) struct PreviewPlacementState(pub PlacementState);
 
+pub(crate) struct RecordsPlacementState(pub PlacementState);
+
 pub(crate) fn new_state() -> PlacementState {
     Arc::new(Mutex::new(None))
+}
+
+pub(crate) fn load_records(state: &PlacementState) {
+    let saved = paths::data_root()
+        .and_then(|root| storage::read_records_window_state_for_setup(&root))
+        .map(|value| value.and_then(|value| serde_json::from_value(value).ok()));
+    match saved {
+        Ok(saved) => set_state(state, saved),
+        Err(error) => warn("Records window placement could not be loaded", error),
+    }
 }
 
 pub(crate) fn load_preview(state: &PlacementState) {
@@ -175,10 +187,6 @@ fn warn(message: &str, error: impl ToString) {
 }
 
 pub(crate) fn restore(window: &Window<Wry>, state: &PlacementState) {
-    let fallback = current_rectangle(window).ok().map(|normal| Placement {
-        normal,
-        maximized: false,
-    });
     let saved = paths::data_root()
         .and_then(|root| storage::read_window_state_for_setup(&root))
         .map(|value| value.and_then(|value| serde_json::from_value(value).ok()));
@@ -189,6 +197,23 @@ pub(crate) fn restore(window: &Window<Wry>, state: &PlacementState) {
             None
         }
     };
+    apply_saved(window, state, saved);
+}
+
+/// Places the Records window, built hidden at its designed size, from the
+/// placement this launch loaded or last captured from it.
+pub(crate) fn place_records(window: &Window<Wry>, state: &PlacementState) {
+    apply_saved(window, state, state_value(state));
+}
+
+/// Applies a saved normal rectangle, and on Windows its maximized state, to a
+/// window that is still hidden; unusable placement leaves the designed size
+/// and the toolkit's placement.
+fn apply_saved(window: &Window<Wry>, state: &PlacementState, saved: Option<Placement>) {
+    let fallback = current_rectangle(window).ok().map(|normal| Placement {
+        normal,
+        maximized: false,
+    });
     let usable = saved.and_then(
         |placement: Placement| match usable(window, placement.normal) {
             Ok(true) => Some(placement),
@@ -375,6 +400,7 @@ pub(crate) fn on_window_event(
     event: &WindowEvent,
     main_state: &PlacementState,
     preview_state: &PlacementState,
+    records_state: &PlacementState,
 ) {
     let state = match window.label() {
         "main" => Some(main_state),
@@ -385,6 +411,7 @@ pub(crate) fn on_window_event(
         WindowEvent::CloseRequested { .. } => match window.label() {
             "main" => capture(window, main_state),
             "preview" => capture_preview(window, preview_state),
+            crate::records_window::LABEL => capture(window, records_state),
             _ => {}
         },
         WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
@@ -408,6 +435,22 @@ pub(crate) fn save(state: &PlacementState) {
     } else {
         logging::info("window placement saved", serde_json::json!({
             "window": "main", "placement": placement,
+        }));
+    }
+}
+
+pub(crate) fn save_records(state: &PlacementState) {
+    let Some(placement) = state_value(state) else {
+        return;
+    };
+    let result = serde_json::to_value(placement)
+        .map_err(|error| error.to_string())
+        .and_then(|value| storage::save_records_window_state(&crate::paths::data_root()?, &value));
+    if let Err(error) = result {
+        warn("Records window placement could not be saved", error);
+    } else {
+        logging::info("window placement saved", serde_json::json!({
+            "window": crate::records_window::LABEL, "placement": placement,
         }));
     }
 }

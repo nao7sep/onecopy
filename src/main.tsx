@@ -17,6 +17,7 @@ const ComparisonWindow = lazy(() => import("./windows/ComparisonWindow"));
 const ComparisonImageWindow = lazy(() => import("./windows/ComparisonImageWindow"));
 const IdentifyWindow = lazy(() => import("./windows/IdentifyWindow"));
 const ViewerWindow = lazy(() => import("./windows/ViewerWindow"));
+const RecordsWindow = lazy(() => import("./windows/RecordsWindow"));
 
 // One entry serves every window; lazy routes keep unrelated window code out of
 // each renderer's initial load.
@@ -91,6 +92,8 @@ void Promise.all([installMediaUseBoundary(), installWindowAppearance()])
                 <IdentifyWindow number={slice} />
               ) : view === "viewer" ? (
                 <ViewerWindow />
+              ) : view === "records" ? (
+                <RecordsWindow />
               ) : (
                 <App />
               )}

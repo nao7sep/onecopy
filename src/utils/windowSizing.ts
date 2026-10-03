@@ -126,3 +126,38 @@ export function derivePaneWidths(
   );
   return { left, right, preview };
 }
+
+// The Records window: a list pane (filters above the record list) the user
+// sizes with the divider, beside the detail pane, which takes the rest. The
+// list keeps a pixel intent, saved only when a drag ends; it is shown clamped
+// to the live window.
+//
+// `min` still fits two filter selects side by side; `max` is as wide as a
+// summary row ever usefully gets.
+export const RECORDS_LIST_WIDTH = { min: 320, default: 380, max: 640 } as const;
+
+// The detail pane's minimum: a field label and its value side by side.
+export const RECORDS_DETAIL_MIN_WIDTH = 420;
+
+// The filter band: 12px padding above and below a search field and two rows
+// of selects (three 32px controls, 8px apart), and the line below it.
+export const RECORDS_FILTERS_HEIGHT = 12 * 2 + 32 * 3 + 8 * 2 + 1;
+
+// The record list below the filters before it scrolls.
+export const RECORDS_LIST_MIN_HEIGHT = 160;
+
+export function computeRecordsMinWidth(): number {
+  return RECORDS_LIST_WIDTH.min + SPLITTER_WIDTH + RECORDS_DETAIL_MIN_WIDTH;
+}
+
+export function computeRecordsMinHeight(): number {
+  return RECORDS_FILTERS_HEIGHT + RECORDS_LIST_MIN_HEIGHT;
+}
+
+/** The list pane's shown width: the intent, clamped to its bounds and to what
+ * the window leaves after the detail pane's minimum. */
+export function clampRecordsListWidth(intent: number, containerWidth: number): number {
+  const room = containerWidth - SPLITTER_WIDTH - RECORDS_DETAIL_MIN_WIDTH;
+  const ceiling = Math.max(RECORDS_LIST_WIDTH.min, Math.min(RECORDS_LIST_WIDTH.max, room));
+  return Math.max(RECORDS_LIST_WIDTH.min, Math.min(ceiling, Math.round(intent)));
+}

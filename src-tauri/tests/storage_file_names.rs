@@ -14,7 +14,7 @@ use onecopy_lib::paths::{
 };
 use onecopy_lib::storage::{
     CACHE_DIR_NAME, CONFIG_FILE_NAME, INDEX_DB_FILE_NAME, PREVIEW_WINDOW_FILE_NAME,
-    STATE_FILE_NAME, WINDOW_FILE_NAME,
+    RECORDS_WINDOW_FILE_NAME, STATE_FILE_NAME, WINDOW_FILE_NAME,
 };
 
 #[test]
@@ -35,6 +35,11 @@ fn main_window_state_resolves_to_window_json() {
 #[test]
 fn preview_window_state_resolves_to_its_own_file() {
     assert_eq!(PREVIEW_WINDOW_FILE_NAME, "preview-window.json");
+}
+
+#[test]
+fn records_window_state_resolves_to_its_own_file() {
+    assert_eq!(RECORDS_WINDOW_FILE_NAME, "records-window.json");
 }
 
 #[test]
@@ -81,6 +86,7 @@ fn every_store_has_its_own_file() {
         STATE_FILE_NAME,
         WINDOW_FILE_NAME,
         PREVIEW_WINDOW_FILE_NAME,
+        RECORDS_WINDOW_FILE_NAME,
         INDEX_DB_FILE_NAME,
         BACKUPS_DB_FILE_NAME,
         RECORDS_DB_FILE_NAME,

@@ -95,6 +95,19 @@ describe("the title band", () => {
     expect(debugView.getByText("Activity trace…")).toBeTruthy();
   });
 
+  it("opens the Records window from the menu, which no longer reveals the logs folder", async () => {
+    mockCommands({ open_records_window: () => null });
+    const view = renderReadyApp();
+    fireEvent.click(view.getByRole("button", { name: "Open menu" }));
+    expect(view.queryByText("Reveal logs folder")).toBeNull();
+
+    await act(async () => {
+      fireEvent.click(view.getByText("Records…"));
+    });
+
+    expect(invokeCalls.filter((call) => call.command === "open_records_window")).toHaveLength(1);
+  });
+
   it("leaves the footer to standing state alone", () => {
     const view = renderReadyApp();
     const footer = view.container.querySelector("footer");

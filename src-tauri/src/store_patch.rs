@@ -64,6 +64,12 @@ pub fn save_config(app: &AppHandle, mut changes: Value, report_failure: bool) ->
                         json!({ "error": { "message": error.to_string() } }),
                     );
                 }
+                if let Err(error) = crate::records_window::retitle(app, resolved) {
+                    logging::warn(
+                        "saved language could not be applied to the Records window's title",
+                        json!({ "error": { "message": error } }),
+                    );
+                }
             }
             // Invalidation, not a potentially stale snapshot from a racing save.
             failure_runtime::emit_or_record(app, "appearance://changed", json!({}));
@@ -115,6 +121,14 @@ pub fn patch_state(app: &AppHandle, patch: &Value, report_failure: bool) -> Resu
         }
     }
     result
+}
+
+/// Reads `state.json` for a window other than Main; a store the read sets
+/// aside is reported like any other.
+pub fn read_state(app: &AppHandle) -> Result<Option<Value>, String> {
+    let (state, quarantined) = storage::read_state(&paths::data_root()?)?;
+    report_quarantine(app, quarantined);
+    Ok(state)
 }
 
 /// A store can also be quarantined mid-session — a save reads the file it is

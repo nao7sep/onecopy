@@ -1,7 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useI18n } from "./i18n/I18nContext";
 import { message } from "./i18n/translate";
-import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 import { useAppStore } from "./state/app-store";
 import {
@@ -51,6 +50,7 @@ import {
 } from "./state/derived-work-store";
 import PreviewSurface from "./components/PreviewSurface";
 import { log, toErrorFields, type LoadedAppData } from "./repositories";
+import { openRecordsWindow } from "./repositories/records";
 import BackgroundWorkModal from "./components/BackgroundWorkModal";
 import ActivityTraceModal from "./components/ActivityTraceModal";
 import { closePreview } from "./workflows/preview";
@@ -339,6 +339,16 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
               <MenuSeparator />
               <MenuItem onSelect={() => openUtility("issues")}>{t("app.issues")}</MenuItem>
               <MenuItem onSelect={() => openUtility("activityTrace")}>{t("app.activityTrace")}</MenuItem>
+              <MenuItem
+                onSelect={() => {
+                  void openRecordsWindow().catch((error: unknown) => {
+                    log.warn("records window open failed", toErrorFields(error));
+                    reportActionFailure("records-open-failed", message("app.recordsOpenFailed"), error);
+                  });
+                }}
+              >
+                {t("app.records")}
+              </MenuItem>
               <MenuSeparator />
               {/* A contained widget, not menu items — arrow navigation skips it
                   because only [role="menuitem"] participates. */}
@@ -364,26 +374,6 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
                   </button>
                 </span>
               </div>
-              <MenuSeparator />
-              <MenuItem
-                onSelect={() => {
-                  // The core builds the path (paths.rs is the one authority);
-                  // the old frontend-built `openPath` was silently rejected by
-                  // the opener plugin's empty path scope. "Reveal app home"
-                  // was dropped with the fix — the data root is
-                  // machine-managed and no fleet app reveals its own innards.
-                  void invoke("reveal_data_subdir", { name: "logs" }).catch((error) => {
-                    log.warn("reveal logs failed", toErrorFields(error));
-                    reportActionFailure(
-                      "reveal-logs-failed",
-                      message("app.revealLogsFailed"),
-                      error,
-                    );
-                  });
-                }}
-              >
-                {t("app.revealLogs")}
-              </MenuItem>
               <MenuSeparator />
               <MenuItem onSelect={openHelp}>{t("app.shortcuts")}</MenuItem>
               <MenuItem onSelect={() => openUtility("about")}>{t("app.about")}</MenuItem>

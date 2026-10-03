@@ -62,6 +62,12 @@ path = "tests/suites/media.rs"
 name = "operations_test_suite"
 path = "tests/suites/operations.rs"
 
+# The stored-record listener is process-wide; every records write in the
+# process would reach it.
+[[test]]
+name = "records_signal_test_suite"
+path = "tests/suites/records_signal.rs"
+
 [[test]]
 name = "platform_test_suite"
 path = "tests/suites/platform.rs"
@@ -103,7 +109,7 @@ getrandom = "0.4"
 # packaging stays churn-free (the lowest-friction SQLite binding for the Rust
 # core, per the data-backup conventions' "built-in or lowest-friction binding"
 # rule).
-rusqlite = { version = "0.40", features = ["bundled", "collation", "backup"] }
+rusqlite = { version = "0.40", features = ["bundled", "collation", "backup", "hooks"] }
 kamadak-exif = "0.6.1"
 nom-exif = "3.6.2"
 blake3 = "1.8.6"

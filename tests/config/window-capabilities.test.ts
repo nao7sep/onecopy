@@ -22,6 +22,7 @@ const SOURCES = [
   "src/windows/ViewerWindow.tsx",
   "src/windows/ComparisonWindow.tsx",
   "src/windows/IdentifyWindow.tsx",
+  "src/windows/RecordsWindow.tsx",
   "src/utils/windowSizing.ts",
 ].map((path) => readFileSync(path, "utf8"));
 const ALL_SOURCE = SOURCES.join("\n");
@@ -117,5 +118,40 @@ describe("durable window-state boundary", () => {
 
   it("creates Main hidden only for native setup", () => {
     expect(tauriConfig.app.windows[0]?.visible).toBe(false);
+  });
+});
+
+describe("the Records window", () => {
+  const core = readFileSync("src-tauri/src/lib.rs", "utf8");
+  const placement = readFileSync("src-tauri/src/window_placement.rs", "utf8");
+  const records = readFileSync("src-tauri/src/records_window.rs", "utf8");
+  const capabilityWindows = (
+    JSON.parse(readFileSync("src-tauri/capabilities/default.json", "utf8")) as { windows: string[] }
+  ).windows;
+
+  it("is one window: opening it again brings the open one forward", () => {
+    expect(records).toContain('pub const LABEL: &str = "records";');
+    const open = records.slice(records.indexOf("pub fn open("));
+    expect(open.indexOf("get_webview_window(LABEL)")).toBeLessThan(open.indexOf("WebviewWindowBuilder::new("));
+    expect(capabilityWindows).toContain("records");
+  });
+
+  it("is placed while hidden, before it is shown", () => {
+    const open = records.slice(records.indexOf("pub fn open("));
+    expect(open).toContain(".visible(false)");
+    expect(open.indexOf("place_records(")).toBeLessThan(open.lastIndexOf("bring_forward(&window)"));
+  });
+
+  it("keeps its own placement, captured at close and at exit and saved once at exit", () => {
+    expect(placement).toContain("crate::records_window::LABEL => capture(window, records_state)");
+    expect(core).toContain("window_placement::load_records(");
+    expect(core).toMatch(/get_webview_window\(records_window::LABEL\)[\s\S]*?window_placement::capture\(/);
+    expect(core).toContain("window_placement::save_records(");
+  });
+
+  it("does not stop a Dock click from bringing Main back", () => {
+    const reopen = core.slice(core.indexOf("tauri::RunEvent::Reopen"));
+    expect(reopen).toContain('get_webview_window("main")');
+    expect(reopen).toContain(".unminimize()");
   });
 });

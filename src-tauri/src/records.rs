@@ -2,7 +2,8 @@
 //! conventions). The app process is its only writer.
 
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use rusqlite::{params, Connection};
 use serde_json::{json, Value as JsonValue};
@@ -10,7 +11,7 @@ use serde_json::{json, Value as JsonValue};
 use crate::activity::ActivityKind;
 
 pub const RECORDS_DB_FILE_NAME: &str = "records.sqlite3";
-const SCHEMA_VERSION: i64 = 1;
+pub(crate) const SCHEMA_VERSION: i64 = 1;
 /// The data-lifecycle conventions' transient-record age, fixed in a desktop app.
 const TRANSIENT_DAYS: i64 = 90;
 
@@ -106,6 +107,48 @@ pub fn trash_action(action: TrashAction<'_>) {
     });
 }
 
+/// Called after a commit that stored a record. Set once, at app setup.
+static STORED: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
+
+/// Sets what runs after each commit that stores a record: the Records
+/// window's live signal. The listener must not log, because a log line is
+/// itself a stored record.
+pub fn on_stored(listener: impl Fn() + Send + Sync + 'static) {
+    if STORED.set(Box::new(listener)).is_err() {
+        eprintln!("[onecopy:records] the stored-record listener is already set");
+    }
+}
+
+/// Watches a connection that writes records into the database it knows as
+/// `database`: a transaction that inserted a row there calls the stored-record
+/// listener as it commits. SQLite has no hook after a commit lands; the
+/// listener only signals, and its reader re-reads a second later.
+fn watch_stored(connection: &Connection, database: &'static str) -> Result<(), String> {
+    let inserted = Arc::new(AtomicBool::new(false));
+    let marked = inserted.clone();
+    connection
+        .update_hook(Some(move |action, name: &str, _table: &str, _row| {
+            if action == rusqlite::hooks::Action::SQLITE_INSERT && name == database {
+                marked.store(true, Ordering::Relaxed);
+            }
+        }))
+        .map_err(|error| error.to_string())?;
+    let committed = inserted.clone();
+    connection
+        .commit_hook(Some(move || {
+            if committed.swap(false, Ordering::Relaxed) {
+                if let Some(listener) = STORED.get() {
+                    listener();
+                }
+            }
+            false
+        }))
+        .map_err(|error| error.to_string())?;
+    connection
+        .rollback_hook(Some(move || inserted.store(false, Ordering::Relaxed)))
+        .map_err(|error| error.to_string())
+}
+
 pub fn open(path: &Path) -> Result<Connection, String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -125,6 +168,7 @@ pub fn open(path: &Path) -> Result<Connection, String> {
     connection
         .execute_batch(SCHEMA)
         .map_err(|error| error.to_string())?;
+    watch_stored(&connection, "main")?;
     Ok(connection)
 }
 
@@ -182,6 +226,7 @@ const SCHEMA: &str = "
         detail_json TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS trash_actions_content ON trash_actions(content_hash);
+    CREATE INDEX IF NOT EXISTS trash_actions_time ON trash_actions(time_utc, id);
     -- Written through the index connection that attaches this database, in
     -- the same transaction as the index change it belongs to.
     CREATE TABLE IF NOT EXISTS analysis_events (
@@ -198,6 +243,7 @@ const SCHEMA: &str = "
         message TEXT
     );
     CREATE INDEX IF NOT EXISTS analysis_events_latest ON analysis_events(content_hash, class, session_id, id);
+    CREATE INDEX IF NOT EXISTS analysis_events_time ON analysis_events(time_utc, id);
     -- An Issue is the run of these events for one (kind, path) in one launch:
     -- each occurrence, then how it closed. Written like `analysis_events`.
     CREATE TABLE IF NOT EXISTS issue_events (
@@ -215,6 +261,7 @@ const SCHEMA: &str = "
         message_values TEXT
     );
     CREATE INDEX IF NOT EXISTS issue_events_identity ON issue_events(session_id, kind, path, id);
+    CREATE INDEX IF NOT EXISTS issue_events_time ON issue_events(time_utc, id);
     -- Every log line, as the logging conventions shape it, kept for good.
     CREATE TABLE IF NOT EXISTS log_lines (
         id INTEGER PRIMARY KEY,
@@ -225,6 +272,7 @@ const SCHEMA: &str = "
         line TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS log_lines_session ON log_lines(session_id, id);
+    CREATE INDEX IF NOT EXISTS log_lines_time ON log_lines(time_utc, id);
     -- Every notice OneCopy published or recorded, in the transaction of the
     -- Issue it raises.
     CREATE TABLE IF NOT EXISTS notices (
@@ -239,6 +287,9 @@ const SCHEMA: &str = "
         message_key TEXT,
         message_values TEXT
     );
+    CREATE INDEX IF NOT EXISTS notices_time ON notices(time_utc, id);
+    -- The Records window reads every table newest first through these.
+    CREATE INDEX IF NOT EXISTS activity_events_event_time ON activity_events(event_time_utc, id);
     PRAGMA user_version = 1;";
 
 /// Attaches the records beside an index database to its connection as
@@ -255,6 +306,7 @@ pub fn attach(connection: &Connection, path: &Path) -> Result<(), String> {
     connection
         .execute("ATTACH DATABASE ?1 AS records", [path.to_string_lossy()])
         .map_err(|error| format!("attach records: {error}"))?;
+    watch_stored(connection, "records")?;
     // This launch's open Issues: each (kind, path) whose latest event is an
     // occurrence, identified by the first occurrence since it last closed.
     connection
