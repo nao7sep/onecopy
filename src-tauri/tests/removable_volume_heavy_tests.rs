@@ -85,6 +85,27 @@ fn items(conn: &rusqlite::Connection, dir: &Path) -> Vec<ItemIdentity> {
         .unwrap()
 }
 
+fn xattr_call(path: &Path, name: &str, value: Option<&[u8]>) -> Option<Vec<u8>> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+    let name = std::ffi::CString::new(name).unwrap();
+    if let Some(value) = value {
+        let status = unsafe {
+            libc::setxattr(path.as_ptr(), name.as_ptr(), value.as_ptr().cast(), value.len(), 0, 0)
+        };
+        assert_eq!(status, 0, "{}", std::io::Error::last_os_error());
+        return None;
+    }
+    let mut read = vec![0u8; 4096];
+    let size = unsafe {
+        libc::getxattr(path.as_ptr(), name.as_ptr(), read.as_mut_ptr().cast(), read.len(), 0, 0)
+    };
+    (size >= 0).then(|| {
+        read.truncate(size as usize);
+        read
+    })
+}
+
 fn private_leftovers(dir: &Path) -> Vec<String> {
     std::fs::read_dir(dir)
         .unwrap()
@@ -103,6 +124,15 @@ fn copy_move_and_delete_on(filesystem: &str) {
         std::fs::create_dir_all(dir).unwrap();
     }
     std::fs::write(local.join("photo.jpg"), vec![7u8; 200_000]).unwrap();
+    // An even second, which FAT can hold exactly.
+    let dated = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_500_000_000);
+    std::fs::File::options()
+        .write(true)
+        .open(local.join("photo.jpg"))
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(dated))
+        .unwrap();
+    xattr_call(&local.join("photo.jpg"), "com.example.onecopy-test", Some(b"local only"));
     std::fs::write(local.join("empty.bin"), b"").unwrap();
     std::fs::write(on_volume.join("moved.jpg"), vec![3u8; 150_000]).unwrap();
     std::fs::write(on_volume.join("deleted.jpg"), vec![5u8; 120_000]).unwrap();
@@ -145,6 +175,11 @@ fn copy_move_and_delete_on(filesystem: &str) {
     assert_eq!(copied.error, None, "{filesystem}");
     assert_eq!(copied.exported, 2, "{filesystem}: {copied:?}");
     assert_eq!(std::fs::read(dest.join("photo.jpg")).unwrap(), vec![7u8; 200_000]);
+    // The volume keeps the modified time; the attribute it cannot hold itself
+    // is dropped rather than written to a `._` file.
+    let output = dest.join("photo.jpg");
+    assert_eq!(std::fs::metadata(&output).unwrap().modified().unwrap(), dated, "{filesystem}");
+    assert_eq!(xattr_call(&output, "com.example.onecopy-test", None), None, "{filesystem}");
     assert_eq!(std::fs::read(dest.join("empty.bin")).unwrap(), b"");
     assert!(private_leftovers(&dest).is_empty(), "{filesystem}: {:?}", private_leftovers(&dest));
 

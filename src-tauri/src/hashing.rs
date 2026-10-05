@@ -6,13 +6,14 @@
 //! anomaly upstream.
 //!
 //! `hash_while_copying` is the move/copy-out primitive: it hashes the current
-//! source bytes while writing, then reads the private output back before the
-//! caller publishes it.
+//! source bytes while writing, gives the output the source's metadata
+//! (`copy_metadata`), then reads the private output back before the caller
+//! publishes it.
 
 use std::io::{Seek, SeekFrom};
 use std::path::Path;
 
-use crate::volume_io::{self, VolumeFile};
+use crate::volume_io::{self, Op, VolumeFile};
 
 /// Head/tail window for the prehash tier (public: the tests and any
 /// consumer reasoning about the tier need the exact spec value).
@@ -113,8 +114,9 @@ pub fn full_hash_cancellable_with_progress(
     )
 }
 
-/// Copies `src` to `dst` while hashing the bytes read. Returns (hash, bytes
-/// copied, the private output bound to the descriptor that wrote it).
+/// Copies `src` to `dst` while hashing the bytes read, and gives `dst` the
+/// metadata a copy keeps (`copy_metadata`). Returns (hash, bytes copied, the
+/// private output bound to the descriptor that wrote it).
 /// not recorded: this writes the user's own media into a destination root —
 /// OUTPUT, not app-managed text (data-backup conventions).
 /// The destination is created fresh (never clobbering an existing file: the
@@ -232,6 +234,15 @@ fn hash_while_copying_detailed(
         total += n as u64;
         progress(total, expected_total);
     }
+    // Before the flush, so the flush makes the metadata durable with the bytes.
+    let metadata = reader
+        .with(Op::Read, None, Some(cancelled), |file| {
+            crate::copy_metadata::SourceMetadata::read(file)
+        })
+        .map_err(|error| classify(error, CopyFailure::Source))?;
+    writer
+        .with(Op::Write, None, Some(cancelled), move |file| metadata.apply(file))
+        .map_err(|error| classify(error, CopyFailure::Destination))?;
     writer
         .sync_all(total, Some(cancelled))
         .map_err(|error| classify(error, CopyFailure::Destination))?;

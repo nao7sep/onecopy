@@ -204,3 +204,139 @@ fn a_dropped_unpublished_copy_removes_its_private_output() {
     drop(private);
     assert!(!dst.exists());
 }
+
+// What a copy keeps of its source (content-lifecycle conventions, Files).
+
+fn at(seconds: u64) -> std::time::SystemTime {
+    std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds)
+}
+
+fn set_source_times(path: &std::path::Path, modified: std::time::SystemTime) {
+    let file = std::fs::File::options().write(true).open(path).unwrap();
+    file.set_times(std::fs::FileTimes::new().set_modified(modified)).unwrap();
+}
+
+#[test]
+fn a_copy_keeps_the_source_modified_time() {
+    let (dir, src) = temp_file("keep-modified", b"dated bytes");
+    set_source_times(&src, at(1_500_000_000));
+    let dst = dir.path().join("out.bin");
+
+    let (_, _, private) = hash_while_copying(&src, &dst).unwrap();
+
+    assert_eq!(std::fs::metadata(&dst).unwrap().modified().unwrap(), at(1_500_000_000));
+    drop(private);
+}
+
+#[cfg(any(target_os = "macos", windows))]
+#[test]
+fn a_copy_keeps_the_source_birth_time() {
+    #[cfg(target_os = "macos")]
+    use std::os::macos::fs::FileTimesExt;
+    #[cfg(windows)]
+    use std::os::windows::fs::FileTimesExt;
+
+    // Born after it was last modified, as a file that was itself copied is.
+    let (dir, src) = temp_file("keep-birth", b"born bytes");
+    set_source_times(&src, at(1_500_000_000));
+    let file = std::fs::File::options().write(true).open(&src).unwrap();
+    file.set_times(std::fs::FileTimes::new().set_created(at(1_600_000_000))).unwrap();
+    drop(file);
+    let dst = dir.path().join("out.bin");
+
+    let (_, _, private) = hash_while_copying(&src, &dst).unwrap();
+
+    let copied = std::fs::metadata(&dst).unwrap();
+    assert_eq!(copied.created().unwrap(), at(1_600_000_000));
+    assert_eq!(copied.modified().unwrap(), at(1_500_000_000));
+    drop(private);
+}
+
+#[test]
+fn a_read_only_source_copies_read_only_and_an_unpublished_copy_is_still_removed() {
+    let (dir, src) = temp_file("keep-read-only", b"locked bytes");
+    let mut permissions = std::fs::metadata(&src).unwrap().permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&src, permissions).unwrap();
+    let dst = dir.path().join("out.bin");
+
+    let (hash, _, private) = hash_while_copying(&src, &dst).unwrap();
+
+    assert_eq!(hash, blake3::hash(b"locked bytes").to_hex().to_string());
+    assert!(std::fs::metadata(&dst).unwrap().permissions().readonly());
+    drop(private);
+    assert!(!dst.exists(), "cleanup removes a read-only private output");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_copy_keeps_the_source_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, src) = temp_file("keep-mode", b"shared bytes");
+    std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o640)).unwrap();
+    let dst = dir.path().join("out.bin");
+
+    let (_, _, private) = hash_while_copying(&src, &dst).unwrap();
+
+    assert_eq!(std::fs::metadata(&dst).unwrap().permissions().mode() & 0o7777, 0o640);
+    drop(private);
+}
+
+#[cfg(target_os = "macos")]
+fn xattr(path: &std::path::Path, name: &str) -> Option<Vec<u8>> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+    let name = std::ffi::CString::new(name).unwrap();
+    let mut value = vec![0u8; 4096];
+    let size = unsafe {
+        libc::getxattr(path.as_ptr(), name.as_ptr(), value.as_mut_ptr().cast(), value.len(), 0, 0)
+    };
+    (size >= 0).then(|| {
+        value.truncate(size as usize);
+        value
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn set_xattr(path: &std::path::Path, name: &str, value: &[u8]) {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+    let name = std::ffi::CString::new(name).unwrap();
+    let status = unsafe {
+        libc::setxattr(path.as_ptr(), name.as_ptr(), value.as_ptr().cast(), value.len(), 0, 0)
+    };
+    assert_eq!(status, 0, "{}", std::io::Error::last_os_error());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_copy_keeps_extended_attributes_and_finder_tags() {
+    // Finder tags live in their own attribute and the colour label in the
+    // Finder info; a copy carries both byte for byte.
+    let tags: &[u8] = b"bplist00 tag list bytes";
+    let mut finder_info = [0u8; 32];
+    finder_info[9] = 0x04; // colour label 2
+    let attributes: [(&str, &[u8]); 3] = [
+        ("com.apple.metadata:_kMDItemUserTags", tags),
+        ("com.apple.FinderInfo", &finder_info),
+        ("com.example.onecopy-test", b"kept value"),
+    ];
+    let (dir, src) = temp_file("keep-xattr", b"tagged bytes");
+    for (name, value) in attributes {
+        set_xattr(&src, name, value);
+    }
+    set_source_times(&src, at(1_500_000_000));
+    let dst = dir.path().join("out.bin");
+
+    let (_, _, private) = hash_while_copying(&src, &dst).unwrap();
+
+    for (name, value) in attributes {
+        assert_eq!(xattr(&dst, name).as_deref(), Some(value), "{name}");
+    }
+    assert_eq!(
+        std::fs::metadata(&dst).unwrap().modified().unwrap(),
+        at(1_500_000_000),
+        "attributes are written before the modified time"
+    );
+    drop(private);
+}

@@ -16,6 +16,7 @@ mod binary_archive;
 pub mod binaries;
 mod binaries_acquisition;
 pub mod binaries_manager;
+mod copy_metadata;
 pub mod derived_runtime;
 pub mod derived_state;
 pub mod derived_work;

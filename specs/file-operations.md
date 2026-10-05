@@ -73,6 +73,8 @@ Each main or distinct companion output is an independent output group. OneCopy w
 
 Read-back verification is mandatory for every Copy and Move output. It is a correctness rule and has no user-disableable mode.
 
+Every Copy and Move output keeps what a Finder copy keeps of the source it was written from: its modified time, its birth time where the platform has one, its permissions (on Windows, the read-only attribute), and on macOS its extended attributes, Finder tags among them. A destination that cannot hold some of these, such as an exFAT, FAT or network volume without native extended attributes, keeps what it can and always the modified time, and the rest is dropped without a warning or `._` files. An output whose modified time the destination refuses fails like any other write to that destination.
+
 Before changing a file, OneCopy pauses and releases any app-owned media reader for that file. Source handling for Move begins only after the corresponding output group has been verified and published. A successful main output may therefore remain established and its covered main sources may be handled even if a later companion output fails; the failed companion sources remain in place.
 
 ## Failures and partial results

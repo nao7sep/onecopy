@@ -883,6 +883,48 @@ fn copy_mode_exports_and_leaves_everything_untouched() {
 }
 
 #[test]
+fn copy_and_move_outputs_keep_the_source_file_times() {
+    let f = fixture("keep-times");
+    let dated = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_500_000_000);
+    for (name, bytes) in [("copied.jpg", b"copied-bytes"), ("moved.jpg", b"moved-bytes!")] {
+        let path = f.root.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        let file = std::fs::File::options().write(true).open(&path).unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(dated)).unwrap();
+    }
+    scan(&f);
+    let created = |path: &std::path::Path| std::fs::metadata(path).unwrap().created().ok();
+    let copied_born = created(&f.root.join("copied.jpg"));
+    let moved_born = created(&f.root.join("moved.jpg"));
+    let dest = f._dir.path().join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    let hash_of = |name: &str| -> String {
+        f.conn
+            .query_row("SELECT content_hash FROM paths WHERE file_name = ?1", [name], |r| r.get(0))
+            .unwrap()
+    };
+
+    for (name, mode) in [
+        ("copied.jpg", MoveOutMode::CopyKeepAll),
+        ("moved.jpg", MoveOutMode::MoveTrashRest),
+    ] {
+        let hash = hash_of(name);
+        let outcome = move_out(&f.conn, &f.app_root, &f.cache, ItemRef::Hash(&hash), &dest, mode)
+            .unwrap();
+        assert_eq!(outcome.exported, 1, "{name}");
+    }
+
+    assert!(!f.root.join("moved.jpg").exists());
+    for (name, born) in [("copied.jpg", copied_born), ("moved.jpg", moved_born)] {
+        let output = dest.join(name);
+        assert_eq!(std::fs::metadata(&output).unwrap().modified().unwrap(), dated, "{name}");
+        if cfg!(any(target_os = "macos", windows)) {
+            assert_eq!(created(&output), born, "{name}");
+        }
+    }
+}
+
+#[test]
 fn identical_destination_skips_but_still_runs_the_post_action() {
     let f = fixture("identical");
     std::fs::write(f.root.join("dup.jpg"), b"dup-bytes").unwrap();
