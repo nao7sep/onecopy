@@ -844,18 +844,6 @@ pub fn pending_index_work_exists(conn: &Connection) -> Result<bool, String> {
     )? {
         return Ok(true);
     }
-    // A build that learns a new metadata fact must backfill an already-complete
-    // pre-release index once. The NULL raw row is still evidence: it means the
-    // file was checked and carries no Live Photo identifier.
-    if probe(
-        "SELECT EXISTS(SELECT 1 FROM paths p \
-         WHERE p.missing = 0 AND p.metadata_attempt_failed = 0 AND p.kind IN ('image', 'video') \
-           AND NOT EXISTS (SELECT 1 FROM evidence e \
-                           WHERE e.path_id = p.id \
-                             AND e.source = 'live-photo-identifier'))",
-    )? {
-        return Ok(true);
-    }
     if probe("SELECT EXISTS(SELECT 1 FROM paths WHERE missing = 0 AND visibility_checked = 0)")? {
         return Ok(true);
     }
@@ -951,9 +939,6 @@ fn pending_index_dirs(conn: &Connection) -> Result<Vec<String>, String> {
                (p.content_hash IS NULL AND p.kind IN ('image', 'video', 'audio'))
                OR p.indexed_at_utc IS NULL
                OR (p.indexed_at_utc IS NOT NULL AND p.resolved_source IS NULL)
-               OR (p.kind IN ('image', 'video') AND NOT EXISTS (
-                    SELECT 1 FROM evidence e
-                    WHERE e.path_id = p.id AND e.source = 'live-photo-identifier'))
              )",
         )
         .map_err(|error| error.to_string())?;
@@ -1932,8 +1917,6 @@ pub struct ExtractStats {
     pub failed: u64,
 }
 
-pub const LIVE_PHOTO_REPAIR_PAGE_SIZE: usize = 64;
-
 /// The evidence pass: reads in-file metadata (per kind) and runs the filename
 /// tokenizer for rows not yet extracted, persisting each finding as a
 /// serialized evidence row. This is the ONLY place resolution inputs touch a
@@ -1954,20 +1937,7 @@ fn extract_pending_with_progress(
         "SELECT id, abs_path, file_name, kind FROM paths \
          WHERE missing = 0 AND indexed_at_utc IS NULL AND metadata_attempt_failed = 0",
     )?;
-    let repair_total = conn
-        .query_row(
-            "SELECT COUNT(*) FROM paths p \
-             WHERE p.missing = 0 AND p.indexed_at_utc IS NOT NULL \
-               AND p.metadata_attempt_failed = 0 \
-               AND p.kind IN ('image', 'video') \
-               AND NOT EXISTS (SELECT 1 FROM evidence e \
-                               WHERE e.path_id = p.id \
-                                 AND e.source = 'live-photo-identifier')",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .map_err(|e| e.to_string())? as u64;
-    let total = rows.len() as u64 + repair_total;
+    let total = rows.len() as u64;
     let mut done = 0u64;
     progress(ScanProgress::phase(
         ScanPhase::Extract,
@@ -2074,77 +2044,6 @@ fn extract_pending_with_progress(
         ));
     }
 
-    // A stopped metadata pass can leave already-indexed media without Live
-    // Photo evidence. Complete exactly those rows; a NULL raw value is the
-    // durable "checked, absent" result, so later passes do not reopen them.
-    let mut after_id = 0;
-    loop {
-        let pending_live_photo =
-            live_photo_repair_candidates(conn, after_id, LIVE_PHOTO_REPAIR_PAGE_SIZE)?;
-        if pending_live_photo.is_empty() {
-            break;
-        }
-        for (id, abs, kind) in pending_live_photo {
-            check_cancel()?;
-            progress(ScanProgress::at_path(
-                ScanPhase::Extract,
-                done,
-                total,
-                &abs,
-                stats.failed,
-                ScanPhase::Resolve,
-            ));
-            let path = Path::new(&abs);
-            let identifier = match kind.as_str() {
-                "image" => {
-                    metadata::read_image_metadata(path).map(|meta| meta.live_photo_identifier)
-                }
-                "video" => {
-                    metadata::read_video_metadata(path).map(|meta| meta.live_photo_identifier)
-                }
-                _ => Ok(None),
-            };
-            let identifier = match identifier {
-                Ok(identifier) => identifier,
-                Err(error) => {
-                    crate::information_attempts::failed(
-                        conn,
-                        id,
-                        &abs,
-                        crate::information_attempts::Stage::Metadata,
-                        &error.to_string(),
-                    )?;
-                    stats.failed += 1;
-                    done += 1;
-                    after_id = id;
-                    continue;
-                }
-            };
-            conn.execute(
-                "INSERT INTO evidence (path_id, source, raw, offset_known) \
-                 VALUES (?1, 'live-photo-identifier', ?2, 0)",
-                params![id, identifier],
-            )
-            .map_err(|e| e.to_string())?;
-            crate::index_store::clear_issues(
-                conn,
-                &abs,
-                &[crate::information_attempts::Stage::Metadata.issue_kind()],
-            )?;
-            stats.extracted += 1;
-            done += 1;
-            after_id = id;
-            progress(ScanProgress::at_path(
-                ScanPhase::Extract,
-                done,
-                total,
-                &abs,
-                stats.failed,
-                ScanPhase::Resolve,
-            ));
-        }
-    }
-
     progress(ScanProgress::completed(
         ScanPhase::Extract,
         total,
@@ -2153,35 +2052,6 @@ fn extract_pending_with_progress(
     ));
 
     Ok(stats)
-}
-
-/// One stable page of media rows missing the durable Live Photo evidence
-/// receipt. Each completed page disappears from this query, so completion
-/// resumes naturally after cancellation without an in-memory ledger.
-pub fn live_photo_repair_candidates(
-    conn: &Connection,
-    after_id: i64,
-    limit: usize,
-) -> Result<Vec<(i64, String, String)>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT p.id, p.abs_path, p.kind FROM paths p \
-             WHERE p.missing = 0 AND p.id > ?1 AND p.metadata_attempt_failed = 0 \
-               AND p.kind IN ('image', 'video') \
-               AND NOT EXISTS (SELECT 1 FROM evidence e \
-                               WHERE e.path_id = p.id \
-                                 AND e.source = 'live-photo-identifier') \
-             ORDER BY p.id LIMIT ?2",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(params![after_id, limit as i64], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })
-        .map_err(|e| e.to_string())?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|e| e.to_string())?;
-    Ok(rows)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

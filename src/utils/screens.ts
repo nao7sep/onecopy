@@ -25,14 +25,9 @@ export interface MonitorRect extends MonitorLike {
  *
  * The POSITION is always part of it, never a fallback for a missing name. Two
  * displays of the same model report the same name — "#1287" twice is the
- * ordinary case for a matched pair — and a name-only key made them one entry:
- * reordering moved whichever the lookup found first, and React saw duplicate
- * keys in the list. What genuinely distinguishes two identical displays is
- * where they sit, so that is what identifies them.
- *
- * Consequence, accepted pre-release: a priority list persisted under the old
- * name-only keys no longer matches, so those monitors fall to the tail in
- * native order and the user reorders once. */
+ * ordinary case for a matched pair — so a name alone would make them one
+ * entry. What genuinely distinguishes two identical displays is where they
+ * sit, so that is what identifies them. */
 export function monitorKey(monitor: MonitorLike): string {
   return `${monitor.name ?? "display"}@${monitor.position.x},${monitor.position.y}`;
 }

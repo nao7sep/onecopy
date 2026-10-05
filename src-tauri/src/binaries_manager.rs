@@ -334,8 +334,7 @@ fn load_facts_map(root: &Path) -> serde_json::Map<String, serde_json::Value> {
     }
 }
 
-/// One entry's facts out of the shared map — the historical `{"ffmpeg": …}`
-/// shape generalized in place, so an existing file needs no migration.
+/// One entry's facts out of the shared map, keyed by the dependency's id.
 pub fn load_facts_for(root: &Path, id: &str) -> BinaryFacts {
     load_facts_map(root)
         .get(id)

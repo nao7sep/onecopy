@@ -170,28 +170,6 @@ fn a_companions_failed_metadata_follows_its_main_files_section() {
 }
 
 #[test]
-fn failed_live_photo_backfill_does_not_claim_success_or_repeat() {
-    let (_root, conn, _path, _cache) = missing_file();
-    conn.execute(
-        "UPDATE paths SET indexed_at_utc = '2026-09-09T00:00:00.000Z', resolved_source = 'undated', content_hash = 'known'",
-        [],
-    )
-    .unwrap();
-    assert_eq!(scanner::extract_pending(&conn).unwrap().failed, 1);
-    assert_eq!(scanner::extract_pending(&conn).unwrap().failed, 0);
-    assert_eq!(
-        conn.query_row(
-            "SELECT COUNT(*) FROM evidence WHERE source = 'live-photo-identifier'",
-            [],
-            |row| row.get::<_, i64>(0)
-        )
-        .unwrap(),
-        0
-    );
-    assert!(!scanner::pending_index_work_exists(&conn).unwrap());
-}
-
-#[test]
 fn a_recording_failure_does_not_silently_settle_the_input() {
     let (_root, conn, path, _cache) = missing_file();
     conn.execute_batch("CREATE TRIGGER records.reject_issue BEFORE INSERT ON issue_events BEGIN SELECT RAISE(ABORT, 'fixture recording failure'); END;").unwrap();

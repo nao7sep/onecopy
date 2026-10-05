@@ -27,9 +27,6 @@
 use serde::{Deserialize, Serialize};
 
 /// Persisted facts for one managed binary (`dependencies.json` value shape).
-///
-/// An older file's `installedVersion` is simply not read here, so it drops on
-/// the next write (the app is pre-release; no migration code).
 #[derive(Serialize, Deserialize, Clone, Default, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct BinaryFacts {
