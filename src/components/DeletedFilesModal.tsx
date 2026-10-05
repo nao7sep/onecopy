@@ -55,9 +55,7 @@ const ROW_HEIGHT = 48;
 const FALLBACK_VIEWPORT = ROW_HEIGHT * 14;
 
 export const STATUS_REASONS: Record<Exclude<EntryStatus, "restorable">, MessageKey> = {
-  unverified: "deletedFiles.statusUnverified",
   changed: "deletedFiles.statusChanged",
-  "outside-root": "deletedFiles.statusOutsideRoot",
   unrepresentable: "deletedFiles.statusUnrepresentable",
   excluded: "deletedFiles.statusExcluded",
 };
@@ -294,9 +292,7 @@ export default function DeletedFilesModal({
     if (blocked !== undefined && entries.every((entry) => !isRestorable(entry))) {
       return t(STATUS_REASONS[blocked.status as Exclude<EntryStatus, "restorable">]);
     }
-    return entries.some((entry) => entry.status === "unverified")
-      ? t(STATUS_REASONS.unverified)
-      : null;
+    return null;
   };
 
   const kindLabel = (group: DeletionGroup): string | null => {
@@ -433,6 +429,9 @@ export default function DeletedFilesModal({
   }
   if (listing !== null && listing.malformedLines > 0) {
     footnotes.push(t("deletedFiles.malformed", { count: listing.malformedLines }));
+  }
+  if (listing !== null && listing.newerLines > 0) {
+    footnotes.push(t("deletedFiles.newer", { count: listing.newerLines }));
   }
 
   return (

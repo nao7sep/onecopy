@@ -219,3 +219,44 @@ fn an_empty_clean_exit_removes_the_running_marker_without_an_archive() {
     assert!(!directory.join(".running").exists());
     assert!(archives(&directory).unwrap().is_empty());
 }
+
+#[test]
+fn the_archive_manifest_carries_its_format_version() {
+    let root = tempfile::tempdir().unwrap();
+    stores(root.path());
+    assert!(run(root.path()).unwrap());
+    let (manifest, _) = read_archive(root.path());
+    assert_eq!(manifest.format_version, crate::formats::ARCHIVE_MANIFEST);
+    assert_eq!(crate::formats::ARCHIVE_MANIFEST, 1);
+}
+
+#[test]
+fn an_archive_a_newer_onecopy_wrote_is_not_read_as_the_predecessor_and_stays() {
+    let root = tempfile::tempdir().unwrap();
+    stores(root.path());
+    assert!(run(root.path()).unwrap());
+    let directory = root.path().join(ARCHIVES);
+    let written = archives(&directory).unwrap().pop().unwrap();
+    let (manifest, entries) = read_archive(root.path());
+    // The same content under a newer manifest, a few seconds older by name.
+    let older_name = (chrono::Utc::now() - chrono::Duration::seconds(5)).format("%Y%m%d-%H%M%S-utc.zip").to_string();
+    let newer = directory.join(older_name);
+    {
+        let mut zip = zip::ZipWriter::new(File::create(&newer).unwrap());
+        for (name, bytes) in &entries {
+            zip.start_file(name.as_str(), SimpleFileOptions::default()).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        let mut document = serde_json::to_value(&manifest).unwrap();
+        document["formatVersion"] = serde_json::json!(2);
+        zip.start_file("manifest.json", SimpleFileOptions::default()).unwrap();
+        zip.write_all(&serde_json::to_vec(&document).unwrap()).unwrap();
+        zip.finish().unwrap();
+    }
+    std::fs::remove_file(&written).unwrap();
+    let newer_bytes = std::fs::read(&newer).unwrap();
+    assert!(run(root.path()).unwrap(), "unchanged content is archived again beside a newer archive");
+    let kept = archives(&directory).unwrap();
+    assert_eq!(kept.len(), 2);
+    assert_eq!(std::fs::read(&newer).unwrap(), newer_bytes);
+}

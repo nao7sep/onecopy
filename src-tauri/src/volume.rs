@@ -16,7 +16,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{logging, paths, storage};
+use crate::{formats, logging, paths, storage};
 
 /// The identity of the volume containing `path`, when the platform can say.
 pub fn volume_identity(path: &Path) -> Option<String> {
@@ -157,12 +157,17 @@ fn store_lock() -> MutexGuard<'static, ()> {
 
 fn load_unlocked(root: &Path) -> Result<BTreeMap<String, SourceVolume>, String> {
     let file = root.join(paths::SOURCE_VOLUMES_FILE_NAME);
-    let bytes = match std::fs::read(&file) { // data root
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
-        Err(error) => return Err(format!("could not read {}: {error}", file.display())),
+    let document = match storage::read_json_file(&file, formats::SOURCE_VOLUMES) // data root
+        .map_err(|error| format!("could not read {}: {error}", file.display()))?
+    {
+        storage::JsonFile::Absent => return Ok(BTreeMap::new()),
+        storage::JsonFile::Document(document) => document,
+        storage::JsonFile::Unreadable(reason) => {
+            return Err(format!("could not read {}: {reason}", file.display()))
+        }
+        storage::JsonFile::Newer(newer) => return Err(newer.to_string()),
     };
-    let store: SourceVolumeStore = serde_json::from_slice(&bytes)
+    let store: SourceVolumeStore = serde_json::from_value(document)
         .map_err(|error| format!("could not read {}: {error}", file.display()))?;
     Ok(store
         .sources
@@ -175,9 +180,13 @@ fn save_unlocked(root: &Path, sources: BTreeMap<String, SourceVolume>) -> Result
     let store = SourceVolumeStore {
         sources: sources.into_values().collect(),
     };
-    let mut text = serde_json::to_string_pretty(&store).map_err(|error| error.to_string())?;
-    text.push('\n');
-    storage::write_atomic(&root.join(paths::SOURCE_VOLUMES_FILE_NAME), text.as_bytes())
+    let document = serde_json::to_value(&store).map_err(|error| error.to_string())?;
+    storage::write_json_file(
+        &root.join(paths::SOURCE_VOLUMES_FILE_NAME),
+        &document,
+        formats::SOURCE_VOLUMES,
+        true,
+    )
 }
 
 pub fn check_identity(root: &Path, dir: &str, current: &str) -> Result<IdentityCheck, String> {

@@ -7,33 +7,25 @@ import type { MutationResult } from "./mutation";
 
 export type TrashKind = "delete" | "move-cleanup" | "overwrite-displaced";
 export type TrashRole = "main" | "companion";
-export type EntryStatus =
-  | "restorable"
-  | "unverified"
-  | "changed"
-  | "outside-root"
-  | "unrepresentable"
-  | "excluded";
+export type EntryStatus = "restorable" | "changed" | "unrepresentable" | "excluded";
 
 export interface TrashEntry {
-  /** `<day folder>/<stored name>`, unique within one root. `role` is always
- * present in a listing: an older record's is derived from its extension. */
+  /** `<day folder>/<stored name>`, unique within one root. */
   id: string;
   day: string;
   storedName: string;
   storedPath: string;
-  originalRelative: string | null;
+  originalRelative: string;
   deletedAtUtc: string;
   size: number;
-  /** The modification time the record promises; null for an older record. */
-  mtimeMs: number | null;
+  /** The modification time the record promises. */
+  mtimeMs: number;
   /** The deleted item this file belongs to (see `groupKey`). */
   group: string;
-  version: number;
-  kind: TrashKind | null;
-  operation: string | null;
+  kind: TrashKind;
+  operation: string;
   item: string | null;
-  role: TrashRole | null;
+  role: TrashRole;
   movedTo: string | null;
   status: EntryStatus;
   /** For a companion: where a main file of its deleted item in its folder was
@@ -45,6 +37,8 @@ export interface TrashListing {
   entries: TrashEntry[];
   unrecordedFiles: number;
   malformedLines: number;
+  /** Record lines a newer OneCopy wrote, left as they are. */
+  newerLines: number;
 }
 
 /** One logical item removed by one operation: its main copies, the
@@ -59,7 +53,7 @@ export interface DeletionGroup {
   size: number;
   mains: number;
   companions: number;
-  kind: TrashKind | null;
+  kind: TrashKind;
   movedTo: string | null;
 }
 
@@ -70,13 +64,12 @@ export interface DayBucket {
 }
 
 export function isRestorable(entry: TrashEntry): boolean {
-  return entry.status === "restorable" || entry.status === "unverified";
+  return entry.status === "restorable";
 }
 
-/** The original file name, or the stored name when the original is unknown. */
+/** The original file name. */
 export function entryName(entry: TrashEntry): string {
   const relative = entry.originalRelative;
-  if (relative === null) return entry.storedName;
   const cut = relative.lastIndexOf("/");
   return cut < 0 ? relative : relative.slice(cut + 1);
 }
@@ -84,14 +77,13 @@ export function entryName(entry: TrashEntry): string {
 /** The original folder relative to the root; "" for the root itself. */
 export function entryFolder(entry: TrashEntry): string {
   const relative = entry.originalRelative;
-  if (relative === null) return "";
   const cut = relative.lastIndexOf("/");
   return cut < 0 ? "" : relative.slice(0, cut);
 }
 
 /** Which deletion group an entry belongs to, as the backend decides it: one
- * operation's logical item, or for records without one the day or operation,
- * folder and stem (the companion rule), so duplicates in other folders stay
+ * operation's logical item, or for a file without one the operation, folder
+ * and stem (the companion rule), so duplicates in other folders stay
  * separate. */
 export function groupKey(entry: TrashEntry): string {
   return entry.group;
@@ -273,7 +265,6 @@ export type RestoreSkip =
   | "already-there"
   | "changed"
   | "missing"
-  | "outside-root"
   | "unrepresentable"
   | "excluded"
   | "folder-is-link"
@@ -286,7 +277,6 @@ export interface RestoreReviewFile {
   /** Where the file goes, relative to the root; null when it is skipped. */
   target: string | null;
   renamed: boolean;
-  unverified: boolean;
   skip: RestoreSkip | null;
   /** A companion that will not pair with its main file, which was restored
    * earlier under another name: where that main file is. */

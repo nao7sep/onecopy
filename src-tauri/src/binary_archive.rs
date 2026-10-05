@@ -14,6 +14,7 @@ const ARCHIVES: &str = "backups";
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Manifest {
+    format_version: i64,
     written_at_utc: String,
     entries: Vec<Entry>,
 }
@@ -161,10 +162,16 @@ fn run(root: &Path) -> Result<bool, String> {
     if let Some(latest) = previous.last() {
         let file = File::open(latest).map_err(|e| e.to_string())?;
         let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
-        let manifest: Manifest = serde_json::from_reader(archive.by_name("manifest.json").map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-        if manifest.entries == entries { return Ok(false); }
+        let manifest: serde_json::Value = serde_json::from_reader(archive.by_name("manifest.json").map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        // An archive a newer OneCopy wrote, or one without its marker, is
+        // never read as this one's predecessor: a new archive is written
+        // beside it.
+        if crate::formats::json_version(&manifest).is_ok_and(|version| version <= crate::formats::ARCHIVE_MANIFEST) {
+            let previous: Vec<Entry> = serde_json::from_value(manifest["entries"].clone()).map_err(|e| e.to_string())?;
+            if previous == entries { return Ok(false); }
+        }
     }
-    let manifest = Manifest { written_at_utc: crate::logging::now_iso_millis(), entries };
+    let manifest = Manifest { format_version: crate::formats::ARCHIVE_MANIFEST, written_at_utc: crate::logging::now_iso_millis(), entries };
     let mut zip = zip::ZipWriter::new(File::create(staging.join("archive.zip")).map_err(|e| e.to_string())?);
     let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     for entry in &manifest.entries {

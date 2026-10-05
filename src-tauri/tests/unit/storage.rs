@@ -30,20 +30,20 @@ fn read_json_optional_missing_valid_and_corrupt() {
     let path = dir.join("config.json");
 
     // Missing → None.
-    let missing = read_json_optional(&path).unwrap();
+    let missing = read_json_optional(&path, crate::formats::CONFIG).unwrap();
     assert!(missing.value.is_none());
     assert!(missing.quarantined.is_none());
 
     // Valid → Some.
-    write_atomic(&path, b"{\"a\": 1}").unwrap();
+    write_atomic(&path, b"{\"formatVersion\": 1, \"a\": 1}").unwrap();
     assert_eq!(
-        read_json_optional(&path).unwrap().value,
+        read_json_optional(&path, crate::formats::CONFIG).unwrap().value,
         Some(serde_json::json!({"a": 1}))
     );
 
     // Corrupt → quarantined aside (original bytes preserved) and None.
     std::fs::write(&path, b"{ not json").unwrap();
-    let corrupt = read_json_optional(&path).unwrap();
+    let corrupt = read_json_optional(&path, crate::formats::CONFIG).unwrap();
     assert!(corrupt.value.is_none());
     assert!(corrupt.quarantined.is_some());
     assert!(

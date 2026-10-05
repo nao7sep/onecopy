@@ -36,8 +36,6 @@ pub enum Skip {
     Changed,
     /// No longer in Deleted files (restored or removed elsewhere).
     Missing,
-    /// The original location is outside this root.
-    OutsideRoot,
     /// The original name cannot be rebuilt on this system.
     Unrepresentable,
     /// The original location is inside deleted-file storage or OneCopy's
@@ -59,9 +57,7 @@ impl Skip {
             Skip::AlreadyThere => "",
             Skip::Changed => CHANGED,
             Skip::Missing => MISSING,
-            Skip::OutsideRoot | Skip::Unrepresentable | Skip::Excluded => {
-                "notice.restoreUnplaceable"
-            }
+            Skip::Unrepresentable | Skip::Excluded => "notice.restoreUnplaceable",
             Skip::FolderIsLink | Skip::FileInTheWay => FOLDER_BLOCKED,
             Skip::OtherDrive => OTHER_DRIVE,
         }
@@ -69,9 +65,8 @@ impl Skip {
 
     fn from_status(status: EntryStatus) -> Option<Self> {
         match status {
-            EntryStatus::Restorable | EntryStatus::Unverified => None,
+            EntryStatus::Restorable => None,
             EntryStatus::Changed => Some(Skip::Changed),
-            EntryStatus::OutsideRoot => Some(Skip::OutsideRoot),
             EntryStatus::Unrepresentable => Some(Skip::Unrepresentable),
             EntryStatus::Excluded => Some(Skip::Excluded),
         }
@@ -131,8 +126,7 @@ pub struct RestorePlan {
 }
 
 /// What the review shows. It is needed only when something needs a decision
-/// or a warning: a name conflict, a folder to recreate, an unverified entry,
-/// a selected file that will be skipped, or a companion that will not pair
+/// or a warning: a name conflict, a folder to recreate, a selected file that will be skipped, or a companion that will not pair
 /// with its main file restored earlier under another name.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -153,7 +147,6 @@ pub struct ReviewFile {
     /// Where the file goes, relative to the root; `None` when skipped.
     pub target: Option<String>,
     pub renamed: bool,
-    pub unverified: bool,
     pub skip: Option<Skip>,
     /// A companion coming back under a name that no longer pairs with its
     /// main file, which was restored earlier under another name: where that
@@ -169,7 +162,6 @@ impl RestoreReview {
                 .iter()
                 .any(|file| {
                 file.renamed
-                    || file.unverified
                     || file.skip.is_some()
                     || file.main_restored_as.is_some()
             })
@@ -360,7 +352,6 @@ pub fn review_of(plan: &RestorePlan, root: &Path, selected_all: &[TrashEntry]) -
                 original: step.entry.original_relative.clone(),
                 target: target.map(|target| relative(target)),
                 renamed,
-                unverified: step.entry.status == EntryStatus::Unverified,
                 skip,
                 main_restored_as,
             }
@@ -664,9 +655,8 @@ fn restore_one(
         Err(error) => return Err(StepFailure::File(CHANGED, error.to_string())),
         Ok(metadata) => {
             let unchanged = metadata.file_type().is_file()
-                && (entry.version < 2
-                    || (metadata.len() == entry.size
-                        && Some(trash::mtime_ms(&metadata)) == entry.mtime_ms));
+                && metadata.len() == entry.size
+                && Some(trash::mtime_ms(&metadata)) == entry.mtime_ms;
             if !unchanged {
                 return Err(StepFailure::File(
                     CHANGED,
@@ -976,7 +966,6 @@ fn missing_entry(id: &str, location: &Path) -> TrashEntry {
         size: 0,
         mtime_ms: None,
         group: id.to_string(),
-        version: 0,
         kind: None,
         operation: None,
         item: None,

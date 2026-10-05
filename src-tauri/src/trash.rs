@@ -29,6 +29,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde::Serialize;
 use unicode_normalization::UnicodeNormalization;
 
+use crate::formats;
 use crate::logging;
 use crate::volume_io;
 
@@ -44,10 +45,6 @@ pub fn is_trash_path(path: &Path) -> bool {
 /// The per-day restore ledger. Named once so the sizing pass can recognise and
 /// exclude its own bookkeeping (see `measure_root`).
 pub const MANIFEST_FILE_NAME: &str = "manifest.jsonl";
-
-/// The current manifest line format. Lines without `v` are the original
-/// four-field format and stay readable (`read_day`).
-pub const MANIFEST_VERSION: u32 = 2;
 
 /// Why a file went to Deleted files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
@@ -107,20 +104,19 @@ impl TrashContext {
     }
 }
 
-/// One manifest line (version 2). The four original fields stay first and
-/// unchanged, so every older reader and line keeps its meaning; the rest are
-/// additive. `storedName` and `originalRelative` are relative, so a record
-/// still resolves after the root is renamed or its drive is mounted
-/// elsewhere; `size` and `mtimeMs` let a reader prove the stored file is the
-/// one the record describes.
+/// One manifest line, carrying its format version (`formats`).
+/// `storedName` and `originalRelative` are relative, so a record still
+/// resolves after the root is renamed or its drive is mounted elsewhere;
+/// `size` and `mtimeMs` let a reader prove the stored file is the one the
+/// record describes. The absolute paths are kept as they were.
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct TrashedRecord {
+    pub format_version: i64,
     pub original_path: String,
     pub stored_path: String,
     pub content_hash: Option<String>,
     pub deleted_at_utc: String,
-    pub v: u32,
     pub stored_name: String,
     /// `/`-joined components of the original path relative to the owning
     /// root.
@@ -280,11 +276,11 @@ fn prepare_trash(
     let stored = available_stored_path(&target)?;
 
     let record = TrashedRecord {
+        format_version: formats::DELETED_FILES_MANIFEST,
         original_path: original.to_string_lossy().to_string(),
         stored_path: stored.to_string_lossy().to_string(),
         content_hash: content_hash.map(|h| h.to_string()),
         deleted_at_utc: logging::now_iso_millis(),
-        v: MANIFEST_VERSION,
         stored_name: stored
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
@@ -465,27 +461,22 @@ fn append_manifest(day_dir: &Path, record: &TrashedRecord) -> Result<(), String>
 // ---------------------------------------------------------------------------
 // Reading manifests
 
-/// One record as a reader sees it: a version 2 line, or an original
-/// four-field line with what can be derived from it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+/// One record as a reader sees it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DayRecord {
-    /// 1 for an original four-field line, otherwise the line's `v`.
-    pub version: u32,
     pub stored_name: String,
-    /// The original path below the root as `/`-joined components; `None`
-    /// when an original line's absolute path does not start with any
-    /// spelling of the current root.
-    pub original_relative: Option<String>,
+    /// The original path below the root as `/`-joined components.
+    pub original_relative: String,
     pub deleted_at_utc: String,
     pub content_hash: Option<String>,
-    pub kind: Option<TrashKind>,
-    pub operation: Option<String>,
+    pub kind: TrashKind,
+    pub operation: String,
     pub item: Option<String>,
-    pub role: Option<TrashRole>,
+    pub role: TrashRole,
     pub moved_to: Option<String>,
-    pub size: Option<u64>,
-    pub mtime_ms: Option<i64>,
+    pub size: u64,
+    pub mtime_ms: i64,
 }
 
 /// What the day folder holds under a record's stored name right now.
@@ -511,28 +502,17 @@ pub struct DayListing {
     /// Lines that are not a record or event this reader understands (a torn
     /// last line after a crash included). They are skipped, never repaired.
     pub malformed_lines: u64,
+    /// Lines a newer OneCopy wrote. They are left as they are, unread.
+    pub newer_lines: u64,
     /// Entries in the day folder that no authoritative record names.
     pub unrecorded_files: u64,
 }
 
-#[derive(serde::Deserialize, Default)]
+#[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct RawLine {
-    v: Option<u32>,
-    event: Option<String>,
-    original_path: Option<String>,
-    stored_path: Option<String>,
-    content_hash: Option<String>,
-    deleted_at_utc: Option<String>,
-    stored_name: Option<String>,
-    original_relative: Option<String>,
-    kind: Option<TrashKind>,
-    operation: Option<String>,
-    item: Option<String>,
-    role: Option<TrashRole>,
-    moved_to: Option<String>,
-    size: Option<u64>,
-    mtime_ms: Option<i64>,
+struct RestoredLine {
+    event: String,
+    stored_name: String,
     restored_to: Option<String>,
 }
 
@@ -542,6 +522,7 @@ enum ParsedLine {
         stored_name: String,
         restored_to: Option<String>,
     },
+    Newer,
 }
 
 /// A bare stored name: one component, never the manifest itself.
@@ -553,87 +534,24 @@ fn valid_stored_name(name: &str) -> bool {
         && !name.contains(['/', '\\', '\0'])
 }
 
-/// The stored name of an original line, only when its stored path is a flat
-/// entry of this very day folder (`…/.onecopy-trash/<day>/<name>`). Nested
-/// layouts and paths into other folders never resolve here. Both separators
-/// are accepted, because the drive may have been written on the other OS.
-fn legacy_stored_name(stored_path: &str, day: &str) -> Option<String> {
-    let mut parts = stored_path.rsplit(['/', '\\']);
-    let name = parts.next()?;
-    let folder = parts.next()?;
-    let trash = parts.next()?;
-    (folder == day && trash.eq_ignore_ascii_case(TRASH_DIR_NAME) && valid_stored_name(name))
-        .then(|| name.to_string())
-}
-
-/// An original line's absolute path below one of the root's spellings.
-fn legacy_relative(original_path: &str, root_spellings: &[PathBuf]) -> Option<String> {
-    let original = Path::new(original_path);
-    root_spellings.iter().find_map(|spelling| {
-        let below = original.strip_prefix(spelling).ok()?;
-        let components = below
-            .components()
-            .map(|component| match component {
-                std::path::Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
-                _ => None,
-            })
-            .collect::<Option<Vec<_>>>()?;
-        (!components.is_empty()).then(|| components.join("/"))
-    })
-}
-
-fn parse_line(line: &str, day: &str, root_spellings: &[PathBuf]) -> Option<ParsedLine> {
-    let raw: RawLine = serde_json::from_str(line).ok()?;
-    if let Some(event) = raw.event.as_deref() {
-        let restored_to = raw.restored_to;
-        return (event == "restored")
-            .then_some(raw.stored_name)
-            .flatten()
-            .filter(|name| valid_stored_name(name))
-            .map(|stored_name| ParsedLine::Restored {
-                stored_name,
-                restored_to,
-            });
+/// One manifest line. A line without its format marker is unreadable, and a
+/// line a newer OneCopy wrote is not interpreted.
+fn parse_line(line: &str) -> Option<ParsedLine> {
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    if formats::json_version(&value).ok()? > formats::DELETED_FILES_MANIFEST {
+        return Some(ParsedLine::Newer);
     }
-    let deleted_at_utc = raw.deleted_at_utc?;
-    match raw.v {
-        None => {
-            let stored_name = legacy_stored_name(raw.stored_path.as_deref()?, day)?;
-            let original_relative = legacy_relative(raw.original_path.as_deref()?, root_spellings);
-            Some(ParsedLine::Record(DayRecord {
-                version: 1,
-                stored_name,
-                original_relative,
-                deleted_at_utc,
-                content_hash: raw.content_hash,
-                kind: None,
-                operation: None,
-                item: None,
-                role: None,
-                moved_to: None,
-                size: None,
-                mtime_ms: None,
-            }))
-        }
-        Some(version) if version >= 2 => {
-            let stored_name = raw.stored_name.filter(|name| valid_stored_name(name))?;
-            Some(ParsedLine::Record(DayRecord {
-                version,
-                stored_name,
-                original_relative: Some(raw.original_relative?),
-                deleted_at_utc,
-                content_hash: raw.content_hash,
-                kind: raw.kind,
-                operation: raw.operation,
-                item: raw.item,
-                role: raw.role,
-                moved_to: raw.moved_to,
-                size: Some(raw.size?),
-                mtime_ms: Some(raw.mtime_ms?),
-            }))
-        }
-        Some(_) => None,
+    if value.get("event").is_some() {
+        let restored: RestoredLine = serde_json::from_value(value).ok()?;
+        return (restored.event == "restored" && valid_stored_name(&restored.stored_name)).then_some(
+            ParsedLine::Restored {
+                stored_name: restored.stored_name,
+                restored_to: restored.restored_to,
+            },
+        );
     }
+    let record: DayRecord = serde_json::from_value(value).ok()?;
+    valid_stored_name(&record.stored_name).then_some(ParsedLine::Record(record))
 }
 
 /// Reads one day folder: its manifest, line by line, and its entries. For a
@@ -642,11 +560,7 @@ fn parse_line(line: &str, day: &str, root_spellings: &[PathBuf]) -> Option<Parse
 /// now stored there, and an earlier one (a stale line whose move failed, or a
 /// file restored since) describes nothing. Only entries directly inside this
 /// day folder resolve. A missing manifest is an empty one.
-pub fn read_day(day_dir: &Path, root_spellings: &[PathBuf]) -> Result<DayListing, String> {
-    let day = day_dir
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
+pub fn read_day(day_dir: &Path) -> Result<DayListing, String> {
     let manifest = match volume_io::read(&day_dir.join(MANIFEST_FILE_NAME)) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
@@ -664,7 +578,7 @@ pub fn read_day(day_dir: &Path, root_spellings: &[PathBuf]) -> Result<DayListing
         if line.trim().is_empty() {
             continue;
         }
-        match parse_line(line, &day, root_spellings) {
+        match parse_line(line) {
             Some(ParsedLine::Record(record)) => {
                 latest.insert(record.stored_name.clone(), (index, record));
             }
@@ -672,6 +586,7 @@ pub fn read_day(day_dir: &Path, root_spellings: &[PathBuf]) -> Result<DayListing
                 stored_name,
                 restored_to,
             }) => restored_lines.push((index, stored_name, restored_to)),
+            Some(ParsedLine::Newer) => listing.newer_lines += 1,
             None => listing.malformed_lines += 1,
         }
     }
@@ -724,7 +639,7 @@ pub fn read_day(day_dir: &Path, root_spellings: &[PathBuf]) -> Result<DayListing
 /// trace of it, and is logged.
 pub fn append_restored(day_dir: &Path, stored_name: &str, restored_to: &str) {
     let line = json!({
-        "v": MANIFEST_VERSION,
+        "formatVersion": formats::DELETED_FILES_MANIFEST,
         "event": "restored",
         "storedName": stored_name,
         "restoredTo": restored_to,
@@ -755,17 +670,11 @@ pub fn append_restored(day_dir: &Path, stored_name: &str, restored_to: &str) {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EntryStatus {
-    /// A version 2 record whose stored file still has the recorded size and
-    /// modification time.
+    /// The stored file still has the recorded size and modification time.
     Restorable,
-    /// An original four-field record: restorable, but nothing proves the
-    /// stored file is the one it describes.
-    Unverified,
     /// The stored entry changed since it was deleted, or is not a regular
     /// file. Reveal only.
     Changed,
-    /// The original location is not inside this root. Reveal only.
-    OutsideRoot,
     /// The original name cannot be rebuilt on this system. Reveal only.
     Unrepresentable,
     /// The original location lies inside deleted-file storage or OneCopy's
@@ -775,7 +684,7 @@ pub enum EntryStatus {
 
 impl EntryStatus {
     pub fn restorable(self) -> bool {
-        matches!(self, Self::Restorable | Self::Unverified)
+        matches!(self, Self::Restorable)
     }
 }
 
@@ -788,19 +697,19 @@ pub struct TrashEntry {
     pub day: String,
     pub stored_name: String,
     pub stored_path: String,
+    /// The record's fields are `None` only for a selected file the listing
+    /// no longer has (`restore::candidates`).
     pub original_relative: Option<String>,
     pub deleted_at_utc: String,
     /// The stored file's current size.
     pub size: u64,
-    /// The modification time the record promises (version 2), which Restore
-    /// checks again before moving the file.
+    /// The modification time the record promises, which Restore checks again
+    /// before moving the file.
     pub mtime_ms: Option<i64>,
     /// The deleted item this file belongs to: one operation's logical item,
-    /// or for records without one (older records, displaced destination
-    /// files) the day or operation, folder and stem, which is the companion
-    /// rule.
+    /// or for a file without one (a displaced destination file) the
+    /// operation, folder and stem, which is the companion rule.
     pub group: String,
-    pub version: u32,
     pub kind: Option<TrashKind>,
     pub operation: Option<String>,
     pub item: Option<String>,
@@ -821,6 +730,8 @@ pub struct TrashListing {
     pub unrecorded_files: u64,
     /// Manifest lines that could not be read.
     pub malformed_lines: u64,
+    /// Manifest lines a newer OneCopy wrote, left as they are.
+    pub newer_lines: u64,
 }
 
 /// Why a recorded original path cannot become a target inside its root.
@@ -874,50 +785,32 @@ pub fn entry_status(
     let StoredState::Regular { size, mtime_ms } = stored else {
         return EntryStatus::Changed;
     };
-    if record.version >= 2 && (record.size != Some(size) || record.mtime_ms != Some(mtime_ms)) {
+    if record.size != size || record.mtime_ms != mtime_ms {
         return EntryStatus::Changed;
     }
-    let Some(relative) = record.original_relative.as_deref() else {
-        return EntryStatus::OutsideRoot;
-    };
-    match target_in_root(root, relative) {
+    match target_in_root(root, &record.original_relative) {
         Err(UnfitPath::Unrepresentable) => EntryStatus::Unrepresentable,
         Err(UnfitPath::Excluded) => EntryStatus::Excluded,
         Ok(target) if crate::paths::is_within_data_root(&target, data_root) => {
             EntryStatus::Excluded
         }
-        Ok(_) if record.version >= 2 => EntryStatus::Restorable,
-        Ok(_) => EntryStatus::Unverified,
+        Ok(_) => EntryStatus::Restorable,
     }
 }
 
 /// Which deleted item a record belongs to (`TrashEntry::group`).
-fn group_key(record: &DayRecord, day: &str) -> String {
-    if let (Some(operation), Some(item)) = (&record.operation, &record.item) {
+fn group_key(record: &DayRecord) -> String {
+    let operation = &record.operation;
+    if let Some(item) = &record.item {
         return format!("item:{operation}:{item}");
     }
-    let relative = record
-        .original_relative
-        .as_deref()
-        .unwrap_or(&record.stored_name);
+    let relative = record.original_relative.as_str();
     let (folder, name) = relative.rsplit_once('/').unwrap_or(("", relative));
     let stem = Path::new(name)
         .file_stem()
         .map(|stem| stem.to_string_lossy().nfc().collect::<String>().to_lowercase())
         .unwrap_or_default();
-    match &record.operation {
-        Some(operation) => format!("stem:{operation}:{folder}/{stem}"),
-        None => format!("day:{day}:{folder}/{stem}"),
-    }
-}
-
-fn is_companion_name(name: &str) -> bool {
-    Path::new(name)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            crate::extensions::COMPANION_EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str())
-        })
+    format!("stem:{operation}:{folder}/{stem}")
 }
 
 /// The configured root that owns a deleted-files location the interface
@@ -948,7 +841,6 @@ pub fn list_root(root: &Path, data_root: &Path) -> Result<TrashListing, String> 
         }
         Err(error) => return Err(format!("deleted-file storage is unavailable: {error}")),
     }
-    let spellings = root_spellings(root);
     let mut listing = TrashListing::default();
     // (deleted item, original folder) -> where a main file of it was restored
     // under another name.
@@ -969,24 +861,22 @@ pub fn list_root(root: &Path, data_root: &Path) -> Result<TrashListing, String> 
             _ => continue,
         }
         let day_name = day.file_name.to_string_lossy().into_owned();
-        let read = read_day(&day.path, &spellings)?;
+        let read = read_day(&day.path)?;
         listing.unrecorded_files += read.unrecorded_files;
         listing.malformed_lines += read.malformed_lines;
+        listing.newer_lines += read.newer_lines;
         for (record, restored_to) in &read.restored_to {
-            let Some(original) = record.original_relative.as_deref() else {
-                continue;
-            };
-            if record_role(record) == TrashRole::Main && restored_to != original {
+            let original = record.original_relative.as_str();
+            if record.role == TrashRole::Main && restored_to != original {
                 restored_mains.insert(
-                    (group_key(record, &day_name), folder_of(original).to_string()),
+                    (group_key(record), folder_of(original).to_string()),
                     restored_to.clone(),
                 );
             }
         }
         for (record, stored) in read.records {
             let status = entry_status(&record, stored, root, data_root);
-            let role = record_role(&record);
-            let group = group_key(&record, &day_name);
+            let group = group_key(&record);
             let size = match stored {
                 StoredState::Regular { size, .. } => size,
                 StoredState::Other => 0,
@@ -996,16 +886,15 @@ pub fn list_root(root: &Path, data_root: &Path) -> Result<TrashListing, String> 
                 day: day_name.clone(),
                 stored_path: day.path.join(&record.stored_name).to_string_lossy().into_owned(),
                 stored_name: record.stored_name,
-                original_relative: record.original_relative,
+                original_relative: Some(record.original_relative),
                 deleted_at_utc: record.deleted_at_utc,
                 size,
-                mtime_ms: record.mtime_ms,
+                mtime_ms: Some(record.mtime_ms),
                 group,
-                version: record.version,
-                kind: record.kind,
-                operation: record.operation,
+                kind: Some(record.kind),
+                operation: Some(record.operation),
                 item: record.item,
-                role: Some(role),
+                role: Some(record.role),
                 moved_to: record.moved_to,
                 status,
                 main_restored_as: None,
@@ -1022,16 +911,6 @@ pub fn list_root(root: &Path, data_root: &Path) -> Result<TrashListing, String> 
             .cloned();
     }
     Ok(listing)
-}
-
-/// A record's role; an older record has none, and the file's extension tells
-/// a companion the way the library tells one.
-fn record_role(record: &DayRecord) -> TrashRole {
-    record.role.unwrap_or(if is_companion_name(&record.stored_name) {
-        TrashRole::Companion
-    } else {
-        TrashRole::Main
-    })
 }
 
 /// The folder part of a `/`-joined relative path.

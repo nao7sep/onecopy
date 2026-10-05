@@ -61,9 +61,11 @@ fn a_same_size_older_model_remains_update_available() {
         sha256: "a".repeat(64),
         bytes: pinned.bytes,
     };
+    let mut document = serde_json::to_value(&older).unwrap();
+    document["formatVersion"] = serde_json::json!(1);
     std::fs::write(
         model_identity_path(dir.path(), spec),
-        serde_json::to_vec(&older).unwrap(),
+        serde_json::to_vec(&document).unwrap(),
     )
     .unwrap();
 
@@ -326,4 +328,59 @@ fn reset_temp_dir_wipes_and_recreates() {
     reset_temp_dir(dir.path());
     assert!(temp.is_dir());
     assert_eq!(std::fs::read_dir(&temp).unwrap().count(), 0);
+}
+
+#[test]
+fn the_facts_store_and_sidecars_carry_their_format_versions() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-binmgr-formats-")
+        .tempdir()
+        .unwrap();
+    save_check_attempt(dir.path(), GITHUB_RELEASE_ATTEMPT_KEY, "2026-10-05T00:00:00.000Z").unwrap();
+    std::fs::create_dir_all(dir.path().join(BIN_DIR_NAME)).unwrap();
+    write_version_sidecar(dir.path(), "9.0").unwrap();
+    let spec = spec_of("ultraface-rfb640").unwrap();
+    std::fs::create_dir_all(installed_path(dir.path(), spec).parent().unwrap()).unwrap();
+    write_model_identity(dir.path(), spec, spec.pinned.as_ref().unwrap()).unwrap();
+    let marker = |path: PathBuf| -> serde_json::Value {
+        serde_json::from_slice::<serde_json::Value>(&std::fs::read(path).unwrap()).unwrap()["formatVersion"].clone()
+    };
+    assert_eq!(marker(dir.path().join(DEPENDENCIES_FILE_NAME)), formats::DEPENDENCIES);
+    assert_eq!(marker(version_sidecar_path(dir.path())), formats::FFMPEG_VERSION_SIDECAR);
+    assert_eq!(marker(model_identity_path(dir.path(), spec)), formats::MODEL_IDENTITY);
+    assert_eq!(
+        load_check_attempt(dir.path(), GITHUB_RELEASE_ATTEMPT_KEY).as_deref(),
+        Some("2026-10-05T00:00:00.000Z")
+    );
+    assert_eq!(load_check_attempt(dir.path(), formats::JSON_KEY), None, "the marker is not a fact");
+    assert_eq!(read_version_sidecar(dir.path()).as_deref(), Some("9.0"));
+}
+
+#[test]
+fn files_a_newer_onecopy_wrote_read_as_absent_and_are_left_as_they_are() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-binmgr-newer-")
+        .tempdir()
+        .unwrap();
+    let facts = dir.path().join(DEPENDENCIES_FILE_NAME);
+    let facts_bytes = br#"{"formatVersion":2,"githubReleaseLastAttemptAtUtc":"2026-10-05T00:00:00.000Z"}"#;
+    std::fs::write(&facts, facts_bytes).unwrap();
+    assert_eq!(load_check_attempt(dir.path(), GITHUB_RELEASE_ATTEMPT_KEY), None);
+    assert!(save_check_attempt(dir.path(), GITHUB_RELEASE_ATTEMPT_KEY, "later").is_err());
+    assert_eq!(std::fs::read(&facts).unwrap(), facts_bytes);
+
+    std::fs::create_dir_all(dir.path().join(BIN_DIR_NAME)).unwrap();
+    let sidecar_bytes = br#"{"formatVersion":2,"version":"9.0"}"#;
+    std::fs::write(version_sidecar_path(dir.path()), sidecar_bytes).unwrap();
+    assert_eq!(read_version_sidecar(dir.path()), None);
+    assert!(write_version_sidecar(dir.path(), "8.0").is_err());
+    assert_eq!(std::fs::read(version_sidecar_path(dir.path())).unwrap(), sidecar_bytes);
+
+    let spec = spec_of("ultraface-rfb640").unwrap();
+    let identity = model_identity_path(dir.path(), spec);
+    std::fs::create_dir_all(identity.parent().unwrap()).unwrap();
+    let identity_bytes = br#"{"formatVersion":2,"sha256":"x","bytes":1}"#;
+    std::fs::write(&identity, identity_bytes).unwrap();
+    assert!(invalidate_model_identity(dir.path(), spec).is_err());
+    assert_eq!(std::fs::read(&identity).unwrap(), identity_bytes);
 }

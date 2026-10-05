@@ -259,7 +259,7 @@ fn restore_fixture() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathB
     std::fs::create_dir_all(&data_root).unwrap();
     std::fs::write(
         data_root.join(crate::storage::CONFIG_FILE_NAME),
-        json!({ "sourceDirs": [root.to_string_lossy()] }).to_string(),
+        json!({ "formatVersion": 1, "sourceDirs": [root.to_string_lossy()] }).to_string(),
     )
     .unwrap();
     let original = root.join("trip").join("a.jpg");

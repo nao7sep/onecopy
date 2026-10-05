@@ -243,7 +243,7 @@ describe("browsing a root", () => {
         { ...ROWS[0] },
         { ...ROWS[0], root: "/Volumes/Gone/.onecopy-trash", available: false },
       ],
-      trash_entries: () => ({ entries: [], unrecordedFiles: 0, malformedLines: 0 }),
+      trash_entries: () => ({ entries: [], unrecordedFiles: 0, malformedLines: 0, newerLines: 0 }),
     });
     render(<TrashModal open onClose={() => {}} />);
     await act(async () => {});

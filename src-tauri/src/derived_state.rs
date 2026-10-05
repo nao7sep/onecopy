@@ -466,8 +466,7 @@ pub const READY_TEXT: &str = "ready-text";
 pub const READY_EMPTY: &str = "ready-empty";
 pub const FAILED: &str = "failed";
 pub const NEEDS_FFMPEG: &str = "needs-ffmpeg";
-/// 4: sharpness is measured at one common scale for every image.
-pub const DERIVE_VERSION: i64 = 4;
+pub use crate::formats::DERIVE_VERSION;
 const STRIP_FAILED: i64 = -1;
 pub const SNAPSHOT_CANDIDATE_PAGE_SIZE: usize = 32;
 pub const FACE_CANDIDATE_PAGE_SIZE: usize = 32;

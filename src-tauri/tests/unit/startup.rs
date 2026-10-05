@@ -25,6 +25,33 @@ fn blocked_gate_exposes_only_stable_private_safe_copy() {
 }
 
 #[test]
+fn required_stores_a_newer_onecopy_wrote_stop_the_launch_by_name_untouched() {
+    let temp = tempfile::tempdir().unwrap();
+    assert!(newer_required_stores(temp.path()).unwrap().is_empty(), "absent stores are not newer");
+    let index = temp.path().join(crate::storage::INDEX_DB_FILE_NAME);
+    {
+        let connection = rusqlite::Connection::open(&index).unwrap();
+        connection.pragma_update(None, "user_version", 2).unwrap();
+    }
+    let config = temp.path().join(crate::storage::CONFIG_FILE_NAME);
+    std::fs::write(&config, br#"{"formatVersion":2}"#).unwrap();
+    let index_bytes = std::fs::read(&index).unwrap();
+
+    let newer = newer_required_stores(temp.path()).unwrap();
+
+    assert_eq!(
+        newer.iter().map(|store| store.file.as_str()).collect::<Vec<_>>(),
+        ["index.sqlite3", "config.json"]
+    );
+    assert_eq!(std::fs::read(&index).unwrap(), index_bytes);
+    assert_eq!(std::fs::read(&config).unwrap(), br#"{"formatVersion":2}"#);
+    assert!(!temp.path().join(crate::records::RECORDS_DB_FILE_NAME).exists());
+    let failure = StartupGate::newer(newer).failure().unwrap();
+    assert_eq!(failure.newer_stores.len(), 2);
+    assert!(StartupGate::blocked().failure().unwrap().newer_stores.is_empty());
+}
+
+#[test]
 fn runtime_service_failures_do_not_skip_later_admission() {
     let later_started = Cell::new(false);
     let failures = RefCell::new(Vec::new());

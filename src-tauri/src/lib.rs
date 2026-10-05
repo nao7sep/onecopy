@@ -24,6 +24,7 @@ mod destinations;
 pub mod work_priority;
 pub mod extensions;
 pub mod file_names;
+pub mod formats;
 pub mod face;
 pub mod failure_runtime;
 pub mod file_identity;

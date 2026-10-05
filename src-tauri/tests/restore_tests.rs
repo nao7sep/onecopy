@@ -24,7 +24,6 @@ fn entry(id: &str, relative: &str) -> TrashEntry {
         size: 10,
         mtime_ms: Some(1),
         group: format!("item:op:{relative}"),
-        version: 2,
         kind: Some(TrashKind::Delete),
         operation: Some("op".to_string()),
         item: Some(relative.to_string()),
@@ -206,7 +205,6 @@ fn unrestorable_entries_are_skipped_with_their_reason() {
     let mut cases = Vec::new();
     for (id, status) in [
         ("d/changed.jpg", EntryStatus::Changed),
-        ("d/outside.jpg", EntryStatus::OutsideRoot),
         ("d/lossy.jpg", EntryStatus::Unrepresentable),
         ("d/excluded.jpg", EntryStatus::Excluded),
     ] {
@@ -229,7 +227,6 @@ fn unrestorable_entries_are_skipped_with_their_reason() {
         skips,
         [
             "skip:Changed",
-            "skip:OutsideRoot",
             "skip:Unrepresentable",
             "skip:Excluded",
             "skip:FolderIsLink",
@@ -238,17 +235,6 @@ fn unrestorable_entries_are_skipped_with_their_reason() {
         ]
     );
     assert!(review_of(&plan, Path::new("/r"), &[]).needed(), "skips are reviewed");
-}
-
-#[test]
-fn an_unverified_entry_is_restored_after_the_review_says_so() {
-    let mut legacy = entry("d/old.jpg", "old.jpg");
-    legacy.status = EntryStatus::Unverified;
-    legacy.version = 1;
-    let plan = plan(&[candidate(legacy)], &[]);
-    let review = review_of(&plan, Path::new("/r"), &[]);
-    assert!(review.files[0].unverified && review.needed());
-    assert_eq!(target_of(&plan, "d/old.jpg"), "/r/old.jpg");
 }
 
 #[test]

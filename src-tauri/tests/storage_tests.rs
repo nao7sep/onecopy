@@ -20,7 +20,7 @@ fn temp_dir(label: &str) -> PathBuf {
 fn appearance_reads_only_preferences_from_the_settings_in_memory() {
     let root = tempfile::tempdir().unwrap();
     let config = root.path().join(CONFIG_FILE_NAME);
-    let bytes = br#"{"theme":"dark","uiFontFamily":"Iosevka","enlargeSmallImagesInPreview":false,"enlargeSmallImagesInQuickView":false,"videoTranscriptionEnabled":false,"audioTranscriptionEnabled":true,"sourceDirs":["/private"],"verifyAfterCopy":false}"#;
+    let bytes = br#"{"formatVersion":1,"theme":"dark","uiFontFamily":"Iosevka","enlargeSmallImagesInPreview":false,"enlargeSmallImagesInQuickView":false,"videoTranscriptionEnabled":false,"audioTranscriptionEnabled":true,"sourceDirs":["/private"],"verifyAfterCopy":false}"#;
     std::fs::write(&config, bytes).unwrap();
     std::fs::write(root.path().join(STATE_FILE_NAME), b"{ invalid state").unwrap();
     assert_eq!(
@@ -123,7 +123,7 @@ fn loading_config_removes_the_obsolete_copy_verification_preference() {
     let path = root.join(CONFIG_FILE_NAME);
     std::fs::write(
         &path,
-        "{\"verifyAfterCopy\":false,\"pairingEnabled\":true}\n",
+        "{\"formatVersion\":1,\"verifyAfterCopy\":false,\"pairingEnabled\":true}\n",
     )
     .unwrap();
 
@@ -133,7 +133,7 @@ fn loading_config_removes_the_obsolete_copy_verification_preference() {
     assert_eq!(untouched["verifyAfterCopy"], false);
     save_config(&root, &serde_json::json!({ "theme": "dark" })).unwrap();
     let stored: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    assert_eq!(stored, serde_json::json!({ "theme": "dark" }), "a copy equal to its built-in is not kept");
+    assert_eq!(stored, serde_json::json!({ "formatVersion": 1, "theme": "dark" }), "a copy equal to its built-in is not kept");
 }
 
 #[test]
@@ -166,7 +166,7 @@ fn scanner_projects_the_pairing_switch() {
 fn patch_merges_shallow_and_survives_interleaved_writers() {
     let dir = temp_dir("patch");
     let target = dir.join("registry.json");
-    write_atomic(&target, b"{\"a\": 1, \"list\": [\"x\"]}").unwrap();
+    write_atomic(&target, b"{\"formatVersion\": 1, \"a\": 1, \"list\": [\"x\"]}").unwrap();
 
     // GENUINELY interleaved: two threads, each reading before either writes.
     // The sequential calls below cannot reach the lost update the name claims —
@@ -183,7 +183,7 @@ fn patch_merges_shallow_and_survives_interleaved_writers() {
                     // Line both threads up so neither can finish before the
                     // other starts.
                     barrier.wait();
-                    patch_json_store(&target, &serde_json::json!({ key: value })).unwrap();
+                    patch_json_store(&target, onecopy_lib::formats::STATE, &serde_json::json!({ key: value })).unwrap();
                 })
             })
             .collect();
@@ -201,21 +201,22 @@ fn patch_merges_shallow_and_survives_interleaved_writers() {
 
     // Writer 1 patches one key; writer 2 patches another with a stale
     // mental model — neither loses the other's write.
-    let after1 = patch_json_store(&target, &serde_json::json!({ "list": ["x", "y"] })).unwrap().merged;
+    let after1 = patch_json_store(&target, onecopy_lib::formats::STATE, &serde_json::json!({ "list": ["x", "y"] })).unwrap().merged;
     assert_eq!(after1["a"], 1);
-    let after2 = patch_json_store(&target, &serde_json::json!({ "b": true })).unwrap().merged;
+    let after2 = patch_json_store(&target, onecopy_lib::formats::STATE, &serde_json::json!({ "b": true })).unwrap().merged;
     assert_eq!(after2["list"], serde_json::json!(["x", "y"]));
     assert_eq!(after2["a"], 1);
     assert_eq!(after2["b"], true);
 
     // Null is a stored value, not a deletion.
-    let after3 = patch_json_store(&target, &serde_json::json!({ "a": null })).unwrap().merged;
+    let after3 = patch_json_store(&target, onecopy_lib::formats::STATE, &serde_json::json!({ "a": null })).unwrap().merged;
     assert!(after3["a"].is_null());
     assert!(after3.get("a").is_some());
 
     // A missing file starts from an empty document.
     let fresh = patch_json_store(
         &dir.join("state.json"),
+        onecopy_lib::formats::STATE,
         &serde_json::json!({ "zoomLevel": 1.2 }),
     )
     .unwrap();
@@ -234,7 +235,7 @@ fn saving_over_a_corrupt_config_keeps_only_sets_that_differ() {
     assert_eq!(outcome.effective["theme"], "dark");
     assert_eq!(outcome.effective["goodRangeStartYear"], 1995);
     let stored: serde_json::Value = serde_json::from_slice(&std::fs::read(&target).unwrap()).unwrap();
-    assert_eq!(stored, serde_json::json!({ "theme": "dark" }));
+    assert_eq!(stored, serde_json::json!({ "formatVersion": 1, "theme": "dark" }));
     // The outcome carries the record — a mid-session quarantine has no load
     // result to ride home on, so the save itself must hand it back.
     let record = outcome.quarantined.expect("the save reports its own quarantine");
@@ -274,15 +275,15 @@ fn first_run_writes_nothing_and_a_save_writes_every_set_that_differs() {
         serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
     };
     save_config(&dir, &serde_json::json!({ "previewLongEdgePx": 2000 })).unwrap();
-    assert_eq!(stored(&path), serde_json::json!({ "previewLongEdgePx": 2000 }));
+    assert_eq!(stored(&path), serde_json::json!({ "formatVersion": 1, "previewLongEdgePx": 2000 }));
     assert_eq!(load_from_root(&dir).unwrap().config["theme"], "system");
     // Unknown keys are dropped, and a set saved equal to its built-in leaves.
-    std::fs::write(&path, br#"{"version":1,"previewLongEdgePx":2000}"#).unwrap();
+    std::fs::write(&path, br#"{"formatVersion":1,"version":1,"previewLongEdgePx":2000}"#).unwrap();
     load_from_root(&dir).unwrap();
     save_config(&dir, &serde_json::json!({ "theme": "dark", "playbackVolume": 1 })).unwrap();
-    assert_eq!(stored(&path), serde_json::json!({ "previewLongEdgePx": 2000, "theme": "dark" }));
+    assert_eq!(stored(&path), serde_json::json!({ "formatVersion": 1, "previewLongEdgePx": 2000, "theme": "dark" }));
     save_config(&dir, &serde_json::json!({ "previewLongEdgePx": 1600, "theme": "system" })).unwrap();
-    assert_eq!(stored(&path), serde_json::json!({}), "the file stays, holding an empty map");
+    assert_eq!(stored(&path), serde_json::json!({ "formatVersion": 1 }), "the file stays, holding no set");
     assert!(save_config(&dir, &serde_json::json!({ "theme": "purple" })).is_err());
 }
 
@@ -297,7 +298,7 @@ fn resetting_similarity_removes_the_whole_set_from_the_file() {
     let result = save_config(&dir, &serde_json::json!({ "similarity": effective_config(None)["similarity"] })).unwrap();
     assert_eq!(result.effective["similarity"], effective_config(None)["similarity"]);
     let stored: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    assert_eq!(stored, serde_json::json!({ "theme": "dark" }));
+    assert_eq!(stored, serde_json::json!({ "formatVersion": 1, "theme": "dark" }));
 }
 
 #[test]
@@ -365,7 +366,7 @@ fn a_corrupt_config_is_set_aside_reported_and_not_reseeded() {
 fn a_corrupt_state_is_reported_without_disturbing_a_good_config() {
     let root = temp_dir("quarantine-state");
     let config = root.join("config.json");
-    std::fs::write(&config, br#"{"sourceDirs": ["/photos"]}"#).unwrap();
+    std::fs::write(&config, br#"{"formatVersion": 1, "sourceDirs": ["/photos"]}"#).unwrap();
     std::fs::write(root.join("state.json"), b"not json at all").unwrap();
 
     let loaded = load_from_root(&root).unwrap();
@@ -376,7 +377,7 @@ fn a_corrupt_state_is_reported_without_disturbing_a_good_config() {
     // touch, reset or re-seed its neighbour.
     assert_eq!(
         std::fs::read(&config).unwrap(),
-        br#"{"sourceDirs": ["/photos"]}"#,
+        br#"{"formatVersion": 1, "sourceDirs": ["/photos"]}"#,
         "the good config is left exactly as the user left it"
     );
     assert_eq!(
@@ -394,7 +395,7 @@ fn a_corrupt_state_is_reported_without_disturbing_a_good_config() {
 fn the_settings_held_before_the_window_shows_never_touch_the_file() {
     let root = temp_dir("held-before-window");
     let config = root.join(CONFIG_FILE_NAME);
-    std::fs::write(&config, br#"{"theme":"light","language":"ko"}"#).unwrap();
+    std::fs::write(&config, br#"{"formatVersion":1,"theme":"light","language":"ko"}"#).unwrap();
     let held = held_config(&root);
     assert_eq!((held["theme"].as_str(), held["language"].as_str()), (Some("light"), Some("ko")));
 
@@ -463,4 +464,71 @@ fn the_frontend_config_fixture_matches_the_core_defaults() {
         fixture, expected,
         "regenerate tests/fixtures/effective-config.json from DefaultConfig"
     );
+}
+
+#[test]
+#[serial(backup_store, quarantine_journal)]
+fn every_json_store_records_its_format_version_and_reads_without_it() {
+    let dir = temp_dir("format-version");
+    save_config(&dir, &serde_json::json!({ "theme": "dark" })).unwrap();
+    patch_json_store(&dir.join(STATE_FILE_NAME), onecopy_lib::formats::STATE, &serde_json::json!({ "zoomLevel": 1.2 })).unwrap();
+    save_window_state(&dir, &serde_json::json!({ "x": 1 })).unwrap();
+    save_preview_window_state(&dir, &serde_json::json!({ "x": 2 })).unwrap();
+    save_records_window_state(&dir, &serde_json::json!({ "x": 3 })).unwrap();
+    for name in [CONFIG_FILE_NAME, STATE_FILE_NAME, WINDOW_FILE_NAME, PREVIEW_WINDOW_FILE_NAME, RECORDS_WINDOW_FILE_NAME] {
+        let stored: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join(name)).unwrap()).unwrap();
+        assert_eq!(stored["formatVersion"], 1, "{name}");
+    }
+    assert_eq!(read_state(&dir).unwrap().0, Some(serde_json::json!({ "zoomLevel": 1.2 })));
+    assert_eq!(read_window_state_for_setup(&dir).unwrap(), Some(serde_json::json!({ "x": 1 })));
+}
+
+#[test]
+#[serial(backup_store, quarantine_journal)]
+fn a_json_store_without_its_marker_is_unreadable_and_set_aside() {
+    let dir = temp_dir("unmarked");
+    std::fs::write(dir.join(STATE_FILE_NAME), br#"{"zoomLevel":1.5}"#).unwrap();
+    std::fs::write(dir.join(CONFIG_FILE_NAME), br#"{"theme":"dark"}"#).unwrap();
+    assert_eq!(config_newer(&dir).unwrap(), None);
+    let loaded = load_from_root(&dir).unwrap();
+    assert_eq!(loaded.state, None);
+    assert_eq!(loaded.config["theme"], "system", "nothing is inferred from the shape");
+    let mut files: Vec<_> = loaded.quarantines.iter().map(|record| record.file.as_str()).collect();
+    files.sort_unstable();
+    assert_eq!(files, ["config.json", "state.json"]);
+}
+
+#[test]
+#[serial(backup_store, quarantine_journal)]
+fn settings_written_by_a_newer_onecopy_stop_the_load_by_name_and_are_left_as_they_are() {
+    let dir = temp_dir("newer-config");
+    let path = dir.join(CONFIG_FILE_NAME);
+    let bytes = br#"{"formatVersion":2,"theme":"dark"}"#;
+    std::fs::write(&path, bytes).unwrap();
+    let newer = config_newer(&dir).unwrap().expect("a newer settings file is named");
+    assert_eq!((newer.file.as_str(), newer.version, newer.supported), ("config.json", 2, 1));
+    assert_eq!(held_config(&dir)["theme"], "system", "the built-ins answer before the load");
+    let error = config(&dir).expect_err("a newer settings file is not loaded");
+    assert!(error.contains("newer"), "{error}");
+    assert!(save_config(&dir, &serde_json::json!({ "theme": "light" })).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), bytes, "never quarantined, reset or written to");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "nothing is set aside");
+}
+
+#[test]
+#[serial(backup_store, quarantine_journal)]
+fn volatile_state_written_by_a_newer_onecopy_reads_as_absent_and_is_not_saved_over() {
+    let dir = temp_dir("newer-state");
+    let state = br#"{"formatVersion":2,"zoomLevel":1.5}"#;
+    let window = br#"{"formatVersion":2,"x":1}"#;
+    std::fs::write(dir.join(STATE_FILE_NAME), state).unwrap();
+    std::fs::write(dir.join(WINDOW_FILE_NAME), window).unwrap();
+    let loaded = load_from_root(&dir).unwrap();
+    assert_eq!(loaded.state, None);
+    assert!(loaded.quarantines.is_empty(), "a newer store is not quarantined");
+    assert_eq!(read_window_state_for_setup(&dir).unwrap(), None);
+    assert!(patch_json_store(&dir.join(STATE_FILE_NAME), onecopy_lib::formats::STATE, &serde_json::json!({ "zoomLevel": 1.0 })).is_err());
+    assert!(save_window_state(&dir, &serde_json::json!({ "x": 2 })).is_err());
+    assert_eq!(std::fs::read(dir.join(STATE_FILE_NAME)).unwrap(), state);
+    assert_eq!(std::fs::read(dir.join(WINDOW_FILE_NAME)).unwrap(), window);
 }

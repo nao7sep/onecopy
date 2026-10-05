@@ -50,7 +50,7 @@ use std::sync::Arc;
 
 use crate::binaries::{self, BinaryFacts, BinaryStatus};
 use crate::binaries_acquisition as acquisition;
-use crate::{logging, nanoid, storage, subprocess};
+use crate::{formats, logging, nanoid, storage, subprocess};
 
 // Subpath names are owned by the one resolver module (storage-path
 // conventions); re-exported here so existing call sites keep their imports.
@@ -320,17 +320,18 @@ pub fn reset_temp_dir(root: &Path) {
 
 // --- The facts store: its own file, self-healing (missing OR corrupt →
 // fresh defaults; the opposite of the config store's quarantine, because
-// every field is re-derivable by a check). ---
+// every field is re-derivable by a check). A file a newer OneCopy wrote
+// reads as empty and is not saved over. ---
 
 fn load_facts_map(root: &Path) -> serde_json::Map<String, serde_json::Value> {
-    let file = root.join(DEPENDENCIES_FILE_NAME);
-    let Ok(bytes) = std::fs::read(&file) else {
-        return serde_json::Map::new();
-    };
-    serde_json::from_slice::<serde_json::Value>(&bytes)
-        .ok()
-        .and_then(|v| v.as_object().cloned())
-        .unwrap_or_default()
+    match storage::read_json_file(&root.join(DEPENDENCIES_FILE_NAME), formats::DEPENDENCIES) {
+        Ok(storage::JsonFile::Document(serde_json::Value::Object(map))) => map,
+        Ok(storage::JsonFile::Newer(newer)) => {
+            storage::warn_newer(&newer);
+            serde_json::Map::new()
+        }
+        _ => serde_json::Map::new(),
+    }
 }
 
 /// One entry's facts out of the shared map — the historical `{"ffmpeg": …}`
@@ -388,10 +389,12 @@ fn save_entry(root: &Path, key: &str, value: serde_json::Value) -> Result<(), St
     // update facts, not user-authored data.
     let mut map = load_facts_map(root);
     map.insert(key.to_string(), value);
-    let mut text = serde_json::to_string_pretty(&serde_json::Value::Object(map))
-        .map_err(|e| e.to_string())?;
-    text.push('\n');
-    storage::write_atomic_unrecorded(&root.join(DEPENDENCIES_FILE_NAME), text.as_bytes())
+    storage::write_json_file(
+        &root.join(DEPENDENCIES_FILE_NAME),
+        &serde_json::Value::Object(map),
+        formats::DEPENDENCIES,
+        false,
+    )
 }
 
 // --- The installed version, read from the artifact ---
@@ -423,18 +426,27 @@ fn write_version_sidecar(root: &Path, version: &str) -> Result<(), String> {
         "version": version,
         "installedAt": logging::now_iso_millis(),
     });
-    let mut text = serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?;
-    text.push('\n');
     // not recorded: a sidecar colocated in the binary-bearing bin/ directory,
     // describing the re-fetchable binary it sits beside — meaningless without that
     // binary (itself excluded as a re-fetchable binary) and rewritten by the next
     // install (data-backup conventions).
-    storage::write_atomic_unrecorded(&version_sidecar_path(root), text.as_bytes())
+    storage::write_json_file(
+        &version_sidecar_path(root),
+        &payload,
+        formats::FFMPEG_VERSION_SIDECAR,
+        false,
+    )
 }
 
 fn read_version_sidecar(root: &Path) -> Option<String> {
-    let bytes = std::fs::read(version_sidecar_path(root)).ok()?;
-    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let value = match storage::read_json_file(&version_sidecar_path(root), formats::FFMPEG_VERSION_SIDECAR) {
+        Ok(storage::JsonFile::Document(value)) => value,
+        Ok(storage::JsonFile::Newer(newer)) => {
+            storage::warn_newer(&newer);
+            return None;
+        }
+        _ => return None,
+    };
     let version = value.get("version")?.as_str()?.trim();
     (!version.is_empty()).then(|| binaries::normalize_version(version))
 }
@@ -451,8 +463,15 @@ fn model_identity_path(root: &Path, spec: &DependencySpec) -> PathBuf {
 }
 
 fn read_model_identity(root: &Path, spec: &DependencySpec, bytes: u64) -> Option<String> {
-    let raw = std::fs::read(model_identity_path(root, spec)).ok()?;
-    let identity: ModelIdentity = serde_json::from_slice(&raw).ok()?;
+    let document = match storage::read_json_file(&model_identity_path(root, spec), formats::MODEL_IDENTITY) {
+        Ok(storage::JsonFile::Document(document)) => document,
+        Ok(storage::JsonFile::Newer(newer)) => {
+            storage::warn_newer(&newer);
+            return None;
+        }
+        _ => return None,
+    };
+    let identity: ModelIdentity = serde_json::from_value(document).ok()?;
     if identity.bytes != bytes
         || identity.sha256.len() != 64
         || !identity.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -471,11 +490,14 @@ fn write_model_identity(
         sha256: pinned.sha256.to_string(),
         bytes: installed_bytes(pinned),
     };
-    let mut text = serde_json::to_string_pretty(&identity).map_err(|e| e.to_string())?;
-    text.push('\n');
     // not recorded: identity for a re-downloadable model, colocated with and
     // meaningless without that model. It is invalidated before replacement.
-    storage::write_atomic_unrecorded(&model_identity_path(root, spec), text.as_bytes())
+    storage::write_json_file(
+        &model_identity_path(root, spec),
+        &serde_json::to_value(&identity).map_err(|e| e.to_string())?,
+        formats::MODEL_IDENTITY,
+        false,
+    )
 }
 
 fn installed_bytes(pinned: &PinnedArtifact) -> u64 {
@@ -487,7 +509,9 @@ fn installed_bytes(pinned: &PinnedArtifact) -> u64 {
 }
 
 fn invalidate_model_identity(root: &Path, spec: &DependencySpec) -> Result<(), String> {
-    match std::fs::remove_file(model_identity_path(root, spec)) {
+    let path = model_identity_path(root, spec);
+    storage::refuse_newer(&path, formats::MODEL_IDENTITY)?;
+    match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.to_string()),

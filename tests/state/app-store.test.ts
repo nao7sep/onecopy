@@ -48,6 +48,7 @@ describe("application initialization", () => {
         failure: {
           title: "OneCopy could not start safely",
           message: "Your photos were not changed.",
+          newerStores: [],
         },
       }),
     });
@@ -59,6 +60,7 @@ describe("application initialization", () => {
     expect(useAppStore.getState().startupFailure).toEqual({
       title: "OneCopy could not start safely",
       message: "Your photos were not changed.",
+      newerStores: [],
     });
   });
 });

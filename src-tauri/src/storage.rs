@@ -33,6 +33,11 @@
 //! rename runs OUTSIDE the parse-failure handling: a failed rename propagates as
 //! an error instead of falling through to a default-reset that would clobber the
 //! very bytes quarantine exists to preserve.
+//!
+//! Every JSON store carries its format version (`formats`) as a top-level
+//! `formatVersion`, stamped on write and removed on read; a store without it
+//! is unreadable and set aside like any other. A store a newer OneCopy wrote is never quarantined or written to: the settings stop the
+//! launch by name, and volatile state reads as absent and is not saved over.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -40,7 +45,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 
-use crate::{backup_store, logging, nanoid, paths};
+use crate::{backup_store, formats, logging, nanoid, paths};
 
 pub const CONFIG_FILE_NAME: &str = "config.json";
 pub const STATE_FILE_NAME: &str = "state.json";
@@ -336,7 +341,7 @@ pub fn with_language_fields(mut preferences: JsonValue, state: &crate::i18n::Lan
 /// Reads volatile state for a pre-frontend runtime decision while preserving
 /// the ordinary load path's duty to report any quarantine to Main.
 pub fn read_state_for_setup(root: &Path) -> Result<Option<JsonValue>, String> {
-    let read = read_json_optional(&root.join(STATE_FILE_NAME))?;
+    let read = read_json_optional(&root.join(STATE_FILE_NAME), formats::STATE)?;
     if let Some(record) = read.quarantined {
         PENDING_QUARANTINES
             .lock()
@@ -347,7 +352,7 @@ pub fn read_state_for_setup(root: &Path) -> Result<Option<JsonValue>, String> {
 }
 
 pub fn read_window_state_for_setup(root: &Path) -> Result<Option<JsonValue>, String> {
-    let read = read_json_optional(&root.join(WINDOW_FILE_NAME))?;
+    let read = read_json_optional(&root.join(WINDOW_FILE_NAME), formats::WINDOW_PLACEMENT)?;
     if let Some(record) = read.quarantined {
         PENDING_QUARANTINES
             .lock()
@@ -358,11 +363,11 @@ pub fn read_window_state_for_setup(root: &Path) -> Result<Option<JsonValue>, Str
 }
 
 pub fn save_window_state(root: &Path, state: &JsonValue) -> Result<(), String> {
-    atomic_write_json(&root.join(WINDOW_FILE_NAME), state, false)
+    write_json_file(&root.join(WINDOW_FILE_NAME), state, formats::WINDOW_PLACEMENT, false)
 }
 
 pub fn read_preview_window_state_for_setup(root: &Path) -> Result<Option<JsonValue>, String> {
-    let read = read_json_optional(&root.join(PREVIEW_WINDOW_FILE_NAME))?;
+    let read = read_json_optional(&root.join(PREVIEW_WINDOW_FILE_NAME), formats::WINDOW_PLACEMENT)?;
     if let Some(record) = read.quarantined {
         PENDING_QUARANTINES
             .lock()
@@ -373,11 +378,11 @@ pub fn read_preview_window_state_for_setup(root: &Path) -> Result<Option<JsonVal
 }
 
 pub fn save_preview_window_state(root: &Path, state: &JsonValue) -> Result<(), String> {
-    atomic_write_json(&root.join(PREVIEW_WINDOW_FILE_NAME), state, false)
+    write_json_file(&root.join(PREVIEW_WINDOW_FILE_NAME), state, formats::WINDOW_PLACEMENT, false)
 }
 
 pub fn read_records_window_state_for_setup(root: &Path) -> Result<Option<JsonValue>, String> {
-    let read = read_json_optional(&root.join(RECORDS_WINDOW_FILE_NAME))?;
+    let read = read_json_optional(&root.join(RECORDS_WINDOW_FILE_NAME), formats::WINDOW_PLACEMENT)?;
     if let Some(record) = read.quarantined {
         PENDING_QUARANTINES
             .lock()
@@ -388,20 +393,20 @@ pub fn read_records_window_state_for_setup(root: &Path) -> Result<Option<JsonVal
 }
 
 pub fn save_records_window_state(root: &Path, state: &JsonValue) -> Result<(), String> {
-    atomic_write_json(&root.join(RECORDS_WINDOW_FILE_NAME), state, false)
+    write_json_file(&root.join(RECORDS_WINDOW_FILE_NAME), state, formats::WINDOW_PLACEMENT, false)
 }
 
 /// Reads `state.json` for a surface other than Main's startup load. A store
 /// this read sets aside is returned beside the value for its caller to report.
 pub fn read_state(root: &Path) -> Result<(Option<JsonValue>, Option<QuarantineRecord>), String> {
-    let read = read_json_optional(&root.join(STATE_FILE_NAME))?;
+    let read = read_json_optional(&root.join(STATE_FILE_NAME), formats::STATE)?;
     Ok((read.value, read.quarantined))
 }
 
 pub fn load_from_root(root: &Path) -> Result<LoadedAppData, String> {
     let config = (*config(root)?).clone();
     let mut quarantines = take_pending_quarantines();
-    let state_read = read_json_optional(&root.join(STATE_FILE_NAME))?;
+    let state_read = read_json_optional(&root.join(STATE_FILE_NAME), formats::STATE)?;
     if let Some(record) = state_read.quarantined {
         quarantines.push(record);
     }
@@ -529,9 +534,10 @@ pub fn config(root: &Path) -> Result<Arc<JsonValue>, String> {
 /// The held settings for the reads that come before the window shows: the
 /// interface language, read before this process owns the instance lock, and
 /// the theme. The first call reads `config.json` and holds it. A file that
-/// cannot be read or is not a settings object is neither held nor touched,
-/// because setting a store aside belongs to the lock owner's load; the
-/// built-ins answer until that load holds what it recovers.
+/// cannot be read, is not a settings object, or was written by a newer
+/// OneCopy is neither held nor touched, because setting a store aside and
+/// stopping the launch belong to the lock owner's load; the built-ins answer
+/// until that load holds what it recovers.
 pub fn held_config(root: &Path) -> JsonValue {
     let mut held = HELD_CONFIG.lock().unwrap_or_else(|p| p.into_inner());
     if let Some((held_root, effective)) = held.as_ref() {
@@ -539,13 +545,10 @@ pub fn held_config(root: &Path) -> JsonValue {
             return JsonValue::clone(effective);
         }
     }
-    let stored = match std::fs::read(root.join(CONFIG_FILE_NAME)) {
-        Ok(bytes) => match serde_json::from_slice::<JsonValue>(&bytes) {
-            Ok(document) if document.is_object() => Some(document),
-            _ => return effective_config(None),
-        },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(_) => return effective_config(None),
+    let stored = match read_json_file(&root.join(CONFIG_FILE_NAME), formats::CONFIG) {
+        Ok(JsonFile::Document(document)) if document.is_object() => Some(document),
+        Ok(JsonFile::Absent) => None,
+        _ => return effective_config(None),
     };
     let effective = effective_config(stored.as_ref());
     register_volume_roots(Some(&effective));
@@ -588,7 +591,7 @@ pub fn save_config(root: &Path, changes: &JsonValue) -> Result<SaveOutcome, Stri
         .filter(|(key, builtin)| !same_value(&effective[key.as_str()], builtin))
         .map(|(key, _)| (key.clone(), effective[key.as_str()].clone()))
         .collect::<serde_json::Map<_, _>>();
-    atomic_write_json(&root.join(CONFIG_FILE_NAME), &JsonValue::Object(stored), true)?;
+    write_json_file(&root.join(CONFIG_FILE_NAME), &JsonValue::Object(stored), formats::CONFIG, true)?;
     *held = Some((root.to_path_buf(), Arc::new(effective.clone())));
     crate::sleep_prevention::configure(&effective);
     register_volume_roots(Some(&effective));
@@ -618,7 +621,7 @@ pub fn patch_state(patch: &JsonValue) -> Result<PatchOutcome, String> {
     // not recorded: state.json is volatile UI state and nothing else; the
     // write goes through the unrecorded atomic path (see `patch_json_store`).
     let root = paths::data_root()?;
-    patch_json_store(&root.join(STATE_FILE_NAME), patch)
+    patch_json_store(&root.join(STATE_FILE_NAME), formats::STATE, patch)
 }
 
 /// A patch's merged document plus the quarantine this read-modify-write
@@ -628,8 +631,9 @@ pub struct PatchOutcome {
     pub quarantined: Option<QuarantineRecord>,
 }
 
-/// Merges top-level keys into a JSON store; null is a stored value.
-pub fn patch_json_store(target: &Path, patch: &JsonValue) -> Result<PatchOutcome, String> {
+/// Merges top-level keys into a JSON store of format `version`; null is a
+/// stored value. A store a newer OneCopy wrote is not patched.
+pub fn patch_json_store(target: &Path, version: i64, patch: &JsonValue) -> Result<PatchOutcome, String> {
     // Serialized: this is a read-modify-write dispatched on a thread pool, so
     // two surfaces saving at once could otherwise interleave their reads and
     // the second write would drop the first's keys. One global lock is
@@ -641,7 +645,10 @@ pub fn patch_json_store(target: &Path, patch: &JsonValue) -> Result<PatchOutcome
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    let read = read_json_optional(target)?;
+    let read = read_json_optional(target, version)?;
+    if let Some(newer) = read.newer {
+        return Err(newer.to_string());
+    }
     let quarantined = read.quarantined;
     let mut current = read.value.unwrap_or_else(|| serde_json::json!({}));
     if !current.is_object() {
@@ -658,11 +665,76 @@ pub fn patch_json_store(target: &Path, patch: &JsonValue) -> Result<PatchOutcome
     let record = !target
         .file_name()
         .is_some_and(|name| name == STATE_FILE_NAME);
-    atomic_write_json(target, &current, record)?;
+    write_json_file(target, &current, version, record)?;
     Ok(PatchOutcome {
         merged: current,
         quarantined,
     })
+}
+
+/// One versioned JSON store file as read: its document with the format
+/// marker removed, or why it cannot be used.
+pub enum JsonFile {
+    Absent,
+    Document(JsonValue),
+    /// Not JSON, or a marker that is not a version.
+    Unreadable(String),
+    /// Written by a newer OneCopy: left exactly in place.
+    Newer(formats::NewerStore),
+}
+
+/// Reads a JSON store of format `supported`. Only a failure to read the
+/// bytes is an error; what the bytes mean is the caller's branch.
+pub fn read_json_file(path: &Path, supported: i64) -> Result<JsonFile, String> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(JsonFile::Absent),
+        Err(err) => return Err(err.to_string()),
+    };
+    let mut document = match serde_json::from_slice::<JsonValue>(&bytes) {
+        Ok(document) => document,
+        Err(parse_error) => return Ok(JsonFile::Unreadable(format!("parse error: {parse_error}"))),
+    };
+    Ok(match formats::take_json_version(&mut document) {
+        Err(reason) => JsonFile::Unreadable(reason),
+        Ok(version) => match formats::NewerStore::check(path, version, supported) {
+            Some(newer) => JsonFile::Newer(newer),
+            None => JsonFile::Document(document),
+        },
+    })
+}
+
+/// Writes a JSON store of format `version` atomically, the marker stamped on
+/// the way out, recording the bytes in the backup store when `record` is
+/// set. A file a newer OneCopy wrote is never written over.
+pub fn write_json_file(target: &Path, document: &JsonValue, version: i64, record: bool) -> Result<(), String> {
+    refuse_newer(target, version)?;
+    let mut document = document.clone();
+    formats::stamp_json(&mut document, version)?;
+    let mut text = serde_json::to_string_pretty(&document).map_err(|e| e.to_string())?;
+    text.push('\n');
+    write_atomic_inner(target, text.as_bytes(), record)
+}
+
+/// Refuses to replace or remove a JSON store a newer OneCopy wrote.
+pub fn refuse_newer(target: &Path, version: i64) -> Result<(), String> {
+    match read_json_file(target, version)? {
+        JsonFile::Newer(newer) => Err(newer.to_string()),
+        _ => Ok(()),
+    }
+}
+
+/// Logs a store a newer OneCopy wrote, which is read as absent and left in
+/// place.
+pub fn warn_newer(newer: &formats::NewerStore) {
+    logging::warn(
+        "store written by a newer OneCopy; left as it is",
+        serde_json::json!({
+            "file": newer.path,
+            "formatVersion": newer.version,
+            "supported": newer.supported,
+        }),
+    );
 }
 
 struct JsonRead {
@@ -670,44 +742,52 @@ struct JsonRead {
     /// Set when this read set the store aside; the caller owns getting the
     /// record to a reporting surface.
     quarantined: Option<QuarantineRecord>,
+    /// Set when a newer OneCopy wrote the store; `value` is then absent.
+    newer: Option<formats::NewerStore>,
 }
 
 /// Reads an optional JSON store; invalid content is quarantined aside and the
 /// record returned. Config additionally requires an object root, which is an
 /// envelope invariant rather than feature-level value validation. The rename
 /// failure propagates before any caller can write defaults.
-fn read_json_optional(path: &Path) -> Result<JsonRead, String> {
-    read_json_optional_with_envelope(path, false)
+fn read_json_optional(path: &Path, version: i64) -> Result<JsonRead, String> {
+    read_json_optional_with_envelope(path, version, false)
 }
 
 fn read_config_optional(path: &Path) -> Result<JsonRead, String> {
-    let mut read = read_json_optional_with_envelope(path, true)?;
+    let mut read = read_json_optional_with_envelope(path, formats::CONFIG, true)?;
+    if let Some(newer) = &read.newer {
+        return Err(newer.to_string());
+    }
     read.value = read.value.as_ref().map(|value| effective_config(Some(value)));
     register_volume_roots(read.value.as_ref());
     Ok(read)
 }
 
+/// Whether `config.json` was written by a newer OneCopy, read without
+/// touching it, for the launch to stop on by name.
+pub fn config_newer(root: &Path) -> Result<Option<formats::NewerStore>, String> {
+    Ok(match read_json_file(&root.join(CONFIG_FILE_NAME), formats::CONFIG)? {
+        JsonFile::Newer(newer) => Some(newer),
+        _ => None,
+    })
+}
+
 fn read_json_optional_with_envelope(
     path: &Path,
+    version: i64,
     require_object_root: bool,
 ) -> Result<JsonRead, String> {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(JsonRead {
-                value: None,
-                quarantined: None,
-            });
+    let read = |value| JsonRead { value, quarantined: None, newer: None };
+    match read_json_file(path, version)? {
+        JsonFile::Absent => Ok(read(None)),
+        JsonFile::Document(value) if !require_object_root || value.is_object() => Ok(read(Some(value))),
+        JsonFile::Document(_) => quarantine_invalid_store(path, "config root must be a JSON object"),
+        JsonFile::Unreadable(reason) => quarantine_invalid_store(path, &reason),
+        JsonFile::Newer(newer) => {
+            warn_newer(&newer);
+            Ok(JsonRead { value: None, quarantined: None, newer: Some(newer) })
         }
-        Err(err) => return Err(err.to_string()),
-    };
-    match serde_json::from_slice::<JsonValue>(&bytes) {
-        Ok(value) if !require_object_root || value.is_object() => Ok(JsonRead {
-            value: Some(value),
-            quarantined: None,
-        }),
-        Ok(_) => quarantine_invalid_store(path, "config root must be a JSON object"),
-        Err(parse_error) => quarantine_invalid_store(path, &format!("parse error: {parse_error}")),
     }
 }
 
@@ -731,6 +811,7 @@ fn quarantine_invalid_store(path: &Path, reason: &str) -> Result<JsonRead, Strin
     );
     Ok(JsonRead {
         value: None,
+        newer: None,
         quarantined: Some(QuarantineRecord {
             file: path
                 .file_name()
@@ -748,14 +829,6 @@ fn quarantine_name(path: &Path) -> PathBuf {
     path.with_file_name(format!("{stem}-{}.invalid", logging::filename_stamp_now()))
 }
 
-/// Serializes through serde (never a hand-written literal) and writes atomically,
-/// recording the bytes in the backup store only when `record` is set.
-fn atomic_write_json(target: &Path, value: &JsonValue, record: bool) -> Result<(), String> {
-    let mut text = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
-    text.push('\n');
-    write_atomic_inner(target, text.as_bytes(), record)
-}
-
 /// Atomic write: write to a `<stem>-<nanoid>.tmp` sibling, fsync it, rename over
 /// the target, fsync the directory — a crash can never leave a half-written
 /// store. Strictly AFTER the rename lands, the exact bytes are recorded into the
@@ -765,10 +838,8 @@ pub fn write_atomic(target: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 /// The same atomic write, WITHOUT the backup record. For text that is excluded
-/// from the history by a design-time, per-write-site decision: the version
-/// sidecar in the binary-bearing `bin/`, the dependency facts, and the volatile
-/// state stores (`state.json`, `window.json`, `preview-window.json`; see the
-/// table above).
+/// from the history by a design-time, per-write-site decision (see the table
+/// above); the JSON stores choose through `write_json_file`.
 pub fn write_atomic_unrecorded(target: &Path, bytes: &[u8]) -> Result<(), String> {
     write_atomic_inner(target, bytes, false)
 }

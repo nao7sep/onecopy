@@ -42,6 +42,7 @@ fn durable_text_records_and_dependency_facts_and_volatile_state_do_not() {
     );
     storage::patch_json_store(
         &root.path().join(storage::STATE_FILE_NAME),
+        onecopy_lib::formats::STATE,
         &serde_json::json!({ "zoomLevel": 1.2 }),
     )
     .unwrap();

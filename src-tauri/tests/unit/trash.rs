@@ -183,15 +183,15 @@ fn the_latest_record_names_a_stored_file_reused_after_a_failed_move() {
     let day = Path::new(&record.stored_path).parent().unwrap();
     let raw = std::fs::read_to_string(day.join(MANIFEST_FILE_NAME)).unwrap();
     assert_eq!(raw.lines().count(), 2, "both lines stay: manifests are append-only");
-    let listing = read_day(day, &root_spellings(&root)).unwrap();
+    let listing = read_day(day).unwrap();
     assert_eq!(listing.records.len(), 1);
     let (latest, stored) = &listing.records[0];
-    assert_eq!(latest.original_relative.as_deref(), Some("second/photo.jpg"));
+    assert_eq!(latest.original_relative, "second/photo.jpg");
     assert_eq!(
         *stored,
         StoredState::Regular {
             size: 6,
-            mtime_ms: latest.mtime_ms.unwrap()
+            mtime_ms: latest.mtime_ms
         }
     );
     assert_eq!(listing.unrecorded_files, 0);

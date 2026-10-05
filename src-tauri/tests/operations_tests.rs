@@ -29,6 +29,7 @@ fn fixture(label: &str) -> Fixture {
     std::fs::write(
         app_root.join("config.json"),
         serde_json::to_vec(&serde_json::json!({
+            "formatVersion": 1,
             "sourceDirs": [root.to_string_lossy()],
             "destinationRoots": [dir.path().to_string_lossy()],
         }))
@@ -232,12 +233,12 @@ fn deleting_a_logical_item_trashes_every_copy_and_companion() {
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
     assert_eq!(manifest.len(), 3, "one manifest line per trashed file");
-    // Version 2: every line names its operation, item, role and relative
-    // location, plus the size and time a restore verifies.
+    // Every line names its format version, operation, item, role and
+    // relative location, plus the size and time a restore verifies.
     let operation = manifest[0]["operation"].as_str().expect("operation id").to_string();
     for line in &manifest {
         let original = line["originalPath"].as_str().unwrap();
-        assert_eq!(line["v"], 2);
+        assert_eq!(line["formatVersion"], 1);
         assert_eq!(line["kind"], "delete");
         assert_eq!(line["operation"], operation.as_str(), "one operation id per batch");
         assert_eq!(line["item"], hash.as_str());
@@ -578,7 +579,7 @@ fn move_out_delivers_primary_and_companion_then_trashes_the_rest() {
         "every trashed original has a manifest line"
     );
     for line in &manifest {
-        assert_eq!(line["v"], 2);
+        assert_eq!(line["formatVersion"], 1);
         assert_eq!(line["kind"], "move-cleanup");
         assert_eq!(line["item"], hash.as_str());
         let companion = line["originalPath"].as_str().unwrap().ends_with("x.arw");
@@ -1910,6 +1911,7 @@ fn write_config(f: &Fixture, sources: &[&std::path::Path], destinations: &[&std:
     std::fs::write(
         f.app_root.join("config.json"),
         serde_json::to_vec(&serde_json::json!({
+            "formatVersion": 1,
             "sourceDirs": list(sources),
             "destinationRoots": list(destinations),
         }))

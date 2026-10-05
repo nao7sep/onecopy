@@ -255,6 +255,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             title: "OneCopy could not start safely",
             message:
               "OneCopy could not load its saved application data. Your existing files were not changed. Quit OneCopy, then try again.",
+            newerStores: [],
           },
         });
         log.error("app data load failed", toErrorFields(error));

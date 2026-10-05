@@ -150,6 +150,7 @@ fn copy_move_and_delete_on(filesystem: &str) {
     std::fs::write(
         app_root.join("config.json"),
         serde_json::to_vec(&serde_json::json!({
+            "formatVersion": 1,
             "sourceDirs": [local.to_string_lossy(), on_volume.to_string_lossy()],
             "destinationRoots": [image.volume.to_string_lossy()],
         }))

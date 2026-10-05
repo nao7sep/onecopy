@@ -19,6 +19,9 @@ static WORKERS: Mutex<Vec<JoinHandle<()>>> = Mutex::new(Vec::new());
 pub(crate) struct StartupFailure {
     pub(crate) title: &'static str,
     pub(crate) message: &'static str,
+    /// Required stores a newer OneCopy wrote, which stopped the launch and
+    /// were left as they are; empty for any other failure.
+    pub(crate) newer_stores: Vec<crate::formats::NewerStore>,
 }
 
 pub(crate) struct StartupGate {
@@ -31,10 +34,19 @@ impl StartupGate {
     }
 
     fn blocked() -> Self {
+        Self::stopped(Vec::new())
+    }
+
+    fn newer(stores: Vec<crate::formats::NewerStore>) -> Self {
+        Self::stopped(stores)
+    }
+
+    fn stopped(newer_stores: Vec<crate::formats::NewerStore>) -> Self {
         Self {
             failure: Some(StartupFailure {
                 title: BLOCKED_TITLE,
                 message: BLOCKED_MESSAGE,
+                newer_stores,
             }),
         }
     }
@@ -53,6 +65,33 @@ pub(crate) struct StartupState {
 
 struct PreparedData {
     cache_root: PathBuf,
+}
+
+/// Why the launch stopped before any runtime work.
+enum StartupError {
+    Failed(String),
+    /// Required stores a newer OneCopy wrote (store-recovery conventions).
+    Newer(Vec<crate::formats::NewerStore>),
+}
+
+impl From<String> for StartupError {
+    fn from(error: String) -> Self {
+        Self::Failed(error)
+    }
+}
+
+/// The stores the launch cannot go on without that a newer OneCopy wrote,
+/// read without touching them: the index, the records and the settings.
+fn newer_required_stores(data_root: &Path) -> Result<Vec<crate::formats::NewerStore>, String> {
+    use crate::formats;
+    Ok([
+        formats::sqlite_newer(&data_root.join(crate::storage::INDEX_DB_FILE_NAME), formats::INDEX)?,
+        formats::sqlite_newer(&data_root.join(crate::records::RECORDS_DB_FILE_NAME), formats::RECORDS)?,
+        crate::storage::config_newer(data_root)?,
+    ]
+    .into_iter()
+    .flatten()
+    .collect())
 }
 
 fn spawn_launch_worker(
@@ -140,11 +179,15 @@ fn prepare_data(data_root: &Path) -> Result<PreparedData, String> {
     })
 }
 
-fn prepare(app: &tauri::App, debug_enabled: bool) -> Result<StartupState, String> {
+fn prepare(app: &tauri::App, debug_enabled: bool) -> Result<StartupState, StartupError> {
     let started = Instant::now();
     let data_root = crate::paths::resolve_data_root(app.handle())?;
     let records_path = data_root.join(crate::records::RECORDS_DB_FILE_NAME);
     crate::logging::init(&records_path, &data_root.join(crate::paths::LOGS_DIR_NAME), debug_enabled);
+    let newer = newer_required_stores(&data_root)?;
+    if !newer.is_empty() {
+        return Err(StartupError::Newer(newer));
+    }
     crate::binary_archive::launch(&data_root);
     if let Some(session_id) = crate::logging::session_id() {
         crate::records::init(&records_path, session_id);
@@ -421,9 +464,16 @@ pub(crate) fn initialize(app: &tauri::App, debug_enabled: bool) -> StartupGate {
 
     let state = match prepared {
         Ok(Ok(state)) => state,
-        Ok(Err(error)) => {
+        Ok(Err(StartupError::Failed(error))) => {
             crate::logging::error("startup blocked", json!({ "error": { "message": error } }));
             return StartupGate::blocked();
+        }
+        Ok(Err(StartupError::Newer(stores))) => {
+            crate::logging::error(
+                "startup stopped: stores written by a newer OneCopy were left as they are",
+                json!({ "stores": stores }),
+            );
+            return StartupGate::newer(stores);
         }
         Err(payload) => {
             let error = crate::failure_runtime::panic_message(payload);

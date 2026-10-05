@@ -115,12 +115,29 @@ fn open(store_file: &Path) -> Result<Connection, String> {
     if let Some(parent) = store_file.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let conn = Connection::open(store_file).map_err(|e| e.to_string())?;
+    let mut conn = Connection::open(store_file).map_err(|e| e.to_string())?;
+    conn.busy_timeout(std::time::Duration::from_millis(100))
+        .map_err(|e| e.to_string())?;
+    // A history a newer OneCopy wrote, or one without its marker, is left
+    // exactly as it is: recording stays disabled for the session
+    // (store-recovery conventions).
+    match crate::formats::sqlite_marker(&conn, store_file, crate::formats::BACKUPS)? {
+        crate::formats::SqliteMarker::Newer(newer) => return Err(newer.to_string()),
+        crate::formats::SqliteMarker::Missing => return Err(crate::formats::missing_marker(store_file)),
+        crate::formats::SqliteMarker::New | crate::formats::SqliteMarker::Current => {}
+    }
     // WAL for cross-process overlap. SQLite contention uses a 100 ms timeout
     // before this best-effort record is dropped and warned.
     static JOURNAL: crate::sqlite::JournalSetup = crate::sqlite::JournalSetup::new();
     JOURNAL.configure(&conn, std::time::Duration::from_millis(100))?;
-    conn.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
+    // The schema and its marker commit together.
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    tx.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
+    tx.pragma_update(None, "user_version", crate::formats::BACKUPS)
+        .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(conn)
 }
 

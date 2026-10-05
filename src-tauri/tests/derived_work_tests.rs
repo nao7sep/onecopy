@@ -730,6 +730,7 @@ fn an_unsupported_saved_acceleration_fails_only_its_own_engine() {
     std::fs::write(
         dir.path().join(onecopy_lib::storage::CONFIG_FILE_NAME),
         serde_json::json!({
+            "formatVersion": 1,
             "aiAcceleration": { "transcription": "none", "face-scoring": "metal" },
             "scoreFaces": true,
         })

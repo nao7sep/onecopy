@@ -1,7 +1,7 @@
 // The restore review: shown only when something needs a decision or a
-// warning (name conflicts, folders to recreate, unverified entries, skipped
-// files, a companion that will not pair with its main file restored earlier
-// under another name). It lists every selected file with where it goes. Restoring destroys
+// warning (name conflicts, folders to recreate, skipped files, a companion
+// that will not pair with its main file restored earlier under another name).
+// It lists every selected file with where it goes. Restoring destroys
 // nothing, so the primary action may take focus; Cancel does no filesystem
 // work.
 
@@ -15,7 +15,6 @@ const SKIP_REASONS: Record<RestoreSkip, MessageKey> = {
   "already-there": "restoreReview.skipAlreadyThere",
   changed: "deletedFiles.statusChanged",
   missing: "restoreReview.skipMissing",
-  "outside-root": "deletedFiles.statusOutsideRoot",
   unrepresentable: "deletedFiles.statusUnrepresentable",
   excluded: "deletedFiles.statusExcluded",
   "folder-is-link": "restoreReview.skipFolderIsLink",
@@ -78,9 +77,6 @@ export default function RestoreReviewModal({
                   ? t("restoreReview.renamed", { path: file.target ?? "" })
                   : t("restoreReview.target", { path: file.target ?? "" })}
             </p>
-            {file.unverified ? (
-              <p className="text-xs text-warning">{t("deletedFiles.statusUnverified")}</p>
-            ) : null}
             {file.mainRestoredAs !== null ? (
               <p className="break-all text-xs text-warning">
                 {t("restoreReview.companionUnpaired", { path: file.mainRestoredAs })}

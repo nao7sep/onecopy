@@ -23,7 +23,6 @@ function entry(overrides: Partial<TrashEntry> & { id: string }): TrashEntry {
     size: 1024,
     mtimeMs: 1,
     group: `item:op:${overrides.item ?? "item"}`,
-    version: 2,
     kind: "delete",
     operation: "op",
     item: "item",
@@ -43,6 +42,7 @@ const LISTING: TrashListing = {
   ],
   unrecordedFiles: 2,
   malformedLines: 0,
+  newerLines: 0,
 };
 
 beforeEach(() => {
@@ -68,6 +68,15 @@ describe("Deleted files browse", () => {
     expect(document.body.textContent).toContain("2 files here have no record");
     const changed = options.find((option) => option.textContent?.includes("notes.txt"))!;
     expect(changed.getAttribute("aria-disabled")).toBe("true");
+  });
+
+  it("says how many record lines a newer OneCopy wrote and left as they are", async () => {
+    mockCommands({ trash_entries: () => ({ ...LISTING, newerLines: 3 }) });
+    render(<DeletedFilesModal location={LOCATION} onClose={() => {}} />);
+    await act(async () => {});
+    expect(document.body.textContent).toContain(
+      "3 record lines were written by a newer version of OneCopy and were left as they are.",
+    );
   });
 
   it("searches by name or original folder", async () => {
@@ -188,8 +197,8 @@ describe("Restore", () => {
               requiresReview: true,
               review: {
                 files: [
-                  { id: "20260927-utc/beach.jpg", original: "trips/beach.jpg", target: "trips/beach 2.jpg", renamed: true, unverified: false, skip: null, mainRestoredAs: null },
-                  { id: "20260927-utc/beach.xmp", original: "trips/beach.xmp", target: "trips/beach 2.xmp", renamed: true, unverified: false, skip: null, mainRestoredAs: null },
+                  { id: "20260927-utc/beach.jpg", original: "trips/beach.jpg", target: "trips/beach 2.jpg", renamed: true, skip: null, mainRestoredAs: null },
+                  { id: "20260927-utc/beach.xmp", original: "trips/beach.xmp", target: "trips/beach 2.xmp", renamed: true, skip: null, mainRestoredAs: null },
                 ],
                 folders: ["trips"],
                 companionsLeft: [],
@@ -217,7 +226,7 @@ describe("Restore", () => {
           requiresReview: true,
           review: {
             files: [
-              { id: "20260927-utc/beach.xmp", original: "trips/beach.xmp", target: "trips/beach.xmp", renamed: false, unverified: false, skip: null, mainRestoredAs: "trips/beach 2.jpg" },
+              { id: "20260927-utc/beach.xmp", original: "trips/beach.xmp", target: "trips/beach.xmp", renamed: false, skip: null, mainRestoredAs: "trips/beach 2.jpg" },
             ],
             folders: [],
             companionsLeft: [],
@@ -240,7 +249,7 @@ describe("Restore", () => {
         calls.push(args);
         return outcome({
           requiresReview: true,
-          review: { files: [{ id: "x", original: "x.jpg", target: null, renamed: false, unverified: false, skip: "already-there", mainRestoredAs: null }], folders: [], companionsLeft: [] },
+          review: { files: [{ id: "x", original: "x.jpg", target: null, renamed: false, skip: "already-there", mainRestoredAs: null }], folders: [], companionsLeft: [] },
         });
       },
     });

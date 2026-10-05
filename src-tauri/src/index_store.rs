@@ -3,8 +3,6 @@
 //! lifecycle archives preserve this store; its Issues and analysis failures
 //! are records in the attached `records.sqlite3`.
 //!
-//! An index written by an earlier schema revision is rebuilt from the files.
-//!
 //! The unit model: `contents` holds one row per unique content hash (the
 //! logical file every view shows); `paths` holds one row per physical path,
 //! N of which share a `content_hash` — the copy count is a COUNT over this
@@ -16,9 +14,6 @@
 use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension};
-
-// Ordinary reads do not replay DDL.
-const SCHEMA_REVISION: i64 = 21;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS contents (
@@ -438,6 +433,15 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let conn = Connection::open(db_file).map_err(|e| e.to_string())?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|error| error.to_string())?;
+    // Read before anything is set or written: an index a newer OneCopy wrote
+    // is left exactly as it is (store-recovery conventions).
+    if let crate::formats::SqliteMarker::Newer(newer) =
+        crate::formats::sqlite_marker(&conn, db_file, crate::formats::INDEX)?
+    {
+        return Err(newer.to_string());
+    }
     conn.create_collation("onecopy_nocase", |left, right| {
         // Allocation-free case-insensitive compare: char::to_lowercase yields a
         // small stack iterator per character, so this never heap-allocates a
@@ -449,27 +453,18 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
     .map_err(|error| error.to_string())?;
     static JOURNAL: crate::sqlite::JournalSetup = crate::sqlite::JournalSetup::new();
     JOURNAL.configure(&conn, std::time::Duration::from_secs(5))?;
-    let schema_revision = conn
-        .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
-        .map_err(|error| format!("read index schema revision: {error}"))?;
-    if schema_revision != SCHEMA_REVISION {
+    // A new index gets its schema once, and an index without its marker is
+    // unreadable and, being re-derived, is rebuilt from the files. Ordinary
+    // opens of a marked index replay no DDL.
+    if raw_user_version(&conn)? == 0 {
         conn.execute_batch("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE")
-            .map_err(|error| format!("claim index upgrade: {error}"))?;
+            .map_err(|error| format!("claim index setup: {error}"))?;
         let setup = (|| {
-            // Another opener may have completed the upgrade while this one
-            // waited for SQLite's write lock. Its observed version owns DDL.
-            let current = conn
-                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
-                .map_err(|error| error.to_string())?;
-            match current {
-                SCHEMA_REVISION => return Ok(()),
-                current if current > SCHEMA_REVISION => {
-                    return Err(format!("unsupported index schema revision: {current}"))
-                }
-                _ => {}
+            // Another opener may have created the schema while this one
+            // waited for SQLite's write lock.
+            if raw_user_version(&conn)? != 0 {
+                return Ok(());
             }
-            // An earlier revision is not upgraded: the index is rebuilt from
-            // the files, starting empty.
             let objects = conn
                 .prepare(
                     "SELECT type, name FROM sqlite_master
@@ -481,6 +476,12 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
                         .collect::<rusqlite::Result<Vec<_>>>()
                 })
                 .map_err(|error| error.to_string())?;
+            if !objects.is_empty() {
+                crate::logging::warn(
+                    "index without its format version; rebuilding it from the files",
+                    serde_json::json!({ "file": db_file }),
+                );
+            }
             for (kind, name) in objects {
                 let kind = if kind == "view" { "VIEW" } else { "TABLE" };
                 conn.execute_batch(&format!("DROP {kind} IF EXISTS \"{}\"", name.replace('"', "\"\"")))
@@ -491,7 +492,7 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
                 &conn,
                 &crate::visibility::Policy::from_config(&serde_json::json!({}))?,
             )?;
-            conn.pragma_update(None, "user_version", SCHEMA_REVISION)
+            conn.pragma_update(None, "user_version", crate::formats::INDEX)
                 .map_err(|error| error.to_string())?;
             Ok::<(), String>(())
         })();
@@ -527,8 +528,12 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
     Ok(conn)
 }
 
-// EXCEPTION (tests-folder conventions): the schema-shape test stays in-file
-// because it asserts the private SCHEMA constant's effect on a fresh file,
+/// `user_version` as stored: 0 until the schema is created.
+fn raw_user_version(conn: &Connection) -> Result<i64, String> {
+    conn.pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(|error| format!("read index format version: {error}"))
+}
+
 /// Whether this launch's Issue for (kind, path) is open: its latest event is
 /// an occurrence.
 fn issue_open(conn: &Connection, kind: &str, path: &str) -> Result<bool, String> {
@@ -761,13 +766,3 @@ pub fn clear_reconstructible(
         },
     )
 }
-
-// which has no public seam. The copy-count semantics it used to sit beside
-// moved to tests/queries_tests.rs, where they are asserted through the real
-// query instead of a SELECT the test wrote itself.
-#[cfg(test)]
-// EXCEPTION to tests-folder conventions: reads the private
-// `SCHEMA_REVISION`; promoting it would widen the crate's API only for this
-// test.
-#[path = "../tests/unit/index_store.rs"]
-mod tests;

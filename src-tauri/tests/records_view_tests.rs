@@ -363,3 +363,49 @@ fn records_from_a_newer_onecopy_are_not_read() {
 
     assert!(open_reader(&store.path).is_err());
 }
+
+#[test]
+fn new_records_record_format_version_1() {
+    let store = records();
+    let version: i64 = store
+        .writer
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, onecopy_lib::formats::RECORDS);
+    assert_eq!(onecopy_lib::formats::RECORDS, 1);
+}
+
+#[test]
+fn records_from_a_newer_onecopy_are_named_and_left_as_they_are() {
+    let store = records();
+    store.writer.pragma_update(None, "user_version", 2).unwrap();
+    store.writer.pragma_update(None, "journal_mode", "DELETE").unwrap();
+
+    let error = records::open(&store.path).expect_err("newer records are not opened for writing");
+    assert!(error.contains(&store.path.to_string_lossy().into_owned()) && error.contains("newer"), "{error}");
+    let journal: String = store
+        .writer
+        .pragma_query_value(None, "journal_mode", |row| row.get(0))
+        .unwrap();
+    assert_eq!(journal, "delete", "the newer store's journal mode is not converted");
+    let version: i64 = store
+        .writer
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 2);
+}
+
+#[test]
+fn records_without_their_marker_are_unreadable_and_left_as_they_are() {
+    let store = records();
+    store.writer.pragma_update(None, "user_version", 0).unwrap();
+
+    let error = records::open(&store.path).expect_err("unmarked records are not opened");
+    assert!(error.contains("no format version"), "{error}");
+    assert!(open_reader(&store.path).is_err());
+    let version: i64 = store
+        .writer
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 0);
+}

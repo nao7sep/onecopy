@@ -94,6 +94,7 @@ fn world(label: &str) -> World {
     std::fs::write(
         home.join("config.json"),
         serde_json::to_vec(&serde_json::json!({
+            "formatVersion": 1,
             "sourceDirs": [corpus.to_string_lossy()],
             "destinationRoots": [dir.path().to_string_lossy()],
         }))

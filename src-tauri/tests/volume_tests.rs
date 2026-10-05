@@ -160,3 +160,25 @@ fn enforce_no_substitution_refuses_only_the_affected_root_in_a_multi_root_batch(
     assert!(error.contains(&substituted_str), "names the affected root: {error}");
     assert!(!error.contains(&healthy_str), "does not implicate the healthy root: {error}");
 }
+
+#[test]
+fn the_source_volume_record_carries_its_format_version() {
+    let app_data = tempfile::tempdir().unwrap();
+    onecopy_lib::volume::check_identity(app_data.path(), "/photos", "volume-a").unwrap();
+    let stored: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(app_data.path().join("source-volumes.json")).unwrap()).unwrap();
+    assert_eq!(stored["formatVersion"], onecopy_lib::formats::SOURCE_VOLUMES);
+    assert_eq!(stored["sources"][0]["identity"], "volume-a");
+}
+
+#[test]
+fn a_source_volume_record_written_by_a_newer_onecopy_closes_the_gate_and_is_left_as_it_is() {
+    let app_data = tempfile::tempdir().unwrap();
+    let path = app_data.path().join("source-volumes.json");
+    let bytes = br#"{"formatVersion":2,"sources":[]}"#;
+    std::fs::write(&path, bytes).unwrap();
+    let error = onecopy_lib::volume::check_identity(app_data.path(), "/photos", "volume-a")
+        .expect_err("a newer record is not read");
+    assert!(error.contains("newer"), "{error}");
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+}

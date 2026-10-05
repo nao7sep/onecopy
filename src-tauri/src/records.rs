@@ -11,7 +11,6 @@ use serde_json::{json, Value as JsonValue};
 use crate::activity::ActivityKind;
 
 pub const RECORDS_DB_FILE_NAME: &str = "records.sqlite3";
-pub(crate) const SCHEMA_VERSION: i64 = 1;
 /// The data-lifecycle conventions' transient-record age, fixed in a desktop app.
 const TRANSIENT_DAYS: i64 = 90;
 
@@ -160,21 +159,34 @@ pub fn open(path: &Path) -> Result<Connection, String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    let connection = Connection::open(path).map_err(|error| error.to_string())?;
+    let mut connection = Connection::open(path).map_err(|error| error.to_string())?;
+    connection
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|error| error.to_string())?;
+    // Read before anything is set or written: records a newer OneCopy wrote
+    // are left exactly as they are (store-recovery conventions).
+    match crate::formats::sqlite_marker(&connection, path, crate::formats::RECORDS)? {
+        crate::formats::SqliteMarker::Newer(newer) => return Err(newer.to_string()),
+        crate::formats::SqliteMarker::Missing => return Err(crate::formats::missing_marker(path)),
+        crate::formats::SqliteMarker::New | crate::formats::SqliteMarker::Current => {}
+    }
     static JOURNAL: crate::sqlite::JournalSetup = crate::sqlite::JournalSetup::new();
     JOURNAL.configure(&connection, std::time::Duration::from_secs(5))?;
     connection
         .pragma_update(None, "synchronous", "NORMAL")
         .map_err(|error| error.to_string())?;
-    let version: i64 = connection
-        .pragma_query_value(None, "user_version", |row| row.get(0))
+    // The schema and its marker commit together, so no reader ever sees one
+    // without the other.
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|error| error.to_string())?;
-    if version > SCHEMA_VERSION {
-        return Err("The records were written by a newer OneCopy version.".into());
-    }
-    connection
+    transaction
         .execute_batch(SCHEMA)
         .map_err(|error| error.to_string())?;
+    transaction
+        .pragma_update(None, "user_version", crate::formats::RECORDS)
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())?;
     Ok(connection)
 }
 
@@ -295,8 +307,7 @@ const SCHEMA: &str = "
     );
     CREATE INDEX IF NOT EXISTS notices_time ON notices(time_utc, id);
     -- The Records window reads every table newest first through these.
-    CREATE INDEX IF NOT EXISTS activity_events_event_time ON activity_events(event_time_utc, id);
-    PRAGMA user_version = 1;";
+    CREATE INDEX IF NOT EXISTS activity_events_event_time ON activity_events(event_time_utc, id);";
 
 /// Attaches the records beside an index database to its connection as
 /// `records`, so an index transaction can write the records it produces.

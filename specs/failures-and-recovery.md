@@ -62,6 +62,8 @@ Recovery failures are themselves contained and reported. Recovery does not retry
 
 Every retryable failure identifies a reachable recovery boundary at the surviving owner; ordinary surface reopening never substitutes for explicit section recheck. A fatal startup halt names a safe next step, provides access to application logs when they can help, and retains a labelled exit. It offers in-process retry only when startup can be attempted again without bypassing or duplicating an already-admitted service.
 
+OneCopy's data files record the version of their format, and one without it is unreadable. A data file a newer OneCopy wrote is intact data this version cannot read: it is never set aside, reset, or written to, so the newer version can still read it. When it is the library index, the records, or the settings, startup halts and names each such file with its path, says it was left as it is, and directs the user to the newer version. Window and interface state it wrote reads as absent and is not saved over, the backup history records nothing for that session, and its deleted-file records are counted in Deleted files.
+
 ## Restart behavior
 
 Restart begins a fresh Issues inbox; entries from earlier runs stay as records. Explicit section recheck similarly retires the section's failed preparation/information/enrichment entries as rechecked, not as successfully repaired, before admitting another attempt. A new failure creates a fresh visible entry; merely changing or reopening a section does neither. Attempt eligibility and the preservation of successful results are owned by `library-maintenance.md`.

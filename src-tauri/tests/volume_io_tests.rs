@@ -323,6 +323,7 @@ fn reading_the_settings_registers_each_configured_root() {
     std::fs::write(
         data_root.path().join("config.json"),
         serde_json::to_vec(&serde_json::json!({
+            "formatVersion": 1,
             "sourceDirs": [source.to_string_lossy()],
             "destinationRoots": [destination.to_string_lossy()],
         }))

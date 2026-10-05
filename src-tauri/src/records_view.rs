@@ -233,11 +233,10 @@ pub fn open_reader(path: &Path) -> Result<Connection, String> {
     connection
         .busy_timeout(Duration::from_secs(5))
         .map_err(|error| error.to_string())?;
-    let version: i64 = connection
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .map_err(|error| error.to_string())?;
-    if version > crate::records::SCHEMA_VERSION {
-        return Err("The records were written by a newer OneCopy version.".into());
+    match crate::formats::sqlite_marker(&connection, path, crate::formats::RECORDS)? {
+        crate::formats::SqliteMarker::Newer(newer) => return Err(newer.to_string()),
+        crate::formats::SqliteMarker::Missing => return Err(crate::formats::missing_marker(path)),
+        crate::formats::SqliteMarker::New | crate::formats::SqliteMarker::Current => {}
     }
     Ok(connection)
 }

@@ -30,6 +30,19 @@ export interface LoadedAppData {
 export interface StartupFailure {
   title: string;
   message: string;
+  /** Required stores a newer OneCopy wrote, which stopped the launch and were
+   * left as they are; empty for any other failure. */
+  newerStores: NewerStore[];
+}
+
+/** Mirrors formats::NewerStore. */
+export interface NewerStore {
+  /** The store's file name — `index.sqlite3`, `config.json`. */
+  file: string;
+  /** The store's full path, shown as recorded. */
+  path: string;
+  version: number;
+  supported: number;
 }
 
 export type BootstrapData =

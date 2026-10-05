@@ -29,7 +29,6 @@ function entry(overrides: Partial<TrashEntry> & { id: string }): TrashEntry {
     size: 10,
     mtimeMs: 1,
     group: `item:${overrides.operation ?? "op-1"}:${overrides.item ?? "hash-1"}`,
-    version: 2,
     kind: "delete",
     operation: "op-1",
     item: "hash-1",
@@ -42,7 +41,7 @@ function entry(overrides: Partial<TrashEntry> & { id: string }): TrashEntry {
 }
 
 describe("grouping", () => {
-  it("groups version 2 records by operation and item, mains before companions", () => {
+  it("groups records by operation and item, mains before companions", () => {
     const groups = groupEntries([
       entry({ id: "d/x.arw", role: "companion", originalRelative: "a/x.arw" }),
       entry({ id: "d/x.jpg", originalRelative: "a/x.jpg" }),
@@ -56,16 +55,6 @@ describe("grouping", () => {
     expect([first.mains, first.companions]).toEqual([2, 1]);
     expect(first.size).toBe(30);
     expect(entryName(first.representative)).toBe("x.jpg");
-  });
-
-  it("groups older records by the backend's day, folder and stem key", () => {
-    const legacy = { version: 1, operation: null, item: null, kind: null, status: "unverified" as const };
-    const groups = groupEntries([
-      entry({ ...legacy, id: "d/IMG.JPG", originalRelative: "a/IMG.JPG", group: "day:d:a/img" }),
-      entry({ ...legacy, id: "d/img.xmp", role: "companion", originalRelative: "a/img.xmp", group: "day:d:a/img" }),
-      entry({ ...legacy, id: "d/IMG-2.JPG", originalRelative: "b/IMG.JPG", group: "day:d:b/img" }),
-    ]);
-    expect(groups.map((group) => group.entries.length).sort()).toEqual([1, 2]);
   });
 
   it("groups a displaced destination family by operation, folder and stem", () => {
@@ -217,7 +206,7 @@ describe("the restore receipt", () => {
   });
 
   it("offers Rename and Restore only when a file is renamed, and nothing when all are skipped", () => {
-    const file = { id: "a", original: "a.jpg", target: "a.jpg", renamed: false, unverified: true, skip: null, mainRestoredAs: null };
+    const file = { id: "a", original: "a.jpg", target: "a.jpg", renamed: false, skip: null, mainRestoredAs: null };
     expect(reviewAction({ files: [file], folders: [], companionsLeft: [] })).toBe("restore");
     expect(reviewAction({ files: [{ ...file, renamed: true }], folders: [], companionsLeft: [] })).toBe(
       "rename-and-restore",

@@ -199,3 +199,56 @@ fn concurrent_connections_serialize_the_latest_decision_before_insert() {
 
     assert_eq!(rows_for(&file, path).len(), 1);
 }
+
+#[test]
+#[serial(backup_store)]
+fn the_history_records_format_version_1() {
+    with_store("format-version", |file| {
+        let conn = Connection::open(file).unwrap();
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, crate::formats::BACKUPS);
+        assert_eq!(crate::formats::BACKUPS, 1);
+    });
+}
+
+#[test]
+#[serial(backup_store)]
+fn a_history_without_its_marker_disables_recording_and_is_left_as_it_is() {
+    let file = unique_store_file("unmarked");
+    {
+        let conn = Connection::open(&file).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO backups (path, content, content_sha256, byte_size, written_at_utc) \
+             VALUES ('/abs/kept.json', x'00', 'h', 1, 't')",
+            [],
+        )
+        .unwrap();
+    }
+    let before = std::fs::read(&file).unwrap();
+    init(file.clone());
+    record(Path::new("/abs/new.json"), b"new");
+    close_for_test();
+    assert_eq!(std::fs::read(&file).unwrap(), before, "nothing is written to it");
+    assert_eq!(rows_for(&file, "/abs/kept.json").len(), 1);
+    assert!(rows_for(&file, "/abs/new.json").is_empty());
+}
+
+#[test]
+#[serial(backup_store)]
+fn a_history_written_by_a_newer_onecopy_disables_recording_and_is_left_as_it_is() {
+    let file = unique_store_file("newer");
+    {
+        let conn = Connection::open(&file).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.pragma_update(None, "user_version", 2).unwrap();
+    }
+    let before = std::fs::read(&file).unwrap();
+    init(file.clone());
+    record(Path::new("/abs/new.json"), b"new");
+    close_for_test();
+    assert_eq!(std::fs::read(&file).unwrap(), before, "nothing is written to it");
+    assert!(rows_for(&file, "/abs/new.json").is_empty());
+}

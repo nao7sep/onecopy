@@ -1,13 +1,34 @@
 use onecopy_lib::index_store;
 
 #[test]
-fn newer_unknown_schema_is_not_destructively_downgraded() {
+fn a_new_index_records_format_version_1() {
+    let root = tempfile::tempdir().unwrap();
+    let conn = index_store::open(&root.path().join("index.sqlite3")).unwrap();
+    assert_eq!(
+        conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .unwrap(),
+        onecopy_lib::formats::INDEX
+    );
+    assert_eq!(onecopy_lib::formats::INDEX, 1);
+}
+
+#[test]
+fn an_index_written_by_a_newer_onecopy_is_reported_by_name_and_left_as_it_is() {
     let root = tempfile::tempdir().unwrap();
     let db = root.path().join("index.sqlite3");
     let conn = index_store::open(&db).unwrap();
-    conn.execute_batch("INSERT INTO contents (hash, byte_size, kind) VALUES ('retained', 1, 'image'); PRAGMA user_version = 999;").unwrap();
+    conn.execute_batch("INSERT INTO contents (hash, byte_size, kind) VALUES ('retained', 1, 'image'); PRAGMA user_version = 2;").unwrap();
     drop(conn);
-    assert!(index_store::open(&db).is_err());
+    let before = std::fs::read(&db).unwrap();
+    let error = index_store::open(&db).expect_err("a newer index is not opened");
+    assert!(error.contains(&db.to_string_lossy().into_owned()) && error.contains("newer"), "{error}");
+    assert_eq!(
+        onecopy_lib::formats::sqlite_newer(&db, onecopy_lib::formats::INDEX)
+            .unwrap()
+            .map(|newer| (newer.file, newer.version)),
+        Some(("index.sqlite3".to_string(), 2))
+    );
+    assert_eq!(std::fs::read(&db).unwrap(), before, "the newer index is not written");
     let conn = rusqlite::Connection::open(&db).unwrap();
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM contents", [], |row| row
@@ -18,7 +39,7 @@ fn newer_unknown_schema_is_not_destructively_downgraded() {
     assert_eq!(
         conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        999
+        2
     );
 }
 
@@ -150,3 +171,134 @@ fn logical_contents_kind_follows_the_representative_copy_not_contents_kind() {
     assert_eq!(kind("h2"), "other");
 }
 
+#[test]
+fn open_creates_schema_and_is_idempotent() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-index-")
+        .tempdir()
+        .unwrap();
+    let db = dir.path().join("index.sqlite3");
+
+    let conn = index_store::open(&db).unwrap();
+    assert_eq!(
+        conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .unwrap(),
+        onecopy_lib::formats::INDEX
+    );
+    // Every table in the current schema exists.
+    let mut stmt = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+        .unwrap();
+    let tables: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    // Set EQUALITY, not a subset, so any table change is deliberate.
+    let mut expected = vec![
+        "contents",
+        "evidence",
+        "face_checks",
+        "faces",
+        "library_choices",
+        "logical_contents",
+        "logical_projection_batch",
+        "paths",
+        "rebuild_keeps_results",
+        "scan_dirs",
+        "similar_group_members",
+        "similar_groups",
+        "similarity_dirty_buckets",
+        "similarity_state",
+        "transcripts",
+        "visibility_directories",
+        "visibility_ignored_names",
+    ];
+    expected.sort_unstable();
+    let actual: Vec<&str> = tables
+        .iter()
+        .map(String::as_str)
+        .filter(|t| !t.starts_with("sqlite_"))
+        .collect();
+    assert_eq!(actual, expected, "the schema's table set changed");
+    drop(stmt);
+    drop(conn);
+
+    // Re-opening an existing file is fine (IF NOT EXISTS schema).
+    let conn = index_store::open(&db).unwrap();
+    index_store::upsert_issue(&conn, Some("/x"), "test", "x").unwrap();
+}
+
+#[test]
+fn reopening_a_current_index_does_not_publish_schema_writes() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-index-read-open-")
+        .tempdir()
+        .unwrap();
+    let db = dir.path().join("index.sqlite3");
+    let observer = index_store::open(&db).unwrap();
+    let before: i64 = observer
+        .pragma_query_value(None, "data_version", |row| row.get(0))
+        .unwrap();
+
+    drop(index_store::open(&db).unwrap());
+
+    let after: i64 = observer
+        .pragma_query_value(None, "data_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        after, before,
+        "an ordinary connection open must not invalidate read caches"
+    );
+}
+
+#[test]
+fn foreign_keys_are_enforced_on_an_ordinary_open_not_only_on_an_upgrade() {
+    // R1-11: a connection that opens an already-current index (no upgrade
+    // branch runs) must still enforce foreign keys, since every command,
+    // worker and watcher pass opens this way.
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-index-fk-")
+        .tempdir()
+        .unwrap();
+    let db = dir.path().join("index.sqlite3");
+    // First open creates the schema at the current format version.
+    drop(index_store::open(&db).unwrap());
+    // Second open takes the "already current" path with no upgrade branch.
+    let conn = index_store::open(&db).unwrap();
+    assert_eq!(
+        conn.pragma_query_value(None, "foreign_keys", |row| row.get::<_, i64>(0))
+            .unwrap(),
+        1,
+        "foreign keys must be enforced on every ordinary open"
+    );
+    conn.execute(
+        "INSERT INTO contents (hash, byte_size, kind) VALUES ('h1', 10, 'image')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO evidence (content_hash, path_id, source) VALUES ('h1', 999, 'metadata')",
+        [],
+    )
+    .expect_err("an evidence row referencing a path that does not exist must be refused");
+}
+
+
+#[test]
+fn an_index_without_its_marker_is_rebuilt_from_the_files() {
+    let root = tempfile::tempdir().unwrap();
+    let db = root.path().join("index.sqlite3");
+    let conn = index_store::open(&db).unwrap();
+    conn.execute_batch("INSERT INTO contents (hash, byte_size, kind) VALUES ('stale', 1, 'image'); PRAGMA user_version = 0;").unwrap();
+    drop(conn);
+    let conn = index_store::open(&db).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM contents", [], |row| row.get::<_, i64>(0)).unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0)).unwrap(),
+        onecopy_lib::formats::INDEX
+    );
+}
