@@ -172,25 +172,28 @@ fn an_empty_run_leaves_previous_archives_unchanged() {
 
 #[test]
 fn archive_waits_for_the_worker_to_finish() {
+    // Completion joins its worker: it returns only after the work's last
+    // step, however long the work is held, with no time budget to outlast.
     let (release, wait) = std::sync::mpsc::channel();
     let (started, start) = std::sync::mpsc::channel();
     let (done, completion) = std::sync::mpsc::channel();
+    let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let worker_finished = finished.clone();
     let caller = std::thread::spawn(move || {
         complete(move || {
             started.send(()).unwrap();
             wait.recv().unwrap();
+            worker_finished.store(true, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         });
         done.send(()).unwrap();
     });
     start.recv_timeout(Duration::from_secs(5)).unwrap();
-    // Hold the worker past the removed two-second budget. Completion must
-    // still wait for its release rather than leaving the archive behind.
-    let premature = completion.recv_timeout(Duration::from_millis(2100));
+    assert!(matches!(completion.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
     release.send(()).unwrap();
     caller.join().unwrap();
-    assert!(matches!(premature, Err(std::sync::mpsc::RecvTimeoutError::Timeout)));
     assert!(completion.try_recv().is_ok());
+    assert!(finished.load(std::sync::atomic::Ordering::SeqCst), "completion came before the work ended");
 }
 
 #[test]

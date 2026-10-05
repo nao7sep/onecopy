@@ -1883,16 +1883,22 @@ fn removing_a_source_keeps_a_nested_root_still_configured_as_its_own_source() {
 fn removing_a_root_with_more_orphaned_hashes_than_sqlites_bound_parameter_limit_still_works() {
     // R6-01: orphan collection is a subquery over `batch_touched_hashes`,
     // never one bound parameter per orphaned hash, so a root holding more
-    // unique items than SQLite's default 32,766 bound-parameter ceiling can
-    // still be forgotten in one pass, instead of rolling back with "too many
-    // SQL variables" on every later source check.
+    // unique items than SQLite's bound-parameter ceiling can still be
+    // forgotten in one pass, instead of rolling back with "too many SQL
+    // variables" on every later source check. The ceiling is lowered on this
+    // connection, so a few hundred orphans exceed it as 40,000 would exceed
+    // the default.
     let f = fixture("forget-root-scale");
     let kept = f.root.join("Kept");
     let dropped = f.root.join("Dropped");
     std::fs::create_dir_all(&kept).unwrap();
     std::fs::create_dir_all(&dropped).unwrap();
 
-    const ORPHAN_COUNT: i64 = 40_000;
+    const VARIABLE_CEILING: i32 = 32;
+    const ORPHAN_COUNT: i64 = 10 * VARIABLE_CEILING as i64;
+    f.conn
+        .set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_VARIABLE_NUMBER, VARIABLE_CEILING)
+        .unwrap();
     let dropped_str = dropped.to_string_lossy().to_string();
     f.conn
         .execute(
@@ -1902,7 +1908,7 @@ fn removing_a_root_with_more_orphaned_hashes_than_sqlites_bound_parameter_limit_
         .unwrap();
     // Insertion goes through the batch publisher, exactly like a real walk's
     // bulk write, so the per-row logical-projection trigger does not run
-    // 40,000 times just to set up this test's fixture.
+    // for every row just to set up this test's fixture.
     index_store::publish_paths_batch(
         &f.conn,
         |_| Ok(()),
@@ -1942,7 +1948,7 @@ fn removing_a_root_with_more_orphaned_hashes_than_sqlites_bound_parameter_limit_
     assert_eq!(
         count(&f.conn, "SELECT COUNT(*) FROM contents"),
         0,
-        "their orphaned contents rows leave too, not just the first 32,766"
+        "their orphaned contents rows leave too, not just the first ceiling's worth"
     );
 }
 
@@ -2030,105 +2036,108 @@ fn scan_phase_tokens_serialize_to_the_frontend_contract() {
 }
 
 
+/// Records, on `conn` only, which projection batch every write to `paths`
+/// ran in: each batch the publisher opens gets the next number, and a write
+/// outside any batch (which fires the per-row projection trigger) gets 0.
+/// The batch publisher opens one batch per IMMEDIATE transaction, so the
+/// rows written under one number are what one transaction held the write
+/// lock for — a property read from the writes themselves, not from a clock.
+fn record_path_writes_by_batch(conn: &Connection) {
+    conn.execute_batch(
+        "CREATE TEMP TABLE batches_opened (n INTEGER NOT NULL);
+         INSERT INTO batches_opened VALUES (0);
+         CREATE TEMP TABLE path_writes (batch INTEGER NOT NULL, path_id INTEGER NOT NULL);
+         CREATE TEMP TRIGGER batch_opened AFTER INSERT ON main.logical_projection_batch
+         BEGIN UPDATE batches_opened SET n = n + 1; END;
+         CREATE TEMP TRIGGER path_updated AFTER UPDATE ON main.paths
+         BEGIN
+           INSERT INTO path_writes
+           SELECT CASE WHEN EXISTS (SELECT 1 FROM main.logical_projection_batch) THEN n ELSE 0 END, NEW.id
+           FROM batches_opened;
+         END;
+         CREATE TEMP TRIGGER path_deleted AFTER DELETE ON main.paths
+         BEGIN
+           INSERT INTO path_writes
+           SELECT CASE WHEN EXISTS (SELECT 1 FROM main.logical_projection_batch) THEN n ELSE 0 END, OLD.id
+           FROM batches_opened;
+         END;",
+    )
+    .unwrap();
+}
+
+/// (batch, distinct paths written in it), one row per batch, unbatched
+/// writes as batch 0.
+fn path_writes_by_batch(conn: &Connection) -> Vec<(i64, i64)> {
+    let mut statement = conn
+        .prepare("SELECT batch, COUNT(DISTINCT path_id) FROM path_writes GROUP BY batch ORDER BY batch")
+        .unwrap();
+    statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+}
+
+/// `rows` indexed images under `dir`, each with its own content and an
+/// already resolved date, generated inside SQLite under the projection batch
+/// the walk publication uses.
+fn insert_indexed_images(conn: &Connection, dir: &str, rows: i64) {
+    let now_ms = resolution_config().now_ms;
+    conn.execute_batch(&format!(
+        r#"
+        INSERT INTO logical_projection_batch (singleton) VALUES (1);
+        WITH RECURSIVE seq(i) AS (
+            SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i < {last}
+        )
+        INSERT INTO contents (hash, byte_size, kind)
+        SELECT printf('h%06d', i), 1, 'image' FROM seq;
+        WITH RECURSIVE seq(i) AS (
+            SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i < {last}
+        )
+        INSERT INTO paths
+          (abs_path, dir_path, file_name, kind, content_hash, mtime_ms,
+           indexed_at_utc, resolved_utc_ms, resolved_source, missing)
+        SELECT '{dir}/' || printf('h%06d', i) || '.jpg', '{dir}',
+               printf('h%06d', i) || '.jpg', 'image', printf('h%06d', i),
+               {now_ms} + i, 'ready', {now_ms} + i, 'filesystem', 0
+        FROM seq;
+        DELETE FROM logical_projection_batch;
+        "#,
+        last = rows - 1,
+    ))
+    .unwrap();
+}
+
 #[test]
 fn library_wide_settings_change_holds_the_write_lock_only_briefly() {
     // D-H2: removing a configured source root (a library-wide settings
     // change) used to fire the per-row logical-projection trigger for every
     // row under that root — once for the companion-detach UPDATE, again for
     // the path DELETE, then again per orphan in a separate per-hash loop —
-    // each recomputing the correlated-subquery projection view. On a large
-    // fixture that holds the write lock for seconds. Going through the
-    // projection-batch publisher (`forget_unconfigured_roots`) keeps the
-    // whole removal one brief IMMEDIATE transaction, so a concurrent
-    // preview write started at the same instant still lands quickly.
-    const ROWS: i64 = 6_000;
+    // each recomputing the correlated-subquery projection view, which held
+    // the write lock for seconds on a large root. Going through the
+    // projection-batch publisher (`forget_unconfigured_roots`) makes the
+    // whole removal one IMMEDIATE transaction in which no row write fires
+    // that trigger.
     let f = fixture("large-settings-change");
-    let now_ms = resolution_config().now_ms;
-    // A single set-based generator, not ROWS round trips from Rust: a
-    // recursive CTE produces the rows entirely inside SQLite, under the
-    // same projection-batch guard the walk publication uses, so building
-    // this fixture is not itself an O(rows) trigger cascade — that per-row
-    // cost is real and already sound (ordinary one-row-at-a-time indexing),
-    // but it is not what this test measures. Every row gets its own unique
-    // hash, so removing the root also orphans every one of them.
-    f.conn
-        .execute_batch(&format!(
-            r#"
-            INSERT INTO scan_dirs (root, last_completed_at_utc, dirty) VALUES ('{root}', 'x', 0);
-            INSERT INTO logical_projection_batch (singleton) VALUES (1);
-            WITH RECURSIVE seq(i) AS (
-                SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i < {last}
-            )
-            INSERT INTO contents (hash, byte_size, kind)
-            SELECT printf('h%06d', i), 1, 'image' FROM seq;
-            WITH RECURSIVE seq(i) AS (
-                SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i < {last}
-            )
-            INSERT INTO paths
-              (abs_path, dir_path, file_name, kind, content_hash, mtime_ms,
-               indexed_at_utc, resolved_utc_ms, resolved_source, missing)
-            SELECT '{root}/' || printf('h%06d', i) || '.jpg', '{root}',
-                   printf('h%06d', i) || '.jpg', 'image', printf('h%06d', i),
-                   {now_ms} + i, 'ready', {now_ms} + i, 'filesystem', 0
-            FROM seq;
-            DELETE FROM logical_projection_batch;
-            "#,
-            root = stored_path(&f.root),
-            last = ROWS - 1,
-            now_ms = now_ms,
-        ))
-        .unwrap();
-    // A distinct row outside the removed root, so the probe's write has
-    // somewhere valid to land both before and after the removal.
+    let root = stored_path(&f.root);
     f.conn
         .execute(
-            "INSERT INTO contents (hash, byte_size, kind) VALUES ('probe', 1, 'image')",
-            [],
+            "INSERT INTO scan_dirs (root, last_completed_at_utc, dirty) VALUES (?1, 'x', 0)",
+            [&root],
         )
         .unwrap();
-    f.conn
-        .execute(
-            "INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash) \
-             VALUES ('/elsewhere/probe.jpg', '/elsewhere', 'probe.jpg', 'image', 'probe')",
-            [],
-        )
-        .unwrap();
+    insert_indexed_images(&f.conn, &root, 50);
+    record_path_writes_by_batch(&f.conn);
 
-    let db_path = f._dir.path().join("index.sqlite3");
-    let cache = test_cache(&f);
-    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let worker_done = done.clone();
-    let worker = std::thread::spawn(move || {
-        forget_unconfigured_roots(&f.conn, &[], &cache).unwrap();
-        worker_done.store(true, std::sync::atomic::Ordering::SeqCst);
-    });
+    forget_unconfigured_roots(&f.conn, &[], &test_cache(&f)).unwrap();
 
-    // Sample a small, independent write throughout the whole removal: a
-    // single well-timed attempt can simply win the race and finish before
-    // the worker's first write, proving nothing either way. Continuous
-    // sampling instead measures the worst wait any concurrent writer would
-    // actually see while the removal is in flight.
-    let probe = index_store::open(&db_path).unwrap();
-    let mut max_write_ms: u128 = 0;
-    let mut samples = 0u32;
-    while !done.load(std::sync::atomic::Ordering::SeqCst) {
-        let started = std::time::Instant::now();
-        onecopy_lib::derived_state::record_preview_success(
-            &probe, "probe", "/elsewhere/probe.jpg", 10, 10, 0.5, 42,
-        )
-        .unwrap();
-        max_write_ms = max_write_ms.max(started.elapsed().as_millis());
-        samples += 1;
-        std::thread::sleep(std::time::Duration::from_micros(500));
-    }
-    worker.join().unwrap();
-
-    assert!(samples > 0, "the probe never got a chance to run");
-    assert!(
-        max_write_ms < 1000,
-        "a concurrent preview write took {max_write_ms} ms — removing a \
-         source root must go through the projection-batch publisher and \
-         hold the write lock only briefly"
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths"), 0);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM contents"), 0);
+    assert_eq!(
+        path_writes_by_batch(&f.conn),
+        [(1, 50)],
+        "every row of the removed root goes in one batch, none outside it"
     );
 }
 
@@ -2136,167 +2145,38 @@ fn library_wide_settings_change_holds_the_write_lock_only_briefly() {
 fn library_wide_date_re_resolution_holds_the_write_lock_only_briefly() {
     // D-H2 (the date-re-resolution follow-up): `re_resolve_all_with_progress`
     // used to invalidate the whole library in one statement and then have
-    // `resolve_from_evidence_with_progress` write `resolved_stmt`/
-    // `undated_stmt` one row at a time in autocommit — both fire the
-    // per-row logical-projection trigger, or rebuild the projection for
-    // every touched hash inside a single transaction. Either way, on a
-    // library of hundreds of thousands of rows that holds the write lock
-    // for as long as the whole pass takes, far past other writers'
-    // busy_timeout. Both the invalidation and the per-file resolve phase
-    // now page their writes: each `RESOLVE_PAGE_SIZE` page is computed
-    // outside any transaction and published through
-    // `index_store::publish_paths_batch` in its own brief IMMEDIATE
-    // transaction, so a concurrent preview-success write started at any
-    // point during the whole call still succeeds within its own
-    // busy_timeout, instead of racing one lock held for the entire pass.
-    const ROWS: i64 = 6_000;
+    // `resolve_from_evidence_with_progress` write one row at a time in
+    // autocommit — both fire the per-row logical-projection trigger, or
+    // rebuild the projection for every touched hash inside one transaction,
+    // so on a large library the write lock was held for the whole pass, far
+    // past other writers' busy_timeout. Both phases now page their writes
+    // through the projection-batch publisher: each transaction writes at
+    // most `RESOLVE_PAGE_SIZE` rows, and no row is written outside a batch.
+    let rows = 3 * RESOLVE_PAGE_SIZE as i64 + 5;
     let f = fixture("large-date-re-resolution");
-    let now_ms = resolution_config().now_ms;
-    // Set-based generation, not ROWS round trips from Rust, under the same
-    // projection-batch guard the walk publication uses — building the
-    // fixture is not itself the O(rows) autocommit cascade this test
-    // measures. Every row already has a resolved date so `re_resolve_all`
-    // has to reset and re-resolve all of them from filesystem mtime.
-    f.conn
-        .execute_batch(&format!(
-            r#"
-            INSERT INTO logical_projection_batch (singleton) VALUES (1);
-            WITH RECURSIVE seq(i) AS (
-                SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i < {last}
-            )
-            INSERT INTO contents (hash, byte_size, kind)
-            SELECT printf('h%06d', i), 1, 'image' FROM seq;
-            WITH RECURSIVE seq(i) AS (
-                SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i < {last}
-            )
-            INSERT INTO paths
-              (abs_path, dir_path, file_name, kind, content_hash, mtime_ms,
-               indexed_at_utc, resolved_utc_ms, resolved_source, missing)
-            SELECT '/library/' || printf('h%06d', i) || '.jpg', '/library',
-                   printf('h%06d', i) || '.jpg', 'image', printf('h%06d', i),
-                   {now_ms} + i, 'ready', {now_ms} + i, 'filesystem', 0
-            FROM seq;
-            DELETE FROM logical_projection_batch;
-            "#,
-            last = ROWS - 1,
-            now_ms = now_ms,
-        ))
-        .unwrap();
-    // A distinct row for the probe's write to land on, unaffected by the
-    // re-resolve so its content never changes.
-    f.conn
-        .execute(
-            "INSERT INTO contents (hash, byte_size, kind) VALUES ('probe', 1, 'image')",
-            [],
-        )
-        .unwrap();
-    f.conn
-        .execute(
-            "INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash) \
-             VALUES ('/elsewhere/probe.jpg', '/elsewhere', 'probe.jpg', 'image', 'probe')",
-            [],
-        )
-        .unwrap();
+    insert_indexed_images(&f.conn, "/library", rows);
+    record_path_writes_by_batch(&f.conn);
 
-    let db_path = f._dir.path().join("index.sqlite3");
-    let config = resolution_config();
-    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let worker_done = done.clone();
-    let worker_start = std::time::Instant::now();
-    let worker = std::thread::spawn(move || {
-        re_resolve_all_with_progress(&f.conn, &config, false, &|_| {}).unwrap();
-        worker_done.store(true, std::sync::atomic::Ordering::SeqCst);
-    });
+    re_resolve_all_with_progress(&f.conn, &resolution_config(), false, &|_| {}).unwrap();
 
-    // Sample a small, independent write throughout the whole re-resolve.
-    // SQLite's default busy handler backs off on a fixed schedule, not a
-    // randomized one; against a worker whose page transactions run back to
-    // back at a steady cadence, that fixed schedule can stay in step with
-    // the worker's cadence and miss every gap for seconds at a time even
-    // though brief gaps keep recurring throughout the run — the
-    // "WAL-fairness flakiness" a previous attempt at this test saw. A
-    // custom handler with a randomized retry interval breaks that
-    // resonance; it gives up (returning `false`, so the call fails fast
-    // with SQLITE_BUSY) after a bounded number of retries rather than
-    // blocking for the app's full 5 s busy_timeout.
-    fn jittered_busy_handler(count: i32) -> bool {
-        if count > 150 {
-            return false;
-        }
-        let jitter_ns = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(0) as u64
-            % 3_000;
-        std::thread::sleep(std::time::Duration::from_micros(500 + jitter_ns));
-        true
-    }
-    let probe = index_store::open(&db_path).unwrap();
-    probe.busy_handler(Some(jittered_busy_handler)).unwrap();
-    let start = std::time::Instant::now();
-    let mut successes = 0u32;
-    let mut attempts = 0u32;
-    let mut last_success_at = start;
-    let mut max_gap_ms: u128 = 0;
-    while !done.load(std::sync::atomic::Ordering::SeqCst) {
-        attempts += 1;
-        if onecopy_lib::derived_state::record_preview_success(
-            &probe, "probe", "/elsewhere/probe.jpg", 10, 10, 0.5, 42,
-        )
-        .is_ok()
-        {
-            successes += 1;
-            let now = std::time::Instant::now();
-            max_gap_ms = max_gap_ms.max(now.duration_since(last_success_at).as_millis());
-            last_success_at = now;
-        }
-        std::thread::sleep(std::time::Duration::from_micros(500));
-    }
-    max_gap_ms = max_gap_ms.max(std::time::Instant::now().duration_since(last_success_at).as_millis());
-    worker.join().unwrap();
-    let worker_elapsed_ms = worker_start.elapsed().as_millis().max(1);
-
-    // Without the fix, invalidation ran as one transaction spanning the
-    // whole library and the per-file resolve phase wrote one autocommit
-    // statement per row back to back with no real idle gap: whichever
-    // connection just released the write lock is already running and
-    // reacquires it before a woken competitor can, so every short-window
-    // attempt started during either stretch fails in a row. Averaging over
-    // the whole run hides this — a short pathological stretch is diluted by
-    // a longer friendly one — so the real signal is the longest stretch
-    // with zero successful writes, not the overall success rate. With the
-    // fix, every page's transaction is followed by a real idle interval, so
-    // no such stretch approaches the length either phase used to hold the
-    // lock for.
-    //
-    // The bound itself must not be a fixed wall-clock millisecond count:
-    // under parallel test-suite load the whole worker runs slower (more
-    // pages per second is not guaranteed), so a fixed cap flakes even with
-    // the fix in place. Instead measure the property the fix establishes —
-    // the lock is only ever held for about one page — by comparing the
-    // longest starved stretch to the worker's own average time per page.
-    // Both phases page over the whole `ROWS`-row library at
-    // `RESOLVE_PAGE_SIZE`, so this is a lower bound on the number of pages
-    // actually written; a generous multiple absorbs scheduling jitter
-    // without hiding a real multi-page stall.
-    let pages = 2 * (ROWS as u128).div_ceil(RESOLVE_PAGE_SIZE as u128);
-    let avg_page_ms = (worker_elapsed_ms / pages).max(1);
-    let max_allowed_gap_ms = avg_page_ms * 50;
+    let batches = path_writes_by_batch(&f.conn);
     assert!(
-        attempts >= 10,
-        "the probe only got {attempts} chances to run"
+        batches.iter().all(|(batch, _)| *batch > 0),
+        "a row was written outside the projection batch: {batches:?}"
     );
-    assert!(successes > 0, "the probe never got a single write through");
     assert!(
-        max_gap_ms <= max_allowed_gap_ms,
-        "the probe went {max_gap_ms} ms without a single successful write \
-         during a re-resolve that averaged {avg_page_ms} ms per page \
-         (allowing up to {max_allowed_gap_ms} ms) — the invalidation and \
-         per-file resolve phases must page their writes through the \
-         projection-batch publisher, with a real idle interval between \
-         pages, so no single transaction (or unbroken run of them) holds \
-         the write lock for many pages' worth of time and starves a \
-         concurrent writer"
+        batches.iter().all(|(_, written)| *written <= RESOLVE_PAGE_SIZE as i64),
+        "a transaction wrote more than one page: {batches:?}"
+    );
+    let pages = (rows as usize).div_ceil(RESOLVE_PAGE_SIZE) as i64;
+    assert!(
+        batches.len() as i64 >= 2 * pages,
+        "both the invalidation and the resolve phase page the whole library: {batches:?}"
+    );
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM paths WHERE resolved_source IS NULL"),
+        0,
+        "every row is resolved again"
     );
 }
 

@@ -1176,6 +1176,9 @@ pub fn walk(
             drop(state);
             let _ = sender.send(end);
         }
+        if let Some(fake) = &fake {
+            fake.walk_returned();
+        }
     }))?;
     Ok(Walk {
         receiver,
@@ -1309,6 +1312,16 @@ struct FakeState {
     gate: Mutex<FakeGate>,
     changed: Condvar,
     held: AtomicUsize,
+    /// Walks on this volume whose thread has returned.
+    walks_returned: AtomicUsize,
+}
+
+impl FakeState {
+    fn walk_returned(&self) {
+        let _gate = self.gate.lock().unwrap_or_else(|p| p.into_inner());
+        self.walks_returned.fetch_add(1, Ordering::SeqCst);
+        self.changed.notify_all();
+    }
 }
 
 #[derive(Default)]
@@ -1369,6 +1382,7 @@ impl FakeStallingVolume {
             gate: Mutex::new(FakeGate::default()),
             changed: Condvar::new(),
             held: AtomicUsize::new(0),
+            walks_returned: AtomicUsize::new(0),
         });
         let mut registry = registry();
         registry.fakes.push((root.to_path_buf(), state.clone()));
@@ -1419,6 +1433,26 @@ impl FakeStallingVolume {
         let deadline = Instant::now() + timeout;
         let mut gate = self.state.gate.lock().unwrap_or_else(|p| p.into_inner());
         while self.held() < count {
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            gate = self
+                .state
+                .changed
+                .wait_timeout(gate, deadline - now)
+                .unwrap_or_else(|p| p.into_inner())
+                .0;
+        }
+        true
+    }
+
+    /// Waits until at least `count` walks on this volume have returned,
+    /// everything they produced already queued for their consumer.
+    pub fn wait_until_walks_returned(&self, count: usize, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut gate = self.state.gate.lock().unwrap_or_else(|p| p.into_inner());
+        while self.state.walks_returned.load(Ordering::SeqCst) < count {
             let now = Instant::now();
             if now >= deadline {
                 return false;

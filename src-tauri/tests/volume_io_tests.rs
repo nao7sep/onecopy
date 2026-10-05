@@ -376,44 +376,38 @@ fn a_cancelled_walk_ends_as_cancelled_never_as_complete() {
 #[test]
 fn a_walk_that_finishes_as_its_wait_gives_up_still_delivers_every_entry() {
     const QUIET: Duration = Duration::from_millis(100);
-    let caught_at_the_give_up = std::cell::Cell::new(0);
-    for _ in 0..20 {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("f"), b"x").unwrap();
-        let volume = FakeStallingVolume::mount(dir.path(), QUIET);
-        volume.stall(&[Op::List], None);
-        let mut walk = volume_io::walk(dir.path(), |_, _| true).unwrap();
-        assert!(volume.wait_until_held(1, Duration::from_secs(5)));
-        let started = Instant::now();
-        let finish_walk = || {
-            // Late in the wait, let the walk run to its end before the
-            // consumer decides.
-            if started.elapsed() + Duration::from_millis(5) >= QUIET && volume.held() > 0 {
-                volume.release();
-                std::thread::sleep(Duration::from_millis(50));
-                caught_at_the_give_up.set(caught_at_the_give_up.get() + 1);
-            }
-            false
-        };
-        let mut seen = 0;
-        let ended = loop {
-            match walk.next(Some(&finish_walk)) {
-                Some(Ok(Ok(_))) => seen += 1,
-                Some(Ok(Err(error))) => panic!("unexpected walk error {}", error.message),
-                Some(Err(error)) => break Some(error),
-                None => break None,
-            }
-        };
-        if let Some(error) = ended {
-            // Given up on before the release: not this case.
-            assert_eq!(failure(&error), Some(WaitFailure::NotResponding));
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("f"), b"x").unwrap();
+    let volume = FakeStallingVolume::mount(dir.path(), QUIET);
+    volume.stall(&[Op::List], None);
+    let mut walk = volume_io::walk(dir.path(), |_, _| true).unwrap();
+    assert!(volume.wait_until_held(1, Duration::from_secs(5)));
+    let finished_in_the_wait = std::cell::Cell::new(false);
+    let finish_walk = || {
+        if !finished_in_the_wait.get() {
+            // The wait began before this first check, so its give-up comes
+            // no later than QUIET from now. Let the walk run to its end, then
+            // stay here past that moment: the give-up decision is the next
+            // thing the wait does, with the whole walk already queued.
+            let entered = Instant::now();
             volume.release();
-            assert!(volume.wait_until_settled(Duration::from_secs(5)));
-            continue;
+            assert!(volume.wait_until_walks_returned(1, Duration::from_secs(5)));
+            std::thread::sleep((entered + QUIET).saturating_duration_since(Instant::now()));
+            finished_in_the_wait.set(true);
         }
-        assert_eq!(seen, 2, "a walk read as complete must have delivered the root and its file");
+        false
+    };
+    let mut seen = 0;
+    loop {
+        match walk.next(Some(&finish_walk)) {
+            Some(Ok(Ok(_))) => seen += 1,
+            Some(Ok(Err(error))) => panic!("unexpected walk error {}", error.message),
+            Some(Err(error)) => panic!("a walk that finished was given up on: {error}"),
+            None => break,
+        }
     }
-    assert!(caught_at_the_give_up.get() > 0, "the walk never finished during a wait");
+    assert!(finished_in_the_wait.get(), "the walk finished before its wait began");
+    assert_eq!(seen, 2, "a walk read as complete must have delivered the root and its file");
 }
 
 /// Cancel during the final flush of a private output returns without waiting

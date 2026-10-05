@@ -226,6 +226,16 @@ pub fn check_identity(root: &Path, dir: &str, current: &str) -> Result<IdentityC
 /// for every directory passed in, because then nothing about any of them can
 /// be verified.
 pub fn enforce_no_substitution(data_root: &Path, dirs: &[String]) -> Result<(), String> {
+    enforce_no_substitution_with(data_root, dirs, &platform_identity)
+}
+
+/// [`enforce_no_substitution`] with the identity probe passed in, so the
+/// gate's scoping and verdicts are exercised without the platform's probe.
+pub fn enforce_no_substitution_with(
+    data_root: &Path,
+    dirs: &[String],
+    identity_of_volume_root: &dyn Fn(&Path) -> Option<String>,
+) -> Result<(), String> {
     // The store lock covers only reading the record: the probes below touch
     // volumes that can stall, and no lock is held across them.
     let recorded = {
@@ -258,7 +268,7 @@ pub fn enforce_no_substitution(data_root: &Path, dirs: &[String]) -> Result<(), 
         // recorded directory whose identity cannot be read now is either a
         // different volume without one or a check that failed: neither is
         // verified-safe.
-        let Some(current) = platform_identity(&root) else {
+        let Some(current) = identity_of_volume_root(&root) else {
             affected.push(format!("{dir} (could not verify the volume)"));
             continue;
         };

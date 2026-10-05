@@ -21,17 +21,19 @@ fn generates_thumb_and_preview_within_limits_preserving_aspect() {
         .prefix("onecopy-preview-")
         .tempdir()
         .unwrap();
-    let src = gradient_jpeg(dir.path(), "big.jpg", 2000, 1000);
+    // Small edges keep the decode and both resizes cheap; the limits apply
+    // the same way at any scale.
+    let src = gradient_jpeg(dir.path(), "big.jpg", 400, 200);
     let cache = CachePaths::new(dir.path().join("cache"));
 
-    let facts = generate_for_image(&src, "abcd1234", &cache, 320, 1600, None).unwrap();
-    assert_eq!((facts.width, facts.height), (2000, 1000));
+    let facts = generate_for_image(&src, "abcd1234", &cache, 32, 160, None).unwrap();
+    assert_eq!((facts.width, facts.height), (400, 200));
 
     let preview = image::open(cache.preview("abcd1234")).unwrap();
-    assert_eq!((preview.width(), preview.height()), (1600, 800));
+    assert_eq!((preview.width(), preview.height()), (160, 80));
 
     let thumb = image::open(cache.thumb("abcd1234")).unwrap();
-    assert_eq!((thumb.width(), thumb.height()), (320, 160));
+    assert_eq!((thumb.width(), thumb.height()), (32, 16));
 
     // Sharded layout: thumbs/ab/abcd1234.webp.
     assert!(cache

@@ -119,7 +119,10 @@ async fn a_failed_response_is_not_retried() {
     assert!(requests.recv_timeout(Duration::from_secs(5)).is_ok());
 }
 
-#[tokio::test]
+// The clock is paused: once the request waits on a silent server, tokio
+// advances virtual time straight to the next timer, so the fixed timeout is
+// observed exactly without being waited out.
+#[tokio::test(start_paused = true)]
 async fn a_request_that_never_gets_a_response_is_bounded_by_the_fixed_timeout() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
@@ -132,14 +135,14 @@ async fn a_request_that_never_gets_a_response_is_bounded_by_the_fixed_timeout() 
     });
     let url = format!("http://{addr}/repos/nao7sep/onecopy/releases/latest");
 
-    let started = std::time::Instant::now();
+    let started = tokio::time::Instant::now();
     let result = request_latest_tag(&url).await;
     let elapsed = started.elapsed();
 
     assert!(result.is_err());
     assert!(
-        elapsed < Duration::from_secs(15),
-        "the 10 s request timeout did not bound the wait: {elapsed:?}"
+        (REQUEST_TIMEOUT..REQUEST_TIMEOUT + Duration::from_secs(1)).contains(&elapsed),
+        "the 10 s request timeout did not end the wait: {elapsed:?}"
     );
 }
 
