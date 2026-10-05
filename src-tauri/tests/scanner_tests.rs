@@ -1615,7 +1615,7 @@ fn ffmpeg_blocked_stills_never_create_index_debt() {
     let f = fixture("blocked-stills");
     f.conn
         .execute(
-            "INSERT INTO contents (hash, byte_size, kind, derived_at_utc) \
+            "INSERT INTO contents (hash, byte_size, kind, derive_outcome) \
              VALUES ('h1', 1, 'image', ?1)",
             rusqlite::params![onecopy_lib::preview::NEEDS_FFMPEG],
         )

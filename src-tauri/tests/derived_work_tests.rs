@@ -488,7 +488,7 @@ fn snapshot_projects_output_debt_without_inventing_jobs() {
     let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
     conn.execute_batch(
         "INSERT INTO contents (hash, byte_size, kind) VALUES ('image', 1, 'image');
-         INSERT INTO contents (hash, byte_size, kind, derived_at_utc)
+         INSERT INTO contents (hash, byte_size, kind, derive_outcome)
            VALUES ('broken', 1, 'image', 'failed');
          INSERT INTO paths
            (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms, resolved_source)

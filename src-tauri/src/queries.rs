@@ -1414,6 +1414,7 @@ fn unhashed_other_item_from_row(
             crate::derived_state::ItemWorkFacts {
                 kind: "other",
                 derived_at: None,
+                derive_outcome: None,
                 derived_version: 0,
                 strip_frames: None,
                 duration_ms: None,
@@ -1540,7 +1541,8 @@ fn hashed_section_select() -> String {
                 strftime('%Y-%m', l.resolved_utc_ms / 1000.0, 'unixepoch'),
                 'undated'
               )
-            ) \
+            ), \
+            c.derive_outcome \
      FROM review_contents l \
      JOIN contents c ON c.hash = l.content_hash \
      JOIN paths rp ON rp.id = l.representative_path_id "
@@ -1553,6 +1555,7 @@ fn section_item_from_row(
 ) -> rusqlite::Result<SectionItem> {
     let kind: String = row.get(14)?;
     let derived_at: Option<String> = row.get(15)?;
+    let derive_outcome: Option<String> = row.get(22)?;
     let face_state: Option<String> = row.get(18)?;
     let transcript_state: Option<String> = row.get(20)?;
     Ok(SectionItem {
@@ -1576,6 +1579,7 @@ fn section_item_from_row(
             crate::derived_state::ItemWorkFacts {
                 kind: &kind,
                 derived_at: derived_at.as_deref(),
+                derive_outcome: derive_outcome.as_deref(),
                 derived_version: row.get(16)?,
                 strip_frames: row.get(17)?,
                 duration_ms: row.get(13)?,

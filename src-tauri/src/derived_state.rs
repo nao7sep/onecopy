@@ -209,7 +209,7 @@ impl WorkClass {
         let faces = face_state_sql("c");
         let transcript = transcript_state_sql("c");
         match self {
-            Self::Previews => Some(format!("(l.kind IN ('image', 'video') AND c.derived_at_utc = '{FAILED}')")),
+            Self::Previews => Some(format!("(l.kind IN ('image', 'video') AND c.derive_outcome = '{FAILED}')")),
             Self::Snapshots => Some("(l.kind = 'video' AND c.strip_frames < 0)".to_string()),
             Self::Faces => Some(format!("(l.kind = 'image' AND {faces} = '{FAILED}')")),
             Self::VideoTranscripts => Some(format!("(c.kind = 'video' AND {transcript} = '{FAILED}')")),
@@ -330,11 +330,11 @@ const COUNTED: [WorkClass; 4] = [
 
 fn work_debt_sql(ffmpeg: bool) -> String {
     let (image_pending, _) = preview_pending_predicates(ffmpeg);
-    let video_pending = video_preview_pending_predicate();
+    let (_, video_pending) = preview_pending_predicates(true);
     let mut columns = vec![
         format!("COALESCE(SUM(l.kind = 'image' AND {image_pending}), 0)"),
         format!("COALESCE(SUM(l.kind = 'video' AND {video_pending}), 0)"),
-        format!("COALESCE(SUM(l.kind = 'image' AND c.derived_at_utc = '{NEEDS_FFMPEG}'), 0)"),
+        format!("COALESCE(SUM(l.kind = 'image' AND c.derive_outcome = '{NEEDS_FFMPEG}'), 0)"),
         format!(
             "COALESCE(SUM({}), 0)",
             WorkClass::Previews.failed_sql().expect("previews record failures")
@@ -506,6 +506,7 @@ pub struct ItemWorkStates {
 pub(crate) struct ItemWorkFacts<'a> {
     pub kind: &'a str,
     pub derived_at: Option<&'a str>,
+    pub derive_outcome: Option<&'a str>,
     pub derived_version: i64,
     pub strip_frames: Option<i64>,
     pub duration_ms: Option<i64>,
@@ -533,17 +534,14 @@ pub(crate) fn item_work_states(
     similarity_dirty: bool,
 ) -> ItemWorkStates {
     let media = matches!(facts.kind, "image" | "video");
-    let preview = media.then(|| match facts.derived_at {
-        Some(FAILED) => item_state("failed", false, Some("Preview generation failed")),
-        Some(NEEDS_FFMPEG) if !capabilities.ffmpeg => {
-            item_state("unavailable", false, Some("waiting-for-ffmpeg"))
-        }
-        None if facts.kind == "video" && !capabilities.ffmpeg => {
-            item_state("unavailable", false, Some("waiting-for-ffmpeg"))
-        }
-        None | Some(NEEDS_FFMPEG) => item_state("pending", false, None),
-        Some(_) if facts.derived_version < DERIVE_VERSION => item_state("pending", true, None),
-        Some(_) => item_state("ready", true, None),
+    let waiting_for_ffmpeg = || item_state("unavailable", false, Some("waiting-for-ffmpeg"));
+    let preview = media.then(|| match (facts.derive_outcome, facts.derived_at) {
+        (Some(FAILED), _) => item_state("failed", false, Some("Preview generation failed")),
+        (Some(_), _) if !capabilities.ffmpeg => waiting_for_ffmpeg(),
+        (None, None) if facts.kind == "video" && !capabilities.ffmpeg => waiting_for_ffmpeg(),
+        (Some(_), _) | (None, None) => item_state("pending", false, None),
+        (None, Some(_)) if facts.derived_version < DERIVE_VERSION => item_state("pending", true, None),
+        (None, Some(_)) => item_state("ready", true, None),
     });
     let preview_ready = preview.as_ref().is_some_and(|state| state.state == "ready");
     let preview_failed = preview.as_ref().is_some_and(|state| state.state == "failed");
@@ -724,38 +722,29 @@ pub(crate) fn priority_candidates(
     Ok(hashes)
 }
 
-pub(crate) fn preview_pending_predicates(ffmpeg: bool) -> (String, String) {
-    let stale = format!(
-        "c.derived_version < {DERIVE_VERSION} \
-         AND c.derived_at_utc NOT IN ('{FAILED}', '{NEEDS_FFMPEG}')",
-    );
-    let image = if ffmpeg {
-        format!(
-            "(c.derived_at_utc IS NULL OR c.derived_at_utc = '{}' OR ({stale}))",
-            NEEDS_FFMPEG,
-        )
-    } else {
-        format!("(c.derived_at_utc IS NULL OR ({stale}))")
-    };
-    let video = if ffmpeg {
-        video_preview_pending_predicate()
-    } else {
-        "0".to_string()
-    };
-    (image, video)
+/// SQL over the `c` alias: the latest attempt left no outcome holding the
+/// item back, and no current-version output exists yet.
+fn preview_owed() -> String {
+    format!(
+        "(c.derive_outcome IS NULL AND \
+         (c.derived_at_utc IS NULL OR c.derived_version < {DERIVE_VERSION}))"
+    )
 }
 
-fn video_preview_pending_predicate() -> String {
-    format!(
-        "(c.derived_at_utc IS NULL OR \
-         (c.derived_version < {DERIVE_VERSION} AND c.derived_at_utc != '{FAILED}'))"
-    )
+pub(crate) fn preview_pending_predicates(ffmpeg: bool) -> (String, String) {
+    let owed = preview_owed();
+    if ffmpeg {
+        let waiting = format!("({owed} OR c.derive_outcome = '{NEEDS_FFMPEG}')");
+        (waiting.clone(), waiting)
+    } else {
+        (owed, "0".to_string())
+    }
 }
 
 pub(crate) fn preview_available_predicate(content_alias: &str) -> String {
     format!(
         "({content_alias}.derived_at_utc IS NOT NULL AND \
-         {content_alias}.derived_at_utc NOT IN ('{FAILED}', '{NEEDS_FFMPEG}') AND \
+         {content_alias}.derive_outcome IS NULL AND \
          {content_alias}.derived_version >= {DERIVE_VERSION})"
     )
 }
@@ -1098,8 +1087,8 @@ pub fn record_preview_success(
             &format!(
                 "UPDATE contents SET width = COALESCE(width, ?2), \
                  height = COALESCE(height, ?3), sharpness = ?4, phash = ?5, \
-                 derived_at_utc = ?6, derived_version = {DERIVE_VERSION} \
-                 WHERE hash = ?1"
+                 derived_at_utc = ?6, derive_outcome = NULL, \
+                 derived_version = {DERIVE_VERSION} WHERE hash = ?1"
             ),
             params![
                 hash,
@@ -1118,7 +1107,7 @@ pub fn record_preview_success(
 
 pub fn record_preview_blocked(conn: &Connection, hash: &str) -> Result<(), String> {
     conn.execute(
-        "UPDATE contents SET derived_at_utc = ?2 WHERE hash = ?1",
+        "UPDATE contents SET derive_outcome = ?2 WHERE hash = ?1",
         params![hash, NEEDS_FFMPEG],
     )
     .map(|_| ())
@@ -1137,7 +1126,7 @@ fn record_content_failure(
         .map_err(|error| error.to_string())?;
     transaction
         .execute(
-            "UPDATE contents SET derived_at_utc = ?2 WHERE hash = ?1",
+            "UPDATE contents SET derive_outcome = ?2 WHERE hash = ?1",
             params![hash, FAILED],
         )
         .map_err(|error| error.to_string())?;
@@ -1213,7 +1202,8 @@ pub fn record_poster_success(
                 "UPDATE contents SET duration_ms = COALESCE(duration_ms, ?2), \
                  strip_frames = CASE WHEN ?2 IS NULL AND duration_ms IS NULL \
                      THEN COALESCE(strip_frames, 0) ELSE strip_frames END, \
-                 derived_at_utc = ?3, derived_version = {DERIVE_VERSION} WHERE hash = ?1"
+                 derived_at_utc = ?3, derive_outcome = NULL, \
+                 derived_version = {DERIVE_VERSION} WHERE hash = ?1"
             ),
             params![
                 hash,
@@ -1520,8 +1510,8 @@ pub(crate) fn reset_failed_outputs_in_transaction(
         (
             "contents",
             "hash",
-            "derived_at_utc = NULL",
-            "derived_at_utc = 'failed'",
+            "derive_outcome = NULL",
+            "derive_outcome = 'failed'",
         ),
         (
             "contents",
@@ -1592,7 +1582,7 @@ pub(crate) fn reopen_session_analysis_failures(conn: &Connection) -> Result<(), 
 
 pub(crate) fn preview_failed(conn: &Connection, hash: &str) -> Result<bool, String> {
     conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM contents WHERE hash = ?1 AND derived_at_utc = ?2)",
+        "SELECT EXISTS(SELECT 1 FROM contents WHERE hash = ?1 AND derive_outcome = ?2)",
         params![hash, FAILED],
         |row| row.get(0),
     )

@@ -649,7 +649,7 @@ fn stills_needing_ffmpeg_wait_for_it_instead_of_failing() {
     assert_eq!(issues, 0);
     let marker: String = conn
         .query_row(
-            "SELECT derived_at_utc FROM contents WHERE hash = 'heic01'",
+            "SELECT derive_outcome FROM contents WHERE hash = 'heic01'",
             [],
             |r| r.get(0),
         )
@@ -684,7 +684,7 @@ fn windows_native_decode_limit_waits_for_ffmpeg_instead_of_failing_the_file() {
     assert_eq!((stats.derived, stats.failed, stats.blocked_no_ffmpeg), (0, 0, 1));
     assert_eq!(
         conn.query_row(
-            "SELECT derived_at_utc FROM contents WHERE hash = 'large01'",
+            "SELECT derive_outcome FROM contents WHERE hash = 'large01'",
             [],
             |row| row.get::<_, String>(0),
         )
@@ -700,7 +700,7 @@ fn windows_native_decode_limit_waits_for_ffmpeg_instead_of_failing_the_file() {
 
 #[test]
 fn a_stale_derive_version_makes_a_row_pending_again() {
-    // Both derive passes checkpoint on derived_at_utc alone, and only a
+    // Both derive passes once checkpointed on derived_at_utc alone, and only a
     // changed source file ever cleared it — so a derive that completed with
     // wrong output stayed wrong for the life of the index and no rescan could
     // fix it. DERIVE_VERSION is the escape hatch: bumping it re-derives
@@ -743,7 +743,7 @@ fn a_stale_derive_version_makes_a_row_pending_again() {
     // broken, not the pipeline, and retrying it every scan is the churn the
     // failed sentinel exists to prevent.
     conn.execute(
-        "UPDATE contents SET derived_at_utc = 'failed', derived_version = 0 WHERE hash = 'good01'",
+        "UPDATE contents SET derive_outcome = 'failed', derived_version = 0 WHERE hash = 'good01'",
         [],
     )
     .unwrap();
@@ -852,7 +852,7 @@ fn an_unwritable_cache_pauses_the_pass_instead_of_failing_every_item() {
 
     let failed_rows: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM contents WHERE derived_at_utc = 'failed'",
+            "SELECT COUNT(*) FROM contents WHERE derive_outcome = 'failed'",
             [],
             |r| r.get(0),
         )

@@ -1067,12 +1067,12 @@ pub fn upsert_file(
             // the bytes — so an in-place replacement regenerates the SAME key.
             // Left alone, the old contents row hands the new file the previous
             // file's facts: byte_size, phash, sharpness, strip_frames and,
-            // fatally, derived_at_utc, which makes both derive passes skip it
-            // for the life of the index. That is why re-saving a trimmed clip
-            // kept showing the old poster and strip, and why a rescan did not
-            // fix it. Captured here, dropped after the row detaches below —
-            // paths.content_hash is a foreign key into contents, so deleting
-            // first is a constraint violation.
+            // fatally, derived_at_utc and derive_outcome, which make both
+            // derive passes skip it for the life of the index. That is why
+            // re-saving a trimmed clip kept showing the old poster and strip,
+            // and why a rescan did not fix it. Captured here, dropped after
+            // the row detaches below — paths.content_hash is a foreign key
+            // into contents, so deleting first is a constraint violation.
             let stale_provisional: Option<String> = conn
                 .query_row(
                     "SELECT content_hash FROM paths WHERE abs_path = ?1",
@@ -1575,9 +1575,9 @@ pub fn promote_identity(
         // row under the real key, repoint the children, drop the old row.
         tx.execute(
             "INSERT INTO contents (hash, byte_size, kind, phash, camera_make, camera_model, \
-             width, height, duration_ms, sharpness, strip_frames, derived_at_utc) \
+             width, height, duration_ms, sharpness, strip_frames, derived_at_utc, derive_outcome) \
              SELECT ?2, byte_size, kind, phash, camera_make, camera_model, \
-             width, height, duration_ms, sharpness, strip_frames, derived_at_utc \
+             width, height, duration_ms, sharpness, strip_frames, derived_at_utc, derive_outcome \
              FROM contents WHERE hash = ?1",
             params![provisional, real_hash],
         )

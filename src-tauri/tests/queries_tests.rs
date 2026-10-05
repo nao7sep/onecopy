@@ -581,13 +581,19 @@ fn explicit_section_range_returns_only_requested_positions() {
 fn needs_ffmpeg_rows_do_not_claim_a_thumbnail() {
     let conn = db();
     seed_image(&conn, "hdone", Some("2026-01-02T03:04:05.000Z"), "done.jpg");
-    seed_image(
-        &conn,
-        "hblocked",
-        Some(preview::NEEDS_FFMPEG),
-        "blocked.jpg",
-    );
-    seed_image(&conn, "hfailed", Some("failed"), "failed.jpg");
+    seed_image(&conn, "hblocked", None, "blocked.jpg");
+    // A later failed attempt outranks an earlier success.
+    seed_image(&conn, "hfailed", Some("2026-01-02T03:04:05.000Z"), "failed.jpg");
+    conn.execute(
+        "UPDATE contents SET derive_outcome = ?2 WHERE hash = ?1",
+        params!["hblocked", preview::NEEDS_FFMPEG],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE contents SET derive_outcome = ?2 WHERE hash = ?1",
+        params!["hfailed", derived_state::FAILED],
+    )
+    .unwrap();
 
     let items = section_items(&conn, "image", "2026-01", Tz::UTC);
     let thumb_of = |hash: &str| {

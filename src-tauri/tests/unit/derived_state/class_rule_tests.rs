@@ -15,10 +15,11 @@ fn capabilities() -> WorkCapabilities {
     }
 }
 
-fn facts<'a>(kind: &'a str, derived_at: Option<&'a str>, duration_ms: Option<i64>) -> ItemWorkFacts<'a> {
+fn facts<'a>(kind: &'a str, derive_outcome: Option<&'a str>, duration_ms: Option<i64>) -> ItemWorkFacts<'a> {
     ItemWorkFacts {
         kind,
-        derived_at,
+        derived_at: None,
+        derive_outcome,
         derived_version: DERIVE_VERSION,
         strip_frames: None,
         duration_ms,
@@ -39,28 +40,33 @@ fn each_prerequisite_selects_in_sql_exactly_the_items_its_fact_form_admits() {
         Prerequisite::PosterAndDuration,
         Prerequisite::DurationOrPoster,
     ] {
-        for (derived_at, version, ready) in [
-            (None, DERIVE_VERSION, false),
-            (Some(FAILED), DERIVE_VERSION, false),
-            (Some(NEEDS_FFMPEG), DERIVE_VERSION, false),
-            (Some("2026-01-01T00:00:00Z"), DERIVE_VERSION - 1, false),
-            (Some("2026-01-01T00:00:00Z"), DERIVE_VERSION, true),
+        let derived = Some("2026-01-01T00:00:00Z");
+        for (derived_at, outcome, version, ready) in [
+            (None, None, DERIVE_VERSION, false),
+            (None, Some(FAILED), DERIVE_VERSION, false),
+            (None, Some(NEEDS_FFMPEG), DERIVE_VERSION, false),
+            (derived, None, DERIVE_VERSION - 1, false),
+            (derived, None, DERIVE_VERSION, true),
+            // A later attempt that produced nothing outranks an earlier success.
+            (derived, Some(FAILED), DERIVE_VERSION, false),
+            (derived, Some(NEEDS_FFMPEG), DERIVE_VERSION, false),
         ] {
             for duration in [None, Some(1_000_i64)] {
                 let selected: bool = conn
                     .query_row(
                         &format!(
-                            "SELECT {} FROM (SELECT ?1 AS derived_at_utc, ?2 AS derived_version, ?3 AS duration_ms) c",
+                            "SELECT {} FROM (SELECT ?1 AS derived_at_utc, ?2 AS derive_outcome, \
+                             ?3 AS derived_version, ?4 AS duration_ms) c",
                             prerequisite.sql()
                         ),
-                        rusqlite::params![derived_at, version, duration],
+                        rusqlite::params![derived_at, outcome, version, duration],
                         |row| row.get(0),
                     )
                     .unwrap();
                 assert_eq!(
                     selected,
                     prerequisite.holds(ready, duration.is_some()),
-                    "{prerequisite:?} derived_at={derived_at:?} version={version} duration={duration:?}"
+                    "{prerequisite:?} derived_at={derived_at:?} outcome={outcome:?} version={version} duration={duration:?}"
                 );
             }
         }

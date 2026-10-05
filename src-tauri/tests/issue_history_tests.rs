@@ -80,7 +80,7 @@ fn dismiss_all_covers_the_full_live_inbox_and_preserves_other_history() {
 #[test]
 fn archived_failures_do_not_reopen_work() {
     let (_root, conn) = db();
-    conn.execute_batch("INSERT INTO contents(hash, byte_size, kind, derived_at_utc) VALUES ('hash', 4, 'image', 'failed');
+    conn.execute_batch("INSERT INTO contents(hash, byte_size, kind, derive_outcome) VALUES ('hash', 4, 'image', 'failed');
         INSERT INTO paths(abs_path, dir_path, file_name, kind, content_hash, hash_attempt_failed) VALUES ('/a.jpg', '/', 'a.jpg', 'image', 'hash', 1);").unwrap();
     for kind in [
         "decode-error",
@@ -92,7 +92,7 @@ fn archived_failures_do_not_reopen_work() {
     index_store::dismiss_issues(&conn, None).unwrap();
     assert_eq!(queries::issues(&conn, 10, None).unwrap().0, 0);
     assert_eq!(
-        conn.query_row("SELECT derived_at_utc FROM contents", [], |row| row
+        conn.query_row("SELECT derive_outcome FROM contents", [], |row| row
             .get::<_, String>(0))
             .unwrap(),
         "failed"
@@ -138,7 +138,7 @@ fn each_launch_starts_a_fresh_inbox_and_keeps_earlier_launches_issues() {
 }
 
 fn section_fixture(conn: &rusqlite::Connection) {
-    conn.execute_batch("INSERT INTO contents(hash, byte_size, kind, derived_at_utc) VALUES
+    conn.execute_batch("INSERT INTO contents(hash, byte_size, kind, derive_outcome) VALUES
         ('photo', 4, 'image', 'failed'), ('next-month', 4, 'image', 'failed'), ('video', 4, 'video', 'failed');
         INSERT INTO paths(id, abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms, resolved_source, metadata_attempt_failed) VALUES
         (1, '/same/photo.jpg', '/same', 'photo.jpg', 'image', 'photo', 10, 'filesystem', 1),
@@ -223,7 +223,7 @@ fn upsert_and_clear_issue_report_whether_they_actually_changed_a_row() {
 fn failed_attempt_admission_rolls_back_diagnostic_retirement_and_all_receipts() {
     let (_root, conn) = db();
     section_fixture(&conn);
-    conn.execute_batch("CREATE TRIGGER reject_reset BEFORE UPDATE OF derived_at_utc ON contents BEGIN SELECT RAISE(ABORT, 'fixture reset failure'); END;").unwrap();
+    conn.execute_batch("CREATE TRIGGER reject_reset BEFORE UPDATE OF derive_outcome ON contents BEGIN SELECT RAISE(ABORT, 'fixture reset failure'); END;").unwrap();
     assert!(attempt_boundaries::recheck_section(&conn, onecopy_lib::queries::SectionKind::Image, Some((0, 100))).is_err());
     assert!(attempt_boundaries::begin_run(&conn).is_err());
     assert_eq!(queries::issues(&conn, 20, None).unwrap().0, 6);

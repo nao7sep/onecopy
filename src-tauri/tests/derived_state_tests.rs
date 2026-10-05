@@ -38,13 +38,13 @@ fn seeded() -> (tempfile::TempDir, rusqlite::Connection) {
     let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
     conn.execute_batch(
         "INSERT INTO contents
-           (hash, byte_size, kind, derived_at_utc, strip_frames)
-         VALUES ('image', 1, 'image', 'failed', NULL),
-                ('poster', 1, 'video', 'failed', NULL),
-                ('strip', 1, 'video', 'ready', -1),
-                ('face', 1, 'image', 'ready', NULL),
-                ('speech', 1, 'video', 'ready', NULL),
-                ('delete', 1, 'image', 'ready', NULL);
+           (hash, byte_size, kind, derived_at_utc, derive_outcome, strip_frames)
+         VALUES ('image', 1, 'image', NULL, 'failed', NULL),
+                ('poster', 1, 'video', NULL, 'failed', NULL),
+                ('strip', 1, 'video', 'ready', NULL, -1),
+                ('face', 1, 'image', 'ready', NULL, NULL),
+                ('speech', 1, 'video', 'ready', NULL, NULL),
+                ('delete', 1, 'image', 'ready', NULL, NULL);
          INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash)
          VALUES ('/image.jpg', '/', 'image.jpg', 'image', 'image'),
                 ('/poster.mov', '/', 'poster.mov', 'video', 'poster'),
@@ -74,9 +74,9 @@ fn explicit_attempt_boundary_reopens_failures_without_using_or_erasing_issues() 
     // Dismissal/history cannot decide whether an output is eligible again.
     index_store::dismiss_issues(&conn, None).unwrap();
     conn.execute_batch(
-        "INSERT INTO contents (hash, byte_size, kind, derived_at_utc, strip_frames)
-         VALUES ('waiting', 1, 'image', 'needs-ffmpeg', NULL),
-                ('ready', 1, 'video', 'ready', 8);
+        "INSERT INTO contents (hash, byte_size, kind, derived_at_utc, derive_outcome, strip_frames)
+         VALUES ('waiting', 1, 'image', NULL, 'needs-ffmpeg', NULL),
+                ('ready', 1, 'video', 'ready', NULL, 8);
          INSERT INTO transcripts (content_hash, model, model_version, text, segments, created_at_utc)
          VALUES ('ready', 'm', 'v', '', '[]', 'now');
          INSERT INTO face_checks (content_hash, model, model_version, face_count, checked_at_utc)
@@ -93,7 +93,7 @@ fn explicit_attempt_boundary_reopens_failures_without_using_or_erasing_issues() 
     );
     let preserved: (String, i64, String) = conn.query_row(
         "SELECT c.derived_at_utc, c.strip_frames,
-          (SELECT derived_at_utc FROM contents WHERE hash = 'waiting')
+          (SELECT derive_outcome FROM contents WHERE hash = 'waiting')
          FROM contents c WHERE c.hash = 'ready'",
         [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     ).unwrap();
@@ -126,8 +126,8 @@ fn section_attempt_reset_uses_logical_kind_and_half_open_dates_not_shared_folder
     );
     let states: (Option<String>, String) = conn
         .query_row(
-            "SELECT (SELECT derived_at_utc FROM contents WHERE hash = 'image'),
-          (SELECT derived_at_utc FROM contents WHERE hash = 'poster')",
+            "SELECT (SELECT derive_outcome FROM contents WHERE hash = 'image'),
+          (SELECT derive_outcome FROM contents WHERE hash = 'poster')",
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -311,9 +311,9 @@ fn preview_poster_and_snapshot_transitions_retire_their_current_issue() {
     let state: (Option<String>, i64, Option<String>, i64, i64) = conn
         .query_row(
             "SELECT
-               (SELECT derived_at_utc FROM contents WHERE hash = 'image'),
+               (SELECT derived_at_utc FROM contents WHERE hash = 'image' AND derive_outcome IS NULL),
                (SELECT derived_version FROM contents WHERE hash = 'image'),
-               (SELECT derived_at_utc FROM contents WHERE hash = 'poster'),
+               (SELECT derived_at_utc FROM contents WHERE hash = 'poster' AND derive_outcome IS NULL),
                (SELECT duration_ms FROM contents WHERE hash = 'poster'),
                (SELECT strip_frames FROM contents WHERE hash = 'strip')",
             [],
@@ -357,8 +357,8 @@ fn preview_poster_and_snapshot_failures_checkpoint_once_for_retry() {
     let state: (String, String, i64) = conn
         .query_row(
             "SELECT
-               (SELECT derived_at_utc FROM contents WHERE hash = 'image'),
-               (SELECT derived_at_utc FROM contents WHERE hash = 'poster'),
+               (SELECT derive_outcome FROM contents WHERE hash = 'image'),
+               (SELECT derive_outcome FROM contents WHERE hash = 'poster'),
                (SELECT strip_frames FROM contents WHERE hash = 'strip')",
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
@@ -502,4 +502,32 @@ fn a_poster_for_a_video_without_a_container_duration_settles_snapshots_and_admit
     );
     let (_, issues) = queries::issues(&conn, 20, None).unwrap();
     assert!(issues.is_empty());
+}
+
+#[test]
+fn a_failure_after_a_success_keeps_the_success_time_and_a_reset_restores_it() {
+    let (_dir, conn) = seeded();
+    derived_state::record_preview_success(&conn, "image", "/image.jpg", 4000, 3000, 12.5, 42)
+        .unwrap();
+    let succeeded = |conn: &rusqlite::Connection| -> (Option<String>, Option<String>, Option<f64>) {
+        conn.query_row(
+            "SELECT derived_at_utc, derive_outcome, sharpness FROM contents WHERE hash = 'image'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap()
+    };
+    let (success_time, outcome, sharpness) = succeeded(&conn);
+    assert!(success_time.is_some());
+    assert_eq!((outcome, sharpness), (None, Some(12.5)));
+
+    derived_state::record_preview_failure(&conn, "image", "/image.jpg", "decode").unwrap();
+    assert_eq!(
+        succeeded(&conn),
+        (success_time.clone(), Some("failed".into()), Some(12.5)),
+        "the failure is its own fact; the success's time stays a time"
+    );
+
+    derived_state::reset_failed_outputs(&conn, FailedOutputScope::Library).unwrap();
+    assert_eq!(succeeded(&conn), (success_time, None, Some(12.5)));
 }
