@@ -292,14 +292,18 @@ fn restore_behind_background_work(
 ) -> crate::restore::RestoreOutcome {
     let mutation = begin().unwrap();
     let shown = host.waiting_shown.clone();
-    let (release, released) = std::sync::mpsc::channel::<()>();
     let outcome = std::thread::scope(|scope| {
+        // Owned by this closure, so a failed assertion below drops the sender
+        // while unwinding and the background work ends; the scope can then
+        // join it and report the failure instead of waiting forever.
+        let (release, released) = std::sync::mpsc::channel::<()>();
         // Background work holds the index and has not reached a safe point.
         let (held, holding) = std::sync::mpsc::channel::<()>();
         let background = scope.spawn(move || {
             crate::scan_runtime::with_owner(crate::scan_runtime::Owner::Watcher, || false, || {
                 held.send(()).unwrap();
-                released.recv().unwrap();
+                // Released by the test, or by the test failing.
+                let _ = released.recv();
                 Ok(())
             })
         });
