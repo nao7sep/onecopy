@@ -299,6 +299,18 @@ describe("Space", () => {
     expect(usePreviewStore.getState().follow).toBe(false);
   });
 
+  // Space pressed in the view closes it, and a still-held Space then
+  // repeats into Main's list: it must not reopen the view at once.
+  it("opens nothing on a held Space's repeats", async () => {
+    const { container } = renderGrid();
+    await anchor("h3");
+
+    await act(async () => press(container, " ", { repeat: true, cancelable: true }));
+
+    expect(useFullscreenViewStore.getState().session).toBeNull();
+    expect(invokeCalls.some((c) => c.command === "viewer_sequence_start")).toBe(false);
+  });
+
   it("never reaches a delete", async () => {
     const { container } = renderGrid();
     await anchor("h3");

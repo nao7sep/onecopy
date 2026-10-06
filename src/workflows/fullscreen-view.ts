@@ -341,16 +341,19 @@ export function openFullscreenView(): boolean {
   return true;
 }
 
+/** A held Space opens nothing: its repeats reach Main's list once the view
+ * has closed on the first press, and would reopen it at once. */
 export function handleSpaceFullscreenView(event: {
   preventDefault: () => void;
+  repeat?: boolean;
   metaKey?: boolean;
   ctrlKey?: boolean;
   altKey?: boolean;
 }): boolean {
   if (event.metaKey || event.ctrlKey || event.altKey) return false;
-  const opened = openFullscreenView();
   event.preventDefault();
-  return opened;
+  if (event.repeat === true) return false;
+  return openFullscreenView();
 }
 
 export function moveFullscreenView(move: ViewerMove): void {

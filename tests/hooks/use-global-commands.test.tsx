@@ -227,16 +227,17 @@ describe("global destructive commands", () => {
     );
   });
 
-  it("consumes repeated Enter and deletion without reopening or deleting", () => {
+  it("consumes repeated Space, Enter and deletion without reopening or deleting", () => {
     const view = render(<Harness />);
     const area = view.container.querySelector("#main-item-area")!;
 
+    fireEvent.keyDown(area, { key: " ", repeat: true });
     fireEvent.keyDown(area, { key: "Enter", repeat: true });
     fireEvent.keyDown(area, { key: "Backspace", repeat: true });
 
     expect(
       invokeCalls.some((call) =>
-        ["comparison_selection_valid", "delete_items"].includes(call.command),
+        ["viewer_sequence_start", "comparison_selection_valid", "delete_items"].includes(call.command),
       ),
     ).toBe(false);
     expect(view.getByLabelText("Trash confirmation").textContent).toBe(
