@@ -18,6 +18,7 @@ import {
   mockCommands,
   resetTauriMocks,
   setCurrentMonitor,
+  setFocus,
   setMonitors,
   setWindowCreatedHook,
   WebviewWindow,
@@ -139,6 +140,23 @@ describe("opening Comparison across displays", () => {
     expect(preview.show).toHaveBeenCalledOnce();
     expect(preview.setFocus).not.toHaveBeenCalled();
     usePreviewStore.setState({ follow: false, placement: null });
+  });
+
+  // Opening and closing finish asynchronously, and a focus on macOS
+  // activates OneCopy: a user who switched away meanwhile keeps the other
+  // app in front, since Rust reads activation as the focus lands.
+  it("refocuses Main only through the focus that stands down while another app is active", async () => {
+    setMonitors(THREE_SCREENS.slice(0, 2));
+    setCurrentMonitor(THREE_SCREENS[0]);
+    mockCommands({ get_similar_group: () => members(6), focus_window_while_active: () => null });
+
+    await useComparisonStore.getState().openGroup("m0");
+    await useComparisonStore.getState().close();
+
+    const focuses = invokeCalls.filter((call) => call.command === "focus_window_while_active");
+    expect(focuses.length).toBeGreaterThanOrEqual(2);
+    expect(focuses.every((call) => call.args.label === "main")).toBe(true);
+    expect(setFocus).not.toHaveBeenCalled();
   });
 
   it("does not hide Preview for an invalid group", async () => {

@@ -6,7 +6,7 @@ import {
   currentMonitor,
 } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { reportWindowCall } from "../repositories";
+import { focusWhileActive, reportWindowCall } from "../repositories";
 import { waitForWindowCreated } from "../utils/windowCreation";
 import { documentTranslator } from "../i18n/I18nContext";
 
@@ -43,7 +43,7 @@ async function activate(window: WebviewWindow, monitor: Display): Promise<void> 
   await window.setSize(new PhysicalSize(monitor.size.width, monitor.size.height));
   await window.show();
   await setFullscreen(true);
-  await window.setFocus();
+  await focusWhileActive(WINDOW_LABEL);
 }
 
 async function createWindow(monitor: Display): Promise<WebviewWindow> {

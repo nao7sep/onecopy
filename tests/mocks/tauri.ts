@@ -148,6 +148,18 @@ const liveWindows = new Map<string, WebviewWindow>();
  * the call it is too late to tell an early publish from a late one. */
 let onWindowCreated: ((label: string) => void) | null = null;
 let nextWindowListenerFailure: unknown | null = null;
+/** Commands every spec gets answered unless it replaces them. Developer
+ * activity is orthogonal to every product assertion; a focus while OneCopy
+ * is active (the suite's case) focuses that window as Rust would. */
+function installDefaultHandlers(): void {
+  handlers.set("activity_record", () => null);
+  handlers.set("focus_window_while_active", async ({ label }) => {
+    if (label === "main") await setFocus();
+    else await liveWindows.get(label as string)?.setFocus();
+  });
+}
+installDefaultHandlers();
+
 export function setWindowCreatedHook(fn: ((label: string) => void) | null): void {
   onWindowCreated = fn;
 }
@@ -487,9 +499,7 @@ export function resetTauriMocks(
   options: { keepListeners?: boolean } = {},
 ): void {
   handlers.clear();
-  // Developer activity is orthogonal to every product assertion. Keep its
-  // fire-and-forget command available unless a spec explicitly replaces it.
-  handlers.set("activity_record", () => null);
+  installDefaultHandlers();
   if (!options.keepListeners) listeners.clear();
   invokeCalls.length = 0;
   emitCalls.length = 0;

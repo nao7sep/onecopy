@@ -291,6 +291,20 @@ pub fn set(app: &AppHandle, label: &str, enable: bool, surface: Surface) -> Resu
     }
 }
 
+/// Focuses a window only while OneCopy is the active app. On macOS focusing a
+/// window activates its app, so a focus from work that finished after the user
+/// switched away would bring OneCopy in front of the other app. Must run on
+/// the main thread.
+pub fn focus_while_active(app: &AppHandle, label: &str) -> Result<(), String> {
+    if !application_active(app)? {
+        return Ok(());
+    }
+    app.get_webview_window(label)
+        .ok_or_else(|| format!("no window labeled {label}"))?
+        .set_focus()
+        .map_err(|error| error.to_string())
+}
+
 pub fn window_destroyed(label: &str) {
     if let Ok(mut state) = STATE.lock() {
         state.forget(label);

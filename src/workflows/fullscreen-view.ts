@@ -6,12 +6,11 @@
 
 import { emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ViewerMove, ViewerSequenceSnapshot } from "../models/viewerSession";
 import { viewerMainIndex } from "../models/viewerSession";
 import type { ItemDetail, SectionItem, SectionLocation } from "../models/items";
 import { identityFromKey, identityKey, isAudioFile, itemKey } from "../models/items";
-import { log, reportWindowCall, toErrorFields } from "../repositories";
+import { focusWhileActive, log, reportWindowCall, toErrorFields } from "../repositories";
 import {
   latestActivityOperationId,
   newActivityOperationId,
@@ -149,7 +148,7 @@ function focusMainAnchor(): void {
 }
 
 async function restoreMainFocus(): Promise<void> {
-  await getCurrentWindow().setFocus().catch(reportWindowCall("main setFocus"));
+  await focusWhileActive("main").catch(reportWindowCall("main focus"));
   focusMainAnchor();
 }
 

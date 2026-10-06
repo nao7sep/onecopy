@@ -936,6 +936,13 @@ fn set_spread_fullscreen(app: AppHandle, label: String, enable: bool) -> Result<
     fullscreen::set(&app, &label, enable, fullscreen::Surface::Spread)
 }
 
+/// Comparison's and the fullscreen view's keyboard refocus, never while
+/// another app is active.
+#[tauri::command]
+fn focus_window_while_active(app: AppHandle, label: String) -> Result<(), String> {
+    fullscreen::focus_while_active(&app, &label)
+}
+
 #[tauri::command]
 fn place_preview_window(
     app: AppHandle,
@@ -1676,6 +1683,7 @@ pub fn run() {
             prioritize_derived_work,
             set_window_fullscreen,
             set_spread_fullscreen,
+            focus_window_while_active,
             place_preview_window,
             capture_preview_window_placement,
             ensure_preview,

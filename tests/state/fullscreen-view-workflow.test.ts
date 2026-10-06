@@ -307,6 +307,12 @@ describe("fullscreen view workflow", () => {
       command: "set_window_fullscreen",
       args: { label: "fullscreen-view", enable: true },
     });
+    // Focused only while OneCopy is still active once the window is up.
+    expect(invokeCalls).toContainEqual({
+      command: "focus_window_while_active",
+      args: { label: "fullscreen-view" },
+    });
+    expect(viewer.setFocus).toHaveBeenCalledOnce();
     // Shown on that display first, so fullscreen takes that display's frame.
     expect(viewer.show.mock.invocationCallOrder[0]).toBeLessThan(
       invoke.mock.invocationCallOrder[invokeCalls.findIndex((call) => call.command === "set_window_fullscreen")],

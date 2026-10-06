@@ -3,7 +3,6 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   availableMonitors,
   currentMonitor,
-  getCurrentWindow,
   PhysicalPosition,
   PhysicalSize,
 } from "@tauri-apps/api/window";
@@ -24,7 +23,7 @@ import {
   type ComparisonDecisionDraft,
   type ComparisonCardInteraction,
 } from "../models/comparisonSession";
-import { log, reportWindowCall, toErrorFields } from "../repositories";
+import { focusWhileActive, log, reportWindowCall, toErrorFields } from "../repositories";
 import { monitorKey, orderMonitors, priorityFromConfig } from "../utils/screens";
 import { requestSeq } from "./request-seq";
 import { message, type Message } from "../i18n/translate";
@@ -388,9 +387,7 @@ async function showSpread(monitors: MonitorList): Promise<void> {
             void recoverDisplays(index + 1);
             return;
           }
-          await getCurrentWindow()
-            .setFocus()
-            .catch(reportWindowCall("main setFocus"));
+          await focusWhileActive("main").catch(reportWindowCall("main focus"));
         });
       });
       void created.once("tauri://error", (event) => {
@@ -473,9 +470,7 @@ function synchronizeSpread(previousSpreadCount: number): void {
     if (previousSpreadCount > needed) {
       await hideSpread(needed + 1, previousSpreadCount);
     }
-    await getCurrentWindow()
-      .setFocus()
-      .catch(reportWindowCall("main setFocus"));
+    await focusWhileActive("main").catch(reportWindowCall("main focus"));
   });
 }
 
@@ -505,9 +500,7 @@ function recoverDisplays(failedSpreadIndex: number): Promise<void> {
   return queueComparisonLifecycle(async () => {
     await closeSpread(1, previousSpreadCount);
     await showSpread(sessionOtherMonitors.slice(0, needed));
-    await getCurrentWindow()
-      .setFocus()
-      .catch(reportWindowCall("main setFocus"));
+    await focusWhileActive("main").catch(reportWindowCall("main focus"));
   });
 }
 
@@ -530,7 +523,7 @@ async function teardownComparison(spreadCount: number): Promise<void> {
   await setComparisonFullscreen(false).catch(
     reportWindowCall("comparison leave fullscreen"),
   );
-  await getCurrentWindow().setFocus().catch(reportWindowCall("main setFocus"));
+  await focusWhileActive("main").catch(reportWindowCall("main focus"));
 }
 
 const groupLoad = requestSeq();
@@ -628,9 +621,7 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
         await hidePreviewWindowForComparison();
         await setComparisonFullscreen(true);
         await showSpread(sessionOtherMonitors.slice(0, get().spreadCount));
-        await getCurrentWindow()
-          .setFocus()
-          .catch(reportWindowCall("main setFocus"));
+        await focusWhileActive("main").catch(reportWindowCall("main focus"));
       });
       return "opened";
     } catch (error) {

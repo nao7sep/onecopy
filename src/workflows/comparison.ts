@@ -6,7 +6,7 @@ import {
 } from "../models/mainSelection";
 import type { SectionRecoveryContextPayload } from "../models/items";
 import { visibleKeepMarks } from "../models/comparisonSession";
-import { log, toErrorFields } from "../repositories";
+import { focusWhileActive, log, toErrorFields } from "../repositories";
 import { useAppStore } from "../state/app-store";
 import {
   broadcastComparison,
@@ -59,12 +59,12 @@ async function refreshLibrary(): Promise<void> {
 }
 
 async function restoreMainFocus(): Promise<void> {
-  await getCurrentWindow().setFocus();
+  await focusWhileActive("main");
   document.getElementById("main-item-area")?.focus();
 }
 
 async function focusComparison(): Promise<void> {
-  await getCurrentWindow().setFocus();
+  await focusWhileActive("main");
   document.getElementById("comparison-item-area")?.focus();
 }
 
