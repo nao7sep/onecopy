@@ -3,12 +3,12 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it } from "vitest";
-import ViewerWindow from "../../src/windows/ViewerWindow";
+import FullscreenViewWindow from "../../src/windows/FullscreenViewWindow";
 import { EMPTY_ITEM_WORK } from "../../src/models/items";
-import type { ViewerBroadcast } from "../../src/workflows/fullscreen-view";
+import type { FullscreenViewBroadcast } from "../../src/workflows/fullscreen-view";
 import { emitCalls, fireEvent as deliver, resetTauriMocks } from "../mocks/tauri";
 
-const state: ViewerBroadcast = {
+const state: FullscreenViewBroadcast = {
   item: { hash: "photo", pathId: 1, fileName: "photo.jpg", resolvedUtcMs: null,
     copyCount: 1, width: 10, height: 10, hasThumb: true, similarGroupId: null,
     sharpness: null, faceScore: null, byteSize: 10, hasCompanions: false,
@@ -24,26 +24,26 @@ afterEach(cleanup);
 
 it("focuses the fullscreen command surface on entry and native-window reactivation", async () => {
   const user = userEvent.setup();
-  render(<ViewerWindow />);
-  await act(async () => deliver("viewer://state", state));
-  const surface = screen.getByLabelText("Fullscreen viewer");
+  render(<FullscreenViewWindow />);
+  await act(async () => deliver("fullscreen-view://state", state));
+  const surface = screen.getByLabelText("Fullscreen view");
   expect(document.activeElement).toBe(surface);
   await user.keyboard("{Enter}");
-  expect(emitCalls.filter((call) => call.event === "viewer://key")).toEqual([]);
+  expect(emitCalls.filter((call) => call.event === "fullscreen-view://key")).toEqual([]);
 
   screen.getByRole("button", { name: "Previous item" }).focus();
   await user.keyboard("{Enter}");
-  expect(emitCalls).toContainEqual({ event: "viewer://key", payload: { key: "ArrowLeft", shiftKey: false } });
+  expect(emitCalls).toContainEqual({ event: "fullscreen-view://key", payload: { key: "ArrowLeft", shiftKey: false } });
   fireEvent(window, new Event("focus"));
   expect(document.activeElement).toBe(surface);
   await user.keyboard(" ");
-  expect(emitCalls).toContainEqual({ event: "viewer://key", payload: expect.objectContaining({ key: " " }) });
+  expect(emitCalls).toContainEqual({ event: "fullscreen-view://key", payload: expect.objectContaining({ key: " " }) });
 });
 
 it("keeps the chrome hover- and focus-revealed, not permanently shown (D9)", async () => {
-  render(<ViewerWindow />);
-  await act(async () => deliver("viewer://state", state));
-  const surface = screen.getByLabelText("Fullscreen viewer");
+  render(<FullscreenViewWindow />);
+  await act(async () => deliver("fullscreen-view://state", state));
+  const surface = screen.getByLabelText("Fullscreen view");
   const header = screen.getByRole("button", { name: "Previous item" }).closest("header");
   expect(surface.className).toMatch(/(^|\s)group(\s|$)/);
   expect(header?.className).toContain("opacity-0");
@@ -57,13 +57,13 @@ it("keeps the chrome hover- and focus-revealed, not permanently shown (D9)", asy
 
 it("does not steal confirmation focus on reactivation or forward its decision keys", async () => {
   const user = userEvent.setup();
-  render(<ViewerWindow />);
-  await act(async () => deliver("viewer://state", { ...state, pendingDelete: { kind: "permanent", fileName: "photo.jpg" } }));
+  render(<FullscreenViewWindow />);
+  await act(async () => deliver("fullscreen-view://state", { ...state, pendingDelete: { kind: "permanent", fileName: "photo.jpg" } }));
   const cancel = screen.getByRole("button", { name: "Cancel" });
   expect(document.activeElement).toBe(cancel);
   fireEvent(window, new Event("focus"));
   expect(document.activeElement).toBe(cancel);
   await user.keyboard("{ArrowRight}{Enter}");
-  expect(emitCalls).toContainEqual({ event: "viewer://confirm-delete", payload: {} });
-  expect(emitCalls.filter((call) => call.event === "viewer://key")).toEqual([]);
+  expect(emitCalls).toContainEqual({ event: "fullscreen-view://confirm-delete", payload: {} });
+  expect(emitCalls.filter((call) => call.event === "fullscreen-view://key")).toEqual([]);
 });

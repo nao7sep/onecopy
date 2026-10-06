@@ -130,7 +130,7 @@ function VideoSurface({
       data-video-surface
       tabIndex={keyboardActive ? 0 : -1}
       role={keyboardActive ? "group" : undefined}
-      aria-label={keyboardActive ? t("viewer.videoPlayer") : undefined}
+      aria-label={keyboardActive ? t("fullscreenView.videoPlayer") : undefined}
       className="flex h-full min-h-0 w-full flex-col gap-2 outline-none"
     >
       <div

@@ -11,14 +11,14 @@ import { useFullscreenViewStore } from "../../src/state/fullscreen-view-store";
 import type { ViewerSequenceSnapshot } from "../../src/models/viewerSession";
 import { revealInMain } from "../../src/workflows/reveal-in-main";
 import {
-  confirmViewerDelete,
-  handleViewerKey,
-  moveViewer,
-  requestViewerDelete,
+  confirmFullscreenViewDelete,
+  handleFullscreenViewKey,
+  moveFullscreenView,
+  requestFullscreenViewDelete,
   openFullscreenView,
-  viewerBroadcast,
-  closeViewer,
-  installViewerWorkflow,
+  fullscreenViewBroadcast,
+  closeFullscreenView,
+  installFullscreenViewWorkflow,
 } from "../../src/workflows/fullscreen-view";
 import {
   WebviewWindow,
@@ -41,7 +41,7 @@ let sequenceIndex = 0;
 function sequenceSnapshot() {
   const current = sequence[sequenceIndex]!;
   return {
-    token: "viewer-token",
+    token: "fullscreen-view-token",
     member: { hash: current.hash, pathId: current.pathId },
     item: current,
     detail: {
@@ -128,7 +128,7 @@ beforeEach(() => {
   });
 });
 
-describe("viewer workflow", () => {
+describe("fullscreen view workflow", () => {
   it("reveals a diagnostic target out of the fullscreen view without replacing its new Main selection on close", async () => {
     expect(openFullscreenView()).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -148,17 +148,17 @@ describe("viewer workflow", () => {
   it("owns its identity, detail and content commands independently of Main", async () => {
     expect(openFullscreenView()).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    const frozen = viewerBroadcast();
+    const frozen = fullscreenViewBroadcast();
 
     useItemsStore.setState({ selectedItem: "unrelated", detail: null, selected: { kind: "other", month: "undated" } });
 
-    expect(viewerBroadcast()).toEqual(frozen);
+    expect(fullscreenViewBroadcast()).toEqual(frozen);
     expect(frozen.item?.fileName).toBe("b.jpg");
     expect(frozen.detail?.fileName).toBe("b.jpg");
-    await handleViewerKey({ key: "PageDown" });
+    await handleFullscreenViewKey({ key: "PageDown" });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(viewerBroadcast().item?.fileName).toBe("c.jpg");
-    expect(viewerBroadcast().detail?.fileName).toBe("c.jpg");
+    expect(fullscreenViewBroadcast().item?.fileName).toBe("c.jpg");
+    expect(fullscreenViewBroadcast().detail?.fileName).toBe("c.jpg");
     expect(useItemsStore.getState().selected).toEqual({ kind: "image", month: "2026-01" });
     expect(useItemsStore.getState().selectedItem).toBe("c");
   });
@@ -168,7 +168,7 @@ describe("viewer workflow", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(useFullscreenViewStore.getState().session).toMatchObject({ index: 1, length: 3 });
 
-    moveViewer("next");
+    moveFullscreenView("next");
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(useItemsStore.getState().selectedItem).toBe("c");
@@ -187,7 +187,7 @@ describe("viewer workflow", () => {
     expect(openFullscreenView()).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    moveViewer("previous");
+    moveFullscreenView("previous");
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(useItemsStore.getState().selectedItem).toBe("a");
@@ -199,13 +199,13 @@ describe("viewer workflow", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     useItemsStore.getState().setSortOrder("name");
     await new Promise((resolve) => setTimeout(resolve, 0));
-    moveViewer("next");
+    moveFullscreenView("next");
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(useFullscreenViewStore.getState().session?.index).toBe(2);
     expect(useItemsStore.getState().selectedItem).toBe("c");
     expect(useItemsStore.getState().scrollRequest?.index).toBe(0);
     const reads = invokeCalls.filter((call) => call.command === "reconcile_section").length;
-    moveViewer("previous");
+    moveFullscreenView("previous");
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(useItemsStore.getState().selectedItem).toBe("b");
     expect(invokeCalls.filter((call) => call.command === "reconcile_section")).toHaveLength(reads);
@@ -218,7 +218,7 @@ describe("viewer workflow", () => {
     openFullscreenView();
     await new Promise((resolve) => setTimeout(resolve, 0));
     await useItemsStore.getState().select({ kind: "other", month: "undated" });
-    moveViewer("previous");
+    moveFullscreenView("previous");
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(useItemsStore.getState().selectedKeys).toEqual(new Set(["a", "c"]));
     expect(useItemsStore.getState().selectedItem).toBe("a");
@@ -231,7 +231,7 @@ describe("viewer workflow", () => {
     await useItemsStore.getState().select({ kind: "other", month: "undated" });
     let release!: (value: { kind: string; month: string }) => void;
     mockCommand("get_item_section", () => new Promise((resolve) => { release = resolve; }));
-    moveViewer("next");
+    moveFullscreenView("next");
     await new Promise((resolve) => setTimeout(resolve, 0));
     useItemsStore.getState().selectItem("unrelated", "nearest", 0);
     release({ kind: "image", month: "2026-01" });
@@ -250,9 +250,9 @@ describe("viewer workflow", () => {
       rangeOrigin: null, rangeBase: [], context: null,
       window: { start: 0, total: 3, items: [item("a", 1), item("b", 2), item("c", 3)] },
     }); }));
-    moveViewer("next");
+    moveFullscreenView("next");
     await new Promise((resolve) => setTimeout(resolve, 0));
-    await closeViewer();
+    await closeFullscreenView();
     release();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(useFullscreenViewStore.getState().session).toBeNull();
@@ -265,9 +265,9 @@ describe("viewer workflow", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     await useItemsStore.getState().select({ kind: "other", month: "undated" });
     mockCommand("get_item_section", () => { throw new Error("database unavailable"); });
-    moveViewer("next");
+    moveFullscreenView("next");
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(viewerBroadcast().item?.fileName).toBe("c.jpg");
+    expect(fullscreenViewBroadcast().item?.fileName).toBe("c.jpg");
     expect(inEnglish(useFullscreenViewStore.getState().failure)).toBe(
       "Couldn’t locate this item in Main.",
     );
@@ -279,7 +279,7 @@ describe("viewer workflow", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     await useItemsStore.getState().select({ kind: "other", month: "undated" });
     mockCommand("get_item_section", () => null);
-    moveViewer("next");
+    moveFullscreenView("next");
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(inEnglish(useFullscreenViewStore.getState().failure)).toBe(
       "This item is no longer available in Main.",
@@ -296,7 +296,7 @@ describe("viewer workflow", () => {
       name: "display",
     };
     setCurrentMonitor(monitor);
-    const viewer = new WebviewWindow("viewer");
+    const viewer = new WebviewWindow("fullscreen-view");
 
     expect(openFullscreenView()).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -305,18 +305,18 @@ describe("viewer workflow", () => {
     expect(viewer.setSize).toHaveBeenCalledWith({ width: 1920, height: 1080 });
     expect(invokeCalls).toContainEqual({
       command: "set_window_fullscreen",
-      args: { label: "viewer", enable: true },
+      args: { label: "fullscreen-view", enable: true },
     });
     // Shown on that display first, so fullscreen takes that display's frame.
     expect(viewer.show.mock.invocationCallOrder[0]).toBeLessThan(
       invoke.mock.invocationCallOrder[invokeCalls.findIndex((call) => call.command === "set_window_fullscreen")],
     );
 
-    await handleViewerKey({ key: "Escape" });
+    await handleFullscreenViewKey({ key: "Escape" });
 
     expect(invokeCalls).toContainEqual({
       command: "set_window_fullscreen",
-      args: { label: "viewer", enable: false },
+      args: { label: "fullscreen-view", enable: false },
     });
     expect(viewer.hide).toHaveBeenCalled();
     expect(viewer.setAlwaysOnTop).not.toHaveBeenCalled();
@@ -336,12 +336,12 @@ describe("viewer workflow", () => {
       scaleFactor: 1,
       name: "display",
     });
-    new WebviewWindow("viewer");
+    new WebviewWindow("fullscreen-view");
 
     expect(openFullscreenView()).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    await handleViewerKey({ key });
+    await handleFullscreenViewKey({ key });
 
     expect(useFullscreenViewStore.getState().session).toBeNull();
     expect(setFocus).toHaveBeenCalled();
@@ -354,7 +354,7 @@ describe("viewer workflow", () => {
     grid.id = "main-item-area";
     grid.tabIndex = 0;
     document.body.appendChild(grid);
-    await installViewerWorkflow();
+    await installFullscreenViewWorkflow();
     expect(openFullscreenView()).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
     setFocus.mockClear();
@@ -380,7 +380,7 @@ describe("viewer workflow", () => {
       scaleFactor: 1,
       name: "display",
     });
-    new WebviewWindow("viewer");
+    new WebviewWindow("fullscreen-view");
     mockCommand("set_window_fullscreen", ({ enable }) => {
       if (enable === true) throw new Error("window unavailable");
       return null;
@@ -393,7 +393,7 @@ describe("viewer workflow", () => {
     expect(useFullscreenViewStore.getState().session).toBeNull();
     expect(invokeCalls.some((call) => call.command === "viewer_sequence_close")).toBe(true);
     expect(inEnglish(currentMainFeedback(useMainFeedbackStore.getState())?.text ?? null)).toBe(
-      "Couldn’t open full screen.",
+      "Couldn’t show the fullscreen view.",
     );
   });
 
@@ -404,11 +404,11 @@ describe("viewer workflow", () => {
       Promise.reject(new Error("sequence unavailable")),
     );
 
-    moveViewer("next");
+    moveFullscreenView("next");
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(inEnglish(useFullscreenViewStore.getState().failure)).toBe(
-      "Couldn’t move in the viewer.",
+      "Couldn’t move in the fullscreen view.",
     );
     expect(
       invokeCalls.some((call) => call.command === "record_recent_notification"),
@@ -422,7 +422,7 @@ describe("viewer workflow", () => {
     expect(openFullscreenView()).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    await handleViewerKey({ key: "Delete", repeat: true });
+    await handleFullscreenViewKey({ key: "Delete", repeat: true });
 
     expect(useFullscreenViewStore.getState().pendingDelete).toBeNull();
     expect(invokeCalls.some((call) => call.command === "delete_items")).toBe(
@@ -435,18 +435,18 @@ describe("viewer workflow", () => {
     expect(openFullscreenView()).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
     for (const key of [" ", "Escape", "Enter"]) {
-      await handleViewerKey({ key, repeat: true });
+      await handleFullscreenViewKey({ key, repeat: true });
       expect(useFullscreenViewStore.getState().session).not.toBeNull();
     }
     useFullscreenViewStore.setState({ pendingDelete: { kind: "permanent", key: "b", fileName: "b.jpg" } });
-    for (const key of [" ", "Escape", "ArrowRight"]) await handleViewerKey({ key });
+    for (const key of [" ", "Escape", "ArrowRight"]) await handleFullscreenViewKey({ key });
     expect(useFullscreenViewStore.getState().session?.item.hash).toBe("b");
   });
 
   it("ignores F, which no longer changes any view", async () => {
     expect(openFullscreenView()).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    await handleViewerKey({ key: "f" });
+    await handleFullscreenViewKey({ key: "f" });
     expect(useFullscreenViewStore.getState().session?.item.hash).toBe("b");
   });
 
@@ -456,15 +456,15 @@ describe("viewer workflow", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(useFullscreenViewStore.getState().session?.item.hash).toBe("b");
 
-    await requestViewerDelete(true);
+    await requestFullscreenViewDelete(true);
     // The watcher reports b removed externally; reconciliation advances the
     // open sequence to c while the permanent-delete review is still open.
     sequenceIndex = 2;
     useFullscreenViewStore.getState().update(sequenceSnapshot() as ViewerSequenceSnapshot);
     expect(useFullscreenViewStore.getState().session?.item.hash).toBe("c");
-    expect(viewerBroadcast().pendingDelete).toEqual({ kind: "permanent", fileName: "b.jpg" });
+    expect(fullscreenViewBroadcast().pendingDelete).toEqual({ kind: "permanent", fileName: "b.jpg" });
 
-    await confirmViewerDelete();
+    await confirmFullscreenViewDelete();
 
     const deletes = invokeCalls.filter((call) => call.command === "delete_items");
     expect(deletes).toHaveLength(1);
@@ -484,7 +484,7 @@ describe("viewer workflow", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(useFullscreenViewStore.getState().session?.item.hash).toBe("b");
 
-    await requestViewerDelete(false);
+    await requestFullscreenViewDelete(false);
 
     const deletes = invokeCalls.filter((call) => call.command === "delete_items");
     expect(deletes).toHaveLength(1);
@@ -504,8 +504,8 @@ describe("viewer workflow", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(useFullscreenViewStore.getState().session?.item.hash).toBe("b");
 
-    await requestViewerDelete(true);
-    await confirmViewerDelete();
+    await requestFullscreenViewDelete(true);
+    await confirmFullscreenViewDelete();
 
     const deletes = invokeCalls.filter((call) => call.command === "delete_items");
     expect(deletes).toHaveLength(1);

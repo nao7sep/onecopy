@@ -475,7 +475,7 @@ export function mockFullscreenDisplay(): void {
     name: "display",
   });
   mockCommand("set_window_fullscreen", () => null);
-  new WebviewWindow("viewer");
+  new WebviewWindow("fullscreen-view");
 }
 
 /** Full reset. Call from beforeEach so no spec inherits another's stubs.

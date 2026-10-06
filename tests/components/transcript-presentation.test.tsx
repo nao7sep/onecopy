@@ -9,7 +9,7 @@ import { useContentSessionStore } from "../../src/state/content-session-store";
 import { useTranscriptStore } from "../../src/state/transcript-store";
 import { useAppShellStore } from "../../src/state/app-shell-store";
 import { emitCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
-import { viewerOwnsKey } from "../../src/utils/viewerKeys";
+import { fullscreenViewOwnsKey } from "../../src/utils/viewerKeys";
 
 const detail: ItemDetail = {
   fileName: "interview.mp4", kind: "video", byteSize: 1000,
@@ -94,9 +94,9 @@ describe("transcript presentation owners", () => {
       Object.defineProperty(value, "target", { value: panel });
       return value;
     };
-    expect(viewerOwnsKey(event("PageDown"), "video", detail.fileName)).toBe(false);
+    expect(fullscreenViewOwnsKey(event("PageDown"), "video", detail.fileName)).toBe(false);
     for (const key of [" ", "Escape", "Delete", "ArrowRight"]) {
-      expect(viewerOwnsKey(event(key), "video", detail.fileName)).toBe(true);
+      expect(fullscreenViewOwnsKey(event(key), "video", detail.fileName)).toBe(true);
     }
   });
 

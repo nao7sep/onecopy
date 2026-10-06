@@ -3,7 +3,7 @@ import type { MainFeedback } from "../models/status";
 
 const scopes = {
   comparison: "selection",
-  viewer: "selection",
+  "fullscreen-view": "selection",
   playback: "selection",
   selection: "selection",
   detail: "selection",

@@ -27,7 +27,7 @@ export function controlOwnsForwardableKey(event: KeyboardEvent): boolean {
 
 /** The fullscreen view's dispatch policy. Native controls keep their ordinary
  * activation/navigation; closing and deletion remain the view's. */
-export function viewerOwnsKey(event: KeyboardEvent, kind: string | null, fileName: string): boolean {
+export function fullscreenViewOwnsKey(event: KeyboardEvent, kind: string | null, fileName: string): boolean {
   if (event.defaultPrevented || isComposingEvent(event) || isEditableTarget(event.target)
     || event.metaKey || event.ctrlKey || event.altKey) return false;
   if (event.key === " " || event.key === "Escape") return !event.shiftKey;

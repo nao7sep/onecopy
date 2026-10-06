@@ -8,10 +8,10 @@ import type {
   ViewerMainProjection,
 } from "../models/viewerSession";
 
-/** The exact member a viewer deletion review names and a confirmed deletion
+/** The exact member a fullscreen view deletion review names and a confirmed deletion
  * acts on, frozen when the review is requested. A refresh that advances the
  * sequence never retargets it. */
-export interface ViewerDeleteReview {
+export interface FullscreenViewDeleteReview {
   kind: "trash" | "permanent";
   key: string;
   fileName: string;
@@ -19,13 +19,13 @@ export interface ViewerDeleteReview {
 
 interface FullscreenViewState {
   session: ActiveViewerSession | null;
-  pendingDelete: ViewerDeleteReview | null;
+  pendingDelete: FullscreenViewDeleteReview | null;
   failure: Message | null;
   currentKey: () => string | null;
   start: (snapshot: ViewerSequenceSnapshot, main: ViewerMainRelationship) => void;
   attachMainProjection: (projection: ViewerMainProjection) => void;
   update: (snapshot: ViewerSequenceSnapshot) => void;
-  requestDelete: (kind: ViewerDeleteReview["kind"]) => void;
+  requestDelete: (kind: FullscreenViewDeleteReview["kind"]) => void;
   cancelDelete: () => void;
   setFailure: (failure: Message | null) => void;
   close: () => void;

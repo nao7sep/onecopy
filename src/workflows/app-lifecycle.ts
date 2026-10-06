@@ -18,7 +18,7 @@ import { installWorkAttention } from "./work-attention";
 import { installPreviewCommandWiring, installPreviewPersistence } from "./preview";
 import { installComparisonEventWiring } from "./comparison";
 import { installMutationEventWiring } from "./mutation-events";
-import { installViewerWorkflow } from "./fullscreen-view";
+import { installFullscreenViewWorkflow } from "./fullscreen-view";
 import { installPlaybackWorkflow } from "./playback";
 import { installContentSessionWorkflow } from "./content-session";
 import { installIssuesEventWiring } from "./issues";
@@ -57,7 +57,7 @@ async function bootstrapOnce(): Promise<void> {
     installScanEventWiring(),
     installComparisonEventWiring(),
     installMutationEventWiring(),
-    installViewerWorkflow(),
+    installFullscreenViewWorkflow(),
     installPreviewCommandWiring(),
     installPlaybackWorkflow(),
     installContentSessionWorkflow(),

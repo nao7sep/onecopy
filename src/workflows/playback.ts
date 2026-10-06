@@ -263,7 +263,7 @@ const install = createEventInstaller(
         log.error("playback handshake failed", toErrorFields(error));
       });
     });
-    // Reserve/release the owner slot the instant the viewer opens or closes,
+    // Reserve/release the owner slot the instant the fullscreen view opens or closes,
     // rather than waiting for the next register/unregister to happen to
     // recompute it.
     listeners.retain(useFullscreenViewStore.subscribe((state, previous) => {

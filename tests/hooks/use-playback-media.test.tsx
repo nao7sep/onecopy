@@ -68,7 +68,7 @@ it.each(["newer attempt", "owner handoff", "disabled", "unmounted"])(
     else {
       playbackClient.session = {
         ...playingSession(),
-        owner: transition === "owner handoff" ? "viewer" : "preview-window",
+        owner: transition === "owner handoff" ? "fullscreen-view" : "preview-window",
         position: 12,
       };
       view.rerender(<MediaHarness enabled={transition !== "disabled"} />);

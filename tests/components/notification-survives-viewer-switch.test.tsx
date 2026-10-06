@@ -36,7 +36,7 @@ it("hands a freshly opened fullscreen window the same persistent notice Main alr
     dismiss_notification: () => true,
   });
 
-  // Mirrors ViewerWindow.tsx mounting its own `<NotificationHost ownsTimedDismissal={false} />`.
+  // Mirrors FullscreenViewWindow.tsx mounting its own `<NotificationHost ownsTimedDismissal={false} />`.
   render(<NotificationHost ownsTimedDismissal={false} />);
 
   await vi.waitFor(() =>

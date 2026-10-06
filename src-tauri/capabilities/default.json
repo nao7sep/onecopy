@@ -5,7 +5,7 @@
   "windows": [
     "main",
     "preview",
-    "viewer",
+    "fullscreen-view",
     "records",
     "comparison-*",
     "identify-*"

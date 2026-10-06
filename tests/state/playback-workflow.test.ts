@@ -5,7 +5,7 @@ import type { ActiveViewerSession } from "../../src/models/viewerSession";
 import { useAppStore } from "../../src/state/app-store";
 import { usePreviewStore } from "../../src/state/preview-store";
 import { useFullscreenViewStore } from "../../src/state/fullscreen-view-store";
-import { handleViewerKey } from "../../src/workflows/fullscreen-view";
+import { handleFullscreenViewKey } from "../../src/workflows/fullscreen-view";
 import { installPlaybackWorkflow, setSoundEnabled } from "../../src/workflows/playback";
 import { emitCalls, fireEvent, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
@@ -76,12 +76,12 @@ describe("playback workflow", () => {
     });
 
     fireEvent("playback://register", {
-      surface: "viewer",
+      surface: "fullscreen-view",
       key: "clip",
       medium: "video",
     });
     fireEvent("playback://observe", {
-      surface: "viewer",
+      surface: "fullscreen-view",
       key: "clip",
       position: 12.5,
       playing: false,
@@ -89,7 +89,7 @@ describe("playback workflow", () => {
       muted: false,
     });
     fireEvent("playback://unregister", {
-      surface: "viewer",
+      surface: "fullscreen-view",
       key: "clip",
       medium: "video",
     });
@@ -178,14 +178,14 @@ describe("playback workflow", () => {
     expect(latestState()).toMatchObject({ key: "clip", owner: null });
 
     fireEvent("playback://register", {
-      surface: "viewer",
+      surface: "fullscreen-view",
       key: "clip",
       medium: "video",
     });
-    expect(latestState()).toMatchObject({ owner: "viewer", key: "clip" });
+    expect(latestState()).toMatchObject({ owner: "fullscreen-view", key: "clip" });
 
     fireEvent("playback://unregister", {
-      surface: "viewer",
+      surface: "fullscreen-view",
       key: "clip",
       medium: "video",
     });
@@ -272,14 +272,14 @@ describe("playback workflow", () => {
 // contract) -- Enter in the viewer toggles the CENTRALLY OWNED playback
 // session for the current video item, the same way clicking the picture
 // itself does (see preview-surface.test.tsx for the click half).
-describe("viewer Enter toggle", () => {
+describe("fullscreen view Enter toggle", () => {
   it("toggles the owned session's playing state on Enter for a video item", async () => {
     fireEvent("playback://register", {
-      surface: "viewer",
+      surface: "fullscreen-view",
       key: "clip",
       medium: "video",
     });
-    expect(latestState()).toMatchObject({ key: "clip", owner: "viewer", playing: true });
+    expect(latestState()).toMatchObject({ key: "clip", owner: "fullscreen-view", playing: true });
 
     const item: SectionItem = {
       hash: "clip",
@@ -300,7 +300,7 @@ describe("viewer Enter toggle", () => {
       derivedWork: EMPTY_ITEM_WORK,
     };
     const session: ActiveViewerSession = {
-      token: "viewer-token",
+      token: "fullscreen-view-token",
       member: { hash: "clip", pathId: 1 },
       item,
       detail: {
@@ -320,11 +320,11 @@ describe("viewer Enter toggle", () => {
     };
     useFullscreenViewStore.setState({ session, pendingDelete: null, failure: null });
 
-    await handleViewerKey({ key: "Enter" });
+    await handleFullscreenViewKey({ key: "Enter" });
 
     expect(latestState()).toMatchObject({ key: "clip", playing: false });
 
-    await handleViewerKey({ key: "Enter" });
+    await handleFullscreenViewKey({ key: "Enter" });
 
     expect(latestState()).toMatchObject({ key: "clip", playing: true });
   });

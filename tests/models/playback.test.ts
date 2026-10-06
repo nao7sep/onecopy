@@ -28,12 +28,12 @@ describe("playback ownership", () => {
     const session = choosePlaybackSession(
       [
         { surface: "preview-split", key: "clip", medium: "video" },
-        { surface: "viewer", key: "clip", medium: "video" },
+        { surface: "fullscreen-view", key: "clip", medium: "video" },
       ],
       null,
       policy,
     );
-    expect(session?.owner).toBe("viewer");
+    expect(session?.owner).toBe("fullscreen-view");
     expect(session?.playing).toBe(true);
   });
 
@@ -48,11 +48,11 @@ describe("playback ownership", () => {
       volume: 0.8,
     };
     const session = choosePlaybackSession(
-      [{ surface: "viewer", key: "clip", medium: "video" }],
+      [{ surface: "fullscreen-view", key: "clip", medium: "video" }],
       current,
       policy,
     );
-    expect(session).toMatchObject({ owner: "viewer", position: 12.5, playing: false });
+    expect(session).toMatchObject({ owner: "fullscreen-view", position: 12.5, playing: false });
   });
 
   it("starts genuinely new audio from the beginning under audio policy", () => {

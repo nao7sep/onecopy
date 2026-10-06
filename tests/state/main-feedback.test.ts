@@ -127,13 +127,13 @@ describe("Main command feedback ownership", () => {
   });
 
   it("supersedes only the same command and rejects callbacks after context invalidation", () => {
-    const old = beginMainFeedback("viewer");
-    const latest = beginMainFeedback("viewer");
-    latest.finish({ tone: "normal", text: message("viewer.selectItemFirst") });
-    old.finish({ tone: "danger", text: message("viewer.openFailed") });
-    expect(current()?.text.key).toBe("viewer.selectItemFirst");
+    const old = beginMainFeedback("fullscreen-view");
+    const latest = beginMainFeedback("fullscreen-view");
+    latest.finish({ tone: "normal", text: message("fullscreenView.selectItemFirst") });
+    old.finish({ tone: "danger", text: message("fullscreenView.openFailed") });
+    expect(current()?.text.key).toBe("fullscreenView.selectItemFirst");
     invalidateMainFeedback("selection");
-    latest.finish({ tone: "danger", text: message("viewer.navigationFailed") });
+    latest.finish({ tone: "danger", text: message("fullscreenView.navigationFailed") });
     expect(current()).toBeNull();
   });
 
@@ -155,7 +155,7 @@ describe("Main command feedback ownership", () => {
     useItemsStore.getState().selectItem(null);
     expect(openFullscreenView()).toBe(false);
     expect(current()?.tone).toBe("normal");
-    expect(inEnglish(current()?.text)).toBe("Select an item to open the viewer.");
+    expect(inEnglish(current()?.text)).toBe("Select an item to open the fullscreen view.");
     useItemsStore.getState().selectItem("h1", "nearest", 0);
     expect(current()).toBeNull();
   });

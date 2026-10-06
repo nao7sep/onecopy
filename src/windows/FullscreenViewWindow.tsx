@@ -3,25 +3,25 @@ import { useI18n } from "../i18n/I18nContext";
 import { emit } from "@tauri-apps/api/event";
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { listenThenAnnounce } from "../utils/handshake";
-import type { ViewerBroadcast } from "../workflows/fullscreen-view";
+import type { FullscreenViewBroadcast } from "../workflows/fullscreen-view";
 import ConfirmModal from "../components/ConfirmModal";
 import PreviewSurface from "../components/PreviewSurface";
 import { message, type Message } from "../i18n/translate";
 import { log, reportWindowCall, toErrorFields } from "../repositories";
-import { viewerOwnsKey } from "../utils/viewerKeys";
+import { fullscreenViewOwnsKey } from "../utils/viewerKeys";
 import { hasOpenModal } from "../utils/modalStack";
 import NotificationHost from "../components/NotificationHost";
 import { recordActionFailure } from "../state/notifications-store";
 import OperationResult from "../components/ui/OperationResult";
 
-export default function ViewerWindow() {
+export default function FullscreenViewWindow() {
   const { t, text } = useI18n();
-  const [state, setState] = useState<ViewerBroadcast | null>(null);
+  const [state, setState] = useState<FullscreenViewBroadcast | null>(null);
   const [commandFailure, setCommandFailure] = useState<Message | null>(null);
   const surface = useRef<HTMLDivElement>(null);
-  const pendingDeleteRef = useRef<ViewerBroadcast["pendingDelete"]>(null);
-  const sectionKindRef = useRef<ViewerBroadcast["sectionKind"]>(null);
-  const itemRef = useRef<ViewerBroadcast["item"]>(null);
+  const pendingDeleteRef = useRef<FullscreenViewBroadcast["pendingDelete"]>(null);
+  const sectionKindRef = useRef<FullscreenViewBroadcast["sectionKind"]>(null);
+  const itemRef = useRef<FullscreenViewBroadcast["item"]>(null);
   pendingDeleteRef.current = state?.pendingDelete ?? null;
   sectionKindRef.current = state?.sectionKind ?? null;
   itemRef.current = state?.item ?? null;
@@ -31,28 +31,28 @@ export default function ViewerWindow() {
   }, [hasItem]);
 
   const sendKey = (key: string, shiftKey = false): void => {
-    void emit("viewer://key", { key, shiftKey })
+    void emit("fullscreen-view://key", { key, shiftKey })
       .then(() => setCommandFailure(null))
       .catch((error) => {
-        log.error("viewer key forward failed", toErrorFields(error));
-        const failure = message("viewer.commandFailed");
+        log.error("fullscreen view key forward failed", toErrorFields(error));
+        const failure = message("fullscreenView.commandFailed");
         setCommandFailure(failure);
-        recordActionFailure("viewer-command-failed", failure, error);
+        recordActionFailure("fullscreen-view-command-failed", failure, error);
       });
   };
 
   useEffect(() => {
-    const unlisten = listenThenAnnounce<ViewerBroadcast>(
-      "viewer://state",
-      "viewer://ready",
+    const unlisten = listenThenAnnounce<FullscreenViewBroadcast>(
+      "fullscreen-view://state",
+      "fullscreen-view://ready",
       setState,
     );
     const onKeyDown = (event: KeyboardEvent) => {
       if (pendingDeleteRef.current !== null || hasOpenModal()
-        || !viewerOwnsKey(event, sectionKindRef.current, itemRef.current?.fileName ?? "")) return;
+        || !fullscreenViewOwnsKey(event, sectionKindRef.current, itemRef.current?.fileName ?? "")) return;
       event.preventDefault();
       event.stopPropagation();
-      void emit("viewer://key", {
+      void emit("fullscreen-view://key", {
         key: event.key,
         repeat: event.repeat,
         shiftKey: event.shiftKey,
@@ -62,10 +62,10 @@ export default function ViewerWindow() {
       })
         .then(() => setCommandFailure(null))
         .catch((error) => {
-          log.error("viewer key forward failed", toErrorFields(error));
-          const failure = message("viewer.commandFailed");
+          log.error("fullscreen view key forward failed", toErrorFields(error));
+          const failure = message("fullscreenView.commandFailed");
           setCommandFailure(failure);
-          recordActionFailure("viewer-command-failed", failure, error);
+          recordActionFailure("fullscreen-view-command-failed", failure, error);
         });
     };
     const onFocus = () => {
@@ -87,7 +87,7 @@ export default function ViewerWindow() {
   const item = state.item;
   const failure = commandFailure ?? state.failure;
   return (
-    <div ref={surface} tabIndex={-1} aria-label={t("viewer.window")} className="group relative flex h-screen w-screen flex-col overflow-hidden bg-black text-white outline-none">
+    <div ref={surface} tabIndex={-1} aria-label={t("fullscreenView.window")} className="group relative flex h-screen w-screen flex-col overflow-hidden bg-black text-white outline-none">
       {/* Main, always open, is the one window that owns timed-notice
           auto-dismiss (Finding C) — this copy still shows and dismisses
           notices, it just never runs a second, unpausable countdown. */}
@@ -102,13 +102,13 @@ export default function ViewerWindow() {
         <span className="text-xs tabular-nums text-white/70">
           {state.index + 1} / {state.length}
         </span>
-        <button aria-label={t("viewer.previous")} disabled={state.index === 0} className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-white/15 disabled:opacity-30" onClick={() => sendKey("ArrowLeft")}>
+        <button aria-label={t("fullscreenView.previous")} disabled={state.index === 0} className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-white/15 disabled:opacity-30" onClick={() => sendKey("ArrowLeft")}>
           <ChevronLeft size={16} />
         </button>
-        <button aria-label={t("viewer.next")} disabled={state.index === state.length - 1} className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-white/15 disabled:opacity-30" onClick={() => sendKey("ArrowRight")}>
+        <button aria-label={t("fullscreenView.next")} disabled={state.index === state.length - 1} className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-white/15 disabled:opacity-30" onClick={() => sendKey("ArrowRight")}>
           <ChevronRight size={16} />
         </button>
-        <button aria-label={t("viewer.closeFullScreen")} className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-white/15" onClick={() => sendKey("Escape")}>
+        <button aria-label={t("fullscreenView.close")} className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-white/15" onClick={() => sendKey("Escape")}>
           <X size={16} />
         </button>
       </header>
@@ -117,7 +117,7 @@ export default function ViewerWindow() {
           <div className="flex h-full items-center justify-center text-sm text-white/60">{t("common.loading")}</div>
         ) : (
           <PreviewSurface
-            surface="viewer"
+            surface="fullscreen-view"
             hash={item.hash}
             pathId={item.hash === null ? item.pathId : null}
             detail={state.detail}
@@ -132,22 +132,22 @@ export default function ViewerWindow() {
           onDismiss={() => {
                 setCommandFailure(null);
                 if (state.failure !== null) {
-                  void emit("viewer://dismiss-failure", {}).catch((error) => {
+                  void emit("fullscreen-view://dismiss-failure", {}).catch((error) => {
                     log.error(
-                      "viewer failure dismissal failed",
+                      "fullscreen view failure dismissal failed",
                       toErrorFields(error),
                     );
-                    const failure = message("viewer.dismissFailed");
+                    const failure = message("fullscreenView.dismissFailed");
                     setCommandFailure(failure);
                     recordActionFailure(
-                      "viewer-result-dismiss-failed",
+                      "fullscreen-view-result-dismiss-failed",
                       failure,
                       error,
                     );
                   });
                 }
               }}
-          dismissLabel={t("viewer.dismissResult")}
+          dismissLabel={t("fullscreenView.dismissResult")}
         >
           {text(failure)}
         </OperationResult>
@@ -157,12 +157,12 @@ export default function ViewerWindow() {
           title={
             state.pendingDelete.kind === "permanent"
               ? t("common.deletePermanentlyTitle")
-              : t("viewer.deleteTitle")
+              : t("fullscreenView.deleteTitle")
           }
           message={
             state.pendingDelete.kind === "permanent"
-              ? t("viewer.deletePermanentlyBody", { name: state.pendingDelete.fileName })
-              : t("viewer.deleteBody", { name: state.pendingDelete.fileName })
+              ? t("fullscreenView.deletePermanentlyBody", { name: state.pendingDelete.fileName })
+              : t("fullscreenView.deleteBody", { name: state.pendingDelete.fileName })
           }
           confirmLabel={
             state.pendingDelete.kind === "permanent"
@@ -170,13 +170,13 @@ export default function ViewerWindow() {
               : t("common.delete")
           }
           onConfirm={() => {
-            void emit("viewer://confirm-delete", {}).catch(
-              reportWindowCall("viewer delete confirmation"),
+            void emit("fullscreen-view://confirm-delete", {}).catch(
+              reportWindowCall("fullscreen view delete confirmation"),
             );
           }}
           onCancel={() => {
-            void emit("viewer://cancel-delete", {}).catch(
-              reportWindowCall("viewer delete cancellation"),
+            void emit("fullscreen-view://cancel-delete", {}).catch(
+              reportWindowCall("fullscreen view delete cancellation"),
             );
           }}
         />

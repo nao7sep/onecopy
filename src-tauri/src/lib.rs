@@ -1519,7 +1519,7 @@ pub fn run() {
                 }
             }
         })
-        // Every window opened after launch — Preview, Comparison, viewers —
+        // Every window opened after launch — Preview, Comparison, the fullscreen view —
         // takes the recorded theme as its page starts loading, before it paints.
         .on_page_load(|webview, payload| {
             if payload.event() == tauri::webview::PageLoadEvent::Started {

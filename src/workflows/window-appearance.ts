@@ -16,7 +16,7 @@ import { useWindowPreferencesStore } from "../state/window-preferences-store";
 // are a fixed brand-only flash.
 const WINDOW_TITLE_KEYS: Partial<Record<string, MessageKey>> = {
   preview: "window.titlePreview",
-  viewer: "window.titleViewer",
+  "fullscreen-view": "window.titleFullscreenView",
   comparison: "window.titleComparison",
 };
 

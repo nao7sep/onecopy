@@ -42,7 +42,7 @@ it("retains a failed shared-session listener at each visible owner and retries f
 
   render(
     <>
-      <PreviewSurface surface="viewer" hash={null} pathId={8} detail={OTHER_DETAIL} />
+      <PreviewSurface surface="fullscreen-view" hash={null} pathId={8} detail={OTHER_DETAIL} />
       <PreviewSurface surface="preview-split" hash="audio-hash" detail={AUDIO_DETAIL} />
     </>,
   );

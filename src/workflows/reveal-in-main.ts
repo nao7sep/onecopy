@@ -4,7 +4,7 @@ import { useFullscreenViewStore } from "../state/fullscreen-view-store";
 import { message } from "../i18n/translate";
 import { reportActionFailure } from "../state/notifications-store";
 import { closeComparison } from "./comparison";
-import { closeViewer } from "./fullscreen-view";
+import { closeFullscreenView } from "./fullscreen-view";
 
 /** Shared diagnostic navigation; the requesting modal owns its inline result. */
 export async function revealInMain(path: string, isCurrent: () => boolean, onRevealed: () => void, expectedHash?: string) {
@@ -18,7 +18,7 @@ export async function revealInMain(path: string, isCurrent: () => boolean, onRev
   // existing view owners dispose their readers/windows and restore Preview.
   onRevealed();
   try {
-    if (useFullscreenViewStore.getState().session !== null) await closeViewer();
+    if (useFullscreenViewStore.getState().session !== null) await closeFullscreenView();
     if (useComparisonStore.getState().open) await closeComparison();
   } catch (error) {
     reportActionFailure(

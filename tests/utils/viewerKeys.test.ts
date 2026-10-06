@@ -1,12 +1,12 @@
 // @vitest-environment happy-dom
 
 import { describe, expect, it } from "vitest";
-import { viewerOwnsKey } from "../../src/utils/viewerKeys";
+import { fullscreenViewOwnsKey } from "../../src/utils/viewerKeys";
 
 function owns(key: string, kind = "image", fileName = "photo.jpg", target: HTMLElement = document.createElement("div"), init: KeyboardEventInit = {}) {
   const event = new KeyboardEvent("keydown", { key, cancelable: true, ...init });
   target.dispatchEvent(event);
-  return viewerOwnsKey(event, kind, fileName);
+  return fullscreenViewOwnsKey(event, kind, fileName);
 }
 
 describe("fullscreen view command ownership", () => {
@@ -42,6 +42,6 @@ describe("fullscreen view command ownership", () => {
     }
     const event = new KeyboardEvent("keydown", { key: " ", cancelable: true });
     event.preventDefault();
-    expect(viewerOwnsKey(event, "image", "photo.jpg")).toBe(false);
+    expect(fullscreenViewOwnsKey(event, "image", "photo.jpg")).toBe(false);
   });
 });

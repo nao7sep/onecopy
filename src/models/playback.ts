@@ -1,7 +1,7 @@
 import type { MessageKey } from "../i18n/catalogues";
 
 export type PlaybackMedium = "video" | "audio";
-export type PlaybackSurface = "preview-split" | "preview-window" | "viewer";
+export type PlaybackSurface = "preview-split" | "preview-window" | "fullscreen-view";
 
 /** Standard MediaError codes do not establish a specific codec or file defect.
  *
@@ -40,7 +40,7 @@ export interface PlaybackSession {
 const SURFACE_PRIORITY: Record<PlaybackSurface, number> = {
   "preview-split": 1,
   "preview-window": 2,
-  viewer: 3,
+  "fullscreen-view": 3,
 };
 
 export function clampPlaybackVolume(value: unknown): number {

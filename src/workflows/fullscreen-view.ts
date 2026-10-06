@@ -20,29 +20,29 @@ import {
 import { useAppStore } from "../state/app-store";
 import { useItemsStore } from "../state/items-store";
 import { beginMainFeedback } from "../state/main-feedback-store";
-import { useFullscreenViewStore, type ViewerDeleteReview } from "../state/fullscreen-view-store";
+import { useFullscreenViewStore, type FullscreenViewDeleteReview } from "../state/fullscreen-view-store";
 import { recordActionFailure } from "../state/notifications-store";
 import { deleteItems } from "./items";
 import { toggleMainPlayback } from "./playback";
-import { enterViewerFullscreen, exitViewerFullscreen } from "./viewer-window";
+import { showFullscreenViewWindow, hideFullscreenViewWindow } from "./fullscreen-view-window";
 import { createEventInstaller } from "../utils/eventInstallation";
 import { useComparisonStore } from "../state/comparison-store";
 import { message, type Message } from "../i18n/translate";
 import { confirmsTrashDelete } from "../models/config";
 
-export interface ViewerBroadcast {
+export interface FullscreenViewBroadcast {
   item: SectionItem | null;
   detail: ItemDetail | null;
   index: number;
   length: number;
-  pendingDelete: Pick<ViewerDeleteReview, "kind" | "fileName"> | null;
+  pendingDelete: Pick<FullscreenViewDeleteReview, "kind" | "fileName"> | null;
   sectionKind: "image" | "video" | "other" | null;
   /** A descriptor, not words: the fullscreen window renders it in its own
    * language, and follows a language change while it stays on screen. */
   failure: Message | null;
 }
 
-interface ViewerKeyMessage {
+interface FullscreenViewKeyMessage {
   key: string;
   repeat?: boolean;
   shiftKey?: boolean;
@@ -63,7 +63,7 @@ function currentItem(): SectionItem | null {
   return useFullscreenViewStore.getState().session?.item ?? null;
 }
 
-export function viewerBroadcast(): ViewerBroadcast {
+export function fullscreenViewBroadcast(): FullscreenViewBroadcast {
   const session = useFullscreenViewStore.getState().session;
   const item = currentItem();
   return {
@@ -84,9 +84,9 @@ export function viewerBroadcast(): ViewerBroadcast {
 
 /** Closing broadcasts the empty state too, so the window is blank before it
  * hides and never flashes the previous item when it is shown again. */
-function broadcastViewer(): void {
-  void emit("viewer://state", viewerBroadcast()).catch(
-    reportWindowCall("viewer state broadcast"),
+function broadcastFullscreenView(): void {
+  void emit("fullscreen-view://state", fullscreenViewBroadcast()).catch(
+    reportWindowCall("fullscreen view state broadcast"),
   );
 }
 
@@ -114,11 +114,11 @@ async function syncMainAnchor(): Promise<void> {
   try {
     section = await invoke<SectionLocation | null>("get_item_section", { identity: session.member });
   } catch (error) {
-    log.error("viewer Main location failed", toErrorFields(error));
+    log.error("fullscreen view Main location failed", toErrorFields(error));
     if (ownsViewer()) {
-      const failure = message("viewer.locateInMainFailed");
+      const failure = message("fullscreenView.locateInMainFailed");
       useFullscreenViewStore.getState().setFailure(failure);
-      recordActionFailure("viewer-main-location-failed", failure, error);
+      recordActionFailure("fullscreen-view-main-location-failed", failure, error);
     }
     return;
   }
@@ -127,7 +127,7 @@ async function syncMainAnchor(): Promise<void> {
     current.selectedKeys !== before.selectedKeys || current.selectedItem !== before.selectedItem ||
     current.currentSort().order !== sort.order || current.currentSort().desc !== sort.desc) return;
   if (section === null) {
-    useFullscreenViewStore.getState().setFailure(message("viewer.notInMain"));
+    useFullscreenViewStore.getState().setFailure(message("fullscreenView.notInMain"));
     return;
   }
   await current.select(section, {
@@ -156,16 +156,16 @@ async function restoreMainFocus(): Promise<void> {
 /** A window failure closes only the session it was shown for: a later
  * session opened in the meantime keeps its own window. */
 function showWindow(token: string, feedback: ReturnType<typeof beginMainFeedback>): void {
-  void enterViewerFullscreen()
+  void showFullscreenViewWindow()
     .then(() => {
-      broadcastViewer();
+      broadcastFullscreenView();
       feedback.finish();
     })
     .catch((error) => {
       log.error("fullscreen view window failed", toErrorFields(error));
       if (useFullscreenViewStore.getState().session?.token !== token) return;
-      void closeViewer();
-      const failure = message("viewer.fullScreenOpenFailed");
+      void closeFullscreenView();
+      const failure = message("fullscreenView.showFailed");
       feedback.finish({ tone: "danger", text: failure });
       recordActionFailure("fullscreen-open-failed", failure, error);
     });
@@ -173,17 +173,17 @@ function showWindow(token: string, feedback: ReturnType<typeof beginMainFeedback
 
 const install = createEventInstaller(
   async (listeners) => {
-    await listeners.listen("viewer://ready", broadcastViewer);
-    await listeners.listen<ViewerKeyMessage>("viewer://key", (event) => {
-      void handleViewerKey(event.payload);
+    await listeners.listen("fullscreen-view://ready", broadcastFullscreenView);
+    await listeners.listen<FullscreenViewKeyMessage>("fullscreen-view://key", (event) => {
+      void handleFullscreenViewKey(event.payload);
     });
-    await listeners.listen("viewer://confirm-delete", () => {
-      void confirmViewerDelete();
+    await listeners.listen("fullscreen-view://confirm-delete", () => {
+      void confirmFullscreenViewDelete();
     });
-    await listeners.listen("viewer://cancel-delete", () => {
+    await listeners.listen("fullscreen-view://cancel-delete", () => {
       useFullscreenViewStore.getState().cancelDelete();
     });
-    await listeners.listen("viewer://dismiss-failure", () => {
+    await listeners.listen("fullscreen-view://dismiss-failure", () => {
       useFullscreenViewStore.getState().setFailure(null);
     });
     // Switching to another app closes the view: Main's selection has followed
@@ -191,11 +191,11 @@ const install = createEventInstaller(
     // the app the user switched to.
     await listeners.listen<boolean>("app://activation", (event) => {
       if (!event.payload && useFullscreenViewStore.getState().session !== null) {
-        void closeViewer({ restoreFocus: false });
+        void closeFullscreenView({ restoreFocus: false });
       }
     });
     listeners.retain(useFullscreenViewStore.subscribe((state, previous) => {
-      if (state.session !== null || previous.session !== null) broadcastViewer();
+      if (state.session !== null || previous.session !== null) broadcastFullscreenView();
     }));
     listeners.retain(useItemsStore.subscribe((state, previous) => {
       if (state.reconciliationId === previous.reconciliationId || itemReconcileQueued) return;
@@ -206,11 +206,11 @@ const install = createEventInstaller(
       });
     }));
   },
-  (error) => log.error("viewer workflow wiring failed", toErrorFields(error)),
+  (error) => log.error("fullscreen view workflow wiring failed", toErrorFields(error)),
 );
 
 /** Installs the cross-window handshake and disappearance reconciliation once. */
-export function installViewerWorkflow(): Promise<void> {
+export function installFullscreenViewWorkflow(): Promise<void> {
   return install();
 }
 
@@ -228,7 +228,7 @@ async function reconcileViewerSequence(): Promise<void> {
       );
       if (useFullscreenViewStore.getState().session?.token !== session.token) return;
       if (snapshot === null) {
-        await closeViewer();
+        await closeFullscreenView();
         return;
       }
       useFullscreenViewStore.getState().update(snapshot);
@@ -237,9 +237,9 @@ async function reconcileViewerSequence(): Promise<void> {
     } catch (error) {
       log.error("viewer sequence reconciliation failed", toErrorFields(error));
       if (useFullscreenViewStore.getState().session?.token !== session.token) return;
-      const failure = message("viewer.refreshFailed");
+      const failure = message("fullscreenView.refreshFailed");
       useFullscreenViewStore.getState().setFailure(failure);
-      recordActionFailure("viewer-reconcile-failed", failure, error);
+      recordActionFailure("fullscreen-view-reconcile-failed", failure, error);
     }
   });
 }
@@ -248,10 +248,10 @@ async function reconcileViewerSequence(): Promise<void> {
  * anchor, within the selection when more than one item is selected. */
 export function openFullscreenView(): boolean {
   if (useComparisonStore.getState().open) return false;
-  const feedback = beginMainFeedback("viewer");
+  const feedback = beginMainFeedback("fullscreen-view");
   const items = useItemsStore.getState();
   if (items.selectedItem === null || items.selectedKeys.size === 0) {
-    feedback.finish({ tone: "normal", text: message("viewer.selectItemFirst") });
+    feedback.finish({ tone: "normal", text: message("fullscreenView.selectItemFirst") });
     return false;
   }
   const section = items.selected;
@@ -260,7 +260,7 @@ export function openFullscreenView(): boolean {
   );
   const anchorPosition = items.selectedPositions.get(items.selectedItem) ?? loadedPositions.get(items.selectedItem);
   if (section === null || anchorPosition === undefined) {
-    feedback.finish({ tone: "normal", text: message("viewer.selectionGone") });
+    feedback.finish({ tone: "normal", text: message("fullscreenView.selectionGone") });
     return false;
   }
   const request = ++viewerOpenRequest;
@@ -320,9 +320,9 @@ export function openFullscreenView(): boolean {
     .catch((error) => {
       if (request !== viewerOpenRequest) return;
       log.error("viewer sequence start failed", toErrorFields(error));
-      const failure = message("viewer.openFailed");
+      const failure = message("fullscreenView.openFailed");
       feedback.finish({ tone: "danger", text: failure });
-      recordActionFailure("viewer-open-failed", failure, error);
+      recordActionFailure("fullscreen-view-open-failed", failure, error);
       recordActivity({
         kind: "failed",
         owner,
@@ -347,7 +347,7 @@ export function handleSpaceFullscreenView(event: {
   return opened;
 }
 
-export function moveViewer(move: ViewerMove): void {
+export function moveFullscreenView(move: ViewerMove): void {
   const session = useFullscreenViewStore.getState().session;
   if (session === null) return;
   enqueueViewerSequence(async () => {
@@ -362,16 +362,16 @@ export function moveViewer(move: ViewerMove): void {
       useFullscreenViewStore.getState().setFailure(null);
       await syncMainAnchor();
     } catch (error) {
-      log.error("viewer navigation failed", toErrorFields(error));
+      log.error("fullscreen view navigation failed", toErrorFields(error));
       if (useFullscreenViewStore.getState().session?.token !== session.token) return;
-      const failure = message("viewer.navigationFailed");
+      const failure = message("fullscreenView.navigationFailed");
       useFullscreenViewStore.getState().setFailure(failure);
-      recordActionFailure("viewer-navigation-failed", failure, error);
+      recordActionFailure("fullscreen-view-navigation-failed", failure, error);
     }
   });
 }
 
-export async function closeViewer({ restoreFocus = true } = {}): Promise<void> {
+export async function closeFullscreenView({ restoreFocus = true } = {}): Promise<void> {
   viewerOpenRequest += 1;
   const session = useFullscreenViewStore.getState().session;
   if (session !== null) {
@@ -388,60 +388,60 @@ export async function closeViewer({ restoreFocus = true } = {}): Promise<void> {
     await invoke("viewer_sequence_close", { token: session.token }).catch((error) =>
       log.warn("viewer sequence cleanup failed", toErrorFields(error)),
     );
-    await exitViewerFullscreen();
+    await hideFullscreenViewWindow();
   }
-  // Library updates and mutations own Main reconciliation. Closing a viewer
+  // Library updates and mutations own Main reconciliation. Closing the view
   // must not replace an already-admitted Main navigation with a second load.
   if (restoreFocus) await restoreMainFocus();
   else focusMainAnchor();
 }
 
-export async function requestViewerDelete(permanent: boolean): Promise<void> {
+export async function requestFullscreenViewDelete(permanent: boolean): Promise<void> {
   const configConfirms = confirmsTrashDelete(useAppStore.getState().appData?.config);
   if (permanent || configConfirms) {
     useFullscreenViewStore.getState().requestDelete(permanent ? "permanent" : "trash");
     return;
   }
-  await deleteViewerCurrent(false);
+  await deleteFullscreenViewCurrent(false);
 }
 
-export async function confirmViewerDelete(): Promise<void> {
+export async function confirmFullscreenViewDelete(): Promise<void> {
   const pending = useFullscreenViewStore.getState().pendingDelete;
   useFullscreenViewStore.getState().cancelDelete();
   if (pending !== null) await deleteItems([pending.key], pending.kind === "permanent");
 }
 
-async function deleteViewerCurrent(permanent: boolean): Promise<void> {
+async function deleteFullscreenViewCurrent(permanent: boolean): Promise<void> {
   const key = useFullscreenViewStore.getState().currentKey();
   if (key !== null) await deleteItems([key], permanent);
 }
 
-export async function handleViewerKey(message: ViewerKeyMessage): Promise<void> {
+export async function handleFullscreenViewKey(message: FullscreenViewKeyMessage): Promise<void> {
   if (message.metaKey || message.ctrlKey || message.altKey) return;
   const session = useFullscreenViewStore.getState().session;
   if (session === null || useFullscreenViewStore.getState().pendingDelete !== null) return;
   if (message.repeat && ["Escape", " ", "Enter", "Delete", "Backspace"].includes(message.key)) return;
   const sequenceBounds = session.detail.kind !== "other" || isAudioFile(session.item.fileName);
   if (message.key === "Escape" || message.key === " ") {
-    await closeViewer();
+    await closeFullscreenView();
   } else if (message.key === "ArrowLeft") {
-    moveViewer("previous");
+    moveFullscreenView("previous");
   } else if (message.key === "ArrowRight") {
-    moveViewer("next");
+    moveFullscreenView("next");
   } else if (
     message.key === "PageUp" &&
     sequenceBounds
   ) {
-    moveViewer("previous");
+    moveFullscreenView("previous");
   } else if (
     message.key === "PageDown" &&
     sequenceBounds
   ) {
-    moveViewer("next");
+    moveFullscreenView("next");
   } else if (message.key === "Home" && sequenceBounds) {
-    moveViewer("first");
+    moveFullscreenView("first");
   } else if (message.key === "End" && sequenceBounds) {
-    moveViewer("last");
+    moveFullscreenView("last");
   } else if (message.key === "Enter") {
     const item = currentItem();
     const kind = session.detail.kind;
@@ -450,6 +450,6 @@ export async function handleViewerKey(message: ViewerKeyMessage): Promise<void> 
     }
   } else if (message.key === "Delete" || message.key === "Backspace") {
     if (message.repeat === true) return;
-    await requestViewerDelete(message.shiftKey === true);
+    await requestFullscreenViewDelete(message.shiftKey === true);
   }
 }

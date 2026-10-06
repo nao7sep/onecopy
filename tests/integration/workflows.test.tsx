@@ -461,7 +461,7 @@ describe("the culling workflow", () => {
     expect(useFullscreenViewStore.getState().session).not.toBeNull();
     expect(usePreviewStore.getState().follow).toBe(false);
     // The fullscreen view's own window forwards its keys to Main.
-    await act(async () => fireEvent("viewer://key", { key: "Escape" }));
+    await act(async () => fireEvent("fullscreen-view://key", { key: "Escape" }));
     await settle();
     expect(useFullscreenViewStore.getState().session).toBeNull();
 
