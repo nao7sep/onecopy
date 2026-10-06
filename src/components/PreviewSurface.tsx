@@ -581,25 +581,16 @@ export default function PreviewSurface({
   keyboardActive?: boolean;
 }) {
   const { t } = useI18n();
-  const isQuickViewSetting = surface === "viewer";
   const configuredEnlargeSmall = useAppStore((state) => {
     const config = state.appData?.config;
     if (config === null || config === undefined) return null;
-    return isQuickViewSetting
-      ? configFlag(config, "enlargeSmallImagesInQuickView")
-      : configFlag(config, "enlargeSmallImagesInPreview");
+    return configFlag(config, "enlargeSmallImages");
   });
   // Main's own webview has this directly through `appData.config` above.
-  // Auxiliary webviews (the separate Preview window, true fullscreen) have no
+  // Auxiliary webviews (the preview window, the fullscreen view) have no
   // app-config projection of their own and fall back to this read-only
-  // mirror — routed by the SAME surface split, so fullscreen shares Quick
-  // View's setting rather than Preview's (content-presentation.md D3: "Quick
-  // View and true fullscreen are one session").
-  const auxiliaryEnlargeSmall = useWindowPreferencesStore((state) =>
-    isQuickViewSetting
-      ? state.enlargeSmallImagesInQuickView
-      : state.enlargeSmallImagesInPreview,
-  );
+  // mirror of the same one setting.
+  const auxiliaryEnlargeSmall = useWindowPreferencesStore((state) => state.enlargeSmallImages);
   const enlargeSmall = configuredEnlargeSmall ?? auxiliaryEnlargeSmall;
   if (detail !== null && isAudioFile(detail.fileName)) {
     const src =

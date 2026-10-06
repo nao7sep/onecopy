@@ -20,8 +20,7 @@ describe("playback preferences", () => {
       audioAutoplay: true,
       soundEnabled: true,
       playbackVolume: 1,
-      enlargeSmallImagesInPreview: true,
-      enlargeSmallImagesInQuickView: true,
+      enlargeSmallImages: true,
       textPreviewMaxBytes: 2 * 1024 * 1024,
       textFallbackEncoding: "utf-8",
     });

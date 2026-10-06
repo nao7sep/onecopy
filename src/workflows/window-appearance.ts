@@ -41,8 +41,7 @@ interface AppearancePreferences {
   language?: unknown;
   systemLanguage?: unknown;
   systemLocale?: unknown;
-  enlargeSmallImagesInPreview?: unknown;
-  enlargeSmallImagesInQuickView?: unknown;
+  enlargeSmallImages?: unknown;
   videoTranscriptionEnabled?: unknown;
   audioTranscriptionEnabled?: unknown;
 }

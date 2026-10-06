@@ -21,8 +21,7 @@ afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); window.history.pushS
 it("initializes the font without Main bootstrap, then follows saved changes", async () => {
   // The core answers with effective values (storage::appearance_preferences).
   const effective = {
-    enlargeSmallImagesInPreview: true,
-    enlargeSmallImagesInQuickView: true,
+    enlargeSmallImages: true,
     videoTranscriptionEnabled: true,
     audioTranscriptionEnabled: true,
   };
@@ -91,8 +90,7 @@ it("projects auxiliary Preview preferences without running Main bootstrap", asyn
   mockCommands({
     appearance_preferences: () => ({
       uiFontFamily: null,
-      enlargeSmallImagesInPreview: false,
-      enlargeSmallImagesInQuickView: true,
+      enlargeSmallImages: false,
       videoTranscriptionEnabled: false,
       audioTranscriptionEnabled: true,
     }),
@@ -101,10 +99,7 @@ it("projects auxiliary Preview preferences without running Main bootstrap", asyn
   const { useWindowPreferencesStore } = await import("../../src/state/window-preferences-store");
   await installWindowAppearance();
   expect(useWindowPreferencesStore.getState()).toMatchObject({
-    enlargeSmallImagesInPreview: false,
-    // Fullscreen (an auxiliary webview) shares Quick View's own setting, not
-    // Preview's — the two are one session (content-presentation.md D3).
-    enlargeSmallImagesInQuickView: true,
+    enlargeSmallImages: false,
     videoTranscriptionEnabled: false,
     audioTranscriptionEnabled: true,
   });

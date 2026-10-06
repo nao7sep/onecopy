@@ -42,7 +42,7 @@ beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
   mockCommands({ logging_debug_enabled: () => false, log_event: () => null });
   useWindowPreferencesStore.setState({
-    enlargeSmallImagesInPreview: true,
+    enlargeSmallImages: true,
     videoTranscriptionEnabled: true,
     audioTranscriptionEnabled: true,
   });

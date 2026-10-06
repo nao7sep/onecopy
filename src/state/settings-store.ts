@@ -48,8 +48,7 @@ export interface SettingsDraft {
   audioAutoplay: boolean;
   soundEnabled: boolean;
   playbackVolume: number;
-  enlargeSmallImagesInPreview: boolean;
-  enlargeSmallImagesInQuickView: boolean;
+  enlargeSmallImages: boolean;
   textPreviewMaxBytes: number;
   textFallbackEncoding: string;
   pairingEnabled: boolean;
@@ -139,8 +138,7 @@ function draftFrom(
     audioAutoplay: flag("audioAutoplay"),
     soundEnabled: flag("soundEnabled"),
     playbackVolume: clampPlaybackVolume(config?.playbackVolume),
-    enlargeSmallImagesInPreview: flag("enlargeSmallImagesInPreview"),
-    enlargeSmallImagesInQuickView: flag("enlargeSmallImagesInQuickView"),
+    enlargeSmallImages: flag("enlargeSmallImages"),
     textPreviewMaxBytes: Math.max(1, numberField(config, "textPreviewMaxBytes")),
     textFallbackEncoding: stringField(config, "textFallbackEncoding"),
     pairingEnabled: flag("pairingEnabled"),

@@ -20,15 +20,14 @@ fn temp_dir(label: &str) -> PathBuf {
 fn appearance_reads_only_preferences_from_the_settings_in_memory() {
     let root = tempfile::tempdir().unwrap();
     let config = root.path().join(CONFIG_FILE_NAME);
-    let bytes = br#"{"formatVersion":1,"theme":"dark","uiFontFamily":"Iosevka","enlargeSmallImagesInPreview":false,"enlargeSmallImagesInQuickView":false,"videoTranscriptionEnabled":false,"audioTranscriptionEnabled":true,"sourceDirs":["/private"],"verifyAfterCopy":false}"#;
+    let bytes = br#"{"formatVersion":1,"theme":"dark","uiFontFamily":"Iosevka","enlargeSmallImages":false,"enlargeSmallImagesInPreview":true,"videoTranscriptionEnabled":false,"audioTranscriptionEnabled":true,"sourceDirs":["/private"],"verifyAfterCopy":false}"#;
     std::fs::write(&config, bytes).unwrap();
     std::fs::write(root.path().join(STATE_FILE_NAME), b"{ invalid state").unwrap();
     assert_eq!(
         appearance_preferences(root.path()).unwrap(),
         serde_json::json!({
             "uiFontFamily": "Iosevka",
-            "enlargeSmallImagesInPreview": false,
-            "enlargeSmallImagesInQuickView": false,
+            "enlargeSmallImages": false,
             "videoTranscriptionEnabled": false,
             "audioTranscriptionEnabled": true,
         })
@@ -53,14 +52,9 @@ fn default_config_serializes_with_camel_case_and_expected_defaults() {
     assert_eq!(value["audioAutoplay"], serde_json::json!(true));
     assert_eq!(value["soundEnabled"], serde_json::json!(true));
     assert_eq!(value["playbackVolume"], serde_json::json!(1.0));
-    assert_eq!(
-        value["enlargeSmallImagesInPreview"],
-        serde_json::json!(true)
-    );
-    assert_eq!(
-        value["enlargeSmallImagesInQuickView"],
-        serde_json::json!(true)
-    );
+    assert_eq!(value["enlargeSmallImages"], serde_json::json!(true));
+    assert!(value.get("enlargeSmallImagesInPreview").is_none());
+    assert!(value.get("enlargeSmallImagesInQuickView").is_none());
     assert_eq!(
         value["textPreviewMaxBytes"],
         serde_json::json!(2 * 1024 * 1024)

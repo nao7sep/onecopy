@@ -617,14 +617,9 @@ export default function SettingsModal({
             onChange={(v) => update({ thumbnailEdgePx: v })}
           />
           <CheckField
-            label={t("settings.enlargeInPreview")}
-            checked={draft.enlargeSmallImagesInPreview}
-            onChange={(v) => update({ enlargeSmallImagesInPreview: v })}
-          />
-          <CheckField
-            label={t("settings.enlargeInQuickView")}
-            checked={draft.enlargeSmallImagesInQuickView}
-            onChange={(v) => update({ enlargeSmallImagesInQuickView: v })}
+            label={t("settings.enlargeSmallImages")}
+            checked={draft.enlargeSmallImages}
+            onChange={(v) => update({ enlargeSmallImages: v })}
           />
           <NumberField
             label={t("settings.textPreviewLimit")}

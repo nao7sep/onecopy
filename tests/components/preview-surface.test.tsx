@@ -621,63 +621,38 @@ describe("shared video presentation", () => {
     expect(screen.getByRole("option", { name: /shift_jis/ })).toBeTruthy();
   });
 
-  // content-presentation.md D3: fullscreen is an auxiliary webview with no
-  // app-config projection of its own, and must fall back to Quick View's
-  // enlarge setting (they are one session), never Preview's.
-  it("routes fullscreen's fallback enlarge setting through Quick View's, not Preview's", () => {
-    useAppStore.setState({ appData: null });
-    useWindowPreferencesStore.setState({
-      enlargeSmallImagesInPreview: true,
-      enlargeSmallImagesInQuickView: false,
-    });
+  // The preview and the fullscreen view share one "Enlarge small images"
+  // setting, read from Main's config in Main and from the read-only mirror in
+  // the auxiliary windows.
+  it.each(["preview-split", "preview-window", "viewer"] as const)(
+    "applies the one enlarge setting on the %s surface, in Main and in its own window",
+    (surface) => {
+      useAppStore.setState({ appData: null });
+      useWindowPreferencesStore.setState({ enlargeSmallImages: false });
+      const auxiliary = render(<PreviewSurface surface={surface} hash="image-hash" detail={IMAGE_DETAIL} />);
+      // Enlarge OFF with known original dimensions caps the image at its
+      // real size through an explicit inline style.
+      expect(auxiliary.getByAltText("family.jpg").getAttribute("style"))
+        .toContain(`max-width: ${IMAGE_DETAIL.width}px`);
+      auxiliary.unmount();
 
-    render(
-      <PreviewSurface surface="viewer" hash="image-hash" detail={IMAGE_DETAIL} keyboardActive />,
-    );
-
-    // Enlarge OFF with known original dimensions caps the image at its real
-    // size through an explicit inline style, rather than the enlarge-on
-    // behavior of filling the available space.
-    const img = screen.getByAltText("family.jpg");
-    expect(img.getAttribute("style")).toContain(`max-width: ${IMAGE_DETAIL.width}px`);
-  });
-
-  // R5.3 untested contract: in MAIN's own webview (which has `appData.config`
-  // directly, unlike the auxiliary windows covered above), the persistent
-  // Preview pane reads `enlargeSmallImagesInPreview` and Quick View reads
-  // `enlargeSmallImagesInQuickView` -- two independent settings, routed by
-  // `surface`, not one shared value.
-  it("routes Main's own enlarge setting by surface: Preview reads its own key, Quick View reads its own", () => {
-    useAppStore.setState({
-      appData: {
-        config: {
-          videoAutoplay: false,
-          audioAutoplay: false,
-          soundEnabled: true,
-          playbackVolume: 1,
-          enlargeSmallImagesInPreview: false,
-          enlargeSmallImagesInQuickView: true,
+      useAppStore.setState({
+        appData: {
+          config: {
+            videoAutoplay: false, audioAutoplay: false, soundEnabled: true, playbackVolume: 1,
+            enlargeSmallImages: true,
+          },
+          state: null,
+          dataRoot: "/app",
+          debugEnabled: false,
+          quarantines: [],
         },
-        state: null,
-        dataRoot: "/app",
-        debugEnabled: false,
-        quarantines: [],
-      },
-    });
-
-    const previewPane = render(
-      <PreviewSurface surface="preview-split" hash="image-hash" detail={IMAGE_DETAIL} />,
-    );
-    const previewImg = previewPane.getByAltText("family.jpg");
-    expect(previewImg.getAttribute("style")).toContain(`max-width: ${IMAGE_DETAIL.width}px`);
-    previewPane.unmount();
-
-    const quickView = render(
-      <PreviewSurface surface="viewer" hash="image-hash" detail={IMAGE_DETAIL} keyboardActive />,
-    );
-    const quickImg = quickView.getByAltText("family.jpg");
-    expect(quickImg.getAttribute("style") ?? "").not.toContain("max-width");
-  });
+      });
+      const main = render(<PreviewSurface surface={surface} hash="image-hash" detail={IMAGE_DETAIL} />);
+      expect(main.getByAltText("family.jpg").getAttribute("style") ?? "").not.toContain("max-width");
+      main.unmount();
+    },
+  );
 
   // content-presentation.md D6: a failed video's poster is a PLAIN poster,
   // not an inspectable original — holding it must never raise a bogus

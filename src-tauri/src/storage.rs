@@ -88,8 +88,8 @@ pub struct DefaultConfig {
     pub ai_acceleration: JsonValue,
     pub video_autoplay: bool,
     pub audio_autoplay: bool,
-    pub enlarge_small_images_in_preview: bool,
-    pub enlarge_small_images_in_quick_view: bool,
+    /// One choice for the preview and the fullscreen view.
+    pub enlarge_small_images: bool,
     pub text_preview_max_bytes: u64,
     pub text_fallback_encoding: String,
     /// The one global companion-pairing toggle (all kinds together).
@@ -167,8 +167,7 @@ impl Default for DefaultConfig {
             ai_acceleration: crate::ai_acceleration::default_config(),
             video_autoplay: true,
             audio_autoplay: true,
-            enlarge_small_images_in_preview: true,
-            enlarge_small_images_in_quick_view: true,
+            enlarge_small_images: true,
             text_preview_max_bytes: crate::text_preview::DEFAULT_MAX_BYTES,
             text_fallback_encoding: crate::text_preview::DEFAULT_FALLBACK_ENCODING.to_string(),
             pairing_enabled: true,
@@ -315,8 +314,7 @@ pub fn appearance_preferences(root: &Path) -> Result<JsonValue, String> {
     let config = config(root)?;
     Ok(serde_json::json!({
         "uiFontFamily": config.get("uiFontFamily"),
-        "enlargeSmallImagesInPreview": config.get("enlargeSmallImagesInPreview"),
-        "enlargeSmallImagesInQuickView": config.get("enlargeSmallImagesInQuickView"),
+        "enlargeSmallImages": config.get("enlargeSmallImages"),
         "videoTranscriptionEnabled": config.get("videoTranscriptionEnabled"),
         "audioTranscriptionEnabled": config.get("audioTranscriptionEnabled"),
     }))
