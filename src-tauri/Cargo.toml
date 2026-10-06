@@ -151,6 +151,9 @@ windows-sys = { version = "0.61.2", features = [
     # sweep's process-liveness check (file_identity::process_is_running).
     "Win32_System_Threading",
     "Win32_Foundation",
+    # GetForegroundWindow/GetWindowThreadProcessId tell whether OneCopy is the
+    # active app (fullscreen::application_active).
+    "Win32_UI_WindowsAndMessaging",
 ] }
 # Load the packaged runtime only when face scoring actually starts. This keeps
 # optional model code out of process initialization on older Windows CPUs.
@@ -166,6 +169,8 @@ objc2 = "0.6"
 # interface language through NSUserDefaults before the application object exists.
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSObject", "NSString", "NSUserDefaults"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSScreen", "NSWindow"] }
+# A fullscreen change queues behind tao's own queued style-mask change.
+dispatch2 = "0.3"
 
 [target.'cfg(unix)'.dependencies]
 # O_NOFOLLOW binds destructive reads to regular-file descriptors; on macOS,

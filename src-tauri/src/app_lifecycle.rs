@@ -154,12 +154,6 @@ pub(crate) fn quiesce(app: &AppHandle) {
 
 /// Asks every worker owner to stop admitting and to cancel its current work.
 fn request_worker_shutdown(app: &AppHandle) {
-    // A hidden or abruptly destroyed simple-fullscreen window can leave macOS
-    // system chrome suppressed. Leave presentation mode before the longer
-    // worker-quiescence shutdown.
-    if let Err(error) = crate::presentation_runtime::shutdown(app) {
-        let _ = crate::failure_runtime::report(app, "shutdown-window-recovery-failed", None, &error);
-    }
     crate::source_check_runtime::shutdown();
     crate::sleep_prevention::shutdown();
     crate::file_information_runtime::shutdown();

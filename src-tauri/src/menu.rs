@@ -27,7 +27,7 @@ use crate::i18n;
 
 /// Every catalogue key the native menu reads; the tests check each one exists
 /// in every language.
-pub const KEYS: [&str; 23] = [
+pub const KEYS: [&str; 21] = [
     "nativeMenu.about",
     "nativeMenu.settings",
     "nativeMenu.services",
@@ -44,8 +44,6 @@ pub const KEYS: [&str; 23] = [
     "nativeMenu.copy",
     "nativeMenu.paste",
     "nativeMenu.selectAll",
-    "nativeMenu.view",
-    "nativeMenu.fullscreen",
     "nativeMenu.window",
     "nativeMenu.minimize",
     "nativeMenu.zoom",
@@ -144,13 +142,9 @@ pub fn build(app: &AppHandle, language: &str) -> tauri::Result<Menu<Wry>> {
                 &quit,
             ],
         )?;
-        let view = Submenu::with_items(
-            app,
-            t("nativeMenu.view"),
-            true,
-            &[&PredefinedMenuItem::fullscreen(app, Some(&t("nativeMenu.fullscreen")))?],
-        )?;
-        Menu::with_items(app, &[&app_menu, &file, &edit, &view, &window, &help])
+        // No View menu: its only item was Toggle Full Screen, and OneCopy
+        // never uses Spaces fullscreen (fullscreen.rs).
+        Menu::with_items(app, &[&app_menu, &file, &edit, &window, &help])
     }
     #[cfg(not(target_os = "macos"))]
     {

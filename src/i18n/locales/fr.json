@@ -25,8 +25,6 @@
   "nativeMenu.copy": "Copier",
   "nativeMenu.paste": "Coller",
   "nativeMenu.selectAll": "Tout sélectionner",
-  "nativeMenu.view": "Présentation",
-  "nativeMenu.fullscreen": "Activer le mode plein écran",
   "nativeMenu.window": "Fenêtre",
   "nativeMenu.minimize": "Minimiser",
   "nativeMenu.zoom": "Réduire/agrandir",

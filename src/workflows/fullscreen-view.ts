@@ -186,6 +186,14 @@ const install = createEventInstaller(
     await listeners.listen("viewer://dismiss-failure", () => {
       useFullscreenViewStore.getState().setFailure(null);
     });
+    // Switching to another app closes the view: Main's selection has followed
+    // its navigation, so one Space reopens the same item. Focus stays with
+    // the app the user switched to.
+    await listeners.listen<boolean>("app://activation", (event) => {
+      if (!event.payload && useFullscreenViewStore.getState().session !== null) {
+        void closeViewer({ restoreFocus: false });
+      }
+    });
     listeners.retain(useFullscreenViewStore.subscribe((state, previous) => {
       if (state.session !== null || previous.session !== null) broadcastViewer();
     }));
@@ -363,7 +371,7 @@ export function moveViewer(move: ViewerMove): void {
   });
 }
 
-export async function closeViewer(): Promise<void> {
+export async function closeViewer({ restoreFocus = true } = {}): Promise<void> {
   viewerOpenRequest += 1;
   const session = useFullscreenViewStore.getState().session;
   if (session !== null) {
@@ -384,7 +392,8 @@ export async function closeViewer(): Promise<void> {
   }
   // Library updates and mutations own Main reconciliation. Closing a viewer
   // must not replace an already-admitted Main navigation with a second load.
-  await restoreMainFocus();
+  if (restoreFocus) await restoreMainFocus();
+  else focusMainAnchor();
 }
 
 export async function requestViewerDelete(permanent: boolean): Promise<void> {

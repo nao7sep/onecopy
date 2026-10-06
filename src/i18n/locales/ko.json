@@ -25,8 +25,6 @@
   "nativeMenu.copy": "복사하기",
   "nativeMenu.paste": "붙여넣기",
   "nativeMenu.selectAll": "모두 선택",
-  "nativeMenu.view": "보기",
-  "nativeMenu.fullscreen": "전체 화면 시작",
   "nativeMenu.window": "윈도우",
   "nativeMenu.minimize": "최소화",
   "nativeMenu.zoom": "확대/축소",

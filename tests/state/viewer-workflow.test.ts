@@ -18,9 +18,12 @@ import {
   openFullscreenView,
   viewerBroadcast,
   closeViewer,
+  installViewerWorkflow,
 } from "../../src/workflows/fullscreen-view";
 import {
   WebviewWindow,
+  fireEvent,
+  invoke,
   invokeCalls,
   mockCommand,
   mockSectionItems,
@@ -284,7 +287,7 @@ describe("viewer workflow", () => {
     expect(useItemsStore.getState().selected?.kind).toBe("other");
   });
 
-  it("reuses one borderless fullscreen window and leaves presentation before hiding", async () => {
+  it("reuses one borderless window, fullscreen on Main's display, and leaves fullscreen before hiding", async () => {
     const monitor = {
       position: { x: 100, y: 200 },
       size: { width: 1920, height: 1080 },
@@ -300,11 +303,14 @@ describe("viewer workflow", () => {
 
     expect(viewer.setPosition).toHaveBeenCalledWith({ x: 100, y: 200 });
     expect(viewer.setSize).toHaveBeenCalledWith({ width: 1920, height: 1080 });
-    expect(viewer.setAlwaysOnTop).toHaveBeenCalledWith(true);
     expect(invokeCalls).toContainEqual({
       command: "set_window_fullscreen",
       args: { label: "viewer", enable: true },
     });
+    // Shown on that display first, so fullscreen takes that display's frame.
+    expect(viewer.show.mock.invocationCallOrder[0]).toBeLessThan(
+      invoke.mock.invocationCallOrder[invokeCalls.findIndex((call) => call.command === "set_window_fullscreen")],
+    );
 
     await handleViewerKey({ key: "Escape" });
 
@@ -312,8 +318,8 @@ describe("viewer workflow", () => {
       command: "set_window_fullscreen",
       args: { label: "viewer", enable: false },
     });
-    expect(viewer.setAlwaysOnTop).toHaveBeenLastCalledWith(false);
     expect(viewer.hide).toHaveBeenCalled();
+    expect(viewer.setAlwaysOnTop).not.toHaveBeenCalled();
     expect(useFullscreenViewStore.getState().session).toBeNull();
   });
 
@@ -339,6 +345,29 @@ describe("viewer workflow", () => {
 
     expect(useFullscreenViewStore.getState().session).toBeNull();
     expect(setFocus).toHaveBeenCalled();
+    expect(document.activeElement).toBe(grid);
+    grid.remove();
+  });
+
+  it("closes when OneCopy stops being the active app, leaving focus with the other app", async () => {
+    const grid = document.createElement("div");
+    grid.id = "main-item-area";
+    grid.tabIndex = 0;
+    document.body.appendChild(grid);
+    await installViewerWorkflow();
+    expect(openFullscreenView()).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    setFocus.mockClear();
+
+    fireEvent("app://activation", true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(useFullscreenViewStore.getState().session).not.toBeNull();
+
+    fireEvent("app://activation", false);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(useFullscreenViewStore.getState().session).toBeNull();
+    expect(setFocus).not.toHaveBeenCalled();
+    // Returning to OneCopy finds the keyboard on Main's list.
     expect(document.activeElement).toBe(grid);
     grid.remove();
   });

@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use tauri::{PhysicalPosition, PhysicalSize, Window, WindowEvent, Wry};
 
-use crate::{logging, paths, presentation_runtime, storage};
+use crate::{fullscreen, logging, paths, storage};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -315,10 +315,11 @@ pub(crate) fn capture_preview(window: &Window<Wry>, state: &PlacementState) {
 /// The pure decision behind a placement capture: given what was observed,
 /// which `ClosingState` should be recorded? `fullscreen_reported` is the
 /// platform's own answer; `presentation_registered` is OneCopy's own
-/// full-display-presentation registry, consulted in addition because macOS
-/// simple fullscreen under-reports through the platform API alone (R2-05,
-/// viewing-sessions.md D1). Isolated from any live `Window` so the decision
-/// itself is directly testable.
+/// fullscreen registry (`fullscreen::is_fullscreen`), consulted in addition
+/// because macOS reports OneCopy's raised borderless fullscreen as an ordinary
+/// window, and Main's frame in Comparison must never become its saved
+/// placement. Isolated from any live `Window` so the decision itself is
+/// directly testable.
 pub fn closing_state_for(
     minimized: bool,
     fullscreen_reported: bool,
@@ -343,7 +344,7 @@ fn capture_with_mode(
     let closing = (|| -> tauri::Result<ClosingState> {
         let minimized = window.is_minimized()?;
         let fullscreen_reported = window.is_fullscreen()?;
-        let presentation_registered = presentation_runtime::is_registered(window.label());
+        let presentation_registered = fullscreen::is_fullscreen(window.label());
         let maximized = is_maximized(window)?;
         let rectangle = current_rectangle(window)?;
         logging::info("window placement sampled", serde_json::json!({
@@ -381,7 +382,7 @@ fn capture_normal_bounds_live(window: &Window<Wry>, state: &PlacementState) {
     let sample = (|| -> tauri::Result<Option<NormalRectangle>> {
         if window.is_minimized()?
             || window.is_fullscreen()?
-            || presentation_runtime::is_registered(window.label())
+            || fullscreen::is_fullscreen(window.label())
             || is_maximized(window)?
         {
             return Ok(None);

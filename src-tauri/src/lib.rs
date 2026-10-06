@@ -33,6 +33,7 @@ pub mod menu;
 pub mod file_information_runtime;
 pub mod fs_publish;
 pub mod fs_recovery;
+pub mod fullscreen;
 mod github_release;
 pub mod hashing;
 pub mod index_store;
@@ -54,7 +55,6 @@ pub mod notifications;
 pub mod operations;
 pub mod path_identity;
 pub mod paths;
-pub mod presentation_runtime;
 pub mod progress_throttle;
 pub mod preview;
 pub mod queries;
@@ -924,11 +924,16 @@ async fn transcript_get(hash: String) -> Result<derived_state::TranscriptResult,
     .await
 }
 
-// Explicit window entry/exit is separate from application system-chrome policy.
-// macOS uses non-Spaces fullscreen; Windows uses native fullscreen.
+/// Main in Comparison and the fullscreen view: the window that holds the keyboard.
 #[tauri::command]
 fn set_window_fullscreen(app: AppHandle, label: String, enable: bool) -> Result<(), String> {
-    presentation_runtime::set_desired(&app, &label, enable)
+    fullscreen::set(&app, &label, enable, fullscreen::Surface::Focused)
+}
+
+/// One of Comparison's other displays.
+#[tauri::command]
+fn set_spread_fullscreen(app: AppHandle, label: String, enable: bool) -> Result<(), String> {
+    fullscreen::set(&app, &label, enable, fullscreen::Surface::Spread)
 }
 
 #[tauri::command]
@@ -961,10 +966,6 @@ fn capture_preview_window_placement(
     Ok(())
 }
 
-#[tauri::command]
-fn refresh_presentation_chrome() {
-    presentation_runtime::note_focus_transition();
-}
 
 // The frontend's throttled input ping — the coordinator's whole view
 // of the user. Atomic store; keeping it plain (main-thread) is deliberate,
@@ -1529,6 +1530,12 @@ pub fn run() {
                         json!({ "window": webview.label(), "error": { "message": error } }),
                     );
                 }
+                if let Err(error) = fullscreen::refuse_spaces_fullscreen(&webview.window()) {
+                    logging::warn(
+                        "window could not refuse Spaces fullscreen",
+                        json!({ "window": webview.label(), "error": { "message": error } }),
+                    );
+                }
             }
         })
         .menu(|app| {
@@ -1657,9 +1664,9 @@ pub fn run() {
             background_work_set_paused,
             prioritize_derived_work,
             set_window_fullscreen,
+            set_spread_fullscreen,
             place_preview_window,
             capture_preview_window_placement,
-            refresh_presentation_chrome,
             ensure_preview,
             apply_library_settings,
             visibility_capabilities,
@@ -1710,16 +1717,16 @@ pub fn run() {
         tauri::RunEvent::WindowEvent {
             event: tauri::WindowEvent::Focused(_),
             ..
-        } => presentation_runtime::note_focus_transition(),
+        } => fullscreen::note_focus_transition(),
         tauri::RunEvent::WindowEvent {
             label,
             event: tauri::WindowEvent::Destroyed,
             ..
-        } => presentation_runtime::window_destroyed(&label),
+        } => fullscreen::window_destroyed(&label),
         tauri::RunEvent::MainEventsCleared => {
-            if let Err(error) = presentation_runtime::reconcile_pending_activation(app_handle) {
+            if let Err(error) = fullscreen::reconcile_activation(app_handle) {
                 logging::warn(
-                    "system chrome reconciliation failed",
+                    "fullscreen activation reconciliation failed",
                     json!({ "error": { "message": error } }),
                 );
             }

@@ -68,7 +68,7 @@ beforeEach(() => {
   resetTauriMocks();
   mockSectionItems(() => [ITEM]);
   mockCommand("set_window_fullscreen", () => null);
-  mockCommand("refresh_presentation_chrome", () => null);
+  mockCommand("set_spread_fullscreen", () => null);
   setCurrentMonitor({
     position: { x: 0, y: 0 },
     size: { width: 1920, height: 1080 },

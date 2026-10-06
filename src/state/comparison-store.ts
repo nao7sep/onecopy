@@ -314,28 +314,21 @@ async function resolveMonitors(
   }
 }
 
-const COMPARISON_PRESENTATION_OWNER = "main";
-let comparisonFullscreenTransition: Promise<void> = Promise.resolve();
-
-function setComparisonFullscreen(
-  enable: boolean,
-): Promise<void> {
-  const next = comparisonFullscreenTransition
-    .catch(() => undefined)
-    .then(() =>
-      invoke<void>("set_window_fullscreen", {
-        label: COMPARISON_PRESENTATION_OWNER,
-        enable,
-      }),
-    );
-  comparisonFullscreenTransition = next;
-  return next;
+/** Main stays Comparison's first surface: fullscreen on its own display for
+ * the session, and back at its exact earlier frame afterwards. Only the
+ * Comparison lifecycle queue calls this, so entry and exit never overlap. */
+function setComparisonFullscreen(enable: boolean): Promise<void> {
+  return invoke<void>("set_window_fullscreen", { label: "main", enable });
 }
 
-function refreshPresentationChrome(): Promise<void> {
-  return invoke<void>("refresh_presentation_chrome");
+function setSpreadFullscreen(label: string, enable: boolean): Promise<void> {
+  return invoke<void>("set_spread_fullscreen", { label, enable });
 }
 
+/** Each other display gets a window over its full frame, not its work area,
+ * raised over the Dock and menu bar while OneCopy is active. Comparison must
+ * be fair: an image must not look smaller on one display because the Dock or
+ * menu bar takes space there. */
 async function showSpread(monitors: MonitorList): Promise<void> {
   for (let index = 0; index < monitors.length; index += 1) {
     const label = `comparison-${index + 1}`;
@@ -350,8 +343,8 @@ async function showSpread(monitors: MonitorList): Promise<void> {
           new PhysicalSize(monitor.size.width, monitor.size.height),
         );
         await existing.show();
-        await refreshPresentationChrome().catch(
-          reportWindowCall("comparison chrome refresh"),
+        await setSpreadFullscreen(label, true).catch(
+          reportWindowCall("comparison display fullscreen"),
         );
         continue;
       }
@@ -383,8 +376,8 @@ async function showSpread(monitors: MonitorList): Promise<void> {
           }
           try {
             await created.show();
-            await refreshPresentationChrome().catch(
-              reportWindowCall("comparison chrome refresh"),
+            await setSpreadFullscreen(label, true).catch(
+              reportWindowCall("comparison display fullscreen"),
             );
           } catch (error) {
             log.warn("comparison display became unavailable", {
@@ -428,11 +421,11 @@ async function hideSpread(first: number, last: number): Promise<void> {
       return null;
     });
     if (window === null) continue;
+    await setSpreadFullscreen(label, false).catch(
+      reportWindowCall("comparison display leave fullscreen"),
+    );
     await window.hide().catch(reportWindowCall("comparison hide"));
   }
-  await refreshPresentationChrome().catch(
-    reportWindowCall("comparison chrome refresh"),
-  );
 }
 
 async function closeSpread(first: number, last: number): Promise<void> {

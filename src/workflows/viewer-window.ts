@@ -12,7 +12,7 @@ import { documentTranslator } from "../i18n/I18nContext";
 
 const VIEWER_LABEL = "viewer";
 
-export interface ViewerMonitor {
+interface ViewerMonitor {
   position: { x: number; y: number };
   size: { width: number; height: number };
   scaleFactor: number;
@@ -20,7 +20,6 @@ export interface ViewerMonitor {
 
 let desired = false;
 let lifecycle: Promise<void> = Promise.resolve();
-let fullscreenTransition: Promise<void> = Promise.resolve();
 
 function queue(action: () => Promise<void>): Promise<void> {
   const next = lifecycle.then(action, action);
@@ -28,27 +27,22 @@ function queue(action: () => Promise<void>): Promise<void> {
   return next;
 }
 
-function setSimpleFullscreen(enable: boolean): Promise<void> {
-  const next = fullscreenTransition
-    .catch(() => undefined)
-    .then(() => invoke<void>("set_window_fullscreen", { label: VIEWER_LABEL, enable }));
-  fullscreenTransition = next;
-  return next;
+function setFullscreen(enable: boolean): Promise<void> {
+  return invoke<void>("set_window_fullscreen", { label: VIEWER_LABEL, enable });
 }
 
-async function resolveMonitor(preferred?: ViewerMonitor): Promise<ViewerMonitor | null> {
-  if (preferred !== undefined) return preferred;
+async function resolveMonitor(): Promise<ViewerMonitor | null> {
   const hosting = await currentMonitor();
   if (hosting !== null) return hosting;
   return (await availableMonitors())[0] ?? null;
 }
 
+/** Placed on the display first, so fullscreen takes that display's frame. */
 async function activate(window: WebviewWindow, monitor: ViewerMonitor): Promise<void> {
   await window.setPosition(new PhysicalPosition(monitor.position.x, monitor.position.y));
   await window.setSize(new PhysicalSize(monitor.size.width, monitor.size.height));
-  await window.setAlwaysOnTop(true);
-  await setSimpleFullscreen(true);
   await window.show();
+  await setFullscreen(true);
   await window.setFocus();
 }
 
@@ -64,7 +58,6 @@ async function createViewer(monitor: ViewerMonitor): Promise<WebviewWindow> {
     width: monitor.size.width / scale,
     height: monitor.size.height / scale,
     decorations: false,
-    alwaysOnTop: true,
     skipTaskbar: true,
     resizable: false,
     focus: false,
@@ -74,21 +67,21 @@ async function createViewer(monitor: ViewerMonitor): Promise<WebviewWindow> {
   return window;
 }
 
-async function enter(preferred?: ViewerMonitor): Promise<void> {
-  const monitor = await resolveMonitor(preferred);
+async function enter(): Promise<void> {
+  const monitor = await resolveMonitor();
   if (monitor === null) throw new Error("No display is available for fullscreen view.");
   const window = (await WebviewWindow.getByLabel(VIEWER_LABEL)) ?? (await createViewer(monitor));
   if (!desired) return;
   await activate(window, monitor);
 }
 
-/** Shows or repositions the one reusable non-Spaces fullscreen surface. */
-export function enterViewerFullscreen(preferred?: ViewerMonitor): Promise<void> {
+/** Shows the one reusable fullscreen window on Main's display. */
+export function enterViewerFullscreen(): Promise<void> {
   desired = true;
-  return queue(() => enter(preferred));
+  return queue(enter);
 }
 
-/** Leaves native presentation before clearing topmost state and hiding. */
+/** Leaves fullscreen before hiding, so the hidden window is never raised. */
 export function exitViewerFullscreen(): Promise<void> {
   desired = false;
   return queue(async () => {
@@ -97,8 +90,7 @@ export function exitViewerFullscreen(): Promise<void> {
       return null;
     });
     if (window === null) return;
-    await setSimpleFullscreen(false).catch(reportWindowCall("viewer leave fullscreen"));
-    await window.setAlwaysOnTop(false).catch(reportWindowCall("viewer clear always on top"));
+    await setFullscreen(false).catch(reportWindowCall("viewer leave fullscreen"));
     await window.hide().catch(reportWindowCall("viewer hide"));
   });
 }

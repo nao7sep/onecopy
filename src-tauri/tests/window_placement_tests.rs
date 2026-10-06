@@ -102,10 +102,9 @@ fn a_zero_sized_rectangle_is_never_restorable() {
     assert!(!restorable_overlap(rectangle(0, 0, 1920, 0), work_area));
 }
 
-/// R2-05 / viewing-sessions.md D1: on macOS, `Window::is_fullscreen` alone
-/// under-reports the app's own simple fullscreen (Comparison's Main-filling
-/// spread, or a fullscreen Preview), so a display-filling frame must also be
-/// caught by the app's own presentation registry, not the platform flag only.
+/// On macOS, `Window::is_fullscreen` does not see OneCopy's own raised
+/// borderless fullscreen (Main in Comparison), so a display-filling frame
+/// must also be caught by the app's own fullscreen registry.
 #[test]
 fn a_display_filling_frame_registered_as_a_presentation_is_transient_even_when_the_platform_reports_no_fullscreen(
 ) {

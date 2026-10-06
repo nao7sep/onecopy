@@ -40,7 +40,7 @@ fn presentation_for(kind: &str) -> &'static str {
             "OneCopy could not save media-use state. Restart OneCopy before continuing.",
         "transcription-worker-failed" =>
             "Transcription stopped unexpectedly. Restart OneCopy, then try again.",
-        "shutdown-media-release-failed" | "shutdown-window-recovery-failed" | "shutdown-worker-failed" =>
+        "shutdown-media-release-failed" | "shutdown-worker-failed" =>
             "OneCopy could not finish shutting down cleanly. Restart it before continuing.",
         "source-check-feedback-failed" =>
             "Source-folder checking finished, but OneCopy could not show its result.",
@@ -77,8 +77,7 @@ pub(crate) fn condition_message_key(kind: &str) -> &'static str {
             "notice.instanceActivationFailed",
         "media-use-state-failed" => "notice.mediaUseStateFailed",
         "transcription-worker-failed" => "notice.transcriptionWorkerFailed",
-        "shutdown-media-release-failed" | "shutdown-window-recovery-failed"
-        | "shutdown-worker-failed" => "notice.shutdownMediaReleaseFailed",
+        "shutdown-media-release-failed" | "shutdown-worker-failed" => "notice.shutdownMediaReleaseFailed",
         "source-check-feedback-failed" => "notice.sourceCheckFeedbackFailed",
         "event-delivery-failed" => "notice.eventDeliveryFailed",
         "interface-failed" => "notice.interfaceFailed",

@@ -3219,6 +3219,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "dirs",
+ "dispatch2",
  "encoding_rs",
  "getrandom 0.4.3",
  "hex",

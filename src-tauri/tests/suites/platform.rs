@@ -16,8 +16,8 @@ mod fs_publish_tests;
 mod i18n_tests;
 #[path = "../presence_tests.rs"]
 mod presence_tests;
-#[path = "../presentation_tests.rs"]
-mod presentation_tests;
+#[path = "../fullscreen_tests.rs"]
+mod fullscreen_tests;
 #[path = "../records_view_tests.rs"]
 mod records_view_tests;
 #[path = "../progress_throttle_tests.rs"]

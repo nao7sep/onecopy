@@ -27,7 +27,7 @@ fn every_condition_message_key_exists_in_every_embedded_catalogue() {
         "text-preview-failed", "dependency-install-failed", "update-check-failed",
         "instance-activation-failed", "instance-listener-failed", "media-use-state-failed",
         "transcription-worker-failed", "shutdown-media-release-failed",
-        "shutdown-window-recovery-failed", "shutdown-worker-failed",
+        "shutdown-worker-failed",
         "source-check-feedback-failed", "event-delivery-failed", "interface-failed",
         "an-unnamed-condition-nothing-maps-to",
     ];

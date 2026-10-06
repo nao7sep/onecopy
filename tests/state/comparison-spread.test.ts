@@ -80,7 +80,7 @@ beforeEach(() => {
   });
   mockCommands({
     set_window_fullscreen: () => null,
-    refresh_presentation_chrome: () => null,
+    set_spread_fullscreen: () => null,
   });
 });
 
@@ -191,7 +191,7 @@ describe("opening Comparison across displays", () => {
     expect(useComparisonStore.getState().capacities).toEqual([3, 4]);
   });
 
-  it("fills Main while it owns process-global system chrome", async () => {
+  it("makes Main fullscreen as Comparison's first surface", async () => {
     setMonitors(THREE_SCREENS);
     mockCommands({ get_similar_group: () => members(10) });
 
@@ -318,6 +318,16 @@ describe("opening Comparison across displays", () => {
         .filter((call) => call.command === "set_window_fullscreen")
         .map((call) => call.args.enable),
     ).toEqual([true, false, true]);
+    // The other display leaves fullscreen before it hides and is raised
+    // again once it shows.
+    expect(
+      invokeCalls
+        .filter((call) => call.command === "set_spread_fullscreen")
+        .map((call) => call.args),
+    ).toEqual([
+      { label: "comparison-1", enable: false },
+      { label: "comparison-1", enable: true },
+    ]);
   });
 
   // R5.5 C8: Comparison orders its OTHER displays by the configured

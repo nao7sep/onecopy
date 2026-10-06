@@ -156,7 +156,7 @@ beforeEach(() => {
       attemptedAtUtc: "2026-09-10T00:00:00.000Z",
     }),
     set_window_fullscreen: () => null,
-    refresh_presentation_chrome: () => null,
+    set_spread_fullscreen: () => null,
   });
   // Journeys start clean; module-load listeners survive resetTauriMocks.
   useMainFeedbackStore.setState({ entries: {} });

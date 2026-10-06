@@ -25,8 +25,6 @@
   "nativeMenu.copy": "拷贝",
   "nativeMenu.paste": "粘贴",
   "nativeMenu.selectAll": "全选",
-  "nativeMenu.view": "显示",
-  "nativeMenu.fullscreen": "进入全屏幕",
   "nativeMenu.window": "窗口",
   "nativeMenu.minimize": "最小化",
   "nativeMenu.zoom": "缩放",
