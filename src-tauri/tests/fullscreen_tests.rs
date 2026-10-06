@@ -1,5 +1,6 @@
 use onecopy_lib::fullscreen::{
-    landing_level, level, settle_activation, Frame, FullscreenState, Level, Surface,
+    landing_level, level, restored_frame, settle_activation, Frame, FullscreenState, Level,
+    Surface,
 };
 use onecopy_lib::window_placement::{closing_state_for, ClosingState, NormalRectangle};
 
@@ -56,11 +57,106 @@ fn main_frame_while_fullscreen_stays_out_of_its_saved_placement() {
         closing_state_for(false, false, state.contains("main"), false, whole_display),
         ClosingState::Transient
     );
+    // Asked to leave, the title bar comes back first and resizes the window
+    // before its frame is restored: that size is still not its placement.
     state.leave("main");
+    assert_eq!(
+        closing_state_for(false, false, state.contains("main"), false, whole_display),
+        ClosingState::Transient
+    );
+    state.left("main");
     assert_eq!(
         closing_state_for(false, false, state.contains("main"), false, whole_display),
         ClosingState::Normal(whole_display)
     );
+}
+
+#[test]
+fn a_window_entered_again_while_leaving_stays_fullscreen_with_its_first_frame() {
+    let mut state = FullscreenState::default();
+    let earlier = Frame {
+        x: 40.0,
+        y: 60.0,
+        width: 1024.0,
+        height: 700.0,
+    };
+    state.enter("main", Surface::Focused, Some(earlier));
+    assert_eq!(state.leave("main"), Some(Some(earlier)));
+    assert_eq!(state.leave("main"), None);
+    // Leaving windows have their normal level on the way.
+    assert!(state.windows().is_empty());
+    let fullscreen_frame = Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 1920.0,
+        height: 1080.0,
+    };
+    assert!(state.enter("main", Surface::Focused, Some(fullscreen_frame)));
+    // The leave that was already queued lands, and the window stays.
+    state.left("main");
+    assert!(state.contains("main"));
+    assert_eq!(state.windows(), vec![("main".to_string(), Surface::Focused)]);
+    assert_eq!(state.leave("main"), Some(Some(earlier)));
+    state.left("main");
+    assert!(!state.contains("main"));
+}
+
+#[test]
+fn a_destroyed_window_is_forgotten_even_while_leaving() {
+    let mut state = FullscreenState::default();
+    state.enter("comparison-1", Surface::Spread, None);
+    state.leave("comparison-1");
+    state.forget("comparison-1");
+    assert!(!state.contains("comparison-1"));
+}
+
+const LAPTOP: Frame = Frame {
+    x: 0.0,
+    y: 0.0,
+    width: 1512.0,
+    height: 944.0,
+};
+
+#[test]
+fn the_restored_frame_is_exact_while_its_display_remains() {
+    let earlier = Frame {
+        x: 1712.5,
+        y: 120.0,
+        width: 1280.0,
+        height: 801.0,
+    };
+    let external = Frame {
+        x: 1512.0,
+        y: -200.0,
+        width: 2560.0,
+        height: 1415.0,
+    };
+    assert_eq!(restored_frame(earlier, &[LAPTOP, external], Some(LAPTOP)), earlier);
+}
+
+#[test]
+fn a_frame_whose_display_was_unplugged_returns_centred_on_the_current_one() {
+    let earlier = Frame {
+        x: 1712.0,
+        y: 120.0,
+        width: 2000.0,
+        height: 800.0,
+    };
+    assert_eq!(
+        restored_frame(earlier, &[LAPTOP], Some(LAPTOP)),
+        Frame {
+            x: 0.0,
+            y: 72.0,
+            width: 1512.0,
+            height: 800.0,
+        }
+    );
+    // A sliver on a display is not enough to drag the window back.
+    let sliver = Frame {
+        x: LAPTOP.width - 20.0,
+        ..earlier
+    };
+    assert_eq!(restored_frame(sliver, &[LAPTOP], Some(LAPTOP)).x, 0.0);
 }
 
 #[test]

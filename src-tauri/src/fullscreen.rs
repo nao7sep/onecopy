@@ -8,7 +8,8 @@
 //! both the Dock (20) and the menu bar (24), while OneCopy is active, and at
 //! the normal level while another app is, so it never floats over that app.
 //! A decorated window (Main, as Comparison's first surface) loses its title
-//! bar for the duration and gets its exact earlier frame back.
+//! bar for the duration and gets its exact earlier frame back, or, when that
+//! frame's display is gone, the same size on the display it is on.
 //!
 //! Windows: the focused surface uses tao's borderless fullscreen; Comparison's
 //! other displays stay monitor-sized windows. Every fullscreen window is
@@ -21,6 +22,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
 
 use tauri::{AppHandle, Emitter, Manager};
+
+use crate::window_placement::{restorable_overlap, NormalRectangle};
 
 /// A window frame in the platform's own window coordinates.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -76,34 +79,82 @@ pub enum Surface {
 /// as an ordinary one.
 #[derive(Default)]
 pub struct FullscreenState {
-    windows: BTreeMap<String, (Surface, Option<Frame>)>,
+    windows: BTreeMap<String, Entry>,
     active: Option<bool>,
+}
+
+struct Entry {
+    surface: Surface,
+    restore: Option<Frame>,
+    /// Asked to leave, with its frame not yet back. Restoring the title bar
+    /// resizes the window before its frame returns, and that size must not
+    /// become Main's saved placement.
+    leaving: bool,
 }
 
 impl FullscreenState {
     /// Records entry with the frame to restore; false when already fullscreen.
+    /// A window still leaving is fullscreen again at once and keeps the frame
+    /// it first entered from, since its frame is not back yet.
     pub fn enter(&mut self, label: &str, surface: Surface, restore: Option<Frame>) -> bool {
-        if self.windows.contains_key(label) {
-            return false;
+        match self.windows.get_mut(label) {
+            Some(entry) if entry.leaving => {
+                entry.surface = surface;
+                entry.leaving = false;
+                true
+            }
+            Some(_) => false,
+            None => {
+                self.windows.insert(
+                    label.to_owned(),
+                    Entry {
+                        surface,
+                        restore,
+                        leaving: false,
+                    },
+                );
+                true
+            }
         }
-        self.windows.insert(label.to_owned(), (surface, restore));
-        true
     }
 
-    /// Records exit; `None` when the window was not fullscreen, otherwise the
-    /// frame it entered from, if it had one to restore.
+    /// Starts leaving; `None` when the window is not fullscreen, otherwise
+    /// the frame it entered from, if it had one to restore. The window stays
+    /// registered until `left`, once its frame is back.
     pub fn leave(&mut self, label: &str) -> Option<Option<Frame>> {
-        self.windows.remove(label).map(|(_, restore)| restore)
+        match self.windows.get_mut(label) {
+            Some(entry) if !entry.leaving => {
+                entry.leaving = true;
+                Some(entry.restore)
+            }
+            _ => None,
+        }
     }
 
+    /// Ends leaving once the window's frame is back; a window entered again
+    /// meanwhile stays fullscreen.
+    pub fn left(&mut self, label: &str) {
+        if self.windows.get(label).is_some_and(|entry| entry.leaving) {
+            self.windows.remove(label);
+        }
+    }
+
+    pub fn forget(&mut self, label: &str) {
+        self.windows.remove(label);
+    }
+
+    /// Fullscreen or still leaving it.
     pub fn contains(&self, label: &str) -> bool {
         self.windows.contains_key(label)
     }
 
+    /// The windows that are fullscreen and follow activation; one leaving
+    /// already has its normal level on the way.
     pub fn windows(&self) -> Vec<(String, Surface)> {
         self.windows
             .iter()
-            .map(|(label, (surface, _))| (label.clone(), *surface))
+            .filter(|(_, entry)| !entry.leaving)
+            .map(|(label, entry)| (label.clone(), entry.surface))
             .collect()
     }
 
@@ -111,6 +162,36 @@ impl FullscreenState {
     /// when it differs from the last observation.
     pub fn observe_activation(&mut self, active: bool) -> Option<bool> {
         (self.active.replace(active) != Some(active)).then_some(active)
+    }
+}
+
+/// The frame a window returns to after fullscreen: exactly the one it entered
+/// from while that still shows usably on a display, otherwise that size,
+/// shrunk to fit, centred on `fallback`, the display it is on now. A display
+/// unplugged during Comparison must not leave Main off-screen.
+pub fn restored_frame(earlier: Frame, visible: &[Frame], fallback: Option<Frame>) -> Frame {
+    let rectangle = |frame: Frame| NormalRectangle {
+        x: frame.x.round() as i32,
+        y: frame.y.round() as i32,
+        width: frame.width.max(0.0).round() as u32,
+        height: frame.height.max(0.0).round() as u32,
+    };
+    if visible
+        .iter()
+        .any(|area| restorable_overlap(rectangle(earlier), rectangle(*area)))
+    {
+        return earlier;
+    }
+    let Some(area) = fallback else {
+        return earlier;
+    };
+    let width = earlier.width.min(area.width);
+    let height = earlier.height.min(area.height);
+    Frame {
+        x: area.x + (area.width - width) / 2.0,
+        y: area.y + (area.height - height) / 2.0,
+        width,
+        height,
     }
 }
 
@@ -175,13 +256,18 @@ pub fn set(app: &AppHandle, label: &str, enable: bool, surface: Surface) -> Resu
             state()?.leave(label).is_some()
         };
         if changed {
-            let raised = landing_level(enable, || application_active(app))? == Level::Raised;
-            match surface {
-                Surface::Focused => window.set_fullscreen(enable),
-                Surface::Spread => Ok(()),
+            let applied = landing_level(enable, || application_active(app)).and_then(|landing| {
+                match surface {
+                    Surface::Focused => window.set_fullscreen(enable),
+                    Surface::Spread => Ok(()),
+                }
+                .and_then(|()| window.set_always_on_top(landing == Level::Raised))
+                .map_err(|error| error.to_string())
+            });
+            if !enable {
+                state()?.left(label);
             }
-            .and_then(|()| window.set_always_on_top(raised))
-            .map_err(|error| error.to_string())?;
+            applied?;
         }
         note_focus_transition();
         Ok(())
@@ -190,7 +276,7 @@ pub fn set(app: &AppHandle, label: &str, enable: bool, surface: Surface) -> Resu
 
 pub fn window_destroyed(label: &str) {
     if let Ok(mut state) = STATE.lock() {
-        state.leave(label);
+        state.forget(label);
     }
     note_focus_transition();
 }
@@ -301,10 +387,14 @@ pub fn refuse_spaces_fullscreen(window: &tauri::Window) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use objc2_app_kit::{NSNormalWindowLevel, NSStatusWindowLevel, NSWindow, NSWindowLevel};
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{
+        NSNormalWindowLevel, NSScreen, NSStatusWindowLevel, NSWindow, NSWindowLevel,
+    };
+    use objc2_foundation::NSRect;
     use tauri::{Manager, WebviewWindow};
 
-    use super::{landing_level, state, Frame, Level, Surface};
+    use super::{landing_level, restored_frame, state, Frame, Level, Surface};
 
     fn with_native<T>(window: &WebviewWindow, f: impl FnOnce(&NSWindow) -> T) -> Result<T, String> {
         let raw = window.ns_window().map_err(|error| error.to_string())?;
@@ -325,13 +415,7 @@ mod macos {
     }
 
     fn frame_of(native: &NSWindow) -> Frame {
-        let frame = native.frame();
-        Frame {
-            x: frame.origin.x,
-            y: frame.origin.y,
-            width: frame.size.width,
-            height: frame.size.height,
-        }
+        frame_of_rect(native.frame())
     }
 
     fn set_frame(native: &NSWindow, target: Frame) {
@@ -341,6 +425,48 @@ mod macos {
         frame.size.width = target.width;
         frame.size.height = target.height;
         native.setFrame_display(frame, true);
+    }
+
+    fn frame_of_rect(rect: NSRect) -> Frame {
+        Frame {
+            x: rect.origin.x,
+            y: rect.origin.y,
+            width: rect.size.width,
+            height: rect.size.height,
+        }
+    }
+
+    /// Runs on the main queue once tao's style change has landed.
+    fn land(window: &WebviewWindow, enable: bool, restore: Option<Frame>) -> Result<(), String> {
+        let landing = landing_level(enable, || super::application_active(window.app_handle()))?;
+        let marker = MainThreadMarker::new()
+            .ok_or_else(|| "a fullscreen change must land on the main thread".to_string())?;
+        with_native(window, |native| {
+            if enable {
+                if let Some(screen) = native.screen() {
+                    set_frame(native, frame_of_rect(screen.frame()));
+                }
+            } else if let Some(earlier) = restore {
+                let visible: Vec<Frame> = NSScreen::screens(marker)
+                    .to_vec()
+                    .iter()
+                    .map(|screen| frame_of_rect(screen.visibleFrame()))
+                    .collect();
+                let fallback = native
+                    .screen()
+                    .map(|screen| frame_of_rect(screen.visibleFrame()));
+                set_frame(native, restored_frame(earlier, &visible, fallback));
+            }
+            native.setHasShadow(!enable);
+            native.setLevel(native_level(landing));
+        })?;
+        if restore.is_some() && window.is_focused().unwrap_or(false) {
+            window
+                .as_ref()
+                .set_focus()
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
     }
 
     pub fn set(window: &WebviewWindow, enable: bool, surface: Surface) -> Result<(), String> {
@@ -358,55 +484,36 @@ mod macos {
                 None => return Ok(()),
             }
         };
-        if restore.is_some() {
+        // A failed title-bar change still lands the frame and level, and
+        // still lets a leaving window leave the registry.
+        let decorations = if restore.is_some() {
             window
                 .set_decorations(!enable)
-                .map_err(|error| error.to_string())?;
-        }
+                .map_err(|error| error.to_string())
+        } else {
+            Ok(())
+        };
         // tao applies a style-mask change on the main queue later and then
         // makes its own view first responder, which leaves the web view
         // without keys until a click. Queued behind it on the same serial
-        // queue, the frame, level and web-view focus land after it.
+        // queue, the frame, level and web-view focus land after it, and only
+        // then does a leaving window leave the registry.
         let window = window.clone();
         dispatch2::DispatchQueue::main().exec_async(move || {
-            let landing = landing_level(enable, || {
-                super::application_active(window.app_handle())
-            });
-            let applied = landing.and_then(|landing| with_native(&window, |native| {
-                if enable {
-                    if let Some(screen) = native.screen() {
-                        let frame = screen.frame();
-                        set_frame(
-                            native,
-                            Frame {
-                                x: frame.origin.x,
-                                y: frame.origin.y,
-                                width: frame.size.width,
-                                height: frame.size.height,
-                            },
-                        );
-                    }
-                } else if let Some(frame) = restore {
-                    set_frame(native, frame);
+            let landed = land(&window, enable, restore);
+            if !enable {
+                if let Ok(mut state) = state() {
+                    state.left(&label);
                 }
-                native.setHasShadow(!enable);
-                native.setLevel(native_level(landing));
-            }));
-            let focused = applied.and_then(|()| {
-                if restore.is_some() && window.is_focused().unwrap_or(false) {
-                    window.as_ref().set_focus().map_err(|error| error.to_string())
-                } else {
-                    Ok(())
-                }
-            });
-            if let Err(error) = focused {
+            }
+            if let Err(error) = landed {
                 crate::logging::warn(
                     "fullscreen window change failed",
-                    serde_json::json!({ "window": window.label(), "error": { "message": error } }),
+                    serde_json::json!({ "window": label, "error": { "message": error } }),
                 );
             }
         });
         super::note_focus_transition();
-        Ok(())
+        decorations
     }
 }
