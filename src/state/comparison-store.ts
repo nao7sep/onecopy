@@ -357,8 +357,9 @@ async function showSpread(monitors: MonitorList): Promise<void> {
         y: monitor.position.y / scale,
         width: monitor.size.width / scale,
         height: monitor.size.height / scale,
+        // No alwaysOnTop: fullscreen::set owns the level, raised only while
+        // OneCopy is active.
         decorations: false,
-        alwaysOnTop: true,
         skipTaskbar: true,
         resizable: false,
         focus: false,

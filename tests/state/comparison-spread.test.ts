@@ -343,9 +343,10 @@ describe("opening Comparison across displays", () => {
       width: 1280,
       height: 720,
       decorations: false,
-      alwaysOnTop: true,
       focus: false,
     });
+    // Its level belongs to fullscreen::set, raised only while OneCopy is active.
+    expect(spread?.options).not.toHaveProperty("alwaysOnTop");
   });
 
   it("reuses a hidden secondary window", async () => {
