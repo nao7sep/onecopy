@@ -12,12 +12,8 @@
 ## Image presentation and inspection
 
 - Main, similar-image, video-scene, and inner drag-payload thumbnails contain the complete media without cropping and keep media, selection, focus, and drag treatment coherent within their bounds. Hold inspection does not apply to thumbnails because dragging owns that gesture.
-- Persistent Preview, Quick View, true fullscreen, and Comparison contain the complete image without cropping.
-- `Enlarge small images in Preview` and `Enlarge small images in Quick View` are independent settings and default on. Each enlarges a small image only to the largest contained size; turning it off caps ordinary presentation at the image's original dimensions.
-- Click-and-hold in every larger image presentation temporarily shows original pixels at 1:1 under the pointer. Dragging inspects other source regions. A smaller original remains centered at real size.
-- Release, pointer loss, blur, item change, placement change, presentation switch, or close ends inspection and restores the fitted image. The hold never also clicks, double-clicks, drags a file, or changes selection.
 - Failure to load original pixels leaves a working fitted image intact and reports the inspection failure without closing the owning view.
-- Ordinary click, double-click, and Enter have no fitted-image body action. Transient-viewer wheel behavior belongs to `viewing-sessions.md`.
+- Ordinary click, double-click, and Enter have no fitted-image body action. Fullscreen-view wheel behavior belongs to `viewing-sessions.md`.
 
 ## Shared playback ownership
 
@@ -25,8 +21,6 @@
 - `Video autoplay`, `Audio autoplay`, and app-wide `Sound` are independent settings, all default on, and are directly available in Main as well as Settings.
 - Autoplay applies only when a genuinely new media item is shown. Changing it does not alter current playback. Rapid navigation cancels automatic starts for abandoned items.
 - App-wide Sound applies immediately to every OneCopy-owned player without changing position or playing state. One remembered nonzero volume value is shared; Sound off silences playback without replacing it, and Sound on restores it.
-- Only one OneCopy surface owns playback at a time. Moving the same logical media item among Preview pane, Preview window, Quick View, and fullscreen preserves the latest position as closely as the media permits together with playing/paused state, without restart, duplicate sound, or autoplay reapplication.
-- Persistent Preview remains open but suspended while the transient viewer owns the same session. Returning transfers the latest state back when Preview remains open; otherwise the session ends.
 - Moving to another logical item ends the prior session. Returning later starts at the beginning and reapplies that medium's autoplay setting. OneCopy keeps no durable playback-position history per item.
 - Natural completion stops at the end without looping, restarting, selecting another library item, or playlist-style advance.
 - Before a file operation or external delegation, OneCopy pauses and releases its own media readers. A failed file operation restores the same surviving item's prior live position and playing state when possible and reports restoration failure otherwise; a successful operation follows ordinary selection and sequence recovery.
@@ -35,7 +29,7 @@
 
 - Main video tiles show a static uncropped poster, the duration when the container reports one, and truthful preparation or failure state. They never animate, play, or produce sound on hover, selection, or navigation.
 - Preview and transient video presentations contain the complete picture without cropping and provide play/pause, seek, elapsed/duration, volume, app-wide Sound, and a usable poster when playback is unavailable.
-- Ordinary click on the video picture and Enter when the player is visible toggle play/pause. Actual controls retain their accessible actions. Space remains a viewing-session transition, not a playback command.
+- Ordinary click on the video picture and Enter when the player is visible toggle play/pause. Actual controls retain their accessible actions.
 - Double-click on the video picture has no special action.
 - Click-and-hold pauses and shows the current frame at original video-pixel size for drag inspection, then resumes only if it had been playing. Controls, transcript, scene strip, and scrollbars never start inspection.
 - Activating a scene snapshot seeks to its timestamp and begins playback. There is no separate autoplay-after-snapshot setting.
@@ -75,7 +69,7 @@
 - Pending, queued, running, paused, disabled, failed, and replacement states are explicit. Incomplete generated words are never presented as a completed transcript.
 - When automatic transcription for the medium is enabled, pending media shows its queued state without a redundant primary Transcribe action; running media shows progress and access to Background Work. When automatic transcription is off, `Transcribe this file` is available. Failure offers Retry and access to Issues. Completed content offers Re-transcribe only as a secondary action. Queueing and replacement publication follow `library-maintenance.md`.
 - Activating a timestamp seeks the current OneCopy playback session and begins playback. Ordinary transcript text selection never seeks. A transcript creates no second player.
-- A focused transcript uses Up/Down and Page Up/Page Down for scrolling. Enter on a focused timestamp seeks and plays. Space, `F`, Escape, and read-only Delete/Backspace retain the owning view's meanings unless a genuinely editable control owns the key.
+- A focused transcript uses Up/Down and Page Up/Page Down for scrolling. Enter on a focused timestamp seeks and plays. Space, Escape, and read-only Delete/Backspace retain the owning view's meanings unless a genuinely editable control owns the key.
 - Re-transcription leaves the prior completed transcript visible until the replacement succeeds. Failure or cancellation preserves the prior result and reports the new attempt.
 - OneCopy provides neither transcript-only search nor library-wide search. Completed transcript text supports inspection and copying only; it does not turn the inbox-zero organizing queue into a retained searchable photo library.
 

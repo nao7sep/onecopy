@@ -30,8 +30,6 @@ OneCopy uses three distinct interruption levels:
 - A persistent notification remains until dismissed but does not steal focus or block unrelated work.
 - A modal is reserved for a required decision or a condition under which OneCopy cannot continue safely without acknowledgement.
 
-Notifications belong to the main application frame rather than a transient viewer. Closing Quick View or switching between Quick View and fullscreen does not dismiss or lose a persistent notification. Notifications do not intercept the viewer's navigation or exit commands.
-
 An expected unsupported format or unavailable richer preview remains truthful inside the affected content surface and does not become an Issue merely because OneCopy has no suitable decoder. Failed requested actions and unresolved conditions share the same Issues inbox. Warning and error notifications retain their corresponding Issue even after the live notice is dismissed; informational notices do not create Issues. Reporting the same occurrence through both an Issue and a notice does not count it twice.
 
 A broad operation such as a source check may present one summary notification while retaining the individual affected paths and explanations in Issues. Notification presentation and history remain independent of Issue dismissal.

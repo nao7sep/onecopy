@@ -10,7 +10,7 @@
 
 ## Surfaces
 
-- Every window OneCopy draws speaks the interface language, including its title: Main, Preview, Viewer, Comparison and the Comparison image windows.
+- Every window OneCopy draws speaks the interface language, including its title: Main, Preview, the fullscreen view and Comparison.
 - The native menu speaks it. The items macOS contributes itself, such as Services, Emoji & Symbols and Start Dictation, follow at the next launch.
 - The launch-failure dialog uses the language resolved at launch: the saved choice when it can be read, otherwise the computer's language.
 - The first text drawn in a window is already in the interface language; no window shows English first.

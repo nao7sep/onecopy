@@ -376,8 +376,8 @@ fn capture_with_mode(
 /// maximizing, resizing, moving, then re-maximizing before close silently
 /// discards the resize: only `Maximized` was observed at close, and that
 /// closing state keeps whatever normal rectangle happened to be recorded
-/// before (viewing-sessions.md D8). Fullscreen, minimized, maximized, and
-/// app-owned-presentation frames are never normal bounds and are left alone.
+/// before. Fullscreen, minimized, maximized, and OneCopy's own fullscreen
+/// frames are never normal bounds and are left alone.
 fn capture_normal_bounds_live(window: &Window<Wry>, state: &PlacementState) {
     let sample = (|| -> tauri::Result<Option<NormalRectangle>> {
         if window.is_minimized()?

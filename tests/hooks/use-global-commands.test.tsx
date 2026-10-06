@@ -158,8 +158,8 @@ describe("global destructive commands", () => {
     );
   });
 
-  // viewing-sessions.md D10: "persistent Preview" trashes Main's complete
-  // selection from either placement, not only the separate window.
+  // The preview trashes Main's complete selection from either placement,
+  // not only the preview window.
   it("trashes Main's selection from a Delete pressed inside the in-pane Preview", () => {
     useItemsStore.setState({ selectedItem: "image-hash", selectedKeys: new Set() });
     const view = render(<Harness />);

@@ -405,7 +405,7 @@ describe("shared video presentation", () => {
     );
   });
 
-  // viewing-sessions.md D6: text scroll is shared session state, like
+  // Text scroll is shared session state, like
   // encoding and wrap, so a placement switch (pane <-> separate window,
   // modeled here as an unmount/remount of the same live session) keeps the
   // reading position instead of restarting at the top.

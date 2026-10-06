@@ -2,11 +2,11 @@
 
 ## Scope
 
-Main is the inbox-zero workspace for choosing a section, maintaining a visible selection, resuming a work position, inspecting the anchor through Details and Preview, and invoking review or file-operation actions. OneCopy is a photo-organizing work queue rather than a retained photo library: reaching no remaining items is the intended successful state, and Main provides no library-wide search. Main owns the displayed order, selection set, range origin, and one anchor. Viewer sessions, Comparison decisions, background discovery, and filesystem effects have separate contracts.
+Main is the inbox-zero workspace for choosing a section, maintaining a visible selection, resuming a work position, inspecting the anchor through Details and Preview, and invoking review or file-operation actions. OneCopy is a photo-organizing work queue rather than a retained photo library: reaching no remaining items is the intended successful state, and Main provides no library-wide search. Main owns the displayed order, selection set, range origin, and one anchor. The fullscreen view, Comparison decisions, background discovery, and filesystem effects have separate contracts.
 
 ## Selection and anchor
 
-The selection is the set a Main operation targets. The anchor is the last deliberately selected or navigated item, the subject followed by Details and persistent Preview, the starting item supplied to a viewer, and the resumable work position.
+The selection is the set a Main operation targets. The anchor is the last deliberately selected or navigated item, the subject followed by Details and persistent Preview, the starting item supplied to the fullscreen view, and the resumable work position.
 
 Ordinary click exclusively selects an item. Clicking the sole selected item leaves it selected. Cmd/Ctrl-click toggles one item without disturbing the others. Shift-click and Shift-modified navigation form or adjust a continuous displayed range from a stable range origin on top of the selection that existed when that range began. Deliberate Cmd/Ctrl selections outside the changing range survive as the range grows, shrinks, or reverses. Navigation without Shift exclusively selects its destination. Clicking empty item-area space clears both selection and anchor.
 
@@ -17,8 +17,6 @@ Dragging an unselected item exclusively selects and drags it. Crossing the drag 
 The anchor is always a selected item when a selection exists. Details and persistent Preview show the anchor rather than choosing another member of a multi-selection. A deliberate selection or navigation change updates the anchor and keeps it visible.
 
 ## Section entry and restoration
-
-Main remembers its last normal position and size as one rectangle across a clean close and relaunch. It replaces both only when closing in normal mode and retains both when maximized, minimized, or fullscreen. Mac always reopens Main in normal mode. Windows also remembers maximized state, establishes the saved rectangle and maximized state before Main becomes visible, and returns to that rectangle when restored. A new Main window, missing placement state, or placement that cannot be restored safely uses its useful designed initial size and the operating system's normal placement. Main keeps its content-derived minimum and never restores visibility, minimized state, or native fullscreen state.
 
 The first visit to a nonempty section selects its first displayed item. Returning to a section during the same app run restores that section's remembered anchor as an exclusive selection; an earlier multi-selection does not remain active while the user works elsewhere.
 
@@ -47,10 +45,6 @@ The Preview pane does not become a competing library-navigation owner. Persisten
 Keyboard focus is visibly distinct from hover and selection. Focus and selection treatment stay inside each item or row so neighboring content cannot clip them.
 
 ## Shared Main commands
-
-Space requests Quick View for the current anchor and selection. `F` requests the same transient viewing session in true fullscreen. With no selection, OneCopy stays in Main and explains that an item must be selected.
-
-Double-click exclusively selects the clicked item and then requests Quick View. The resulting sequence follows the ordinary one-selection entry rule in `viewing-sessions.md`; double-click does not open Comparison, fullscreen, or an external application.
 
 Delete and Backspace request recoverable deletion of the complete Main selection. More than one selected item always receives exact-count review; the configured direct-Trash preference applies only to one selected item. Shift+Delete requests permanent deletion of the complete Main selection through its confirmation path. Holding Enter, Delete, or Backspace never repeats an entry or file action against a newly opened or recovered context.
 

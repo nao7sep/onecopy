@@ -428,12 +428,11 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
                 the preview with a selection shows that image at once. */}
             <div
               style={{ width: paneWidths.preview }}
-              // Not a second item-navigation context (viewing-sessions.md),
-              // but Delete/Backspace still reach Main's complete-selection
-              // Trash from here — "persistent Preview" is pane-or-window, and
-              // the spec's deletion-scope line does not single out the
-              // separate window (D10). Only this one command reads the
-              // marker; see useGlobalCommands.
+              // Not a second item-navigation context, but Delete/Backspace
+              // still reach Main's complete-selection Trash from here: the
+              // pane and the preview window are one preview in two places,
+              // so Delete means the same in both. Only this one command reads
+              // the marker; see useGlobalCommands.
               data-preview-pane
               className="relative shrink-0 overflow-hidden bg-surface"
             >

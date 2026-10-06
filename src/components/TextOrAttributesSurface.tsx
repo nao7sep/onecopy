@@ -155,8 +155,7 @@ export default function TextOrAttributesSurface({
   // same item can carry both a transcript (audio/video) and, through the
   // shared session, an unrelated text body. Persisted in the same shared
   // model as encoding/wrap so a placement switch (pane ↔ separate window)
-  // keeps the reading position instead of restarting at the top
-  // (viewing-sessions.md D6).
+  // keeps the reading position instead of restarting at the top.
   const textViewKey = `text:${key}`;
   const textScrollTop = useContentSessionStore(
     (state) => state.transcriptViews[textViewKey]?.scrollTop,

@@ -20,7 +20,7 @@ A similar-image group has no size limit. Comparison divides any group into pages
 
 Comparison uses as many eligible displays as needed to reach the current page size and leaves unnecessary displays uncovered. There is no four-display limit. The dominant orientation of the current page selects the image orientation; a tie uses landscape. Each display then receives its own capacity and grid from that image orientation and the display's shape: matching landscape/portrait orientations use four equal slots in a 2x2 grid, a portrait display showing landscape images uses three equal slots from top to bottom, and a landscape display showing portrait images uses three equal slots from left to right. A participating display keeps that capacity grid when its final slice is only partly occupied, so no image becomes larger merely because it is last in cross-display order.
 
-Every display participating in Comparison is a temporary display-filling presentation. Main fills its hosting display for the Comparison session, and each auxiliary Comparison window fills its assigned display. Comparison owns no durable window placement. When OneCopy hides the operating-system menu bar, Dock, or taskbar, no participating surface retains the former system-chrome strip as unused space. Exiting or failing Comparison restores Main's exact prior normal geometry; Comparison geometry never becomes Main's durable placement state.
+Every display participating in Comparison is a temporary display-filling presentation. Main fills its hosting display for the Comparison session, and each auxiliary Comparison window fills its assigned display. Comparison owns no durable window placement. Exiting or failing Comparison restores Main's exact prior normal geometry; Comparison geometry never becomes Main's durable placement state.
 
 Only the current page's viewing content is prepared ahead. Original pixels are obtained on demand for inspection. If a display window becomes unavailable, Comparison preserves the session and keep marks, recomputes capacity from the surviving displays, and moves excess images to later pages.
 
@@ -42,19 +42,13 @@ Comparison opens on the entry anchor's page without activating any card or creat
 
 Ordinary click activates a card without changing its keep mark. Each card has a visible Keep control that toggles only that card's mark and makes it active. Cmd/Ctrl-click may perform the same explicit toggle. Shift-click adjusts a continuous marked range from a stable origin in cross-display order on top of the keep marks that existed when that range began, so deliberate marks outside the range survive as it grows, shrinks, or reverses.
 
-Arrow keys move the active card spatially through the grids and across display edges; with no active card, the first Arrow activates the first visible image. Without Shift they do not change keep marks; with Shift they extend the marked range. Home and End activate the first or last image on the current page, with Shift extending marks to that bound. Space opens the active card in a separate image window and never toggles its keep mark; with no active card it does nothing. Cmd/Ctrl+A marks the current page only and never marks hidden later pages.
-
 Each undecided page retains its keep marks while the user visits another undecided page. Active and marked states are visually distinct on the display containing them.
 
 ## Direct image keys
 
 The first 36 visible images receive bare direct keys in stable order: `0-9`, then `A-Z`. Each assigned key is visibly printed on its card and is reassigned when the page changes. Pressing an assigned key explicitly toggles that image's keep mark and makes it active.
 
-Auto-repeat does not repeat a direct-key toggle or Space inspection transition. Cmd/Ctrl/Alt-modified keys retain their normal application or operating-system meaning, and shifted symbols do not activate image keys. Direct image keys are inactive while a modal, editable field, menu, or interactive control owns keyboard input.
-
 The thirty-seventh and later visible images have no direct key and remain fully selectable through pointer and grid navigation. Comparison has no multi-character key system, modifier alphabet, alternate shortcut mode, or key subpages.
-
-When `F` is assigned to a visible card, bare `F` is that card's direct key and does not enter fullscreen. When `F` is unassigned, it does nothing in Comparison. Other assigned letters similarly keep their visible Comparison meaning.
 
 ## File actions on the selection
 
@@ -62,9 +56,7 @@ Delete and Backspace request recoverable deletion of the keep-marked images them
 
 Open in Default App acts on the active logical image through its deterministic representative copy. Reveal in File Manager continues to let the user choose a physical copy.
 
-Space opens a separate image window containing the complete active image at the larger available size. Hold inspection remains the distinct original-pixel gesture. Space, Escape, or Close in the image window returns command focus to the invoking Comparison display without changing its page, active card, or keep marks. This image window neither starts Main's frozen viewer sequence nor creates another library selection. Closing Comparison or removing the inspected image closes that window too. Escape or Close in Comparison itself leaves without applying its keep marks as a file decision.
-
-Comparison and its image window own their commands while active. Hidden Main controls never respond to those keys, even if stale DOM focus remains behind. Entry focuses the Comparison item area without activating a card; exit restores Main's item-area focus after its anchor and visibility have recovered. Real controls and topmost dialogs retain their own input, and composition keystrokes never invoke workspace commands.
+Escape or Close in Comparison leaves without applying its keep marks as a file decision.
 
 ## Page decision
 
@@ -102,4 +94,4 @@ If OneCopy cannot durably record the promised failure explanation, it stops the 
 
 Failure of an auxiliary display preserves the session and repaginates on surviving displays. Failure of the Main comparison renderer preserves files and recorded completed work, closes auxiliary presentation safely, and provides a visible reload or recovery path.
 
-Persistent Preview is hidden while Comparison is open. On exit, OneCopy restores its prior pane or window placement and lets it follow Main's recovered anchor. Exit during an active mutation stops admission of new work and follows the normal mutation-quiescence contract.
+Exit during an active mutation stops admission of new work and follows the normal mutation-quiescence contract.

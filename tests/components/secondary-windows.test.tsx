@@ -172,11 +172,11 @@ describe("the preview window", () => {
   });
 
   it("leaves a focused native audio control's own keys alone, but still forwards Delete from a focused button", async () => {
-    // viewing-sessions.md D4/D5: only a genuinely editable control consumes
-    // Delete/Backspace, while every other forwarded key (arrows, paging,
-    // Enter) also stands down for a focused native control such as
-    // <audio controls> — the same predicate the transient viewer already
-    // uses, reused here instead of a second, incomplete exclusion list.
+    // Only a genuinely editable control consumes Delete/Backspace, while
+    // every other forwarded key (arrows, paging, Enter) also stands down for
+    // a focused native control such as <audio controls> — the same predicate
+    // the fullscreen view uses, reused here instead of a second, incomplete
+    // exclusion list.
     render(<PreviewWindow />);
     await act(async () => {});
     const audio = document.createElement("audio");
@@ -211,8 +211,7 @@ describe("the preview window", () => {
   });
 
   it("leaves document-scroll keys to a focused text body instead of forwarding them to Main", async () => {
-    // content-presentation.md / viewing-sessions.md D4: PageDown on a
-    // focused text body scrolls the document locally; it must not change
+    // PageDown on a focused text body scrolls the document locally; it must not change
     // Main's selection or file the way it does everywhere else.
     render(<PreviewWindow />);
     await act(async () => {});

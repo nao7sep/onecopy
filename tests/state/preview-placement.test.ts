@@ -119,8 +119,7 @@ describe("activating the preview", () => {
   });
 
   it("opens immediately with a truthful no-selection state when nothing is selected", async () => {
-    // viewing-sessions.md D2: opening Preview without an anchor still opens
-    // it, showing its own "select an item" state at once instead of merely
+    // Opening Preview without an anchor still opens it, showing its own "select an item" state at once instead of merely
     // arming follow until the next selection.
     await togglePreview();
     const { follow, placement, current } = usePreviewStore.getState();
