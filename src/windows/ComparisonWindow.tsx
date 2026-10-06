@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n/I18nContext";
 import { emit } from "@tauri-apps/api/event";
-import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
 import { isComposingEvent } from "../hooks/useComposing";
 import { useComparisonLayout } from "../hooks/useComparisonLayout";
 import { reportWindowCall } from "../repositories";
@@ -32,9 +31,6 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
 
   useEffect(() => {
     itemArea.current?.focus();
-    const stopFocus = listenThenAnnounce<{ label: string }>("comparison://focus", "comparison://ready", ({ label }) => {
-      if (label === getCurrentWindow().label) itemArea.current?.focus();
-    });
     // Announce only once this window can hear the reply (see handshake.ts).
     const unlisten = listenThenAnnounce<ComparisonBroadcast>(
       "comparison://state",
@@ -60,23 +56,18 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
       if (!comparisonKeyIsRoutable(event, visibleCount)) return;
       event.preventDefault();
       event.stopPropagation();
-      const message = {
+      void emit("comparison://key", {
         key: event.key,
         repeat: event.repeat,
         shiftKey: event.shiftKey,
         metaKey: event.metaKey,
         ctrlKey: event.ctrlKey,
         altKey: event.altKey,
-        returnWindow: getCurrentWindow().label,
-      };
-      void (event.key === " " ? currentMonitor() : Promise.resolve(null))
-        .then((monitor) => emit("comparison://key", { ...message, monitor: monitor ?? undefined }))
-        .catch(reportWindowCall("comparison key forwarding"));
+      }).catch(reportWindowCall("comparison key forwarding"));
     };
     window.addEventListener("keydown", onKeyDown);
     return () => {
       unlisten();
-      stopFocus();
       window.removeEventListener("keydown", onKeyDown);
     };
   }, []);

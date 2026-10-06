@@ -12,7 +12,6 @@ import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import { render, cleanup, act } from "@testing-library/react";
 import PreviewWindow from "../../src/windows/PreviewWindow";
 import ComparisonWindow from "../../src/windows/ComparisonWindow";
-import ComparisonImageWindow from "../../src/windows/ComparisonImageWindow";
 import type { ComparisonBroadcast } from "../../src/state/comparison-store";
 import { useWindowPreferencesStore } from "../../src/state/window-preferences-store";
 import {
@@ -50,31 +49,6 @@ beforeEach(() => {
 });
 
 afterEach(() => cleanup());
-
-describe("the Comparison image window", () => {
-  it("shows the whole picked image and routes Space/Escape only back to Comparison", async () => {
-    const view = render(<ComparisonImageWindow />);
-    await act(async () => {});
-    await act(async () => fireEvent("comparison-image://state", {
-      token: 7, sessionId: 1, returnWindow: "comparison-1",
-      member: { hash: "image-hash", fileName: "picked.jpg", width: 4000, height: 3000 },
-    }));
-    expect(view.getByAltText("picked.jpg")).toBeTruthy();
-    const press = (key: string, init: KeyboardEventInit = {}) => window.dispatchEvent(new KeyboardEvent("keydown", { key, cancelable: true, ...init }));
-    press(" ", { repeat: true });
-    press(" ", { isComposing: true });
-    press("Escape", { ctrlKey: true });
-    press("1");
-    expect(emitCalls.some((call) => call.event.endsWith("://close"))).toBe(false);
-    press(" ");
-    press("Escape");
-    expect(emitCalls.filter((call) => call.event === "comparison-image://close")).toEqual([
-      { event: "comparison-image://close", payload: { token: 7 } },
-      { event: "comparison-image://close", payload: { token: 7 } },
-    ]);
-    expect(emitCalls.some((call) => ["viewer://key", "comparison://key"].includes(call.event))).toBe(false);
-  });
-});
 
 describe("the preview window", () => {
   it("mounts without throwing and shows its placeholder", () => {
@@ -140,12 +114,15 @@ describe("the preview window", () => {
     expect(view.getByRole("button", { name: "Transcribe this file" })).toBeTruthy();
   });
 
-  it("forwards navigation, keeps Space inert, and requests live Preview fullscreen with F", async () => {
+  // Space does nothing in the preview window: the fullscreen view opens only
+  // from Main's list. F does nothing either; the window has no fullscreen.
+  it("forwards navigation and keeps Space and F inert", async () => {
     render(<PreviewWindow />);
     await act(async () => {});
 
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight" }));
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: " " }));
+    const space = new KeyboardEvent("keydown", { key: " ", cancelable: true });
+    window.dispatchEvent(space);
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "f" }));
     await act(async () => {});
 
@@ -161,28 +138,25 @@ describe("the preview window", () => {
         altKey: false,
       },
     });
-    expect(
-      emitCalls.some(
-        (call) =>
-          call.event === "preview://key" &&
-          (call.payload as { key?: string }).key === " ",
-      ),
-    ).toBe(false);
-    expect(emitCalls).toContainEqual({ event: "preview://fullscreen", payload: "toggle" });
+    expect(space.defaultPrevented).toBe(true);
+    expect(emitCalls.filter((call) => call.event !== "preview://ready").map((call) => call.event))
+      .toEqual(["preview://key"]);
   });
 
-  it("uses Escape to leave fullscreen before closing Preview and ignores repeated F", async () => {
+  it("closes on Escape, once for a held key", async () => {
     render(<PreviewWindow />);
     await act(async () => {});
-    await act(async () => fireEvent("preview://fullscreen-state", { fullscreen: true, error: null }));
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "f", repeat: true }));
-    expect(emitCalls.filter((call) => call.event === "preview://fullscreen"))
-      .toEqual([{ event: "preview://fullscreen", payload: "exit" }]);
-    expect(close).not.toHaveBeenCalled();
-    await act(async () => fireEvent("preview://fullscreen-state", { fullscreen: false, error: null }));
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", repeat: true }));
     expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("shows a failure Main publishes for the preview", async () => {
+    const view = render(<PreviewWindow />);
+    await act(async () => {});
+    await act(async () => fireEvent("preview://show", { hash: "h", pathId: null, detail: null }));
+    await act(async () => fireEvent("preview://error", { key: "preview.updateFailed" }));
+    expect(view.container.textContent).toContain("Couldn’t");
   });
 
   it("leaves a focused native audio control's own keys alone, but still forwards Delete from a focused button", async () => {

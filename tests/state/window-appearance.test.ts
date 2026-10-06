@@ -163,7 +163,7 @@ it("titles an auxiliary window from the current language, not fixed English (D-L
   await vi.waitFor(() => expect(setTitle).toHaveBeenCalledWith("OneCopy プレビュー"));
 });
 
-it("leaves the identify flash and comparison-image titles alone (they carry no app sentence)", async () => {
+it("leaves the identify flash title alone (it carries no app sentence)", async () => {
   window.history.pushState(null, "", "/?view=identify&slice=1");
   mockCommands({ appearance_preferences: () => ({ uiFontFamily: null }) });
   const { installWindowAppearance } = await import("../../src/workflows/window-appearance");

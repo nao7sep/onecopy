@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useI18n } from "../i18n/I18nContext";
 import { listenThenAnnounce } from "../utils/handshake";
 import { emit } from "@tauri-apps/api/event";
@@ -8,7 +8,7 @@ import { isEditableTarget } from "../utils/shortcuts";
 import { hasOpenModal } from "../utils/modalStack";
 import { controlOwnsForwardableKey } from "../utils/viewerKeys";
 import PreviewSurface from "../components/PreviewSurface";
-import type { PreviewPresentation, PreviewShowMessage } from "../state/preview-store";
+import type { PreviewShowMessage } from "../state/preview-store";
 import { message, type Message } from "../i18n/translate";
 import { log, toErrorFields } from "../repositories";
 import { recordActionFailure } from "../state/notifications-store";
@@ -32,9 +32,7 @@ export default function PreviewWindow() {
   const [shown, setShown] = useState<PreviewShowMessage | null>(null);
   const [featuresReady, setFeaturesReady] = useState(false);
   const [actionError, setActionError] = useState<Message | null>(null);
-  const [fullscreen, setFullscreen] = useState(false);
-  const [presentationError, setPresentationError] = useState<Message | null>(null);
-  const fullscreenRef = useRef(false);
+  const [publishedError, setPublishedError] = useState<Message | null>(null);
 
   const reportActionError = (kind: string, failure: Message, error: unknown) => {
     log.error("preview window action failed", { kind, ...toErrorFields(error) });
@@ -62,47 +60,22 @@ export default function PreviewWindow() {
       "preview://ready",
       setShown,
     );
-    const stopPresentation = listenThenAnnounce<PreviewPresentation>(
-      "preview://fullscreen-state", "preview://ready", (value) => {
-        fullscreenRef.current = value.fullscreen;
-        setFullscreen(value.fullscreen);
-        setPresentationError(value.error);
-      },
+    const stopError = listenThenAnnounce<Message | null>(
+      "preview://error", "preview://ready", setPublishedError,
     );
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || isComposingEvent(event) || hasOpenModal() || isEditableTarget(event.target)) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       if (event.key === " ") {
-        // Persistent Preview never reinterprets Space as playback or as a
-        // second transient-viewer toggle.
+        // Space does nothing here. The fullscreen view opens only from Main's
+        // list, which holds the selection it shows; the preview window only
+        // follows that selection, and Space is never its playback key.
         event.preventDefault();
         event.stopPropagation();
-      } else if (event.key.toLowerCase() === "f") {
-        event.preventDefault();
-        event.stopPropagation();
-        if (event.repeat) return;
-        void emit("preview://fullscreen", "toggle")
-          .then(() => setActionError(null))
-          .catch((error) =>
-            reportActionError(
-              "preview-fullscreen-failed",
-              message("preview.fullScreenFromPreviewFailed"),
-              error,
-            ),
-          );
       } else if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
         if (event.repeat) return;
-        if (fullscreenRef.current) {
-          void emit("preview://fullscreen", "exit").catch((error) =>
-            reportActionError(
-              "preview-fullscreen-failed",
-              message("preview.leaveFullScreenFailed"),
-              error,
-            ));
-          return;
-        }
         void getCurrentWindow()
           .close()
           .catch((error) =>
@@ -161,7 +134,7 @@ export default function PreviewWindow() {
     return () => {
       active = false;
       unlisten();
-      stopPresentation();
+      stopError();
       window.removeEventListener("keydown", onKeyDown, true);
     };
   }, []);
@@ -176,7 +149,7 @@ export default function PreviewWindow() {
     );
   }
 
-  const failure = actionError ?? presentationError;
+  const failure = actionError ?? publishedError;
 
   return (
     <div className="flex h-screen flex-col bg-background">
@@ -217,20 +190,7 @@ export default function PreviewWindow() {
             </span>
           ) : null}
         </span>
-        <div className="flex items-center gap-3">
-          <span>
-            {fullscreen ? t("preview.hintFullscreen") : t("preview.hint")}
-          </span>
-          <button className="rounded border border-border px-2 py-0.5 text-ink hover:bg-surface-muted"
-            onClick={() => void emit("preview://fullscreen", "toggle").catch((error) =>
-              reportActionError(
-                "preview-fullscreen-failed",
-                message("preview.fullScreenChangeFailed"),
-                error,
-              ))}>
-            {fullscreen ? t("preview.leaveFullScreen") : t("preview.fullScreen")}
-          </button>
-        </div>
+        <span>{t("preview.hint")}</span>
       </footer>
     </div>
   );

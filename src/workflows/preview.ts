@@ -50,19 +50,14 @@ export function installPreviewPersistence(): void {
 /** The separate Preview is a follower, so it forwards library commands to
  * the Main grid instead of maintaining a second navigation implementation. */
 const installCommands = createEventInstaller(async (listeners) => {
-  const publishPresentation = () => {
-    const { fullscreen, error } = usePreviewStore.getState();
-    void emit("preview://fullscreen-state", { fullscreen, error })
-      .catch(reportWindowCall("preview fullscreen state"));
+  const publishError = () => {
+    void emit("preview://error", usePreviewStore.getState().error)
+      .catch(reportWindowCall("preview error publication"));
   };
-  await listeners.listen("preview://ready", publishPresentation);
+  await listeners.listen("preview://ready", publishError);
   await listeners.listen("preview://dismiss-error", () => usePreviewStore.getState().clearError());
-  await listeners.listen<"toggle" | "exit">("preview://fullscreen", (event) => {
-    const preview = usePreviewStore.getState();
-    void preview.setFullscreen(event.payload === "toggle" ? !preview.fullscreen : false);
-  });
   listeners.retain(usePreviewStore.subscribe((state, previous) => {
-    if (state.fullscreen !== previous.fullscreen || state.error !== previous.error) publishPresentation();
+    if (state.error !== previous.error) publishError();
   }));
   await listeners.listen<PreviewKeyMessage>("preview://key", async (event) => {
     const message = event.payload;

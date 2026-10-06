@@ -9,13 +9,7 @@ import {
   useComparisonStore,
   type GroupMember,
 } from "../../src/state/comparison-store";
-import { openComparisonImage } from "../../src/workflows/comparison-image";
-import { invokeCalls, mockCommand } from "../mocks/tauri";
-
-vi.mock("../../src/workflows/comparison-image", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../../src/workflows/comparison-image")>(),
-  openComparisonImage: vi.fn(async () => {}),
-}));
+import { createdWindows, invokeCalls, mockCommand } from "../mocks/tauri";
 
 function member(index: number): GroupMember {
   return {
@@ -108,10 +102,18 @@ describe("comparison keyboard selection", () => {
     expect(useComparisonStore.getState().anchor).toBeNull();
   });
 
-  it("uses Space for the image window without toggling a keep mark", () => {
+  // Nothing enlarges an image from Comparison: Space is taken so no focused
+  // control acts on it, and it changes neither the marks nor any window.
+  it("takes Space and does nothing with it", () => {
+    const before = useComparisonStore.getState();
+    const windows = createdWindows.length;
+    const commands = invokeCalls.length;
+    expect(comparisonKeyIsRoutable({ key: " " })).toBe(true);
     expect(handleComparisonKey({ key: " " })).toBe(true);
-    expect(openComparisonImage).toHaveBeenCalled();
     expect(useComparisonStore.getState().selected).toEqual(new Set());
+    expect(useComparisonStore.getState().anchor).toBe(before.anchor);
+    expect(createdWindows).toHaveLength(windows);
+    expect(invokeCalls).toHaveLength(commands);
   });
 
   it("starts Arrow navigation from the first card without inventing keep intent", () => {

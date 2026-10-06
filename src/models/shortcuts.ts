@@ -58,8 +58,7 @@ export function shortcutColumns(): ShortcutGroup[][] {
         ["Shift+Delete/Backspace", "shortcuts.fullscreenViewReviewPermanentDisplayed"],
       ]),
       group("shortcuts.groupPreviewWindow", "shortcuts.contextPreviewWindow", [
-        ["F", "shortcuts.previewToggleFullscreen"],
-        ["Escape", "shortcuts.previewLeaveOrClose"],
+        ["Escape", "shortcuts.previewClose"],
         ["Arrows/Home/End/PageUp/PageDown", "shortcuts.previewNavigateMain"],
         ["Delete/Backspace", "shortcuts.previewTrashMainSelection"],
         ["Shift+Delete/Backspace", "shortcuts.previewReviewPermanentMainSelection"],
@@ -83,7 +82,6 @@ export function shortcutColumns(): ShortcutGroup[][] {
         ["Click", "shortcuts.comparisonPickWithoutKeep"],
         [mod + "+Click", "shortcuts.comparisonToggleKeepMark"],
         ["Shift+Click", "shortcuts.comparisonExtendMarkedRange"],
-        ["Space", "shortcuts.comparisonOpenPickedLarger"],
         ["Arrows", "shortcuts.comparisonMovePicked"],
         ["Home/End", "shortcuts.comparisonFirstLastOnPage"],
         ["Shift+Arrows/Home/End", "shortcuts.comparisonExtendMarkedRange"],

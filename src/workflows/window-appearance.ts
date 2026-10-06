@@ -12,10 +12,8 @@ import { useWindowPreferencesStore } from "../state/window-preferences-store";
 
 // Every window OneCopy draws speaks the interface language in its title
 // (interface-language.md L6). Main's title never carries a suffix; the
-// others own a translated catalogue key. Identify flashes and the
-// per-image Comparison window are excluded: the first is a fixed brand-only
-// flash and the second's title is the user's own file name, which stays as
-// recorded like any other user-supplied text.
+// others own a translated catalogue key. Identify flashes are excluded: they
+// are a fixed brand-only flash.
 const WINDOW_TITLE_KEYS: Partial<Record<string, MessageKey>> = {
   preview: "window.titlePreview",
   viewer: "window.titleViewer",

@@ -28,8 +28,6 @@ import { useSectionsStore } from "../state/sections-store";
 import { presentEscapedFailure, recordInterfaceFailure } from "../utils/failureSurface";
 import { createEventInstaller } from "../utils/eventInstallation";
 import { hasOpenModal } from "../utils/modalStack";
-import { focusComparison, installComparisonImageEvents, openComparisonImage } from "./comparison-image";
-import type { MonitorRect } from "../utils/screens";
 import {
   latestActivityOperationId,
   newActivityOperationId,
@@ -63,6 +61,11 @@ async function refreshLibrary(): Promise<void> {
 async function restoreMainFocus(): Promise<void> {
   await getCurrentWindow().setFocus();
   document.getElementById("main-item-area")?.focus();
+}
+
+async function focusComparison(): Promise<void> {
+  await getCurrentWindow().setFocus();
+  document.getElementById("comparison-item-area")?.focus();
 }
 
 async function applyResult(
@@ -344,8 +347,6 @@ export function handleComparisonKey(event: {
   metaKey?: boolean;
   ctrlKey?: boolean;
   altKey?: boolean;
-  returnWindow?: string;
-  monitor?: MonitorRect;
 }): boolean {
   const store = useComparisonStore.getState();
   if (!store.open || hasOpenModal()) return false;
@@ -422,17 +423,17 @@ export function handleComparisonKey(event: {
       return true;
     }
   }
-  if (event.key === " ") {
-    void openComparisonImage(event.returnWindow, event.monitor);
-    return true;
-  }
+  // Space is taken and does nothing: nothing enlarges an image from
+  // Comparison. Seeing one whole image as large as possible is left out of
+  // the workflow for speed; the composition is already on the display, and
+  // click-and-hold inspection gives the close look.
+  if (event.key === " ") return true;
   return false;
 }
 
 const installEvents = createEventInstaller(
   async (listeners) => {
     if (getCurrentWindow().label !== "main") return;
-    await installComparisonImageEvents(listeners);
     await listeners.listen<{ slice: number; aspect: number }>("comparison://layout", (event) => {
       useComparisonStore.getState().setDisplayAspect(event.payload.slice, event.payload.aspect);
     });
@@ -443,8 +444,6 @@ const installEvents = createEventInstaller(
       metaKey?: boolean;
       ctrlKey?: boolean;
       altKey?: boolean;
-      returnWindow?: string;
-      monitor?: MonitorRect;
     }>("comparison://key", (event) => {
       handleComparisonKey(event.payload);
     });

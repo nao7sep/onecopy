@@ -42,12 +42,6 @@ export interface PreviewShowMessage extends PreviewPayload {
   detail: ItemDetail | null;
 }
 
-export interface PreviewPresentation {
-  fullscreen: boolean;
-  /** A descriptor, not words: the Preview window renders it in its own
-   * language, and follows a language change while it stays on screen. */
-  error: Message | null;
-}
 
 /** Pane versus separate window remains an explicit user choice. */
 export type PlacementPreference = "split" | "window" | null;
@@ -65,15 +59,14 @@ interface PreviewState {
   placementPreference: PlacementPreference;
   /** What the side pane renders (the window renders from events). */
   current: PreviewShowMessage | null;
-  /** Requested presentation of the same live separate-window follower. */
-  fullscreen: boolean;
-  setFullscreen: (enabled: boolean) => Promise<void>;
   /** True once an `open` attempt has failed and stays failed until the user
    * acts (placement change, close, or a fresh restore). While true, the
    * anchor-driven auto-reopen in the item workflow stands down instead of
    * retrying — and failing — on every subsequent anchor change. */
   openFailed: boolean;
-  /** Result owned by the Preview command surface, never the global host. */
+  /** Result owned by the Preview command surface, never the global host. A
+   * descriptor, not words: the preview window renders it in its own language,
+   * and follows a language change while it stays on screen. */
   error: Message | null;
   clearError: () => void;
   /** Opens the surface for the payload and turns follow on. */
@@ -105,7 +98,6 @@ interface PreviewState {
 let previewWindowOpen = false;
 let surfaceRequest = 0;
 let surfaceTail: Promise<void> = Promise.resolve();
-let previewFullscreenApplied = false;
 
 function enqueueSurface(task: () => Promise<void>): Promise<void> {
   const operation = surfaceTail.then(task, task);
@@ -182,14 +174,13 @@ async function ensurePreviewWindow(config: Record<string, unknown>): Promise<voi
     // follow flag — otherwise P looks broken afterwards.
     await window.once("tauri://destroyed", () => {
       previewWindowOpen = false;
-      previewFullscreenApplied = false;
       const store = usePreviewStore.getState();
       if (store.placement === "window") {
         // The placement PREFERENCE survives — closing the window means "not
         // now", not "never on that screen again".
         surfaceRequest += 1;
         cancelPublication();
-        usePreviewStore.setState({ follow: false, placement: null, current: null, fullscreen: false });
+        usePreviewStore.setState({ follow: false, placement: null, current: null });
       }
     });
   } catch (error) {
@@ -254,8 +245,6 @@ async function closePreviewWindow(): Promise<void> {
   const existing = await WebviewWindow.getByLabel("preview");
   if (existing === null) return;
   await invoke("capture_preview_window_placement");
-  await invoke("set_window_fullscreen", { label: "preview", enable: false });
-  previewFullscreenApplied = false;
   await existing.destroy();
 }
 
@@ -324,35 +313,9 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
   placement: null,
   placementPreference: null,
   current: null,
-  fullscreen: false,
   openFailed: false,
   error: null,
   clearError: () => set({ error: null }),
-
-  setFullscreen: async (enabled) => {
-    if (!get().follow || get().placement !== "window") return;
-    const request = surfaceRequest;
-    set({ fullscreen: enabled, error: null });
-    try {
-      await enqueueSurface(async () => {
-        if (request !== surfaceRequest) return;
-        const window = await WebviewWindow.getByLabel("preview");
-        if (window === null) throw new Error("The Preview window is unavailable.");
-        if (enabled) await invoke("capture_preview_window_placement");
-        await invoke("set_window_fullscreen", { label: "preview", enable: enabled });
-        previewFullscreenApplied = enabled;
-        if (request === surfaceRequest) await window.setFocus();
-      });
-    } catch (error) {
-      if (request !== surfaceRequest) return;
-      set({ fullscreen: previewFullscreenApplied });
-      publishPreviewFailure(
-        "preview-fullscreen-failed",
-        message("preview.fullScreenChangeFailed"),
-        error,
-      );
-    }
-  },
 
   open: async (payload, detail, config = {}) => {
     const request = ++surfaceRequest;
@@ -409,7 +372,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     surfaceRequest += 1;
     cancelPublication();
     const { placement } = get();
-    set({ follow: false, placement: null, current: null, fullscreen: false, openFailed: false });
+    set({ follow: false, placement: null, current: null, openFailed: false });
     if (placement === "window") {
       void enqueueSurface(async () => {
         await closePreviewWindow();
@@ -435,7 +398,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
       // The order is load-bearing: the preview window's destroyed handler
       // treats destruction while placement is still `window` as a manual
       // close and turns follow off.
-      set({ placement: next, fullscreen: false, error: null, openFailed: false });
+      set({ placement: next, error: null, openFailed: false });
       try {
         if (placement === "window") {
           await closePreviewWindow();

@@ -21,7 +21,6 @@ it.each([1, 3])("places Preview before showing with %i available screens", async
   resetTauriMocks();
   let nativePlacementApplied = false;
   mockCommands({
-    set_window_fullscreen: () => null,
     capture_preview_window_placement: () => null,
     place_preview_window: () => { nativePlacementApplied = true; },
     log_event: () => null,
@@ -42,7 +41,6 @@ it.each([1, 3])("places Preview before showing with %i available screens", async
     follow: false,
     placement: null,
     placementPreference: "window",
-    fullscreen: false,
   });
   setWindowCreatedHook((label) => {
     nativePlacementApplied = false;

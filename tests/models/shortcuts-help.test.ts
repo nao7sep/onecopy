@@ -14,7 +14,8 @@ describe("shortcut catalogue", () => {
       ["Fullscreen view", "Preview window", "Media and text", "Confirmations"],
       ["Comparison", "App"],
     ]);
-    const lengths = columns.map((column) => column.reduce((n, group) => n + group.rows.length, 0));
+    // A column is as tall as its rows plus a heading and context line per group.
+    const lengths = columns.map((column) => column.reduce((n, group) => n + group.rows.length + 2, 0));
     expect(Math.max(...lengths) - Math.min(...lengths)).toBeLessThanOrEqual(4);
     expect(columns.flat()).toEqual(shortcutGroups());
   });
@@ -45,8 +46,9 @@ describe("shortcut catalogue", () => {
     expect(row("Main items", "F")).toBeUndefined();
     expect(row("Comparison", "Delete/Backspace")).toContain("marked images themselves");
     expect(row("Comparison", "Enter")).toContain("unmarked images");
-    expect(row("Comparison", "Space")).toContain("Space/Escape returns");
-    expect(row("Preview window", "F")).toContain("this live Preview");
+    expect(row("Comparison", "Space")).toBeUndefined();
+    expect(row("Preview window", "F")).toBeUndefined();
+    expect(row("Preview window", "Escape")).toBe("Close the preview window");
     expect(row("Destinations", "Enter")).toContain("Expand/collapse only");
   });
 });

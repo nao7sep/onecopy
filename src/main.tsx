@@ -14,7 +14,6 @@ import { closeComparisonAfterMainRendererFailure } from "./state/comparison-stor
 const App = lazy(() => import("./App"));
 const PreviewWindow = lazy(() => import("./windows/PreviewWindow"));
 const ComparisonWindow = lazy(() => import("./windows/ComparisonWindow"));
-const ComparisonImageWindow = lazy(() => import("./windows/ComparisonImageWindow"));
 const IdentifyWindow = lazy(() => import("./windows/IdentifyWindow"));
 const ViewerWindow = lazy(() => import("./windows/ViewerWindow"));
 const RecordsWindow = lazy(() => import("./windows/RecordsWindow"));
@@ -86,8 +85,6 @@ void Promise.all([installMediaUseBoundary(), installWindowAppearance()])
                 <PreviewWindow />
               ) : view === "comparison" ? (
                 <ComparisonWindow slice={slice} />
-              ) : view === "comparison-image" ? (
-                <ComparisonImageWindow />
               ) : view === "identify" ? (
                 <IdentifyWindow number={slice} />
               ) : view === "viewer" ? (
