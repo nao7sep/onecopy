@@ -4,7 +4,7 @@ import { viewerMainIndex } from "../models/viewerSession";
 import { resolveWorkAttention, type ViewportAttention } from "../models/workAttention";
 import { useItemsStore } from "../state/items-store";
 import { comparisonChunks, useComparisonStore } from "../state/comparison-store";
-import { useQuickViewStore } from "../state/quick-view-store";
+import { useFullscreenViewStore } from "../state/fullscreen-view-store";
 import { log, toErrorFields } from "../repositories";
 import { message } from "../i18n/translate";
 import { recordInterfaceFailure } from "../utils/failureSurface";
@@ -31,7 +31,7 @@ function publish(): void {
   const section = items.selected;
   const currentViewport = viewport?.sectionKey === `${section?.kind}:${section?.month}` ? viewport : null;
   const comparison = useComparisonStore.getState();
-  const viewer = useQuickViewStore.getState().session;
+  const viewer = useFullscreenViewStore.getState().session;
   const attention = resolveWorkAttention({
     selectedHash: items.selectedItem === null ? null : identityFromKey(items.selectedItem).hash,
     visibleHashes: currentViewport?.visibleHashes ?? [],
@@ -77,6 +77,6 @@ export function installWorkAttention(): void {
   installed = true;
   useItemsStore.subscribe(schedule);
   useComparisonStore.subscribe(schedule);
-  useQuickViewStore.subscribe(schedule);
+  useFullscreenViewStore.subscribe(schedule);
   schedule();
 }

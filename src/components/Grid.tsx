@@ -16,7 +16,7 @@ import {
 import { useItemsStore } from "../state/items-store";
 import { useSectionsStore } from "../state/sections-store";
 import { retainStatePatch, useAppStore } from "../state/app-store";
-import { handleSpaceQuickView, openViewerFromMain } from "../workflows/quick-view";
+import { handleSpaceFullscreenView, openFullscreenView } from "../workflows/fullscreen-view";
 import { scrollTopForRow, visibleWindow } from "../utils/virtualize";
 import { viewportAttention } from "../models/workAttention";
 import { setWorkViewport } from "../workflows/work-attention";
@@ -44,7 +44,7 @@ import Button from "./ui/Button";
 import OperationResult from "./ui/OperationResult";
 import { isComposingEvent } from "../hooks/useComposing";
 import { useComparisonStore } from "../state/comparison-store";
-import { useQuickViewStore } from "../state/quick-view-store";
+import { useFullscreenViewStore } from "../state/fullscreen-view-store";
 import { hasOpenModal } from "../utils/modalStack";
 import { isEditableTarget } from "../utils/shortcuts";
 import { configFlag } from "../models/config";
@@ -125,7 +125,7 @@ function Tile({
       onClick={onSelect}
       onDoubleClick={() => {
         useItemsStore.getState().selectItem(itemKey(item));
-        openViewerFromMain("quick");
+        openFullscreenView();
       }}
     >
       <div
@@ -382,7 +382,7 @@ function ListRow({
       onClick={onSelect}
       onDoubleClick={() => {
         useItemsStore.getState().selectItem(itemKey(item));
-        openViewerFromMain("quick");
+        openFullscreenView();
       }}
     >
       <span
@@ -651,13 +651,13 @@ export default function Grid({
 
   const onGridKeyDown = (event: React.KeyboardEvent) => {
     if (event.defaultPrevented || isComposingEvent(event) || hasOpenModal()
-      || useComparisonStore.getState().open || useQuickViewStore.getState().session !== null
+      || useComparisonStore.getState().open || useFullscreenViewStore.getState().session !== null
       || isEditableTarget(event.target) || event.metaKey || event.ctrlKey || event.altKey) return;
-    // Space opens the transient Quick View. Persistent Preview visibility is
-    // chrome-only; a focused video player may decline this route and keep the
-    // key for play/pause.
+    // Space opens the fullscreen view. The preview's visibility is chrome-only;
+    // a focused video player may decline this route and keep the key for
+    // play/pause.
     if (event.key === " ") {
-      handleSpaceQuickView(event);
+      handleSpaceFullscreenView(event);
       return;
     }
     const target = gridNavigationTarget({
@@ -838,7 +838,7 @@ export default function Grid({
             containerRef.current?.focus();
             // Browser double-click dispatch is click, click, dblclick. Acting
             // only on the first click avoids repeating the selection change
-            // before the double-click opens Quick View.
+            // before the double-click opens the fullscreen view.
             if (event.detail > 1) return;
             if (event.shiftKey) {
               void rangeSelect(key, absoluteIndex);

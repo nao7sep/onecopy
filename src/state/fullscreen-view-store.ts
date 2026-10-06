@@ -3,7 +3,6 @@ import type { Message } from "../i18n/translate";
 import { identityKey } from "../models/items";
 import type {
   ActiveViewerSession,
-  ViewerPresentation,
   ViewerSequenceSnapshot,
   ViewerMainRelationship,
   ViewerMainProjection,
@@ -18,22 +17,21 @@ export interface ViewerDeleteReview {
   fileName: string;
 }
 
-interface QuickViewState {
+interface FullscreenViewState {
   session: ActiveViewerSession | null;
   pendingDelete: ViewerDeleteReview | null;
   failure: Message | null;
   currentKey: () => string | null;
-  start: (snapshot: ViewerSequenceSnapshot, presentation: ViewerPresentation, main: ViewerMainRelationship) => void;
+  start: (snapshot: ViewerSequenceSnapshot, main: ViewerMainRelationship) => void;
   attachMainProjection: (projection: ViewerMainProjection) => void;
   update: (snapshot: ViewerSequenceSnapshot) => void;
-  setPresentation: (presentation: ViewerPresentation) => void;
   requestDelete: (kind: ViewerDeleteReview["kind"]) => void;
   cancelDelete: () => void;
   setFailure: (failure: Message | null) => void;
   close: () => void;
 }
 
-export const useQuickViewStore = create<QuickViewState>((set, get) => ({
+export const useFullscreenViewStore = create<FullscreenViewState>((set, get) => ({
   session: null,
   pendingDelete: null,
   failure: null,
@@ -41,8 +39,8 @@ export const useQuickViewStore = create<QuickViewState>((set, get) => ({
     const session = get().session;
     return session === null ? null : identityKey(session.member);
   },
-  start: (snapshot, presentation, main) => {
-    set({ session: { ...snapshot, presentation, main }, pendingDelete: null, failure: null });
+  start: (snapshot, main) => {
+    set({ session: { ...snapshot, main }, pendingDelete: null, failure: null });
   },
   attachMainProjection: (projection) => {
     const session = get().session;
@@ -53,12 +51,8 @@ export const useQuickViewStore = create<QuickViewState>((set, get) => ({
   update: (snapshot) => {
     const session = get().session;
     if (session !== null && session.token === snapshot.token) {
-      set({ session: { ...snapshot, presentation: session.presentation, main: session.main } });
+      set({ session: { ...snapshot, main: session.main } });
     }
-  },
-  setPresentation: (presentation) => {
-    const session = get().session;
-    if (session !== null) set({ session: { ...session, presentation } });
   },
   requestDelete: (kind) => {
     const session = get().session;

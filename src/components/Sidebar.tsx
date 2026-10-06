@@ -19,7 +19,7 @@ import OperationResult from "./ui/OperationResult";
 import { isComposingEvent } from "../hooks/useComposing";
 import { hasOpenModal } from "../utils/modalStack";
 import { useComparisonStore } from "../state/comparison-store";
-import { useQuickViewStore } from "../state/quick-view-store";
+import { useFullscreenViewStore } from "../state/fullscreen-view-store";
 
 // The left pane as ONE tree composite (the composite-control conventions):
 // the container is the single tab stop, Up/Down walk the VISIBLE rows,
@@ -141,7 +141,7 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
 
   const onKeyDown = (event: React.KeyboardEvent) => {
     if (event.defaultPrevented || isComposingEvent(event) || hasOpenModal()
-      || useComparisonStore.getState().open || useQuickViewStore.getState().session !== null
+      || useComparisonStore.getState().open || useFullscreenViewStore.getState().session !== null
       || event.metaKey || event.ctrlKey || event.altKey) return;
     if (event.key === "Tab" && !event.shiftKey) {
       const itemArea = document.getElementById("main-item-area");

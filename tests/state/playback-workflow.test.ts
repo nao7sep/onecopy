@@ -4,8 +4,8 @@ import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import type { ActiveViewerSession } from "../../src/models/viewerSession";
 import { useAppStore } from "../../src/state/app-store";
 import { usePreviewStore } from "../../src/state/preview-store";
-import { useQuickViewStore } from "../../src/state/quick-view-store";
-import { handleViewerKey } from "../../src/workflows/quick-view";
+import { useFullscreenViewStore } from "../../src/state/fullscreen-view-store";
+import { handleViewerKey } from "../../src/workflows/fullscreen-view";
 import { installPlaybackWorkflow, setSoundEnabled } from "../../src/workflows/playback";
 import { emitCalls, fireEvent, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
@@ -33,7 +33,7 @@ beforeEach(async () => {
     },
   });
   usePreviewStore.setState({ follow: true });
-  useQuickViewStore.setState({ session: null });
+  useFullscreenViewStore.setState({ session: null });
   await installPlaybackWorkflow();
 });
 
@@ -76,12 +76,12 @@ describe("playback workflow", () => {
     });
 
     fireEvent("playback://register", {
-      surface: "quick",
+      surface: "viewer",
       key: "clip",
       medium: "video",
     });
     fireEvent("playback://observe", {
-      surface: "quick",
+      surface: "viewer",
       key: "clip",
       position: 12.5,
       playing: false,
@@ -89,7 +89,7 @@ describe("playback workflow", () => {
       muted: false,
     });
     fireEvent("playback://unregister", {
-      surface: "quick",
+      surface: "viewer",
       key: "clip",
       medium: "video",
     });
@@ -169,23 +169,23 @@ describe("playback workflow", () => {
     });
     expect(latestState()).toMatchObject({ owner: "preview-split", key: "clip" });
 
-    // Quick View opens for the SAME item and briefly has no registration of
-    // its own (the item change drops the old registration before the new
+    // The fullscreen view opens for the SAME item and briefly has no
+    // registration of its own (the item change drops the old registration before the new
     // one lands) — Preview must not reclaim ownership during that gap.
-    useQuickViewStore.setState({
-      session: { presentation: "quick", member: { hash: "clip", pathId: null } } as never,
+    useFullscreenViewStore.setState({
+      session: { member: { hash: "clip", pathId: null } } as never,
     });
     expect(latestState()).toMatchObject({ key: "clip", owner: null });
 
     fireEvent("playback://register", {
-      surface: "quick",
+      surface: "viewer",
       key: "clip",
       medium: "video",
     });
-    expect(latestState()).toMatchObject({ owner: "quick", key: "clip" });
+    expect(latestState()).toMatchObject({ owner: "viewer", key: "clip" });
 
     fireEvent("playback://unregister", {
-      surface: "quick",
+      surface: "viewer",
       key: "clip",
       medium: "video",
     });
@@ -193,7 +193,7 @@ describe("playback workflow", () => {
     // remains ineligible even with no current viewer registration.
     expect(latestState()).toMatchObject({ key: "clip", owner: null });
 
-    useQuickViewStore.setState({ session: null });
+    useFullscreenViewStore.setState({ session: null });
     expect(latestState()).toMatchObject({ owner: "preview-split", key: "clip" });
 
     fireEvent("playback://unregister", {
@@ -275,11 +275,11 @@ describe("playback workflow", () => {
 describe("viewer Enter toggle", () => {
   it("toggles the owned session's playing state on Enter for a video item", async () => {
     fireEvent("playback://register", {
-      surface: "quick",
+      surface: "viewer",
       key: "clip",
       medium: "video",
     });
-    expect(latestState()).toMatchObject({ key: "clip", owner: "quick", playing: true });
+    expect(latestState()).toMatchObject({ key: "clip", owner: "viewer", playing: true });
 
     const item: SectionItem = {
       hash: "clip",
@@ -312,14 +312,13 @@ describe("viewer Enter toggle", () => {
       length: 1,
       sectionIndex: 0,
       scope: "section",
-      presentation: "quick",
       main: {
         projection: { section: null, sort: { order: "time", desc: false }, revision: 0 },
         selectedKeys: ["clip"],
         frozenPositionsValid: true,
       },
     };
-    useQuickViewStore.setState({ session, pendingDelete: null, failure: null });
+    useFullscreenViewStore.setState({ session, pendingDelete: null, failure: null });
 
     await handleViewerKey({ key: "Enter" });
 

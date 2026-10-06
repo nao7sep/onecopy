@@ -127,7 +127,7 @@ afterEach(() => {
 
 describe("shared video presentation", () => {
   it.each([2, 3, 4])("shows one noticeable video failure for media error %s and keeps native diagnostics out of the UI", async (code) => {
-    const view = render(<PreviewSurface surface="quick" hash="video-hash" detail={DETAIL} />);
+    const view = render(<PreviewSurface surface="viewer" hash="video-hash" detail={DETAIL} />);
     const video = view.container.querySelector("video")!;
     Object.defineProperty(video, "error", { value: { code, message: "fixture native decoder sentinel" } });
     fireEvent.error(video);
@@ -146,18 +146,18 @@ describe("shared video presentation", () => {
 
   it("registers one named playback surface for central ownership", async () => {
     render(
-      <PreviewSurface surface="quick" hash="video-hash" detail={DETAIL} />,
+      <PreviewSurface surface="viewer" hash="video-hash" detail={DETAIL} />,
     );
     await act(async () => {});
     expect(emitCalls).toContainEqual({
       event: "playback://register",
-      payload: { surface: "quick", key: "video-hash", medium: "video" },
+      payload: { surface: "viewer", key: "video-hash", medium: "video" },
     });
   });
 
   it("re-announces a live surface when the coordinator becomes ready without remounting it", async () => {
     render(
-      <PreviewSurface surface="quick" hash="video-hash" detail={DETAIL} />,
+      <PreviewSurface surface="viewer" hash="video-hash" detail={DETAIL} />,
     );
     await act(async () => {});
     emitCalls.length = 0;
@@ -168,7 +168,7 @@ describe("shared video presentation", () => {
 
     expect(emitCalls).toContainEqual({
       event: "playback://register",
-      payload: { surface: "quick", key: "video-hash", medium: "video" },
+      payload: { surface: "viewer", key: "video-hash", medium: "video" },
     });
     expect(
       emitCalls.some((call) => call.event === "playback://unregister"),
@@ -177,7 +177,7 @@ describe("shared video presentation", () => {
 
   it("plays only when the central session assigns this surface", async () => {
     render(
-      <PreviewSurface surface="quick" hash="video-hash" detail={DETAIL} />,
+      <PreviewSurface surface="viewer" hash="video-hash" detail={DETAIL} />,
     );
     await act(async () => {});
 
@@ -185,7 +185,7 @@ describe("shared video presentation", () => {
       fireTauriEvent("playback://state", {
         key: "video-hash",
         medium: "video",
-        owner: "quick",
+        owner: "viewer",
         position: 4,
         playing: true,
         soundEnabled: false,
@@ -204,7 +204,7 @@ describe("shared video presentation", () => {
   // contract) -- clicking the video body itself must request the shared
   // player toggle for THIS surface's key, the same as pressing Enter does.
   it("toggles playback when the video picture itself is clicked", async () => {
-    render(<PreviewSurface surface="quick" hash="video-hash" detail={DETAIL} />);
+    render(<PreviewSurface surface="viewer" hash="video-hash" detail={DETAIL} />);
     await act(async () => {});
     emitCalls.length = 0;
 
@@ -220,7 +220,7 @@ describe("shared video presentation", () => {
   it("overlays timestamped snapshots, seeks and plays, and keeps transcript below", async () => {
     const view = render(
       <PreviewSurface
-        surface="quick"
+        surface="viewer"
         hash="video-hash"
         detail={DETAIL}
         keyboardActive
@@ -376,7 +376,7 @@ describe("shared video presentation", () => {
   it("shows bounded read-only text with session encoding and wrapping controls", async () => {
     render(
       <PreviewSurface
-        surface="quick"
+        surface="viewer"
         hash={null}
         pathId={8}
         detail={OTHER_DETAIL}
@@ -411,7 +411,7 @@ describe("shared video presentation", () => {
   // reading position instead of restarting at the top.
   it("keeps the text scroll position across a placement switch", async () => {
     const view = render(
-      <PreviewSurface surface="quick" hash={null} pathId={8} detail={OTHER_DETAIL} />,
+      <PreviewSurface surface="viewer" hash={null} pathId={8} detail={OTHER_DETAIL} />,
     );
     const pre = await screen.findByText(/first line/);
     Object.defineProperty(pre, "scrollTop", { configurable: true, writable: true, value: 0 });
@@ -449,7 +449,7 @@ describe("shared video presentation", () => {
     mockCommands({ record_recent_notification: () => ({}) });
     render(
       <PreviewSurface
-        surface="quick"
+        surface="viewer"
         hash={null}
         pathId={8}
         detail={OTHER_DETAIL}
@@ -474,7 +474,7 @@ describe("shared video presentation", () => {
   it("keeps independent text-session failures and clears only the chosen result", async () => {
     mockCommands({ record_recent_notification: () => ({}) });
     render(
-      <PreviewSurface surface="quick" hash={null} pathId={8} detail={OTHER_DETAIL} />,
+      <PreviewSurface surface="viewer" hash={null} pathId={8} detail={OTHER_DETAIL} />,
     );
     await screen.findByText(/first line/);
 
@@ -521,7 +521,7 @@ describe("shared video presentation", () => {
 
     render(
       <PreviewSurface
-        surface="quick"
+        surface="viewer"
         hash={null}
         pathId={8}
         detail={OTHER_DETAIL}
@@ -549,7 +549,7 @@ describe("shared video presentation", () => {
 
     render(
       <PreviewSurface
-        surface="quick"
+        surface="viewer"
         hash={null}
         pathId={8}
         detail={OTHER_DETAIL}
@@ -574,7 +574,7 @@ describe("shared video presentation", () => {
 
     render(
       <PreviewSurface
-        surface="quick"
+        surface="viewer"
         hash="image-hash"
         detail={IMAGE_DETAIL}
       />,
@@ -608,7 +608,7 @@ describe("shared video presentation", () => {
 
     render(
       <PreviewSurface
-        surface="quick"
+        surface="viewer"
         hash={null}
         pathId={8}
         detail={OTHER_DETAIL}
@@ -673,7 +673,7 @@ describe("shared video presentation", () => {
     previewPane.unmount();
 
     const quickView = render(
-      <PreviewSurface surface="quick" hash="image-hash" detail={IMAGE_DETAIL} keyboardActive />,
+      <PreviewSurface surface="viewer" hash="image-hash" detail={IMAGE_DETAIL} keyboardActive />,
     );
     const quickImg = quickView.getByAltText("family.jpg");
     expect(quickImg.getAttribute("style") ?? "").not.toContain("max-width");
@@ -685,7 +685,7 @@ describe("shared video presentation", () => {
   // file itself, and decoding that as an image always fails.
   it("shows a plain, non-inspectable poster after playback fails, with no hold failure notice", () => {
     render(
-      <PreviewSurface surface="quick" hash="video-hash" detail={DETAIL} keyboardActive />,
+      <PreviewSurface surface="viewer" hash="video-hash" detail={DETAIL} keyboardActive />,
     );
 
     const video = document.querySelector("video")!;
@@ -711,7 +711,7 @@ describe("shared video presentation", () => {
     });
     render(
       <PreviewSurface
-        surface="quick"
+        surface="viewer"
         hash="image-hash"
         detail={IMAGE_DETAIL}
       />,
@@ -728,7 +728,7 @@ describe("shared video presentation", () => {
   it("falls back truthfully after specialized audio playback fails", async () => {
     const view = render(
       <PreviewSurface
-        surface="quick"
+        surface="viewer"
         hash="audio-hash"
         detail={AUDIO_DETAIL}
       />,

@@ -463,6 +463,21 @@ export function setCurrentMonitor(monitor: Record<string, unknown> | null): void
   hostMonitor = monitor;
 }
 
+/** One display the fullscreen view can open on, its reusable window already
+ * created, and its native commands answered. Specs that open the view from
+ * Main call this. */
+export function mockFullscreenDisplay(): void {
+  setCurrentMonitor({
+    position: { x: 0, y: 0 },
+    size: { width: 1920, height: 1080 },
+    workArea: { position: { x: 0, y: 0 }, size: { width: 1920, height: 1040 } },
+    scaleFactor: 1,
+    name: "display",
+  });
+  mockCommand("set_window_fullscreen", () => null);
+  new WebviewWindow("viewer");
+}
+
 /** Full reset. Call from beforeEach so no spec inherits another's stubs.
  *
  * `keepListeners` matters for stores that register their event wiring ONCE at

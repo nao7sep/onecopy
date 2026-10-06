@@ -21,7 +21,7 @@ vi.mock("../../src/state/playback-client-store", () => ({
 import { usePlaybackMedia } from "../../src/hooks/usePlaybackMedia";
 
 function Harness() {
-  const playback = usePlaybackMedia<HTMLAudioElement>("quick", "audio-key", "audio");
+  const playback = usePlaybackMedia<HTMLAudioElement>("preview-window", "audio-key", "audio");
   return playback.setupFailed ? (
     <div role="alert">
       <span>Playback controls could not be connected. Try again.</span>
@@ -42,13 +42,13 @@ afterEach(() => {
 });
 
 function MediaHarness({ enabled = true }: { enabled?: boolean }) {
-  const playback = usePlaybackMedia<HTMLAudioElement>("quick", "audio-key", "audio", enabled);
+  const playback = usePlaybackMedia<HTMLAudioElement>("preview-window", "audio-key", "audio", enabled);
   return <audio ref={playback.ref} />;
 }
 
 function playingSession(): PlaybackSession {
   return {
-    key: "audio-key", medium: "audio", owner: "quick", position: 0,
+    key: "audio-key", medium: "audio", owner: "preview-window", position: 0,
     playing: true, soundEnabled: true, volume: 1,
   };
 }
@@ -68,7 +68,7 @@ it.each(["newer attempt", "owner handoff", "disabled", "unmounted"])(
     else {
       playbackClient.session = {
         ...playingSession(),
-        owner: transition === "owner handoff" ? "viewer" : "quick",
+        owner: transition === "owner handoff" ? "viewer" : "preview-window",
         position: 12,
       };
       view.rerender(<MediaHarness enabled={transition !== "disabled"} />);

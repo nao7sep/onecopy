@@ -6,14 +6,14 @@ import {
   usePreviewStore,
 } from "../../src/state/preview-store";
 import {
-  useQuickViewStore,
-} from "../../src/state/quick-view-store";
-import { handleSpaceQuickView } from "../../src/workflows/quick-view";
+  useFullscreenViewStore,
+} from "../../src/state/fullscreen-view-store";
+import { handleSpaceFullscreenView } from "../../src/workflows/fullscreen-view";
 import { useItemsStore } from "../../src/state/items-store";
 import { togglePreview } from "../../src/workflows/preview";
 import { installItemWorkflow } from "../../src/workflows/items";
 import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
-import { mockCommands, mockSectionItems, resetTauriMocks } from "../mocks/tauri";
+import { mockCommands, mockSectionItems, mockFullscreenDisplay, resetTauriMocks } from "../mocks/tauri";
 
 function item(pathId: number): SectionItem {
   return {
@@ -40,6 +40,7 @@ installItemWorkflow();
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
+  mockFullscreenDisplay();
   mockCommands({
     patch_state: () => ({}),
     get_item_detail: () => null,
@@ -51,7 +52,7 @@ beforeEach(() => {
     placementPreference: null,
     current: null,
   });
-  useQuickViewStore.setState({ session: null, pendingDelete: null });
+  useFullscreenViewStore.setState({ session: null, pendingDelete: null });
   useItemsStore.setState({
     selected: { kind: "image", month: "2026-01" },
     items: [item(1), item(2)],
@@ -62,14 +63,14 @@ beforeEach(() => {
 });
 
 describe("the Space model", () => {
-  it("opens Quick View without changing persistent Preview", async () => {
+  it("opens the fullscreen view without changing the preview", async () => {
     useItemsStore.setState({ selectedItem: "h1", selectedKeys: new Set(["h1"]) });
     let prevented = false;
-    const claimed = handleSpaceQuickView({ preventDefault: () => (prevented = true) });
+    const claimed = handleSpaceFullscreenView({ preventDefault: () => (prevented = true) });
     expect(claimed).toBe(true);
     expect(prevented).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(useQuickViewStore.getState().session?.presentation).toBe("quick");
+    expect(useFullscreenViewStore.getState().session).not.toBeNull();
     expect(usePreviewStore.getState().follow).toBe(false);
   });
 
@@ -80,10 +81,10 @@ describe("the Space model", () => {
       selectedKeys: new Set(["h1"]),
     });
     let prevented = false;
-    expect(handleSpaceQuickView({ preventDefault: () => (prevented = true) })).toBe(true);
+    expect(handleSpaceFullscreenView({ preventDefault: () => (prevented = true) })).toBe(true);
     expect(prevented).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(useQuickViewStore.getState().session?.presentation).toBe("quick");
+    expect(useFullscreenViewStore.getState().session).not.toBeNull();
   });
 });
 

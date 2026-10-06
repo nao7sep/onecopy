@@ -18,7 +18,7 @@ import { useItemsStore } from "../../src/state/items-store";
 import { useMainFeedbackStore } from "../../src/state/main-feedback-store";
 import { useMutationStore } from "../../src/state/mutation-store";
 import { usePreviewStore } from "../../src/state/preview-store";
-import { useQuickViewStore } from "../../src/state/quick-view-store";
+import { useFullscreenViewStore } from "../../src/state/fullscreen-view-store";
 import { useComparisonStore } from "../../src/state/comparison-store";
 import { useReleaseCheckStore } from "../../src/state/release-check-store";
 import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
@@ -29,6 +29,7 @@ import {
   mockCommand,
   mockCommands,
   mockSectionItems,
+  mockFullscreenDisplay,
   resetTauriMocks,
 } from "../mocks/tauri";
 import { finishWizard } from "../../src/workflows/wizard";
@@ -92,6 +93,7 @@ const settle = () =>
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
+  mockFullscreenDisplay();
   let sourceCheckSnapshot = {
     running: false,
     stopping: false,
@@ -196,7 +198,7 @@ beforeEach(() => {
     detail: null,
   });
   usePreviewStore.setState({ follow: false, current: null });
-  useQuickViewStore.setState({ session: null, pendingDelete: null });
+  useFullscreenViewStore.setState({ session: null, pendingDelete: null });
   useComparisonStore.setState({
     open: false,
     members: [],
@@ -449,18 +451,19 @@ describe("the culling workflow", () => {
     });
     expect(useItemsStore.getState().selectedItem).toBe("h2");
 
-    // ---- Space opens transient Quick View without changing Preview ----
+    // ---- Space opens the fullscreen view without changing the preview ----
     await act(async () => {
       grid.dispatchEvent(
         new KeyboardEvent("keydown", { key: " ", bubbles: true }),
       );
     });
     await settle();
-    expect(useQuickViewStore.getState().session?.presentation).toBe("quick");
+    expect(useFullscreenViewStore.getState().session).not.toBeNull();
     expect(usePreviewStore.getState().follow).toBe(false);
-    await act(async () => pressWindow("Escape"));
+    // The fullscreen view's own window forwards its keys to Main.
+    await act(async () => fireEvent("viewer://key", { key: "Escape" }));
     await settle();
-    expect(useQuickViewStore.getState().session).toBeNull();
+    expect(useFullscreenViewStore.getState().session).toBeNull();
 
     // ---- Enter on a ≈ item opens the comparison over the whole scene ----
     mockCommand("get_similar_group", () => [

@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import ViewerWindow from "../../src/windows/ViewerWindow";
 import { EMPTY_ITEM_WORK } from "../../src/models/items";
-import type { ViewerBroadcast } from "../../src/workflows/quick-view";
+import type { ViewerBroadcast } from "../../src/workflows/fullscreen-view";
 import { emitCalls, fireEvent as deliver, resetTauriMocks } from "../mocks/tauri";
 
 const state: ViewerBroadcast = {

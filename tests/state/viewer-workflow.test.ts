@@ -4,10 +4,10 @@
 // which renders the sentence in the language the document declares, so these
 // specs need a document even though the subject is pure workflow logic.
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import { useItemsStore } from "../../src/state/items-store";
-import { useQuickViewStore } from "../../src/state/quick-view-store";
+import { useFullscreenViewStore } from "../../src/state/fullscreen-view-store";
 import type { ViewerSequenceSnapshot } from "../../src/models/viewerSession";
 import { revealInMain } from "../../src/workflows/reveal-in-main";
 import {
@@ -15,20 +15,22 @@ import {
   handleViewerKey,
   moveViewer,
   requestViewerDelete,
-  openViewerFromMain,
+  openFullscreenView,
   viewerBroadcast,
   closeViewer,
-} from "../../src/workflows/quick-view";
+} from "../../src/workflows/fullscreen-view";
 import {
   WebviewWindow,
   invokeCalls,
   mockCommand,
   mockSectionItems,
+  mockFullscreenDisplay,
   resetTauriMocks,
   setCurrentMonitor,
   setFocus,
 } from "../mocks/tauri";
 import { inEnglish } from "../helpers/i18n";
+import { currentMainFeedback, useMainFeedbackStore } from "../../src/state/main-feedback-store";
 
 let sequence: Array<SectionItem> = [];
 let sequenceIndex = 0;
@@ -76,10 +78,10 @@ function item(key: string, pathId: number): SectionItem {
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
+  mockFullscreenDisplay();
   mockSectionItems(({ kind }) => kind === "image"
     ? [item("a", 1), item("b", 2), item("c", 3)] : [item("unrelated", 99)]);
   mockCommand("get_item_section", () => ({ kind: "image", month: "2026-01" }));
-  mockCommand("set_window_fullscreen", () => null);
   mockCommand("viewer_sequence_start", ({ selected }) => {
     const picked = selected as Array<{ hash: string; index: number }>;
     sequence = picked.length === 1
@@ -98,7 +100,7 @@ beforeEach(() => {
   mockCommand("viewer_sequence_close", () => null);
   mockCommand("log_event", () => null);
   mockCommand("record_recent_notification", () => ({}));
-  useQuickViewStore.setState({ session: null, pendingDelete: null, failure: null });
+  useFullscreenViewStore.setState({ session: null, pendingDelete: null, failure: null });
   useItemsStore.setState({
     selected: { kind: "image", month: "2026-01" },
     items: [item("c", 3), item("a", 1), item("b", 2)],
@@ -124,8 +126,8 @@ beforeEach(() => {
 });
 
 describe("viewer workflow", () => {
-  it("reveals a diagnostic target out of Quick View without replacing its new Main selection on close", async () => {
-    expect(openViewerFromMain("quick")).toBe(true);
+  it("reveals a diagnostic target out of the fullscreen view without replacing its new Main selection on close", async () => {
+    expect(openFullscreenView()).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
     mockCommand("resolve_library_path", () => ({
       identity: { hash: "a", pathId: 1 }, section: { kind: "image", month: "2026-01" },
@@ -133,7 +135,7 @@ describe("viewer workflow", () => {
     let modalClosed = false;
     expect(await revealInMain("/fixture/a.jpg", () => true, () => { modalClosed = true; })).toBe("revealed");
     expect(modalClosed).toBe(true);
-    expect(useQuickViewStore.getState().session).toBeNull();
+    expect(useFullscreenViewStore.getState().session).toBeNull();
     expect(useItemsStore.getState().selectedItem).toBe("a");
     expect([...useItemsStore.getState().selectedKeys]).toEqual(["a"]);
     expect(invokeCalls.filter((call) => call.command === "reconcile_section")).toHaveLength(1);
@@ -141,7 +143,7 @@ describe("viewer workflow", () => {
   });
 
   it("owns its identity, detail and content commands independently of Main", async () => {
-    expect(openViewerFromMain("quick")).toBe(true);
+    expect(openFullscreenView()).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
     const frozen = viewerBroadcast();
 
@@ -159,9 +161,9 @@ describe("viewer workflow", () => {
   });
 
   it("freezes displayed order and makes whole-section navigation exclusive", async () => {
-    expect(openViewerFromMain("quick")).toBe(true);
+    expect(openFullscreenView()).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(useQuickViewStore.getState().session).toMatchObject({ index: 1, length: 3 });
+    expect(useFullscreenViewStore.getState().session).toMatchObject({ index: 1, length: 3 });
 
     moveViewer("next");
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -179,7 +181,7 @@ describe("viewer workflow", () => {
         ["a", 0],
       ]),
     });
-    expect(openViewerFromMain("quick")).toBe(true);
+    expect(openFullscreenView()).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     moveViewer("previous");
@@ -190,13 +192,13 @@ describe("viewer workflow", () => {
   });
 
   it("maps frozen navigation into Main's new sort without refreezing or reusing its old ordinal", async () => {
-    openViewerFromMain("quick");
+    openFullscreenView();
     await new Promise((resolve) => setTimeout(resolve, 0));
     useItemsStore.getState().setSortOrder("name");
     await new Promise((resolve) => setTimeout(resolve, 0));
     moveViewer("next");
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(useQuickViewStore.getState().session?.index).toBe(2);
+    expect(useFullscreenViewStore.getState().session?.index).toBe(2);
     expect(useItemsStore.getState().selectedItem).toBe("c");
     expect(useItemsStore.getState().scrollRequest?.index).toBe(0);
     const reads = invokeCalls.filter((call) => call.command === "reconcile_section").length;
@@ -210,18 +212,18 @@ describe("viewer workflow", () => {
   it("recovers the frozen subset after Main leaves its section", async () => {
     useItemsStore.setState({ selectedItem: "c", selectedKeys: new Set(["a", "c"]),
       selectedPositions: new Map([["a", 0], ["c", 2]]) });
-    openViewerFromMain("quick");
+    openFullscreenView();
     await new Promise((resolve) => setTimeout(resolve, 0));
     await useItemsStore.getState().select({ kind: "other", month: "undated" });
     moveViewer("previous");
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(useItemsStore.getState().selectedKeys).toEqual(new Set(["a", "c"]));
     expect(useItemsStore.getState().selectedItem).toBe("a");
-    expect(useQuickViewStore.getState().session?.length).toBe(2);
+    expect(useFullscreenViewStore.getState().session?.length).toBe(2);
   });
 
   it("does not redirect Main if a newer user intent wins the section lookup", async () => {
-    openViewerFromMain("quick");
+    openFullscreenView();
     await new Promise((resolve) => setTimeout(resolve, 0));
     await useItemsStore.getState().select({ kind: "other", month: "undated" });
     let release!: (value: { kind: string; month: string }) => void;
@@ -236,7 +238,7 @@ describe("viewer workflow", () => {
   });
 
   it("lets an admitted Main restore finish when the viewer closes", async () => {
-    openViewerFromMain("quick");
+    openFullscreenView();
     await new Promise((resolve) => setTimeout(resolve, 0));
     await useItemsStore.getState().select({ kind: "other", month: "undated" });
     let release!: () => void;
@@ -250,33 +252,33 @@ describe("viewer workflow", () => {
     await closeViewer();
     release();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(useQuickViewStore.getState().session).toBeNull();
+    expect(useFullscreenViewStore.getState().session).toBeNull();
     expect(useItemsStore.getState().loading).toBe(false);
     expect(useItemsStore.getState().selectedItem).toBe("c");
   });
 
   it("reports a Main lookup failure without misreporting the successful viewer move", async () => {
-    openViewerFromMain("quick");
+    openFullscreenView();
     await new Promise((resolve) => setTimeout(resolve, 0));
     await useItemsStore.getState().select({ kind: "other", month: "undated" });
     mockCommand("get_item_section", () => { throw new Error("database unavailable"); });
     moveViewer("next");
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(viewerBroadcast().item?.fileName).toBe("c.jpg");
-    expect(inEnglish(useQuickViewStore.getState().failure)).toBe(
+    expect(inEnglish(useFullscreenViewStore.getState().failure)).toBe(
       "Couldn’t locate this item in Main.",
     );
     expect(useItemsStore.getState().selected?.kind).toBe("other");
   });
 
   it("does not invent a Main section for a no-longer-available viewer item", async () => {
-    openViewerFromMain("quick");
+    openFullscreenView();
     await new Promise((resolve) => setTimeout(resolve, 0));
     await useItemsStore.getState().select({ kind: "other", month: "undated" });
     mockCommand("get_item_section", () => null);
     moveViewer("next");
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(inEnglish(useQuickViewStore.getState().failure)).toBe(
+    expect(inEnglish(useFullscreenViewStore.getState().failure)).toBe(
       "This item is no longer available in Main.",
     );
     expect(useItemsStore.getState().selected?.kind).toBe("other");
@@ -293,7 +295,7 @@ describe("viewer workflow", () => {
     setCurrentMonitor(monitor);
     const viewer = new WebviewWindow("viewer");
 
-    expect(openViewerFromMain("fullscreen")).toBe(true);
+    expect(openFullscreenView()).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(viewer.setPosition).toHaveBeenCalledWith({ x: 100, y: 200 });
@@ -304,7 +306,7 @@ describe("viewer workflow", () => {
       args: { label: "viewer", enable: true },
     });
 
-    await handleViewerKey({ key: "f" });
+    await handleViewerKey({ key: "Escape" });
 
     expect(invokeCalls).toContainEqual({
       command: "set_window_fullscreen",
@@ -312,18 +314,14 @@ describe("viewer workflow", () => {
     });
     expect(viewer.setAlwaysOnTop).toHaveBeenLastCalledWith(false);
     expect(viewer.hide).toHaveBeenCalled();
-    expect(useQuickViewStore.getState().session).toBeNull();
+    expect(useFullscreenViewStore.getState().session).toBeNull();
   });
 
-  // viewing-sessions.md D7: returning from fullscreen to Quick View must
-  // focus Quick View's OWN surface, not the hidden Main grid behind it —
-  // Quick View already claimed DOM focus synchronously when it mounted.
-  it("does not steal focus to the hidden Main grid when fullscreen switches back to Quick View", async () => {
+  it.each([" ", "Escape"])("closes on %j and gives the keyboard back to Main's list", async (key) => {
     const grid = document.createElement("div");
     grid.id = "main-item-area";
     grid.tabIndex = 0;
     document.body.appendChild(grid);
-    const gridFocus = vi.spyOn(grid, "focus");
     setFocus.mockClear();
     setCurrentMonitor({
       position: { x: 0, y: 0 },
@@ -334,18 +332,44 @@ describe("viewer workflow", () => {
     });
     new WebviewWindow("viewer");
 
-    expect(openViewerFromMain("fullscreen")).toBe(true);
+    expect(openFullscreenView()).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    await handleViewerKey({ key: " " });
+    await handleViewerKey({ key });
 
+    expect(useFullscreenViewStore.getState().session).toBeNull();
     expect(setFocus).toHaveBeenCalled();
-    expect(gridFocus).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(grid);
     grid.remove();
   });
 
+  it("closes the session and reports in Main when its window cannot open", async () => {
+    setCurrentMonitor({
+      position: { x: 0, y: 0 },
+      size: { width: 1920, height: 1080 },
+      workArea: { position: { x: 0, y: 0 }, size: { width: 1920, height: 1040 } },
+      scaleFactor: 1,
+      name: "display",
+    });
+    new WebviewWindow("viewer");
+    mockCommand("set_window_fullscreen", ({ enable }) => {
+      if (enable === true) throw new Error("window unavailable");
+      return null;
+    });
+
+    expect(openFullscreenView()).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(useFullscreenViewStore.getState().session).toBeNull();
+    expect(invokeCalls.some((call) => call.command === "viewer_sequence_close")).toBe(true);
+    expect(inEnglish(currentMainFeedback(useMainFeedbackStore.getState())?.text ?? null)).toBe(
+      "Couldn’t open full screen.",
+    );
+  });
+
   it("keeps navigation failure on the viewer while recording only Recent history", async () => {
-    expect(openViewerFromMain("quick")).toBe(true);
+    expect(openFullscreenView()).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
     mockCommand("viewer_sequence_move", () =>
       Promise.reject(new Error("sequence unavailable")),
@@ -354,7 +378,7 @@ describe("viewer workflow", () => {
     moveViewer("next");
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(inEnglish(useQuickViewStore.getState().failure)).toBe(
+    expect(inEnglish(useFullscreenViewStore.getState().failure)).toBe(
       "Couldn’t move in the viewer.",
     );
     expect(
@@ -366,94 +390,49 @@ describe("viewer workflow", () => {
   });
 
   it("does not repeat deletion into the recovered next item", async () => {
-    expect(openViewerFromMain("quick")).toBe(true);
+    expect(openFullscreenView()).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     await handleViewerKey({ key: "Delete", repeat: true });
 
-    expect(useQuickViewStore.getState().pendingDelete).toBeNull();
+    expect(useFullscreenViewStore.getState().pendingDelete).toBeNull();
     expect(invokeCalls.some((call) => call.command === "delete_items")).toBe(
       false,
     );
-    expect(useQuickViewStore.getState().session?.item?.hash).toBe("b");
+    expect(useFullscreenViewStore.getState().session?.item?.hash).toBe("b");
   });
 
-  it("does not let a held entry key or a pending confirmation change presentation", async () => {
-    expect(openViewerFromMain("quick")).toBe(true);
+  it("does not let a held key or a pending confirmation close the view", async () => {
+    expect(openFullscreenView()).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    for (const key of [" ", "f", "Escape", "Enter"]) {
+    for (const key of [" ", "Escape", "Enter"]) {
       await handleViewerKey({ key, repeat: true });
-      expect(useQuickViewStore.getState().session?.presentation).toBe("quick");
+      expect(useFullscreenViewStore.getState().session).not.toBeNull();
     }
-    useQuickViewStore.setState({ pendingDelete: { kind: "permanent", key: "b", fileName: "b.jpg" } });
-    for (const key of [" ", "f", "Escape", "ArrowRight"]) await handleViewerKey({ key });
-    expect(useQuickViewStore.getState().session?.item.hash).toBe("b");
-    expect(useQuickViewStore.getState().session?.presentation).toBe("quick");
+    useFullscreenViewStore.setState({ pendingDelete: { kind: "permanent", key: "b", fileName: "b.jpg" } });
+    for (const key of [" ", "Escape", "ArrowRight"]) await handleViewerKey({ key });
+    expect(useFullscreenViewStore.getState().session?.item.hash).toBe("b");
   });
 
-  // R5.2 T5: the three untested transition-table cells. F from Quick View
-  // enters fullscreen; Space from fullscreen returns to Quick View; Escape
-  // from fullscreen closes all the way back to Main -- not just one step
-  // down to Quick View.
-  it("enters fullscreen on F from the Quick View row", async () => {
-    expect(openViewerFromMain("quick")).toBe(true);
+  it("ignores F, which no longer changes any view", async () => {
+    expect(openFullscreenView()).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(useQuickViewStore.getState().session?.presentation).toBe("quick");
-
     await handleViewerKey({ key: "f" });
-
-    expect(useQuickViewStore.getState().session?.presentation).toBe("fullscreen");
-  });
-
-  it("returns to Quick View on Space from the fullscreen row", async () => {
-    setCurrentMonitor({
-      position: { x: 0, y: 0 },
-      size: { width: 1920, height: 1080 },
-      workArea: { position: { x: 0, y: 0 }, size: { width: 1920, height: 1040 } },
-      scaleFactor: 1,
-      name: "display",
-    });
-    new WebviewWindow("viewer");
-
-    expect(openViewerFromMain("fullscreen")).toBe(true);
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(useQuickViewStore.getState().session?.presentation).toBe("fullscreen");
-
-    await handleViewerKey({ key: " " });
-
-    expect(useQuickViewStore.getState().session?.presentation).toBe("quick");
-  });
-
-  it("closes all the way back to Main on Escape from the fullscreen row", async () => {
-    setCurrentMonitor({
-      position: { x: 0, y: 0 },
-      size: { width: 1920, height: 1080 },
-      workArea: { position: { x: 0, y: 0 }, size: { width: 1920, height: 1040 } },
-      scaleFactor: 1,
-      name: "display",
-    });
-    new WebviewWindow("viewer");
-
-    expect(openViewerFromMain("fullscreen")).toBe(true);
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    await handleViewerKey({ key: "Escape" });
-
-    expect(useQuickViewStore.getState().session).toBeNull();
+    expect(useFullscreenViewStore.getState().session?.item.hash).toBe("b");
   });
 
   it("deletes the member the review named even after a refresh advances the sequence", async () => {
     mockCommand("delete_items", () => ({ error: null, failedFiles: 0 }));
-    expect(openViewerFromMain("quick")).toBe(true);
+    expect(openFullscreenView()).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(useQuickViewStore.getState().session?.item.hash).toBe("b");
+    expect(useFullscreenViewStore.getState().session?.item.hash).toBe("b");
 
     await requestViewerDelete(true);
     // The watcher reports b removed externally; reconciliation advances the
     // open sequence to c while the permanent-delete review is still open.
     sequenceIndex = 2;
-    useQuickViewStore.getState().update(sequenceSnapshot() as ViewerSequenceSnapshot);
-    expect(useQuickViewStore.getState().session?.item.hash).toBe("c");
+    useFullscreenViewStore.getState().update(sequenceSnapshot() as ViewerSequenceSnapshot);
+    expect(useFullscreenViewStore.getState().session?.item.hash).toBe("c");
     expect(viewerBroadcast().pendingDelete).toEqual({ kind: "permanent", fileName: "b.jpg" });
 
     await confirmViewerDelete();
@@ -472,9 +451,9 @@ describe("viewer workflow", () => {
       selectedKeys: new Set(["a", "b", "c"]),
       selectedPositions: new Map([["a", 0], ["b", 1], ["c", 2]]),
     });
-    expect(openViewerFromMain("quick")).toBe(true);
+    expect(openFullscreenView()).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(useQuickViewStore.getState().session?.item.hash).toBe("b");
+    expect(useFullscreenViewStore.getState().session?.item.hash).toBe("b");
 
     await requestViewerDelete(false);
 
@@ -492,9 +471,9 @@ describe("viewer workflow", () => {
       selectedKeys: new Set(["a", "b", "c"]),
       selectedPositions: new Map([["a", 0], ["b", 1], ["c", 2]]),
     });
-    expect(openViewerFromMain("quick")).toBe(true);
+    expect(openFullscreenView()).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(useQuickViewStore.getState().session?.item.hash).toBe("b");
+    expect(useFullscreenViewStore.getState().session?.item.hash).toBe("b");
 
     await requestViewerDelete(true);
     await confirmViewerDelete();

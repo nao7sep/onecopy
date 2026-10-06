@@ -8,7 +8,7 @@ import { useComparisonStore } from "../../src/state/comparison-store";
 import { useAppStore } from "../../src/state/app-store";
 import { useItemsStore } from "../../src/state/items-store";
 import { currentMainFeedback, useMainFeedbackStore } from "../../src/state/main-feedback-store";
-import { useQuickViewStore } from "../../src/state/quick-view-store";
+import { useFullscreenViewStore } from "../../src/state/fullscreen-view-store";
 import { useAppShellStore } from "../../src/state/app-shell-store";
 import { pushModal, resetModalStack } from "../../src/utils/modalStack";
 import { installPreviewCommandWiring } from "../../src/workflows/preview";
@@ -89,7 +89,7 @@ beforeEach(() => {
       quarantines: [],
     },
   });
-  useQuickViewStore.setState({ session: null, pendingDelete: null });
+  useFullscreenViewStore.setState({ session: null, pendingDelete: null });
   useItemsStore.setState({
     selected: { kind: "image", month: "2026-01" },
     items: [ITEM],
@@ -106,32 +106,18 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("global viewer commands", () => {
-  it("opens true fullscreen when the in-pane Preview owns focus", async () => {
+  it("opens nothing for F, wherever focus is", async () => {
     const view = render(<Harness />);
-    const preview = view.getByLabelText("Preview pane");
-    preview.focus();
-
-    fireEvent.keyDown(preview, { key: "f" });
+    for (const target of [view.getByLabelText("Preview pane"), view.getByRole("tree")]) {
+      target.focus();
+      fireEvent.keyDown(target, { key: "f" });
+    }
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(useQuickViewStore.getState().session?.presentation).toBe(
-      "fullscreen",
-    );
-  });
-
-  it("does not open the viewer for F while the sidebar owns focus (R5.1 D4)", async () => {
-    const view = render(<Harness />);
-    const tree = view.getByRole("tree");
-    tree.focus();
-
-    fireEvent.keyDown(tree, { key: "f" });
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-
-    expect(useQuickViewStore.getState().session).toBeNull();
+    expect(invokeCalls.some((call) => call.command === "viewer_sequence_start")).toBe(false);
+    expect(useFullscreenViewStore.getState().session).toBeNull();
   });
 });
 

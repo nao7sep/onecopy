@@ -10,7 +10,7 @@ import {
 import { log, toErrorFields } from "../repositories";
 import { reportStatePatchFailure, useAppStore } from "../state/app-store";
 import { usePreviewStore } from "../state/preview-store";
-import { useQuickViewStore } from "../state/quick-view-store";
+import { useFullscreenViewStore } from "../state/fullscreen-view-store";
 import { createEventInstaller } from "../utils/eventInstallation";
 import { keyOf } from "../models/items";
 
@@ -56,7 +56,7 @@ function broadcast(): void {
 }
 
 function shouldRetainUnownedSession(current: PlaybackSession): boolean {
-  const viewer = useQuickViewStore.getState();
+  const viewer = useFullscreenViewStore.getState();
   if (viewer.currentKey() === current.key) return true;
   const preview = usePreviewStore.getState();
   const previewKey =
@@ -67,18 +67,16 @@ function shouldRetainUnownedSession(current: PlaybackSession): boolean {
   return preview.follow && previewKey === current.key;
 }
 
-/** Persistent Preview never becomes another playback owner while the
- * transient viewer is open for the same content (viewing-sessions.md: "Main
- * keeps ... persistent Preview follows it without becoming another playback
- * owner"; content-presentation.md: "Only one OneCopy surface owns playback").
- * A viewer registration briefly missing mid-item-change (Quick View drops the
- * old item's registration before Preview catches up to the new anchor) must
- * not hand the live session to Preview for that gap — the viewer session
- * being OPEN is what reserves the slot, not merely having a registration this
- * instant. */
+/** The preview never becomes a playback owner while the fullscreen view is
+ * open: the preview follows the same anchor behind it, and two surfaces
+ * playing one item would be heard twice. A fullscreen-view registration
+ * briefly missing mid-item-change (the view drops the old item's registration
+ * before the preview catches up to the new anchor) must not hand the live
+ * session to the preview for that gap — the session being OPEN is what
+ * reserves the slot, not merely having a registration this instant. */
 function eligibleRegistrations(): PlaybackRegistration[] {
   const all = [...registrations.values()];
-  if (useQuickViewStore.getState().session === null) return all;
+  if (useFullscreenViewStore.getState().session === null) return all;
   return all.filter(
     (registration) => registration.surface !== "preview-split" && registration.surface !== "preview-window",
   );
@@ -268,7 +266,7 @@ const install = createEventInstaller(
     // Reserve/release the owner slot the instant the viewer opens or closes,
     // rather than waiting for the next register/unregister to happen to
     // recompute it.
-    listeners.retain(useQuickViewStore.subscribe((state, previous) => {
+    listeners.retain(useFullscreenViewStore.subscribe((state, previous) => {
       if ((state.session === null) !== (previous.session === null)) recompute();
     }));
     listeners.retain(useAppStore.subscribe((state, previous) => {

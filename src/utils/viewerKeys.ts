@@ -11,7 +11,7 @@ export function transcriptOwnsScrollKey(event: KeyboardEvent): boolean {
 }
 
 /** Does a focused native or body-specific control already own this key?
- * Shared by the transient viewer and the separate Preview window, which both
+ * Shared by the fullscreen view and the preview window, which both
  * forward navigation/activation keys to their command owner unless a real
  * control (a button, a native `<audio controls>`/`<video controls>` player, a
  * slider, a menu, or the transcript's own scroll region) already consumes
@@ -25,12 +25,12 @@ export function controlOwnsForwardableKey(event: KeyboardEvent): boolean {
   ) !== null;
 }
 
-/** Shared transient-viewer dispatch policy. Native controls keep their
- * ordinary activation/navigation; viewing transitions remain viewer-owned. */
+/** The fullscreen view's dispatch policy. Native controls keep their ordinary
+ * activation/navigation; closing and deletion remain the view's. */
 export function viewerOwnsKey(event: KeyboardEvent, kind: string | null, fileName: string): boolean {
   if (event.defaultPrevented || isComposingEvent(event) || isEditableTarget(event.target)
     || event.metaKey || event.ctrlKey || event.altKey) return false;
-  if ([" ", "f", "F", "Escape"].includes(event.key)) return !event.shiftKey;
+  if (event.key === " " || event.key === "Escape") return !event.shiftKey;
   if (event.key === "Delete" || event.key === "Backspace") return true;
   if (controlOwnsForwardableKey(event)) return false;
   if (event.key === "ArrowLeft" || event.key === "ArrowRight") return true;

@@ -9,7 +9,7 @@ function owns(key: string, kind = "image", fileName = "photo.jpg", target: HTMLE
   return viewerOwnsKey(event, kind, fileName);
 }
 
-describe("transient viewer command ownership", () => {
+describe("fullscreen view command ownership", () => {
   it("keeps image Enter neutral and accepts media Enter", () => {
     expect(owns("Enter")).toBe(false);
     expect(owns("Enter", "video", "movie.mp4")).toBe(true);
@@ -23,7 +23,8 @@ describe("transient viewer command ownership", () => {
     expect(owns("Enter", "video", "movie.mp4", target)).toBe(false);
     expect(owns("ArrowRight", "video", "movie.mp4", target)).toBe(false);
     expect(owns(" ", "video", "movie.mp4", target)).toBe(true);
-    expect(owns("f", "video", "movie.mp4", target)).toBe(true);
+    expect(owns("Escape", "video", "movie.mp4", target)).toBe(true);
+    expect(owns("f", "video", "movie.mp4", target)).toBe(false);
   });
 
   it("keeps text document scrolling local, but audio sequence bounds viewer-owned", () => {
@@ -37,9 +38,9 @@ describe("transient viewer command ownership", () => {
   it("never intercepts typing, composition, modifiers, or an already consumed event", () => {
     expect(owns(" ", "image", "photo.jpg", document.createElement("input"))).toBe(false);
     for (const init of [{ isComposing: true }, { keyCode: 229 }, { metaKey: true }, { ctrlKey: true }, { altKey: true }]) {
-      expect(owns("f", "image", "photo.jpg", document.createElement("div"), init)).toBe(false);
+      expect(owns(" ", "image", "photo.jpg", document.createElement("div"), init)).toBe(false);
     }
-    const event = new KeyboardEvent("keydown", { key: "f", cancelable: true });
+    const event = new KeyboardEvent("keydown", { key: " ", cancelable: true });
     event.preventDefault();
     expect(viewerOwnsKey(event, "image", "photo.jpg")).toBe(false);
   });

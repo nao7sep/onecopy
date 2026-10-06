@@ -23,11 +23,11 @@ import {
   deleteItems,
   rescanCurrentSection,
 } from "../workflows/items";
-import { handleFViewer, handleSpaceQuickView } from "../workflows/quick-view";
+import { handleSpaceFullscreenView } from "../workflows/fullscreen-view";
 import { isAudioFile, itemKey } from "../models/items";
 import { toggleMainPlayback } from "../workflows/playback";
 import { isComposingEvent } from "./useComposing";
-import { useQuickViewStore } from "../state/quick-view-store";
+import { useFullscreenViewStore } from "../state/fullscreen-view-store";
 import { confirmsTrashDelete } from "../models/config";
 
 /** The exact ordered logical items a Main deletion review shows. */
@@ -87,7 +87,7 @@ export function useGlobalCommands() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (hasOpenModal() || useComparisonStore.getState().open || useQuickViewStore.getState().session !== null || isComposingEvent(event)) return;
+      if (hasOpenModal() || useComparisonStore.getState().open || useFullscreenViewStore.getState().session !== null || isComposingEvent(event)) return;
       if (event.defaultPrevented || isEditableTarget(event.target)) return;
       if (isSectionRecheckShortcut(event)) {
         event.preventDefault();
@@ -134,21 +134,7 @@ export function useGlobalCommands() {
         ) {
           return;
         }
-        handleSpaceQuickView(event);
-      } else if (
-        event.key.toLowerCase() === "f" &&
-        !event.metaKey &&
-        !event.ctrlKey &&
-        !event.altKey
-      ) {
-        // Unlike Delete/Enter/Space, F is not exclusive to the main item
-        // area: the in-pane Preview also owns an F path to true fullscreen
-        // (viewing-sessions.md). Only the sidebar tree opts out, matching
-        // "item commands do not act while the sidebar owns focus."
-        if (event.target instanceof Element && event.target.closest('[role="tree"]') !== null) {
-          return;
-        }
-        handleFViewer(event);
+        handleSpaceFullscreenView(event);
       } else if (event.key === "Enter") {
         if (
           !(event.target instanceof Element) ||

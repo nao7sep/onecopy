@@ -11,11 +11,12 @@ import Grid from "../../src/components/Grid";
 import { useItemsStore } from "../../src/state/items-store";
 import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import { usePreviewStore } from "../../src/state/preview-store";
-import { useQuickViewStore } from "../../src/state/quick-view-store";
+import { useFullscreenViewStore } from "../../src/state/fullscreen-view-store";
 import {
   invokeCalls,
   mockCommands,
   mockSectionItems,
+  mockFullscreenDisplay,
   resetTauriMocks,
 } from "../mocks/tauri";
 import { useDerivedWorkStore } from "../../src/state/derived-work-store";
@@ -96,6 +97,7 @@ beforeEach(() => {
   seedAppConfig();
   useComparisonStore.setState({ open: false });
   resetTauriMocks({ keepListeners: true });
+  mockFullscreenDisplay();
   mockCommands({
     patch_state: () => ({}),
     get_item_detail: () => null,
@@ -108,7 +110,7 @@ beforeEach(() => {
     placementPreference: null,
     current: null,
   });
-  useQuickViewStore.setState({ session: null, pendingDelete: null });
+  useFullscreenViewStore.setState({ session: null, pendingDelete: null });
   useDerivedWorkStore.setState({ activeItem: null });
   useSectionsStore.setState({
     sourceCheck: {
@@ -256,7 +258,7 @@ describe("Space", () => {
     // just the happy path where focus transfer masks the old leak.
     container.focus();
     await act(async () => press(container, " ", { cancelable: true }));
-    expect(useQuickViewStore.getState().session).toBeNull();
+    expect(useFullscreenViewStore.getState().session).toBeNull();
     await act(async () => press(container, "ArrowRight", { cancelable: true }));
     expect(useComparisonStore.getState().anchor).toBe("c0");
     expect(useItemsStore.getState().selectedItem).toBe("h2");
@@ -272,28 +274,28 @@ describe("Space", () => {
     }
     expect(useComparisonStore.getState()).toMatchObject({ open: true, anchor: "c0", selected: new Set() });
     expect(useItemsStore.getState().selectedItem).toBe("h2");
-    expect(useQuickViewStore.getState().session).toBeNull();
+    expect(useFullscreenViewStore.getState().session).toBeNull();
     comparison.unmount();
     useComparisonStore.setState({ open: false });
   });
 
-  it("opens Quick View without changing persistent Preview or selection", async () => {
+  it("opens the fullscreen view without changing the preview or selection", async () => {
     // It used to toggle the anchor in and out of the multi-selection, which
     // nobody found and which made Space a way to silently DESELECT the photo
-    // about to be deleted. Selection stays put now; Space only opens Quick View.
+    // about to be deleted. Selection stays put; Space only opens the view.
     const { container } = renderGrid();
     await anchor("h3");
 
     await act(async () => press(container, " "));
 
-    expect(useQuickViewStore.getState().session?.presentation).toBe("quick");
+    expect(useFullscreenViewStore.getState().session).not.toBeNull();
     expect(usePreviewStore.getState().follow).toBe(false);
     expect(useItemsStore.getState().selectedKeys.has("h3")).toBe(true);
     expect(useItemsStore.getState().selectedItem).toBe("h3");
 
     // A second Space is not a hidden Preview toggle.
     await act(async () => press(container, " "));
-    expect(useQuickViewStore.getState().session?.presentation).toBe("quick");
+    expect(useFullscreenViewStore.getState().session).not.toBeNull();
     expect(usePreviewStore.getState().follow).toBe(false);
   });
 
@@ -329,7 +331,7 @@ describe("pointer selection", () => {
     expect([...useItemsStore.getState().selectedKeys]).toEqual(["h1"]);
   });
 
-  it("double-click exclusively selects and opens Quick View", async () => {
+  it("double-click exclusively selects and opens the fullscreen view", async () => {
     const { view } = renderGrid();
     const tile = view.container.querySelector<HTMLElement>("[data-item-key='h1'] figure")!;
 
@@ -339,7 +341,7 @@ describe("pointer selection", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(useItemsStore.getState().selectedKeys.has("h1")).toBe(true);
-    expect(useQuickViewStore.getState().session?.presentation).toBe("quick");
+    expect(useFullscreenViewStore.getState().session).not.toBeNull();
   });
 });
 

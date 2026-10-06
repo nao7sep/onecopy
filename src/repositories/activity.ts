@@ -32,7 +32,6 @@ export type ActivityOwner =
   | "backgroundWork"
   | "mutation"
   | "preview"
-  | "quickView"
   | "fullscreen"
   | "comparison"
   | "destination"

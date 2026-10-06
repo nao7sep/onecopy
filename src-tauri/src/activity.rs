@@ -50,7 +50,6 @@ pub enum ActivityOwner {
     BackgroundWork,
     Mutation,
     Preview,
-    QuickView,
     Fullscreen,
     Comparison,
     Destination,

@@ -1,16 +1,13 @@
-// The transient viewer is one application-owned session with two renderings:
-// an overlay in Main and a reusable borderless fullscreen window. This edge
-// coordinates those surfaces. The native disk-backed sequence owns frozen
-// membership and order; neither React surface owns library state.
+// The fullscreen view is one application-owned session shown in a reusable
+// borderless fullscreen window. Unlike the preview, which follows Main's
+// selection, it holds the list while it is open and shows one item at a time.
+// The native disk-backed sequence owns frozen membership and order; the window
+// owns no library state.
 
 import { emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type {
-  ViewerMove,
-  ViewerPresentation,
-  ViewerSequenceSnapshot,
-} from "../models/viewerSession";
+import type { ViewerMove, ViewerSequenceSnapshot } from "../models/viewerSession";
 import { viewerMainIndex } from "../models/viewerSession";
 import type { ItemDetail, SectionItem, SectionLocation } from "../models/items";
 import { identityFromKey, identityKey, isAudioFile, itemKey } from "../models/items";
@@ -23,20 +20,15 @@ import {
 import { useAppStore } from "../state/app-store";
 import { useItemsStore } from "../state/items-store";
 import { beginMainFeedback } from "../state/main-feedback-store";
-import { useQuickViewStore, type ViewerDeleteReview } from "../state/quick-view-store";
+import { useFullscreenViewStore, type ViewerDeleteReview } from "../state/fullscreen-view-store";
 import { recordActionFailure } from "../state/notifications-store";
 import { deleteItems } from "./items";
 import { toggleMainPlayback } from "./playback";
-import {
-  enterViewerFullscreen,
-  exitViewerFullscreen,
-  type ViewerMonitor,
-} from "./viewer-window";
+import { enterViewerFullscreen, exitViewerFullscreen } from "./viewer-window";
 import { createEventInstaller } from "../utils/eventInstallation";
 import { useComparisonStore } from "../state/comparison-store";
 import { message, type Message } from "../i18n/translate";
 import { confirmsTrashDelete } from "../models/config";
-export type { ViewerMonitor } from "./viewer-window";
 
 export interface ViewerBroadcast {
   item: SectionItem | null;
@@ -60,7 +52,6 @@ interface ViewerKeyMessage {
 }
 
 let itemReconcileQueued = false;
-let fullscreenRequest = 0;
 let viewerOpenRequest = 0;
 let viewerSequenceQueue: Promise<void> = Promise.resolve();
 
@@ -69,11 +60,11 @@ function enqueueViewerSequence(task: () => Promise<void>): void {
 }
 
 function currentItem(): SectionItem | null {
-  return useQuickViewStore.getState().session?.item ?? null;
+  return useFullscreenViewStore.getState().session?.item ?? null;
 }
 
 export function viewerBroadcast(): ViewerBroadcast {
-  const session = useQuickViewStore.getState().session;
+  const session = useFullscreenViewStore.getState().session;
   const item = currentItem();
   return {
     item,
@@ -81,37 +72,26 @@ export function viewerBroadcast(): ViewerBroadcast {
     index: session?.index ?? 0,
     length: session?.length ?? 0,
     pendingDelete: (() => {
-      const pending = useQuickViewStore.getState().pendingDelete;
+      const pending = useFullscreenViewStore.getState().pendingDelete;
       return pending === null ? null : { kind: pending.kind, fileName: pending.fileName };
     })(),
     sectionKind: session === null ? null
       : session.detail.kind === "image" ? "image"
       : session.detail.kind === "video" ? "video" : "other",
-    failure: useQuickViewStore.getState().failure,
+    failure: useFullscreenViewStore.getState().failure,
   };
 }
 
+/** Closing broadcasts the empty state too, so the window is blank before it
+ * hides and never flashes the previous item when it is shown again. */
 function broadcastViewer(): void {
-  if (useQuickViewStore.getState().session?.presentation !== "fullscreen") return;
   void emit("viewer://state", viewerBroadcast()).catch(
     reportWindowCall("viewer state broadcast"),
   );
 }
 
-function clearFullscreenSurface(): void {
-  void emit("viewer://state", {
-    item: null,
-    detail: null,
-    index: 0,
-    length: 0,
-    pendingDelete: null,
-    sectionKind: null,
-    failure: null,
-  } satisfies ViewerBroadcast).catch(reportWindowCall("viewer clear broadcast"));
-}
-
 async function syncMainAnchor(): Promise<void> {
-  const viewer = useQuickViewStore.getState();
+  const viewer = useFullscreenViewStore.getState();
   const key = viewer.currentKey();
   const session = viewer.session;
   if (key === null || session === null) return;
@@ -128,8 +108,8 @@ async function syncMainAnchor(): Promise<void> {
     else before.selectItem(key, "nearest", position);
     return;
   }
-  const ownsViewer = () => useQuickViewStore.getState().session?.token === session.token &&
-    useQuickViewStore.getState().currentKey() === key;
+  const ownsViewer = () => useFullscreenViewStore.getState().session?.token === session.token &&
+    useFullscreenViewStore.getState().currentKey() === key;
   let section: SectionLocation | null;
   try {
     section = await invoke<SectionLocation | null>("get_item_section", { identity: session.member });
@@ -137,7 +117,7 @@ async function syncMainAnchor(): Promise<void> {
     log.error("viewer Main location failed", toErrorFields(error));
     if (ownsViewer()) {
       const failure = message("viewer.locateInMainFailed");
-      useQuickViewStore.getState().setFailure(failure);
+      useFullscreenViewStore.getState().setFailure(failure);
       recordActionFailure("viewer-main-location-failed", failure, error);
     }
     return;
@@ -147,7 +127,7 @@ async function syncMainAnchor(): Promise<void> {
     current.selectedKeys !== before.selectedKeys || current.selectedItem !== before.selectedItem ||
     current.currentSort().order !== sort.order || current.currentSort().desc !== sort.desc) return;
   if (section === null) {
-    useQuickViewStore.getState().setFailure(message("viewer.notInMain"));
+    useFullscreenViewStore.getState().setFailure(message("viewer.notInMain"));
     return;
   }
   await current.select(section, {
@@ -156,7 +136,7 @@ async function syncMainAnchor(): Promise<void> {
   });
   const restored = useItemsStore.getState();
   if (ownsViewer() && !restored.loading && restored.loadError === null && restored.selectedItem === key) {
-    useQuickViewStore.getState().attachMainProjection({
+    useFullscreenViewStore.getState().attachMainProjection({
       section: restored.selected, sort: restored.currentSort(), revision: restored.reconciliationId,
     });
   }
@@ -168,60 +148,27 @@ function focusMainAnchor(): void {
   }
 }
 
-/** OS-level app focus alone, with no DOM grid focus — for returning to a
- * still-open Quick View, which already focused its own surface synchronously
- * at mount (`useModalLayer`). Calling `focusMainAnchor` here would steal
- * focus right back to the hidden Main grid behind an `aria-modal` dialog
- * (viewing-sessions.md D7: "persistent Preview returns focus to its own
- * window" — Quick View is the same kind of returning owner). */
-async function restoreAppFocus(): Promise<void> {
-  await getCurrentWindow().setFocus().catch(reportWindowCall("main setFocus"));
-}
-
 async function restoreMainFocus(): Promise<void> {
-  await restoreAppFocus();
+  await getCurrentWindow().setFocus().catch(reportWindowCall("main setFocus"));
   focusMainAnchor();
 }
 
-function beginFullscreen(
-  fallback: "quick" | "main",
-  preferredMonitor?: ViewerMonitor,
-): void {
-  const request = ++fullscreenRequest;
-  const feedback = beginMainFeedback("viewer");
-  void enterViewerFullscreen(preferredMonitor)
-    .then(broadcastViewer)
-    .catch((error) => recoverFullscreenFailure(error, fallback, request, feedback));
-}
-
-function recoverFullscreenFailure(
-  error: unknown,
-  fallback: "quick" | "main",
-  request: number,
-  feedback: ReturnType<typeof beginMainFeedback>,
-): void {
-  log.error("fullscreen viewer failed", toErrorFields(error));
-  if (request !== fullscreenRequest) return;
-  const session = useQuickViewStore.getState().session;
-  if (session?.presentation === "fullscreen") {
-    if (fallback === "quick") {
-      useQuickViewStore.getState().setPresentation("quick");
-    } else {
+/** A window failure closes only the session it was shown for: a later
+ * session opened in the meantime keeps its own window. */
+function showWindow(token: string, feedback: ReturnType<typeof beginMainFeedback>): void {
+  void enterViewerFullscreen()
+    .then(() => {
+      broadcastViewer();
+      feedback.finish();
+    })
+    .catch((error) => {
+      log.error("fullscreen view window failed", toErrorFields(error));
+      if (useFullscreenViewStore.getState().session?.token !== token) return;
       void closeViewer();
-    }
-    const failure = message("viewer.fullScreenOpenFailed");
-    if (fallback === "quick") {
-      useQuickViewStore.getState().setFailure(failure);
-    } else {
+      const failure = message("viewer.fullScreenOpenFailed");
       feedback.finish({ tone: "danger", text: failure });
-    }
-    recordActionFailure("fullscreen-open-failed", failure, error);
-  }
-  if (fallback === "quick") {
-    clearFullscreenSurface();
-    // Quick View already mounted above and owns its own surface focus (D7).
-    void exitViewerFullscreen().then(restoreAppFocus);
-  }
+      recordActionFailure("fullscreen-open-failed", failure, error);
+    });
 }
 
 const install = createEventInstaller(
@@ -234,12 +181,14 @@ const install = createEventInstaller(
       void confirmViewerDelete();
     });
     await listeners.listen("viewer://cancel-delete", () => {
-      useQuickViewStore.getState().cancelDelete();
+      useFullscreenViewStore.getState().cancelDelete();
     });
     await listeners.listen("viewer://dismiss-failure", () => {
-      useQuickViewStore.getState().setFailure(null);
+      useFullscreenViewStore.getState().setFailure(null);
     });
-    listeners.retain(useQuickViewStore.subscribe(broadcastViewer));
+    listeners.retain(useFullscreenViewStore.subscribe((state, previous) => {
+      if (state.session !== null || previous.session !== null) broadcastViewer();
+    }));
     listeners.retain(useItemsStore.subscribe((state, previous) => {
       if (state.reconciliationId === previous.reconciliationId || itemReconcileQueued) return;
       itemReconcileQueued = true;
@@ -258,10 +207,10 @@ export function installViewerWorkflow(): Promise<void> {
 }
 
 async function reconcileViewerSequence(): Promise<void> {
-  const session = useQuickViewStore.getState().session;
+  const session = useFullscreenViewStore.getState().session;
   if (session === null) return;
   enqueueViewerSequence(async () => {
-    const current = useQuickViewStore.getState().session;
+    const current = useFullscreenViewStore.getState().session;
     if (current?.token !== session.token) return;
     const before = identityKey(current.member);
     try {
@@ -269,28 +218,27 @@ async function reconcileViewerSequence(): Promise<void> {
         "viewer_sequence_reconcile",
         { token: session.token },
       );
-      if (useQuickViewStore.getState().session?.token !== session.token) return;
+      if (useFullscreenViewStore.getState().session?.token !== session.token) return;
       if (snapshot === null) {
         await closeViewer();
         return;
       }
-      useQuickViewStore.getState().update(snapshot);
-      useQuickViewStore.getState().setFailure(null);
+      useFullscreenViewStore.getState().update(snapshot);
+      useFullscreenViewStore.getState().setFailure(null);
       if (identityKey(snapshot.member) !== before) await syncMainAnchor();
     } catch (error) {
       log.error("viewer sequence reconciliation failed", toErrorFields(error));
-      if (useQuickViewStore.getState().session?.token !== session.token) return;
+      if (useFullscreenViewStore.getState().session?.token !== session.token) return;
       const failure = message("viewer.refreshFailed");
-      useQuickViewStore.getState().setFailure(failure);
+      useFullscreenViewStore.getState().setFailure(failure);
       recordActionFailure("viewer-reconcile-failed", failure, error);
     }
   });
 }
 
-export function openViewerFromMain(
-  presentation: ViewerPresentation,
-  preferredMonitor?: ViewerMonitor,
-): boolean {
+/** Space or double-click on Main's list: the fullscreen view opens on the
+ * anchor, within the selection when more than one item is selected. */
+export function openFullscreenView(): boolean {
   if (useComparisonStore.getState().open) return false;
   const feedback = beginMainFeedback("viewer");
   const items = useItemsStore.getState();
@@ -308,7 +256,7 @@ export function openViewerFromMain(
     return false;
   }
   const request = ++viewerOpenRequest;
-  const owner = presentation === "fullscreen" ? "fullscreen" : "quickView";
+  const owner = "fullscreen";
   const operationId = newActivityOperationId(owner);
   recordActivity({
     kind: "started",
@@ -347,11 +295,10 @@ export function openViewerFromMain(
         );
         return;
       }
-      useQuickViewStore.getState().start(snapshot, presentation, {
+      useFullscreenViewStore.getState().start(snapshot, {
         projection: { section, sort: entrySort, revision: items.reconciliationId },
         selectedKeys: [...items.selectedKeys], frozenPositionsValid: true,
       });
-      feedback.finish();
       recordActivity({
         kind: "opened",
         owner,
@@ -360,7 +307,7 @@ export function openViewerFromMain(
         current: "open",
         reason: "completion",
       });
-      if (presentation === "fullscreen") beginFullscreen("main", preferredMonitor);
+      showWindow(snapshot.token, feedback);
     })
     .catch((error) => {
       if (request !== viewerOpenRequest) return;
@@ -380,92 +327,59 @@ export function openViewerFromMain(
   return true;
 }
 
-export function handleSpaceQuickView(event: {
+export function handleSpaceFullscreenView(event: {
   preventDefault: () => void;
   metaKey?: boolean;
   ctrlKey?: boolean;
   altKey?: boolean;
 }): boolean {
   if (event.metaKey || event.ctrlKey || event.altKey) return false;
-  const opened = openViewerFromMain("quick");
-  event.preventDefault();
-  return opened;
-}
-
-export function handleFViewer(event: {
-  preventDefault: () => void;
-  metaKey?: boolean;
-  ctrlKey?: boolean;
-  altKey?: boolean;
-}): boolean {
-  if (event.metaKey || event.ctrlKey || event.altKey) return false;
-  const opened = openViewerFromMain("fullscreen");
+  const opened = openFullscreenView();
   event.preventDefault();
   return opened;
 }
 
 export function moveViewer(move: ViewerMove): void {
-  const session = useQuickViewStore.getState().session;
+  const session = useFullscreenViewStore.getState().session;
   if (session === null) return;
   enqueueViewerSequence(async () => {
-    if (useQuickViewStore.getState().session?.token !== session.token) return;
+    if (useFullscreenViewStore.getState().session?.token !== session.token) return;
     try {
       const snapshot = await invoke<ViewerSequenceSnapshot>("viewer_sequence_move", {
         token: session.token,
         movement: move,
       });
-      if (useQuickViewStore.getState().session?.token !== session.token) return;
-      useQuickViewStore.getState().update(snapshot);
-      useQuickViewStore.getState().setFailure(null);
+      if (useFullscreenViewStore.getState().session?.token !== session.token) return;
+      useFullscreenViewStore.getState().update(snapshot);
+      useFullscreenViewStore.getState().setFailure(null);
       await syncMainAnchor();
     } catch (error) {
       log.error("viewer navigation failed", toErrorFields(error));
-      if (useQuickViewStore.getState().session?.token !== session.token) return;
+      if (useFullscreenViewStore.getState().session?.token !== session.token) return;
       const failure = message("viewer.navigationFailed");
-      useQuickViewStore.getState().setFailure(failure);
+      useFullscreenViewStore.getState().setFailure(failure);
       recordActionFailure("viewer-navigation-failed", failure, error);
     }
   });
 }
 
-export async function setViewerPresentation(presentation: ViewerPresentation): Promise<void> {
-  const current = useQuickViewStore.getState().session?.presentation;
-  if (current === null || current === undefined || current === presentation) return;
-  useQuickViewStore.getState().setPresentation(presentation);
-  if (presentation === "fullscreen") {
-    beginFullscreen("quick");
-  } else {
-    fullscreenRequest += 1;
-    clearFullscreenSurface();
-    await exitViewerFullscreen();
-    // Quick View is already mounted and already owns DOM focus on its own
-    // surface — only the app window itself needs focus back (D7).
-    await restoreAppFocus();
-  }
-}
-
 export async function closeViewer(): Promise<void> {
   viewerOpenRequest += 1;
-  const session = useQuickViewStore.getState().session;
-  const presentation = session?.presentation;
-  if (presentation !== undefined) {
+  const session = useFullscreenViewStore.getState().session;
+  if (session !== null) {
     recordActivity({
       kind: "closed",
-      owner: presentation === "fullscreen" ? "fullscreen" : "quickView",
+      owner: "fullscreen",
       previous: "open",
       current: "closed",
       reason: "user",
     });
   }
-  useQuickViewStore.getState().close();
+  useFullscreenViewStore.getState().close();
   if (session !== null) {
     await invoke("viewer_sequence_close", { token: session.token }).catch((error) =>
       log.warn("viewer sequence cleanup failed", toErrorFields(error)),
     );
-  }
-  fullscreenRequest += 1;
-  if (presentation === "fullscreen") {
-    clearFullscreenSurface();
     await exitViewerFullscreen();
   }
   // Library updates and mutations own Main reconciliation. Closing a viewer
@@ -476,37 +390,31 @@ export async function closeViewer(): Promise<void> {
 export async function requestViewerDelete(permanent: boolean): Promise<void> {
   const configConfirms = confirmsTrashDelete(useAppStore.getState().appData?.config);
   if (permanent || configConfirms) {
-    useQuickViewStore.getState().requestDelete(permanent ? "permanent" : "trash");
+    useFullscreenViewStore.getState().requestDelete(permanent ? "permanent" : "trash");
     return;
   }
   await deleteViewerCurrent(false);
 }
 
 export async function confirmViewerDelete(): Promise<void> {
-  const pending = useQuickViewStore.getState().pendingDelete;
-  useQuickViewStore.getState().cancelDelete();
+  const pending = useFullscreenViewStore.getState().pendingDelete;
+  useFullscreenViewStore.getState().cancelDelete();
   if (pending !== null) await deleteItems([pending.key], pending.kind === "permanent");
 }
 
 async function deleteViewerCurrent(permanent: boolean): Promise<void> {
-  const key = useQuickViewStore.getState().currentKey();
+  const key = useFullscreenViewStore.getState().currentKey();
   if (key !== null) await deleteItems([key], permanent);
 }
 
 export async function handleViewerKey(message: ViewerKeyMessage): Promise<void> {
   if (message.metaKey || message.ctrlKey || message.altKey) return;
-  const session = useQuickViewStore.getState().session;
-  if (session === null || useQuickViewStore.getState().pendingDelete !== null) return;
-  if (message.repeat && ["Escape", " ", "f", "F", "Enter", "Delete", "Backspace"].includes(message.key)) return;
+  const session = useFullscreenViewStore.getState().session;
+  if (session === null || useFullscreenViewStore.getState().pendingDelete !== null) return;
+  if (message.repeat && ["Escape", " ", "Enter", "Delete", "Backspace"].includes(message.key)) return;
   const sequenceBounds = session.detail.kind !== "other" || isAudioFile(session.item.fileName);
-  if (message.key === "Escape") {
+  if (message.key === "Escape" || message.key === " ") {
     await closeViewer();
-  } else if (message.key === " ") {
-    if (session.presentation === "fullscreen") await setViewerPresentation("quick");
-    else await closeViewer();
-  } else if (message.key.toLowerCase() === "f") {
-    if (session.presentation === "fullscreen") await closeViewer();
-    else await setViewerPresentation("fullscreen");
   } else if (message.key === "ArrowLeft") {
     moveViewer("previous");
   } else if (message.key === "ArrowRight") {

@@ -22,7 +22,7 @@ import { useItemsStore } from "../state/items-store";
 import { useI18n } from "../i18n/I18nContext";
 import { hasOpenModal } from "../utils/modalStack";
 import { useComparisonStore } from "../state/comparison-store";
-import { useQuickViewStore } from "../state/quick-view-store";
+import { useFullscreenViewStore } from "../state/fullscreen-view-store";
 
 // The right pane's destination tree, mirroring the sidebar's interaction
 // (redesigned 2026-08-17, developer-approved): one composite tree with the
@@ -431,7 +431,7 @@ export default function DestinationsTab() {
   // active folder. File operations remain explicit action-bar commands.
   const onKeyDown = (event: React.KeyboardEvent) => {
     if (event.defaultPrevented || isComposingEvent(event) || hasOpenModal()
-      || useComparisonStore.getState().open || useQuickViewStore.getState().session !== null
+      || useComparisonStore.getState().open || useFullscreenViewStore.getState().session !== null
       || event.metaKey || event.ctrlKey || event.altKey) return;
     const rows = visibleRows(roots, children, expanded);
     if (rows.length === 0) return;

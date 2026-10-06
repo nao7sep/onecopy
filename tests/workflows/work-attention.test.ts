@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installWorkAttention, setWorkViewport } from "../../src/workflows/work-attention";
 import { useItemsStore } from "../../src/state/items-store";
 import { useComparisonStore } from "../../src/state/comparison-store";
-import { useQuickViewStore } from "../../src/state/quick-view-store";
+import { useFullscreenViewStore } from "../../src/state/fullscreen-view-store";
 import { EMPTY_ITEM_WORK } from "../../src/models/items";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
@@ -13,7 +13,7 @@ beforeEach(() => {
   mockCommands({ prioritize_derived_work: () => null });
   useItemsStore.setState({ selected: { kind: "video", month: "2026-09" }, selectedItem: "video", totalItems: 1000 });
   useComparisonStore.setState({ open: false });
-  useQuickViewStore.setState({ session: null });
+  useFullscreenViewStore.setState({ session: null });
   installWorkAttention();
 });
 afterEach(async () => { await vi.advanceTimersByTimeAsync(100); vi.useRealTimers(); });

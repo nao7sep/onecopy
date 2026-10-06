@@ -16,7 +16,7 @@ const SOURCES = [
   "src/hooks/useMainWindowLifecycle.ts",
   "src/state/preview-store.ts",
   "src/state/comparison-store.ts",
-  "src/workflows/quick-view.ts",
+  "src/workflows/fullscreen-view.ts",
   "src/workflows/viewer-window.ts",
   "src/windows/PreviewWindow.tsx",
   "src/windows/ViewerWindow.tsx",

@@ -8,7 +8,7 @@ import { useSectionsStore } from "../../src/state/sections-store";
 import { mockCommands, mockSectionItems, resetTauriMocks } from "../mocks/tauri";
 import { pushModal, resetModalStack } from "../../src/utils/modalStack";
 import { useComparisonStore } from "../../src/state/comparison-store";
-import { useQuickViewStore } from "../../src/state/quick-view-store";
+import { useFullscreenViewStore } from "../../src/state/fullscreen-view-store";
 
 const COUNTS = {
   images: [{ month: "undated", count: 2 }],
@@ -20,7 +20,7 @@ beforeEach(() => {
   resetTauriMocks();
   resetModalStack();
   useComparisonStore.setState({ open: false });
-  useQuickViewStore.setState({ session: null });
+  useFullscreenViewStore.setState({ session: null });
   mockCommands({
     get_item_detail: () => null,
   });

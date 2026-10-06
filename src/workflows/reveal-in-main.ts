@@ -1,16 +1,16 @@
 import { useItemsStore } from "../state/items-store";
 import { useComparisonStore } from "../state/comparison-store";
-import { useQuickViewStore } from "../state/quick-view-store";
+import { useFullscreenViewStore } from "../state/fullscreen-view-store";
 import { message } from "../i18n/translate";
 import { reportActionFailure } from "../state/notifications-store";
 import { closeComparison } from "./comparison";
-import { closeViewer } from "./quick-view";
+import { closeViewer } from "./fullscreen-view";
 
 /** Shared diagnostic navigation; the requesting modal owns its inline result. */
 export async function revealInMain(path: string, isCurrent: () => boolean, onRevealed: () => void, expectedHash?: string) {
   const canLeave = () => !useComparisonStore.getState().busy &&
     useComparisonStore.getState().pendingAction === null &&
-    useQuickViewStore.getState().pendingDelete === null;
+    useFullscreenViewStore.getState().pendingDelete === null;
   if (!canLeave()) return "blocked" as const;
   const result = await useItemsStore.getState().revealPath(path, () => isCurrent() && canLeave(), expectedHash);
   if (result !== "revealed") return result;
@@ -18,7 +18,7 @@ export async function revealInMain(path: string, isCurrent: () => boolean, onRev
   // existing view owners dispose their readers/windows and restore Preview.
   onRevealed();
   try {
-    if (useQuickViewStore.getState().session !== null) await closeViewer();
+    if (useFullscreenViewStore.getState().session !== null) await closeViewer();
     if (useComparisonStore.getState().open) await closeComparison();
   } catch (error) {
     reportActionFailure(

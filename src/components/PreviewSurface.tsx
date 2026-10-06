@@ -130,7 +130,7 @@ function VideoSurface({
       data-video-surface
       tabIndex={keyboardActive ? 0 : -1}
       role={keyboardActive ? "group" : undefined}
-      aria-label={keyboardActive ? t("preview.videoQuickView") : undefined}
+      aria-label={keyboardActive ? t("viewer.videoPlayer") : undefined}
       className="flex h-full min-h-0 w-full flex-col gap-2 outline-none"
     >
       <div
@@ -581,7 +581,7 @@ export default function PreviewSurface({
   keyboardActive?: boolean;
 }) {
   const { t } = useI18n();
-  const isQuickViewSetting = surface === "quick" || surface === "viewer";
+  const isQuickViewSetting = surface === "viewer";
   const configuredEnlargeSmall = useAppStore((state) => {
     const config = state.appData?.config;
     if (config === null || config === undefined) return null;

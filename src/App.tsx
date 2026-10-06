@@ -30,7 +30,6 @@ import ShortcutsModal from "./components/ShortcutsModal";
 import SettingsModal from "./components/SettingsModal";
 import { Menu, MenuItem, MenuSeparator } from "./components/Menu";
 import AboutModal from "./components/AboutModal";
-import QuickView from "./components/QuickView";
 import TrashModal from "./components/TrashModal";
 import MutationResultActions from "./components/MutationResultActions";
 import ConfirmModal from "./components/ConfirmModal";
@@ -43,7 +42,6 @@ import {
 } from "./state/binaries-store";
 import { managedInstallActivityLine } from "./models/dependencyProgress";
 import { usePreviewStore } from "./state/preview-store";
-import { useQuickViewStore } from "./state/quick-view-store";
 import {
   backgroundWorkLine,
   useDerivedWorkStore,
@@ -160,10 +158,6 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
   const utilitySurface = useAppShellStore((s) => s.utilitySurface);
   const openUtility = useAppShellStore((s) => s.openUtility);
   const closeUtility = useAppShellStore((s) => s.closeUtility);
-  /** Transient media inspection lives in the main webview. */
-  const quickViewOpen = useQuickViewStore(
-    (state) => state.session?.presentation === "quick",
-  );
   const previewFollow = usePreviewStore((s) => s.follow);
   const previewPlacement = usePreviewStore((s) => s.placement);
   const previewCurrent = usePreviewStore((s) => s.current);
@@ -256,7 +250,6 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
         onClose={closeUtility}
       />
       <AboutModal open={utilitySurface === "about"} onClose={closeUtility} />
-      {quickViewOpen ? <QuickView /> : null}
       {confirmPermanent !== null ? (
         <ConfirmModal
           title={t("common.deletePermanentlyTitle")}

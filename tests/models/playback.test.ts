@@ -24,16 +24,16 @@ describe("playback failure messages", () => {
 });
 
 describe("playback ownership", () => {
-  it("gives the transient viewer priority over persistent Preview", () => {
+  it("gives the fullscreen view priority over the preview", () => {
     const session = choosePlaybackSession(
       [
         { surface: "preview-split", key: "clip", medium: "video" },
-        { surface: "quick", key: "clip", medium: "video" },
+        { surface: "viewer", key: "clip", medium: "video" },
       ],
       null,
       policy,
     );
-    expect(session?.owner).toBe("quick");
+    expect(session?.owner).toBe("viewer");
     expect(session?.playing).toBe(true);
   });
 

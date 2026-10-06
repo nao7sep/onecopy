@@ -11,7 +11,7 @@ describe("shortcut catalogue", () => {
     const columns = shortcutColumns();
     expect(columns.map((column) => column.map((group) => t(group.title)))).toEqual([
       ["Main items", "Sections", "Destinations"],
-      ["Quick View and fullscreen", "Preview window", "Media and text", "Confirmations"],
+      ["Fullscreen view", "Preview window", "Media and text", "Confirmations"],
       ["Comparison", "App"],
     ]);
     const lengths = columns.map((column) => column.reduce((n, group) => n + group.rows.length, 0));
@@ -40,7 +40,9 @@ describe("shortcut catalogue", () => {
     };
     expect(row("Main items", "Delete/Backspace")).toContain("selected items");
     expect(row("Preview window", "Delete/Backspace")).toContain("complete selection");
-    expect(row("Quick View and fullscreen", "Delete/Backspace")).toContain("only the displayed item");
+    expect(row("Fullscreen view", "Delete/Backspace")).toContain("only the displayed item");
+    expect(row("Fullscreen view", "Space/Escape")).toBe("Return to Main");
+    expect(row("Main items", "F")).toBeUndefined();
     expect(row("Comparison", "Delete/Backspace")).toContain("marked images themselves");
     expect(row("Comparison", "Enter")).toContain("unmarked images");
     expect(row("Comparison", "Space")).toContain("Space/Escape returns");

@@ -1,12 +1,10 @@
 // @vitest-environment happy-dom
 
-// R4.4 E3 / Finding E.3: a persistent notice lives in `notifications.rs`'s
-// process-wide ACTIVE list, not in any one window's component state. The
-// fullscreen viewer is a separate webview with its own fresh module graph
-// (unlike Quick View, which stays inside Main's already-running one — see
-// `notification-host.test.tsx`'s Quick View open/close test for that half),
-// so it must hydrate the notice from `get_active_notifications` on mount
-// rather than from anything Main already holds in memory. This file exists
+// A persistent notice lives in `notifications.rs`'s process-wide ACTIVE list,
+// not in any one window's component state. The fullscreen view is a separate
+// webview with its own fresh module graph, so it must hydrate the notice from
+// `get_active_notifications` on mount rather than from anything Main already
+// holds in memory. This file exists
 // solely so `installNotificationWiring()`'s module-level singleton has never
 // run before this test — a shared file would let an earlier test's `install()`
 // answer for this one too.

@@ -6,7 +6,7 @@ import { useItemsStore } from "../../src/state/items-store";
 import { useComparisonStore } from "../../src/state/comparison-store";
 import { useNotificationsStore } from "../../src/state/notifications-store";
 import { requestComparisonFromMain } from "../../src/workflows/comparison";
-import { openViewerFromMain } from "../../src/workflows/quick-view";
+import { openFullscreenView } from "../../src/workflows/fullscreen-view";
 import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import { mockCommands, mockSectionItems, resetTauriMocks } from "../mocks/tauri";
 import { message } from "../../src/i18n/translate";
@@ -153,7 +153,7 @@ describe("Main command feedback ownership", () => {
 
   it("makes no-selection viewer feedback informational and clears it on selection", () => {
     useItemsStore.getState().selectItem(null);
-    expect(openViewerFromMain("quick")).toBe(false);
+    expect(openFullscreenView()).toBe(false);
     expect(current()?.tone).toBe("normal");
     expect(inEnglish(current()?.text)).toBe("Select an item to open the viewer.");
     useItemsStore.getState().selectItem("h1", "nearest", 0);

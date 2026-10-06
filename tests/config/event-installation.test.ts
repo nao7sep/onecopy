@@ -17,7 +17,7 @@ const multiListenerOwners = [
   "src/workflows/content-session.ts",
   "src/workflows/mutation-events.ts",
   "src/workflows/playback.ts",
-  "src/workflows/quick-view.ts",
+  "src/workflows/fullscreen-view.ts",
   "src/workflows/scan-events.ts",
 ] as const;
 

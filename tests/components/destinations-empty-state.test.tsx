@@ -8,13 +8,13 @@ import { useItemsStore } from "../../src/state/items-store";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 import { pushModal, resetModalStack } from "../../src/utils/modalStack";
 import { useComparisonStore } from "../../src/state/comparison-store";
-import { useQuickViewStore } from "../../src/state/quick-view-store";
+import { useFullscreenViewStore } from "../../src/state/fullscreen-view-store";
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
   resetModalStack();
   useComparisonStore.setState({ open: false });
-  useQuickViewStore.setState({ session: null });
+  useFullscreenViewStore.setState({ session: null });
   useItemsStore.setState({ selectedItem: "photo", selectedKeys: new Set(["photo"]) });
   useDestinationsStore.setState({
     roots: [],

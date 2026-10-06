@@ -2,18 +2,18 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { revealInMain } from "../../src/workflows/reveal-in-main";
 import { useItemsStore } from "../../src/state/items-store";
 import { useComparisonStore } from "../../src/state/comparison-store";
-import { useQuickViewStore } from "../../src/state/quick-view-store";
-import { closeViewer } from "../../src/workflows/quick-view";
+import { useFullscreenViewStore } from "../../src/state/fullscreen-view-store";
+import { closeViewer } from "../../src/workflows/fullscreen-view";
 import { closeComparison } from "../../src/workflows/comparison";
 
-vi.mock("../../src/workflows/quick-view", () => ({ closeViewer: vi.fn() }));
+vi.mock("../../src/workflows/fullscreen-view", () => ({ closeViewer: vi.fn() }));
 vi.mock("../../src/workflows/comparison", () => ({ closeComparison: vi.fn() }));
 
 beforeEach(() => {
   vi.restoreAllMocks();
   vi.clearAllMocks();
   useComparisonStore.setState({ open: false, busy: false, pendingAction: null });
-  useQuickViewStore.setState({ session: null, pendingDelete: null });
+  useFullscreenViewStore.setState({ session: null, pendingDelete: null });
 });
 
 it("closes the requesting modal before exiting the active Comparison through its owner", async () => {

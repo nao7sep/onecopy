@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n/I18nContext";
 import { emit } from "@tauri-apps/api/event";
-import { ChevronLeft, ChevronRight, Minimize2, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { listenThenAnnounce } from "../utils/handshake";
-import type { ViewerBroadcast } from "../workflows/quick-view";
+import type { ViewerBroadcast } from "../workflows/fullscreen-view";
 import ConfirmModal from "../components/ConfirmModal";
 import PreviewSurface from "../components/PreviewSurface";
 import { message, type Message } from "../i18n/translate";
@@ -107,9 +107,6 @@ export default function ViewerWindow() {
         </button>
         <button aria-label={t("viewer.next")} disabled={state.index === state.length - 1} className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-white/15 disabled:opacity-30" onClick={() => sendKey("ArrowRight")}>
           <ChevronRight size={16} />
-        </button>
-        <button aria-label={t("viewer.quickView")} className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-white/15" onClick={() => sendKey(" ")}>
-          <Minimize2 size={16} />
         </button>
         <button aria-label={t("viewer.closeFullScreen")} className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-white/15" onClick={() => sendKey("Escape")}>
           <X size={16} />

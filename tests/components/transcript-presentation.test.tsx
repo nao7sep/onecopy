@@ -95,7 +95,7 @@ describe("transcript presentation owners", () => {
       return value;
     };
     expect(viewerOwnsKey(event("PageDown"), "video", detail.fileName)).toBe(false);
-    for (const key of [" ", "f", "Escape", "Delete", "ArrowRight"]) {
+    for (const key of [" ", "Escape", "Delete", "ArrowRight"]) {
       expect(viewerOwnsKey(event(key), "video", detail.fileName)).toBe(true);
     }
   });

@@ -1,4 +1,3 @@
-export type ViewerPresentation = "quick" | "fullscreen";
 export type ViewerSequenceScope = "section" | "selection";
 
 import { identityKey, type ItemDetail, type SectionIdentity, type SectionItem, type SectionLocation, type SortChoice } from "./items";
@@ -15,7 +14,6 @@ export interface ViewerSequenceSnapshot {
 }
 
 export interface ActiveViewerSession extends ViewerSequenceSnapshot {
-  presentation: ViewerPresentation;
   main: ViewerMainRelationship;
 }
 
