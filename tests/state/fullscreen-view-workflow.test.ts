@@ -240,7 +240,7 @@ describe("fullscreen view workflow", () => {
     expect(useItemsStore.getState().selectedItem).toBe("unrelated");
   });
 
-  it("lets an admitted Main restore finish when the viewer closes", async () => {
+  it("lets an admitted Main restore finish when the fullscreen view closes", async () => {
     openFullscreenView();
     await new Promise((resolve) => setTimeout(resolve, 0));
     await useItemsStore.getState().select({ kind: "other", month: "undated" });
@@ -421,7 +421,7 @@ describe("fullscreen view workflow", () => {
     );
   });
 
-  it("keeps navigation failure on the viewer while recording only Recent history", async () => {
+  it("keeps navigation failure on the fullscreen view while recording only Recent history", async () => {
     expect(openFullscreenView()).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
     mockCommand("viewer_sequence_move", () =>

@@ -121,9 +121,8 @@ export async function initLogging(): Promise<void> {
 /** A Tauri window/webview call that failed, reported rather than swallowed.
  *
  * `.catch(() => {})` around these calls is how a MISSING CAPABILITY becomes an
- * invisible no-op: `setFullscreen()` rejected for want of
- * `core:window:allow-set-fullscreen` while the preview footer went on
- * advertising "F: fullscreen", and nothing anywhere said so. These calls are
+ * invisible no-op: the call is rejected, the feature silently does nothing,
+ * and nothing anywhere says why. These calls are
  * genuinely best-effort — a window the user closed mid-flight must not throw —
  * so they still resolve, but the reason now reaches the log.
  */

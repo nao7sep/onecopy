@@ -1,4 +1,4 @@
-//! One disposable, disk-backed Quick View sequence.
+//! One disposable, disk-backed sequence for the fullscreen view.
 //!
 //! A one-item Main selection freezes the whole ordered section, which can be
 //! millions of identities. Keeping that list in the webview or a Rust Vec

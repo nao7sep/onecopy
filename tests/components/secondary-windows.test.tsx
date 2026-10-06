@@ -227,15 +227,15 @@ describe("the preview window", () => {
     text.remove();
   });
 
-  it("does not consume composing fullscreen or navigation keys", async () => {
+  it("does not consume composing navigation keys", async () => {
     render(<PreviewWindow />);
     await act(async () => {});
-    for (const key of ["f", "Escape", "ArrowRight", "Delete", " "]) {
+    for (const key of ["Escape", "ArrowRight", "Delete", " "]) {
       const event = new KeyboardEvent("keydown", { key, isComposing: true, cancelable: true });
       window.dispatchEvent(event);
       expect(event.defaultPrevented).toBe(false);
     }
-    expect(emitCalls.some((call) => ["preview://fullscreen", "preview://key"].includes(call.event))).toBe(false);
+    expect(emitCalls.some((call) => call.event === "preview://key")).toBe(false);
   });
 });
 

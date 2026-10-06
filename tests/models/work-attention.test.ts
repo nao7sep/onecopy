@@ -27,7 +27,7 @@ describe("work attention", () => {
     expect(resolveWorkAttention(main, null, null)).toEqual(main);
   });
 
-  it("a distant Quick View move replaces the old viewport while Main catches up", () => {
+  it("a distant fullscreen view move replaces the old viewport while Main catches up", () => {
     const view = resolveWorkAttention(main, null, { hash: "far", sectionIndex: 900 });
     expect(view.visibleHashes).toEqual(["far"]);
     expect(view.nearbyHashes).toEqual([]);

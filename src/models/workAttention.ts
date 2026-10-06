@@ -53,7 +53,7 @@ export function resolveWorkAttention(
   if (viewer !== null) return {
     ...main, selectedHash: viewer.hash,
     visibleHashes: viewer.hash === null ? [] : [viewer.hash],
-    // Main scrolls to the viewer; only use its neighborhood once it catches up.
+    // Main scrolls to the fullscreen view's item; only use its neighborhood once it catches up.
     nearbyHashes: viewer.sectionIndex !== null && main.visibleHashes.includes(viewer.hash ?? "") ? main.nearbyHashes : [],
     sectionAnchor: viewer.sectionIndex ?? 0,
     sectionKind: viewer.sectionIndex === null ? null : main.sectionKind,

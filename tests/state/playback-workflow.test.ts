@@ -158,10 +158,10 @@ describe("playback workflow", () => {
     expect(latestState()).toBeNull();
   });
 
-  // content-presentation.md D1: "Only one OneCopy surface owns playback at a
-  // time" and Preview "follows it without becoming another playback owner"
-  // while the transient viewer is open for the same content.
-  it("never hands the live session to Preview while the viewer is open for the same content", () => {
+  // One surface owns playback at a time: while the fullscreen view is open
+  // for the same content, Preview follows it instead of becoming a second
+  // owner.
+  it("never hands the live session to Preview while the fullscreen view is open for the same content", () => {
     fireEvent("playback://register", {
       surface: "preview-split",
       key: "clip",
@@ -189,8 +189,8 @@ describe("playback workflow", () => {
       key: "clip",
       medium: "video",
     });
-    // The viewer is still open (now showing something else) — Preview
-    // remains ineligible even with no current viewer registration.
+    // The fullscreen view is still open (now showing something else), so
+    // Preview remains ineligible even with no registration of the view's.
     expect(latestState()).toMatchObject({ key: "clip", owner: null });
 
     useFullscreenViewStore.setState({ session: null });
@@ -268,10 +268,9 @@ describe("playback workflow", () => {
   });
 });
 
-// content-presentation.md: "Picture click and Enter toggle" (R5.3 untested
-// contract) -- Enter in the viewer toggles the CENTRALLY OWNED playback
-// session for the current video item, the same way clicking the picture
-// itself does (see preview-surface.test.tsx for the click half).
+// Enter in the fullscreen view toggles the centrally owned playback session
+// for the current video item, as clicking the picture does
+// (preview-surface.test.tsx holds the click half).
 describe("fullscreen view Enter toggle", () => {
   it("toggles the owned session's playing state on Enter for a video item", async () => {
     fireEvent("playback://register", {

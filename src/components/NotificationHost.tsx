@@ -175,8 +175,8 @@ function Toast({
 export default function NotificationHost({
   ownsTimedDismissal = true,
 }: {
-  // False in the fullscreen viewer: Main, always open, is the one timer
-  // owner (Finding C). The viewer still shows and lets the user dismiss
+  // False in the fullscreen view: Main, always open, is the one timer
+  // owner (Finding C). The fullscreen view still shows and lets the user dismiss
   // every notice; it just never races Main's own countdown.
   ownsTimedDismissal?: boolean;
 } = {}) {
