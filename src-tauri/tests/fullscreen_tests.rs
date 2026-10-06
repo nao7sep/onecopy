@@ -271,3 +271,22 @@ fn a_system_close_of_a_session_window_goes_to_main() {
         assert_eq!(session_close_event(label), None, "{label}");
     }
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_window_refuses_spaces_fullscreen_whatever_tao_gave_it() {
+    use objc2_app_kit::NSWindowCollectionBehavior as Behavior;
+    use onecopy_lib::fullscreen::refusing_spaces_fullscreen;
+    assert_eq!(
+        refusing_spaces_fullscreen(Behavior::Default),
+        Behavior::FullScreenNone
+    );
+    assert_eq!(
+        refusing_spaces_fullscreen(Behavior::FullScreenPrimary | Behavior::Managed),
+        Behavior::FullScreenNone | Behavior::Managed
+    );
+    assert_eq!(
+        refusing_spaces_fullscreen(Behavior::FullScreenAuxiliary),
+        Behavior::FullScreenNone
+    );
+}

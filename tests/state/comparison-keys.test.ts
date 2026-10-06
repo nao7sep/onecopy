@@ -105,12 +105,14 @@ describe("comparison keyboard selection", () => {
 
   // Nothing enlarges an image from Comparison: Space is taken so no focused
   // control acts on it, and it changes neither the marks nor any window.
-  it("takes Space and does nothing with it", () => {
+  it("takes Space and does nothing with it", async () => {
     const before = useComparisonStore.getState();
     const windows = createdWindows.length;
     const commands = invokeCalls.length;
     expect(comparisonKeyIsRoutable({ key: " " })).toBe(true);
     expect(handleComparisonKey({ key: " " })).toBe(true);
+    // A window would open after an await, so wait past one before looking.
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(useComparisonStore.getState().selected).toEqual(new Set());
     expect(useComparisonStore.getState().anchor).toBe(before.anchor);
     expect(createdWindows).toHaveLength(windows);

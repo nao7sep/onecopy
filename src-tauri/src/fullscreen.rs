@@ -388,6 +388,18 @@ fn application_active(app: &AppHandle) -> Result<bool, String> {
         .any(|window| window.is_focused().unwrap_or(false)))
 }
 
+/// A window's collection behaviour with Spaces fullscreen refused: AppKit
+/// takes exactly one of FullScreenPrimary, FullScreenAuxiliary and
+/// FullScreenNone, so the other two go.
+#[cfg(target_os = "macos")]
+pub fn refusing_spaces_fullscreen(
+    behavior: objc2_app_kit::NSWindowCollectionBehavior,
+) -> objc2_app_kit::NSWindowCollectionBehavior {
+    use objc2_app_kit::NSWindowCollectionBehavior as Behavior;
+    (behavior - (Behavior::FullScreenPrimary | Behavior::FullScreenAuxiliary))
+        | Behavior::FullScreenNone
+}
+
 /// Every OneCopy window refuses Spaces fullscreen, so the green button only
 /// zooms and nothing can slide a window into its own Space. tao leaves the
 /// collection behaviour unset, which makes resizable windows fullscreen-capable.
@@ -401,10 +413,9 @@ pub fn refuse_spaces_fullscreen(window: &tauri::Window) -> Result<(), String> {
                     // SAFETY: Tauri supplies the retained NSWindow of this live
                     // window, borrowed on AppKit's main thread.
                     let native = unsafe { &*raw.cast::<objc2_app_kit::NSWindow>() };
-                    native.setCollectionBehavior(
-                        native.collectionBehavior()
-                            | objc2_app_kit::NSWindowCollectionBehavior::FullScreenNone,
-                    );
+                    native.setCollectionBehavior(refusing_spaces_fullscreen(
+                        native.collectionBehavior(),
+                    ));
                 }
             })
             .map_err(|error| error.to_string())
