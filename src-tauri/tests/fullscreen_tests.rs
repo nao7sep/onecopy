@@ -1,4 +1,4 @@
-use onecopy_lib::fullscreen::{level, Frame, FullscreenState, Level};
+use onecopy_lib::fullscreen::{level, Frame, FullscreenState, Level, Surface};
 use onecopy_lib::window_placement::{closing_state_for, ClosingState, NormalRectangle};
 
 #[test]
@@ -18,10 +18,11 @@ fn a_decorated_window_gets_its_exact_earlier_frame_back() {
         width: 1280.0,
         height: 801.0,
     };
-    assert!(state.enter("main", Some(earlier)));
+    assert!(state.enter("main", Surface::Focused, Some(earlier)));
     // A second entry while fullscreen neither re-records nor replaces it.
     assert!(!state.enter(
         "main",
+        Surface::Focused,
         Some(Frame {
             x: 0.0,
             y: 0.0,
@@ -36,7 +37,7 @@ fn a_decorated_window_gets_its_exact_earlier_frame_back() {
 #[test]
 fn main_frame_while_fullscreen_stays_out_of_its_saved_placement() {
     let mut state = FullscreenState::default();
-    state.enter("main", Some(Frame {
+    state.enter("main", Surface::Focused, Some(Frame {
         x: 10.0,
         y: 20.0,
         width: 800.0,
@@ -63,11 +64,18 @@ fn main_frame_while_fullscreen_stays_out_of_its_saved_placement() {
 #[test]
 fn windows_enter_and_leave_independently() {
     let mut state = FullscreenState::default();
-    assert!(state.enter("main", None));
-    assert!(state.enter("comparison-1", None));
+    assert!(state.enter("main", Surface::Focused, None));
+    assert!(state.enter("comparison-1", Surface::Spread, None));
+    assert_eq!(
+        state.windows(),
+        vec![
+            ("comparison-1".to_string(), Surface::Spread),
+            ("main".to_string(), Surface::Focused),
+        ]
+    );
     assert_eq!(state.leave("comparison-1"), Some(None));
     assert!(state.contains("main"));
-    assert_eq!(state.labels(), vec!["main".to_string()]);
+    assert_eq!(state.windows(), vec![("main".to_string(), Surface::Focused)]);
 }
 
 #[test]
