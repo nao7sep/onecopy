@@ -654,6 +654,8 @@ export default function PreviewSurface({
           keyboardActive={keyboardActive}
         />
       ) : (
+        // Keyed by hash so a click-and-hold inspection ends when the item
+        // changes instead of showing the next item's pixels under the hold.
         <ImageSurface
           key={hash}
           hash={hash}

@@ -87,6 +87,9 @@ export function useGlobalCommands() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      // Comparison and the fullscreen view cover Main's list while they are
+      // open, so a key reaching Main then must not delete, open or compare
+      // items the user cannot see.
       if (hasOpenModal() || useComparisonStore.getState().open || useFullscreenViewStore.getState().session !== null || isComposingEvent(event)) return;
       if (event.defaultPrevented || isEditableTarget(event.target)) return;
       if (isSectionRecheckShortcut(event)) {

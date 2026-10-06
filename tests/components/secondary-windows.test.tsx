@@ -66,6 +66,18 @@ describe("the preview window", () => {
     expect(ready).toBeDefined();
   });
 
+  it("names the shown item in its footer, with the selection count when more than one is selected", async () => {
+    const view = render(<PreviewWindow />);
+    await act(async () => {});
+    const footer = () => view.container.querySelector("footer")?.textContent ?? "";
+    await act(async () => fireEvent("preview://show", { hash: "abc", pathId: null, detail: DETAIL, selectedCount: 1 }));
+    expect(footer()).toContain("IMG_1.jpg");
+    expect(footer()).not.toContain("selected");
+    await act(async () => fireEvent("preview://show", { hash: "abc", pathId: null, detail: DETAIL, selectedCount: 3 }));
+    expect(footer()).toContain("IMG_1.jpg");
+    expect(footer()).toContain("3 selected");
+  });
+
   it("renders the image when the show message arrives", async () => {
     const view = render(<PreviewWindow />);
     await act(async () => {});

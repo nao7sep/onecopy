@@ -10,6 +10,7 @@ import {
   useComparisonStore,
   type GroupMember,
 } from "../../src/state/comparison-store";
+import { restorePreviewAfterComparison, usePreviewStore } from "../../src/state/preview-store";
 import {
   createdWindows,
   emitCalls,
@@ -46,18 +47,23 @@ const THREE_SCREENS = [
     position: { x: 0, y: 0 },
     size: { width: 2560, height: 1440 },
     scaleFactor: 2,
+    // The menu bar and Dock take space from the work area; Comparison
+    // ignores it so equal displays show images at equal sizes.
+    workArea: { position: { x: 0, y: 50 }, size: { width: 2560, height: 1250 } },
   },
   {
     name: "two",
     position: { x: 2560, y: 0 },
     size: { width: 2560, height: 1440 },
     scaleFactor: 2,
+    workArea: { position: { x: 2560, y: 50 }, size: { width: 2560, height: 1250 } },
   },
   {
     name: "three",
     position: { x: 5120, y: 0 },
     size: { width: 2560, height: 1440 },
     scaleFactor: 2,
+    workArea: { position: { x: 5120, y: 50 }, size: { width: 2560, height: 1250 } },
   },
 ];
 
@@ -114,6 +120,25 @@ describe("opening Comparison across displays", () => {
     expect(
       invokeCalls.filter((call) => call.command === "record_interface_failure"),
     ).toEqual([]);
+  });
+
+  // Comparison covers every display it uses, and a following preview window
+  // would only show the same images behind it.
+  it("hides the preview window for the session and brings it back after, without taking focus", async () => {
+    const preview = new WebviewWindow("preview");
+    usePreviewStore.setState({ follow: true, placement: "window" });
+    setMonitors(THREE_SCREENS.slice(0, 1));
+    mockCommands({ get_similar_group: () => members(2) });
+
+    expect(await useComparisonStore.getState().openGroup("m0")).toBe("opened");
+    expect(preview.hide).toHaveBeenCalledOnce();
+    expect(preview.show).not.toHaveBeenCalled();
+
+    await useComparisonStore.getState().close();
+    await restorePreviewAfterComparison();
+    expect(preview.show).toHaveBeenCalledOnce();
+    expect(preview.setFocus).not.toHaveBeenCalled();
+    usePreviewStore.setState({ follow: false, placement: null });
   });
 
   it("does not hide Preview for an invalid group", async () => {
@@ -284,7 +309,7 @@ describe("opening Comparison across displays", () => {
     expect(targets).not.toContain(1280);
   });
 
-  it("sizes a new display window in logical coordinates", async () => {
+  it("sizes a new display window over the display's full frame, in logical coordinates", async () => {
     setMonitors(THREE_SCREENS.slice(0, 2));
     setCurrentMonitor(THREE_SCREENS[0]);
     mockCommands({ get_similar_group: () => members(6) });
@@ -296,6 +321,7 @@ describe("opening Comparison across displays", () => {
     );
     expect(spread?.options).toMatchObject({
       x: 1280,
+      y: 0,
       width: 1280,
       height: 720,
       decorations: false,
@@ -318,6 +344,9 @@ describe("opening Comparison across displays", () => {
         .filter((call) => call.command === "set_window_fullscreen")
         .map((call) => call.args.enable),
     ).toEqual([true, false, true]);
+    const reused = await WebviewWindow.getByLabel("comparison-1");
+    expect(reused?.setPosition).toHaveBeenLastCalledWith({ x: 0, y: 0 });
+    expect(reused?.setSize).toHaveBeenLastCalledWith({ width: 2560, height: 1440 });
     // The other display leaves fullscreen before it hides and is raised
     // again once it shows.
     expect(

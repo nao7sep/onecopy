@@ -33,6 +33,9 @@ export function fullscreenViewOwnsKey(event: KeyboardEvent, kind: string | null,
   if (event.key === " " || event.key === "Escape") return !event.shiftKey;
   if (event.key === "Delete" || event.key === "Backspace") return true;
   if (controlOwnsForwardableKey(event)) return false;
+  // Up and Down are never the view's: the sequence moves with Left and
+  // Right, text and transcripts scroll with Up and Down, and fitted media has
+  // nothing to scroll, so there they do nothing rather than move items.
   if (event.key === "ArrowLeft" || event.key === "ArrowRight") return true;
   const media = kind === "video" || isAudioFile(fileName);
   if (event.key === "Enter") return media;

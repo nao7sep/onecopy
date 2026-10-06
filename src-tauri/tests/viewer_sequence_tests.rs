@@ -375,6 +375,39 @@ fn selection_scope_freezes_in_displayed_order_and_starts_at_the_anchor() {
     viewer_sequence::close(Some(&snapshot.token)).unwrap();
 }
 
+#[test]
+fn moving_past_either_end_stays_on_that_end_without_wrapping() {
+    let _session = VIEWER_SESSION.lock().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let index_path = root.path().join(storage::INDEX_DB_FILE_NAME);
+    let conn = index_store::open(&index_path).unwrap();
+    for index in 1..=3 {
+        seed_image(&conn, index);
+    }
+    let anchor = queries::SectionIdentity { hash: Some("h1".into()), path_id: 1 };
+    let snapshot = viewer_sequence::start(
+        root.path(),
+        &conn,
+        onecopy_lib::queries::SectionKind::Image,
+        "2026-01",
+        Tz::UTC,
+        queries::SectionSort { order: queries::SectionSortOrder::Name, desc: false },
+        vec![queries::PositionedSectionIdentity { hash: Some("h1".into()), path_id: 1, index: 0 }],
+        &anchor,
+        projection(),
+    )
+    .unwrap();
+    let step = |movement| {
+        viewer_sequence::move_current(&snapshot.token, movement, &conn, projection()).unwrap()
+    };
+    let first = step(viewer_sequence::Move::Previous);
+    assert_eq!((first.index, first.item.hash.as_deref()), (0, Some("h1")));
+    step(viewer_sequence::Move::Last);
+    let last = step(viewer_sequence::Move::Next);
+    assert_eq!((last.index, last.item.hash.as_deref()), (2, Some("h3")));
+    viewer_sequence::close(Some(&snapshot.token)).unwrap();
+}
+
 // R5.2 T2: after the CURRENT item itself is removed, recovery goes to the
 // next member, then the previous one when there is no next, and closes the
 // session once none remain. The existing coverage only ever removed a

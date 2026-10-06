@@ -121,6 +121,25 @@ describe("global viewer commands", () => {
   });
 });
 
+describe("Main while Comparison or the fullscreen view is open", () => {
+  it.each(["Comparison", "the fullscreen view"])("ignores its own keys while %s covers the list", async (cover) => {
+    if (cover === "Comparison") useComparisonStore.setState({ open: true });
+    else useFullscreenViewStore.setState({ session: { token: "open" } as never });
+    const view = render(<Harness />);
+    const area = view.container.querySelector("#main-item-area")!;
+    for (const key of ["Delete", " ", "Enter"]) fireEvent.keyDown(area, { key });
+    fireEvent.keyDown(area, { key: "Delete", shiftKey: true });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(view.getByLabelText("Trash confirmation").textContent).toBe("none");
+    expect(view.getByLabelText("Permanent confirmation").textContent).toBe("none");
+    expect(invokeCalls.filter((call) =>
+      ["delete_items", "viewer_sequence_start", "get_similar_group"].includes(call.command))).toEqual([]);
+  });
+});
+
 describe("global destructive commands", () => {
   it("always reviews a multi-item Trash even when the single-item preference is off", () => {
     const second = { ...ITEM, hash: "image-hash-2", pathId: 2 };

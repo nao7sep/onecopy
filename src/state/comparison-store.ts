@@ -448,6 +448,9 @@ function queueComparisonLifecycle(action: () => Promise<void>): Promise<void> {
   return next;
 }
 
+/** Comparison covers every display it uses, so a preview window following
+ * the same anchor could only sit behind it; it is hidden for the session and
+ * shown again afterwards (`restorePreviewAfterComparison`). */
 async function hidePreviewWindowForComparison(): Promise<void> {
   const preview = await WebviewWindow.getByLabel("preview").catch((error) => {
     reportWindowCall("preview lookup")(error);

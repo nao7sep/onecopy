@@ -27,6 +27,13 @@ describe("fullscreen view command ownership", () => {
     expect(owns("f", "video", "movie.mp4", target)).toBe(false);
   });
 
+  it("leaves Up and Down to the item, so they do nothing on fitted media", () => {
+    for (const [kind, fileName] of [["image", "photo.jpg"], ["video", "movie.mp4"], ["other", "recording.wav"]]) {
+      expect(owns("ArrowUp", kind, fileName)).toBe(false);
+      expect(owns("ArrowDown", kind, fileName)).toBe(false);
+    }
+  });
+
   it("keeps text document scrolling local, but audio sequence bounds viewer-owned", () => {
     for (const key of ["Home", "End", "PageUp", "PageDown"]) {
       expect(owns(key, "other", "readme.txt")).toBe(false);

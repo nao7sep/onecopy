@@ -621,6 +621,27 @@ describe("shared video presentation", () => {
     expect(screen.getByRole("option", { name: /shift_jis/ })).toBeTruthy();
   });
 
+  it("ends a click-and-hold inspection when the item changes", () => {
+    vi.useFakeTimers();
+    const view = render(<PreviewSurface surface="fullscreen-view" hash="image-hash" detail={IMAGE_DETAIL} />);
+    fireEvent.pointerDown(screen.getByTitle("Press and hold for original pixels"), {
+      pointerId: 1, button: 0, isPrimary: true, clientX: 20, clientY: 30,
+    });
+    act(() => vi.advanceTimersByTime(200));
+    expect(screen.getByAltText("family.jpg at original size")).toBeTruthy();
+
+    view.rerender(
+      <PreviewSurface
+        surface="fullscreen-view"
+        hash="other-hash"
+        detail={{ ...IMAGE_DETAIL, fileName: "other.jpg" }}
+      />,
+    );
+
+    expect(screen.queryByAltText(/at original size/)).toBeNull();
+    expect(screen.getByAltText("other.jpg")).toBeTruthy();
+  });
+
   // The preview and the fullscreen view share one "Enlarge small images"
   // setting, read from Main's config in Main and from the read-only mirror in
   // the auxiliary windows.

@@ -179,6 +179,9 @@ export default function PreviewWindow() {
           {text(failure)}
         </OperationResult>
       ) : null}
+      {/* The window shows only the anchor, so the footer names it and, with
+          more than one selected, says how many: Delete here acts on all of
+          them, as in Main. */}
       <footer className="flex shrink-0 justify-between border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
         <span className="flex min-w-0 items-center gap-2">
           <span className="truncate" title={shown.detail?.fileName ?? ""}>

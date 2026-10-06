@@ -232,6 +232,9 @@ pub fn move_current(
         Move::Last => edge_ordinal(&sequence.conn, true)?,
     };
     let previous_ordinal = sequence.current_ordinal;
+    // At either end there is no neighbour and the current member stays: the
+    // sequence never wraps, so a held arrow key stops at the last item
+    // instead of silently starting the section over.
     if let Some(ordinal) = ordinal {
         sequence.current_ordinal = ordinal;
     }
