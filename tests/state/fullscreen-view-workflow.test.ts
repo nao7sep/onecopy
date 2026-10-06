@@ -4,7 +4,7 @@
 // which renders the sentence in the language the document declares, so these
 // specs need a document even though the subject is pure workflow logic.
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import { useItemsStore } from "../../src/state/items-store";
 import { useFullscreenViewStore } from "../../src/state/fullscreen-view-store";
@@ -370,6 +370,24 @@ describe("fullscreen view workflow", () => {
     // Returning to OneCopy finds the keyboard on Main's list.
     expect(document.activeElement).toBe(grid);
     grid.remove();
+  });
+
+  // Alt+F4 or Close Window on the fullscreen view's window: Rust keeps the
+  // window, and the session closes as on Escape, so Main takes keys again.
+  it("closes the session when the system asks to close its window", async () => {
+    const viewer = new WebviewWindow("fullscreen-view");
+    await installFullscreenViewWorkflow();
+    expect(openFullscreenView()).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(useFullscreenViewStore.getState().session).not.toBeNull();
+
+    fireEvent("fullscreen-view://close-requested");
+    await vi.waitFor(() => expect(viewer.hide).toHaveBeenCalled());
+
+    expect(useFullscreenViewStore.getState().session).toBeNull();
+    expect(invokeCalls.some((call) => call.command === "viewer_sequence_close")).toBe(true);
+    expect(viewer.close).not.toHaveBeenCalled();
+    expect(viewer.destroy).not.toHaveBeenCalled();
   });
 
   it("closes the session and reports in Main when its window cannot open", async () => {

@@ -1,5 +1,5 @@
 use onecopy_lib::fullscreen::{
-    landing_level, level, restored_frame, settle_activation, Frame, FullscreenState, Level,
+    landing_level, level, restored_frame, session_close_event, settle_activation, Frame, FullscreenState, Level,
     Surface,
 };
 use onecopy_lib::window_placement::{closing_state_for, ClosingState, NormalRectangle};
@@ -251,4 +251,23 @@ fn an_unchanged_activation_relevels_without_telling_main() {
     );
     assert_eq!(levels, vec![Level::Raised]);
     assert!(failures.is_empty());
+}
+
+#[test]
+fn a_system_close_of_a_session_window_goes_to_main() {
+    assert_eq!(
+        session_close_event("fullscreen-view"),
+        Some("fullscreen-view://close-requested")
+    );
+    assert_eq!(
+        session_close_event("comparison-1"),
+        Some("comparison://close-requested")
+    );
+    assert_eq!(
+        session_close_event("comparison-12"),
+        Some("comparison://close-requested")
+    );
+    for label in ["main", "preview", "records", "identify-1", "comparison-", "comparison-x"] {
+        assert_eq!(session_close_event(label), None, "{label}");
+    }
 }

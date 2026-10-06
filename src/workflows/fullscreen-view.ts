@@ -186,6 +186,13 @@ const install = createEventInstaller(
     await listeners.listen("fullscreen-view://dismiss-failure", () => {
       useFullscreenViewStore.getState().setFailure(null);
     });
+    // The system can ask to close the window too (Alt+F4, Close Window). It
+    // ends the session as Escape does and keeps the window for the next one;
+    // Rust prevents the close itself (fullscreen::session_close_event).
+    await listeners.listen("fullscreen-view://close-requested", () => {
+      if (useFullscreenViewStore.getState().session !== null) void closeFullscreenView();
+      else void hideFullscreenViewWindow();
+    });
     // Switching to another app closes the view: Main's selection has followed
     // its navigation, so one Space reopens the same item. Focus stays with
     // the app the user switched to.

@@ -370,8 +370,8 @@ async function showSpread(monitors: MonitorList): Promise<void> {
           const state = useComparisonStore.getState();
           if (!state.open || index >= state.spreadCount) {
             await created
-              .close()
-              .catch(reportWindowCall("unused comparison close"));
+              .destroy()
+              .catch(reportWindowCall("unused comparison destroy"));
             return;
           }
           try {
@@ -428,6 +428,8 @@ async function hideSpread(first: number, last: number): Promise<void> {
   }
 }
 
+/** Destroyed, not closed: a close is a request the user makes, and it leaves
+ * Comparison (`comparison://close-requested`). */
 async function closeSpread(first: number, last: number): Promise<void> {
   for (let index = first; index <= last; index += 1) {
     const label = `comparison-${index}`;
@@ -436,7 +438,7 @@ async function closeSpread(first: number, last: number): Promise<void> {
       return null;
     });
     if (window === null) continue;
-    await window.close().catch(reportWindowCall("comparison close"));
+    await window.destroy().catch(reportWindowCall("comparison destroy"));
   }
 }
 

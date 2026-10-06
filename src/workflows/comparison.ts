@@ -458,6 +458,12 @@ const installEvents = createEventInstaller(
     await listeners.listen("comparison://ready", () => {
       broadcastComparison();
     });
+    // Alt+F4 or Close Window on one of Comparison's displays leaves
+    // Comparison as Escape does; Rust prevents the close itself
+    // (fullscreen::session_close_event), and Comparison owns its windows.
+    await listeners.listen("comparison://close-requested", () => {
+      if (useComparisonStore.getState().open) void closeComparison();
+    });
     await listeners.listen<{ slice: number }>("comparison://display-failed", (event) => {
       void recoverComparisonDisplay(event.payload.slice);
     });

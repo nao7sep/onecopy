@@ -4,12 +4,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   comparisonKeyIsRoutable,
   handleComparisonKey,
+  installComparisonEventWiring,
 } from "../../src/workflows/comparison";
 import {
   useComparisonStore,
   type GroupMember,
 } from "../../src/state/comparison-store";
-import { createdWindows, invokeCalls, mockCommand } from "../mocks/tauri";
+import { createdWindows, fireEvent, invokeCalls, mockCommand } from "../mocks/tauri";
 
 function member(index: number): GroupMember {
   return {
@@ -216,5 +217,18 @@ describe("comparison page keys", () => {
     const close = vi.spyOn(useComparisonStore.getState(), "close");
     expect(handleComparisonKey({ key: "Escape" })).toBe(true);
     expect(close).toHaveBeenCalledOnce();
+    close.mockRestore();
+  });
+});
+
+describe("comparison display close requests", () => {
+  // Alt+F4 or Close Window on one of Comparison's displays: Rust keeps the
+  // window, and Comparison closes as on Escape instead of losing a display.
+  it("leaves Comparison as Escape does", async () => {
+    await installComparisonEventWiring();
+    const close = vi.spyOn(useComparisonStore.getState(), "close");
+    fireEvent("comparison://close-requested");
+    expect(close).toHaveBeenCalledOnce();
+    close.mockRestore();
   });
 });

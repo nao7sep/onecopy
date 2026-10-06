@@ -229,6 +229,23 @@ static ACTIVATION_CHECK_PENDING: AtomicBool = AtomicBool::new(true);
 /// The event Main hears when OneCopy stops or starts being the active app.
 pub const ACTIVATION_EVENT: &str = "app://activation";
 
+/// The event Main hears when the system asks to close a window that shows one
+/// of Main's sessions (Alt+F4, Close Window). The session ends as Escape ends
+/// it, and the session alone hides or tears down its window; closing it
+/// directly would leave the session open and Main ignoring every key.
+pub fn session_close_event(label: &str) -> Option<&'static str> {
+    let spread = label
+        .strip_prefix("comparison-")
+        .is_some_and(|index| !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit()));
+    if label == "fullscreen-view" {
+        Some("fullscreen-view://close-requested")
+    } else if spread {
+        Some("comparison://close-requested")
+    } else {
+        None
+    }
+}
+
 fn state() -> Result<std::sync::MutexGuard<'static, FullscreenState>, String> {
     STATE
         .lock()
