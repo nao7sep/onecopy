@@ -11,9 +11,10 @@
 //! bar for the duration and gets its exact earlier frame back.
 //!
 //! Windows: the focused surface uses tao's borderless fullscreen; Comparison's
-//! other displays stay monitor-sized windows that are topmost while OneCopy is
-//! active, which covers the taskbar even while another OneCopy window is in
-//! front, and drop topmost while another app is, so they sit behind it.
+//! other displays stay monitor-sized windows. Every fullscreen window is
+//! topmost while OneCopy is active, which covers the taskbar even after a
+//! click on another display or while another OneCopy window is in front, and
+//! drops topmost while another app is, so it sits behind that app.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -45,6 +46,19 @@ pub fn level(fullscreen: bool, application_active: bool) -> Level {
     } else {
         Level::Normal
     }
+}
+
+/// The level a window takes when its fullscreen change lands. The change is
+/// queued, and OneCopy may have stopped being active since it was asked for,
+/// so activation is read then, never assumed; leaving never needs it.
+pub fn landing_level(
+    enable: bool,
+    application_active: impl FnOnce() -> Result<bool, String>,
+) -> Result<Level, String> {
+    if !enable {
+        return Ok(Level::Normal);
+    }
+    Ok(level(true, application_active()?))
 }
 
 /// Which kind of fullscreen surface a window is.
@@ -100,6 +114,33 @@ impl FullscreenState {
     }
 }
 
+/// Settles one activation check: each fullscreen window takes its level on its
+/// own, so one failed window leaves the others settled, and a change of
+/// activation reaches Main even after a window failed, since it is observed
+/// once and never resent. Returns every failure, for the log.
+pub fn settle_activation(
+    changed: Option<bool>,
+    windows: &[(String, Surface)],
+    active: bool,
+    mut relevel: impl FnMut(&str, Surface, Level) -> Result<(), String>,
+    notify: impl FnOnce(bool) -> Result<(), String>,
+) -> Vec<String> {
+    let mut failures: Vec<String> = windows
+        .iter()
+        .filter_map(|(label, surface)| {
+            relevel(label, *surface, level(true, active))
+                .err()
+                .map(|error| format!("{label}: {error}"))
+        })
+        .collect();
+    if let Some(active) = changed {
+        if let Err(error) = notify(active) {
+            failures.push(format!("{ACTIVATION_EVENT}: {error}"));
+        }
+    }
+    failures
+}
+
 static STATE: LazyLock<Mutex<FullscreenState>> =
     LazyLock::new(|| Mutex::new(FullscreenState::default()));
 static ACTIVATION_CHECK_PENDING: AtomicBool = AtomicBool::new(true);
@@ -134,13 +175,12 @@ pub fn set(app: &AppHandle, label: &str, enable: bool, surface: Surface) -> Resu
             state()?.leave(label).is_some()
         };
         if changed {
+            let raised = landing_level(enable, || application_active(app))? == Level::Raised;
             match surface {
                 Surface::Focused => window.set_fullscreen(enable),
-                // A reused window may have dropped topmost while OneCopy was
-                // inactive; the activation check below settles it again.
-                Surface::Spread if enable => window.set_always_on_top(true),
                 Surface::Spread => Ok(()),
             }
+            .and_then(|()| window.set_always_on_top(raised))
             .map_err(|error| error.to_string())?;
         }
         note_focus_transition();
@@ -170,27 +210,35 @@ pub fn reconcile_activation(app: &AppHandle) -> Result<(), String> {
         let mut state = state()?;
         (state.observe_activation(active), state.windows())
     };
-    for (label, surface) in windows {
-        let Some(window) = app.get_webview_window(&label) else {
-            continue;
-        };
-        #[cfg(target_os = "macos")]
-        {
-            let _ = surface;
-            macos::apply_level(&window, level(true, active))?;
-        }
-        // Windows: only Comparison's other displays are topmost windows; the
-        // focused surface is borderless fullscreen and never topmost.
-        #[cfg(not(target_os = "macos"))]
-        if surface == Surface::Spread {
-            window
-                .set_always_on_top(level(true, active) == Level::Raised)
-                .map_err(|error| error.to_string())?;
-        }
-    }
-    if let Some(active) = changed {
-        app.emit_to("main", ACTIVATION_EVENT, active)
-            .map_err(|error| error.to_string())?;
+    let failures = settle_activation(
+        changed,
+        &windows,
+        active,
+        |label, _surface, level| {
+            let Some(window) = app.get_webview_window(label) else {
+                return Ok(());
+            };
+            #[cfg(target_os = "macos")]
+            {
+                macos::apply_level(&window, level)
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                window
+                    .set_always_on_top(level == Level::Raised)
+                    .map_err(|error| error.to_string())
+            }
+        },
+        |active| {
+            app.emit_to("main", ACTIVATION_EVENT, active)
+                .map_err(|error| error.to_string())
+        },
+    );
+    for failure in failures {
+        crate::logging::warn(
+            "fullscreen window could not follow activation",
+            serde_json::json!({ "error": { "message": failure } }),
+        );
     }
     Ok(())
 }
@@ -253,10 +301,10 @@ pub fn refuse_spaces_fullscreen(window: &tauri::Window) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use objc2_app_kit::{NSNormalWindowLevel, NSStatusWindowLevel, NSWindow};
-    use tauri::WebviewWindow;
+    use objc2_app_kit::{NSNormalWindowLevel, NSStatusWindowLevel, NSWindow, NSWindowLevel};
+    use tauri::{Manager, WebviewWindow};
 
-    use super::{level, state, Frame, Level, Surface};
+    use super::{landing_level, state, Frame, Level, Surface};
 
     fn with_native<T>(window: &WebviewWindow, f: impl FnOnce(&NSWindow) -> T) -> Result<T, String> {
         let raw = window.ns_window().map_err(|error| error.to_string())?;
@@ -265,13 +313,15 @@ mod macos {
         Ok(f(unsafe { &*raw.cast::<NSWindow>() }))
     }
 
+    fn native_level(level: Level) -> NSWindowLevel {
+        match level {
+            Level::Raised => NSStatusWindowLevel,
+            Level::Normal => NSNormalWindowLevel,
+        }
+    }
+
     pub fn apply_level(window: &WebviewWindow, level: Level) -> Result<(), String> {
-        with_native(window, |native| {
-            native.setLevel(match level {
-                Level::Raised => NSStatusWindowLevel,
-                Level::Normal => NSNormalWindowLevel,
-            })
-        })
+        with_native(window, |native| native.setLevel(native_level(level)))
     }
 
     fn frame_of(native: &NSWindow) -> Frame {
@@ -319,7 +369,10 @@ mod macos {
         // queue, the frame, level and web-view focus land after it.
         let window = window.clone();
         dispatch2::DispatchQueue::main().exec_async(move || {
-            let applied = with_native(&window, |native| {
+            let landing = landing_level(enable, || {
+                super::application_active(window.app_handle())
+            });
+            let applied = landing.and_then(|landing| with_native(&window, |native| {
                 if enable {
                     if let Some(screen) = native.screen() {
                         let frame = screen.frame();
@@ -337,11 +390,8 @@ mod macos {
                     set_frame(native, frame);
                 }
                 native.setHasShadow(!enable);
-                native.setLevel(match level(enable, true) {
-                    Level::Raised => NSStatusWindowLevel,
-                    Level::Normal => NSNormalWindowLevel,
-                });
-            });
+                native.setLevel(native_level(landing));
+            }));
             let focused = applied.and_then(|()| {
                 if restore.is_some() && window.is_focused().unwrap_or(false) {
                     window.as_ref().set_focus().map_err(|error| error.to_string())

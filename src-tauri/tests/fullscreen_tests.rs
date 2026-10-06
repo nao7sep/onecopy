@@ -1,4 +1,6 @@
-use onecopy_lib::fullscreen::{level, Frame, FullscreenState, Level, Surface};
+use onecopy_lib::fullscreen::{
+    landing_level, level, settle_activation, Frame, FullscreenState, Level, Surface,
+};
 use onecopy_lib::window_placement::{closing_state_for, ClosingState, NormalRectangle};
 
 #[test]
@@ -85,4 +87,72 @@ fn activation_is_reported_only_when_it_changes() {
     assert_eq!(state.observe_activation(true), None);
     assert_eq!(state.observe_activation(false), Some(false));
     assert_eq!(state.observe_activation(false), None);
+}
+
+#[test]
+fn a_change_landing_while_onecopy_is_inactive_is_not_raised() {
+    // The change was asked for while OneCopy was active and lands after it
+    // stopped being so: the level follows activation as it is then.
+    assert_eq!(landing_level(true, || Ok(false)), Ok(Level::Normal));
+    assert_eq!(landing_level(true, || Ok(true)), Ok(Level::Raised));
+    assert_eq!(
+        landing_level(false, || panic!("leaving never reads activation")),
+        Ok(Level::Normal)
+    );
+}
+
+#[test]
+fn one_failed_window_neither_keeps_the_others_raised_nor_loses_the_activation_event() {
+    let windows = vec![
+        ("comparison-1".to_string(), Surface::Spread),
+        ("comparison-2".to_string(), Surface::Spread),
+        ("main".to_string(), Surface::Focused),
+    ];
+    let mut relevelled = Vec::new();
+    let mut notified = None;
+    let failures = settle_activation(
+        Some(false),
+        &windows,
+        false,
+        |label, _surface, level| {
+            relevelled.push((label.to_string(), level));
+            if label == "comparison-1" {
+                Err("window is gone".to_string())
+            } else {
+                Ok(())
+            }
+        },
+        |active| {
+            notified = Some(active);
+            Ok(())
+        },
+    );
+    assert_eq!(
+        relevelled,
+        vec![
+            ("comparison-1".to_string(), Level::Normal),
+            ("comparison-2".to_string(), Level::Normal),
+            ("main".to_string(), Level::Normal),
+        ]
+    );
+    assert_eq!(notified, Some(false));
+    assert_eq!(failures, vec!["comparison-1: window is gone".to_string()]);
+}
+
+#[test]
+fn an_unchanged_activation_relevels_without_telling_main() {
+    let windows = vec![("main".to_string(), Surface::Focused)];
+    let mut levels = Vec::new();
+    let failures = settle_activation(
+        None,
+        &windows,
+        true,
+        |_, _, level| {
+            levels.push(level);
+            Ok(())
+        },
+        |_| panic!("an unchanged activation is not sent"),
+    );
+    assert_eq!(levels, vec![Level::Raised]);
+    assert!(failures.is_empty());
 }
