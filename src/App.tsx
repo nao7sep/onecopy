@@ -262,7 +262,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
         <MissingSourcesNotice
           missing={missingDirs}
           onRecheck={() => void recheckSources()}
-          onReconfigure={reopenSetup}
+          onReconfigure={() => useAppShellStore.getState().openUtility("settings")}
         />
       ) : null}
       <div ref={contentRowRef} className="flex min-h-0 flex-1">

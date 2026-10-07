@@ -227,6 +227,7 @@ export function itemPresentation(
     selectionOrdinal: number | null;
     selectedCount: number;
     showFaceStars: boolean;
+    unavailable?: boolean;
   },
   t: Translator["t"],
 ): ItemPresentation {
@@ -244,7 +245,9 @@ export function itemPresentation(
               : t("item.selected"),
         };
 
-  const status = workStatus(item.derivedWork, t);
+  const status = options.unavailable
+    ? { text: t("item.workUnavailable"), label: t("source.unavailable"), tone: "warning" as const }
+    : workStatus(item.derivedWork, t);
 
   const relationshipText: string[] = [];
   const relationshipLabels: string[] = [];

@@ -73,3 +73,58 @@ fn watcher_section_scope_covers_descendants_but_not_sibling_prefixes() {
     assert_eq!(both.len(), 2);
     assert!(both.contains(&crate::queries::SectionLocation { kind: "other".to_string(), month: "2026-03".to_string() }));
 }
+
+#[test]
+fn a_file_stat_failure_preserves_its_row_and_allows_other_entries_to_update() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("source");
+    std::fs::create_dir(&root).unwrap();
+    let conn = crate::index_store::open(&temp.path().join("index.sqlite3")).unwrap();
+    std::fs::write(root.join("uncertain.jpg"), b"old").unwrap();
+    let settings = crate::scanner::settings_from_config(Some(&serde_json::json!({"sourceDirs": [root]})), &temp.path().join("data"), 0);
+    super::restat_dir(&conn, &root, &settings.lists, &settings.source_dirs, settings.data_root()).unwrap();
+    std::fs::write(root.join("new.jpg"), b"new").unwrap();
+    for type_unknown in [false, true] {
+        super::restat_dir_with(&conn, &root, &settings.lists, &settings.source_dirs, settings.data_root(), &|path| {
+            let mut entries = crate::volume_io::read_dir(path, true)?;
+            for entry in &mut entries {
+                if entry.file_name == "uncertain.jpg" {
+                    entry.metadata = Some(Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)));
+                    if type_unknown { entry.file_type = None; }
+                }
+            }
+            Ok(entries)
+        }).unwrap();
+        let present: i64 = conn.query_row("SELECT count(*) FROM paths WHERE missing = 0", [], |row| row.get(0)).unwrap();
+        assert_eq!(present, 2);
+        let issues: i64 = conn.query_row("SELECT count(*) FROM active_issues WHERE kind = 'stat-error'", [], |row| row.get(0)).unwrap();
+        assert_eq!(issues, 1);
+    }
+    super::restat_dir(&conn, &root, &settings.lists, &settings.source_dirs, settings.data_root()).unwrap();
+    assert_eq!(conn.query_row("SELECT count(*) FROM active_issues WHERE kind = 'stat-error'", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    std::fs::remove_dir_all(&root).unwrap();
+    super::restat_dir(&conn, &root, &settings.lists, &settings.source_dirs, settings.data_root()).unwrap();
+    assert_eq!(conn.query_row("SELECT count(*) FROM paths WHERE missing = 0", [], |row| row.get::<_, i64>(0)).unwrap(), 2);
+}
+
+#[test]
+fn sources_offline_at_launch_register_on_return_and_retry_failed_registration() {
+    let roots = vec!["first".to_string(), "second".to_string()];
+    let mut watches = vec![None, None];
+    let mut calls = Vec::new();
+    let mut register = |_: usize, root: &str| { calls.push(root.to_string()); Ok(root.to_string()) };
+    assert!(super::reconcile_watches(&roots, &mut watches, &roots, &[], false, &mut register).is_empty());
+    let returned = super::reconcile_watches(&roots, &mut watches, &[], &[], false, &mut register);
+    assert_eq!(returned.len(), 2);
+    assert!(returned.iter().all(|(_, result)| result.is_ok()));
+    assert!(super::reconcile_watches(&roots, &mut watches, &[], &[], false, &mut register).is_empty());
+    super::reconcile_watches(&roots, &mut watches, &roots, &[], false, &mut register);
+    let refused = super::reconcile_watches(&roots, &mut watches, &[], &roots, false, &mut register);
+    assert!(refused.is_empty(), "a substituted drive never registers");
+    assert!(super::reconcile_watches(&roots, &mut watches, &[], &[], true, &mut register).is_empty());
+    assert_eq!(calls, roots);
+    let failed = super::reconcile_watches(&roots, &mut watches, &[], &[], false, &mut |_, _| Err("busy".to_string()));
+    assert!(failed.iter().all(|(_, result)| result.is_err()));
+    assert!(watches.iter().all(Option::is_none));
+    assert_eq!(super::reconcile_watches(&roots, &mut watches, &[], &[], false, &mut |_, root| Ok(root.to_string())).len(), 2);
+}

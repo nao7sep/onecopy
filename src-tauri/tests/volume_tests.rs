@@ -222,3 +222,15 @@ fn a_filesystem_without_a_recorded_identity_retains_presence_only_support() {
     assert!(status.missing.is_empty());
     assert!(status.substituted.is_empty());
 }
+
+#[test]
+fn availability_wording_requires_recorded_volume_evidence() {
+    use onecopy_lib::volume::{check_identity, unavailable_message_with};
+    let data = tempfile::tempdir().unwrap();
+    let source = data.path().join("missing").to_string_lossy().into_owned();
+    assert_eq!(unavailable_message_with(data.path(), &source, &|_| Some("disk-a".into())), "source.unavailable");
+    check_identity(data.path(), &source, "disk-a").unwrap();
+    assert_eq!(unavailable_message_with(data.path(), &source, &|_| Some("disk-a".into())), "source.folderMissing");
+    assert_eq!(unavailable_message_with(data.path(), &source, &|_| Some("disk-b".into())), "source.driveUnavailable");
+    assert_eq!(unavailable_message_with(data.path(), &source, &|_| None), "source.unavailable");
+}

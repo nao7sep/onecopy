@@ -1,3 +1,5 @@
+import { useWizardStore } from "../state/wizard-store";
+import { allCopiesUnavailable } from "../models/sourceAvailability";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "../i18n/I18nContext";
 import type { Message } from "../i18n/translate";
@@ -463,6 +465,7 @@ export default function Grid({
   const activeWork = useDerivedWorkStore((s) => s.activeItem);
   const previewError = usePreviewStore((s) => s.error);
   const clearPreviewError = usePreviewStore((s) => s.clearError);
+  const unavailableRoots = useWizardStore((state) => state.missingDirs);
   const showFaceStars = useAppStore(
     (state) => configFlag(state.appData?.config, "scoreFaces"),
   );
@@ -833,6 +836,7 @@ export default function Grid({
             selectionOrdinal: selectionOrdinals.get(key) ?? null,
             selectedCount: selectedKeys.size,
             showFaceStars,
+            unavailable: allCopiesUnavailable(item.dirPaths, unavailableRoots),
           }, t);
           const onSelect = (event: React.MouseEvent) => {
             containerRef.current?.focus();

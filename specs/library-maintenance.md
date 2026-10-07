@@ -50,6 +50,10 @@ While all configured sources are already being checked, section recheck is unava
 
 `Complete file information` consumes durable gaps for content identity, metadata, date evidence, and companion relationships. It is independent of source-folder checking and provides Pause and Resume. An unexpected terminal failure holds its queued work and shows as failed rather than paused, with Retry resuming it.
 
+Unavailable sources keep their indexed items and cached previews. An item is Unavailable only when all its copies are unavailable; Details identifies the affected copies. Original reads and preview generation choose an available copy. Offline inputs remain pending rather than receiving bad-media failure receipts.
+
+The watcher checks for returning sources even when no source could be watched at launch. A returning source must pass its recorded volume-identity check before watching and scoped reconciliation resume. A different drive at the same path remains refused.
+
 Stopping a source-folder check does not stop completion of information already discovered. Watcher-discovered work can also complete while the broader source check is stopped. Missing information does not disable unrelated library use; surfaces and operations use the facts currently known and remain truthful about what is unavailable.
 
 An input-local identity-read or metadata-read failure settles that attempt without making the information complete. Later unrelated completion passes and ordinary browsing do not retry it. Restart, explicit recheck of its section, or an observed source change admits a new attempt; successfully completed information remains reusable. Absent or unsupported embedded metadata is an empty successful result, distinct from filesystem I/O failure. Failure receipts belong to file-information eligibility, independently of Issue visibility or dismissal.

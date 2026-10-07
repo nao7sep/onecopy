@@ -38,6 +38,8 @@ A broad operation such as a source check may present one summary notification wh
 
 The Issues surface is one current-run inbox, without separate Active and Recent views or Issue-owned Retry controls. Safe recovery remains with the feature that owns it: section recheck, source checking and source repair, Background Work Resume, Managed Tools, or explicit reload/restart guidance where in-process recovery cannot be safe. Dismissing diagnostics never resumes or retries work.
 
+One unavailable source has one current Issue with Check again and Settings actions. Automatic disconnection and reconnection update that condition quietly. Folder missing or Drive unavailable is used only when recorded volume evidence distinguishes them; otherwise the condition is Source unavailable. Availability warnings clear when verified access returns, independently of scan completion.
+
 Repeated background failures are combined with a count. Issue presentation must remain useful when many files fail; it summarizes the condition without hiding access to the affected files and technical context.
 
 A drive that stops answering (`file-operations.md`, `Drives that stop answering`) is a condition of that drive, not a failure of the app: the affected step fails as not responding, and a file whose rename or removal was given up on keeps an Issue stating that its outcome is unknown until a later check or operation settles it.
@@ -50,7 +52,7 @@ Issue records are kept: each occurrence and how its Issue closed is a record, an
 
 Every long-lived background worker has an outer failure boundary. An unexpected worker failure publishes a terminal failed state, releases resources it owns, records the failure when possible, and leaves an explicit Retry, Resume, or repair path. A worker must never stop while its visible state still claims that work is running or healthy.
 
-A failure limited to one input is recorded and processing continues when later inputs remain safe and independent. Failure of shared worker state stops that worker rather than allowing it to continue with unreliable ownership or progress.
+A failure limited to one input, including a recoverable decoder or inference panic, is recorded and processing continues when later inputs remain safe and independent. A failed input does not retry during ordinary browsing; restart, explicit recheck or retry, or a detected file change admits another attempt. Failure of shared worker state stops that worker rather than allowing it to continue with unreliable ownership or progress.
 
 ## Interface and asynchronous recovery
 

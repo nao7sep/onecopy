@@ -87,9 +87,9 @@ describe("the presence gate", () => {
     );
 
     expect(hasOpenModal()).toBe(false);
-    expect(view.container.textContent).toContain("keep working with available files");
+    expect(view.container.textContent).toContain("keeps indexed items and cached previews visible");
     fireEvent.click(view.getByRole("button", { name: "Check again" }));
-    fireEvent.click(view.getByRole("button", { name: "Re-run setup…" }));
+    fireEvent.click(view.getByRole("button", { name: "Settings…" }));
     expect(recheck).toHaveBeenCalledOnce();
     expect(reconfigure).toHaveBeenCalledOnce();
   });

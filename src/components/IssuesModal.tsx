@@ -1,3 +1,4 @@
+import { recheckSources } from "../workflows/source-availability";
 import { useEffect, useRef, useState } from "react";
 import { modelIssueLabel } from "../models/workReasons";
 import { useSectionsStore } from "../state/sections-store";
@@ -127,10 +128,13 @@ export default function IssuesModal({ open, onClose }: {
                   {t("app.openBackgroundWork")}
                 </Button>
               ) : null}
-              {["source-check-failed", "watcher-failed", "watcher-root-failed", "watcher-recovery-failed"].includes(row.kind) ? (
-                <Button className="mt-2" disabled={checkingSources} onClick={() => void useSectionsStore.getState().startSourceCheck()}>
-                  {t("app.checkSources")}
+              {["source-unavailable", "source-check-failed", "watcher-failed", "watcher-root-failed", "watcher-recovery-failed"].includes(row.kind) ? (
+                <Button className="mt-2" disabled={checkingSources} onClick={() => void recheckSources()}>
+                  {t(row.kind === "source-unavailable" ? "source.checkAgain" : "app.checkSources")}
                 </Button>
+              ) : null}
+              {row.kind === "source-unavailable" ? (
+                <Button className="ml-2 mt-2" onClick={() => useAppShellStore.getState().openUtility("settings")}>{t("app.settings")}</Button>
               ) : null}
               {recordedDetail(row) !== null ? (
                 <div className="mt-1 select-text break-words text-xs leading-relaxed text-ink-muted opacity-80">

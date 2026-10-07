@@ -160,6 +160,9 @@ function refreshDerivedIssues(): void {
 
 const install = createEventInstaller(
   async (listeners) => {
+    await listeners.listen("source://availability", () => {
+      void refreshSourceAvailability().then(() => useIssuesStore.getState().load());
+    });
     await listeners.listen<Omit<SourceCheckState, "progress">>(
       "source-check://state",
       (event) => {

@@ -475,3 +475,32 @@ fn callback_failure_marks_only_its_root_for_recovery_even_without_a_queued_event
     assert!(!other_root.load(Ordering::SeqCst));
     assert!(rx.try_recv().is_err(), "the root's flag drives recovery even on an idle queue");
 }
+
+#[test]
+fn source_issues_coalesce_and_clear_on_return_or_configuration_removal() {
+    let dir = tempfile::tempdir().unwrap();
+    let roots = vec!["/offline/photos".to_string(), "/offline/videos".to_string()];
+    for _ in 0..3 { reconcile_source_conditions(dir.path(), &roots, &roots, &[]).unwrap(); }
+    let conn = index_store::open(&dir.path().join(onecopy_lib::storage::INDEX_DB_FILE_NAME)).unwrap();
+    let count = || conn.query_row("SELECT count(*) FROM active_issues WHERE kind = 'source-unavailable'", [], |row| row.get::<_, i64>(0)).unwrap();
+    assert_eq!(count(), 2);
+    reconcile_source_conditions(dir.path(), &roots, &roots[..1], &[]).unwrap();
+    assert_eq!(count(), 1);
+    reconcile_source_conditions(dir.path(), &roots, &[], &roots[..1]).unwrap();
+    assert_eq!(count(), 1, "substitution remains one actionable condition");
+    reconcile_source_conditions(dir.path(), &[], &[], &[]).unwrap();
+    assert_eq!(count(), 0);
+}
+
+#[test]
+fn healthy_directory_updates_do_not_reopen_walk_issues_for_an_offline_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("healthy");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("photo.jpg"), b"photo").unwrap();
+    let offline = dir.path().join("offline");
+    let roots = vec![root.to_string_lossy().into_owned(), offline.to_string_lossy().into_owned()];
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    for _ in 0..2 { restat_dir(&conn, &root, &lists(), &roots, &no_data_root()).unwrap(); }
+    assert_eq!(conn.query_row("SELECT count(*) FROM active_issues", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+}

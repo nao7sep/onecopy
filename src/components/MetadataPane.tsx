@@ -1,3 +1,5 @@
+import { useWizardStore } from "../state/wizard-store";
+import { pathUnavailable } from "../models/sourceAvailability";
 import { useEffect, useState } from "react";
 import { useDisplayZone } from "../hooks/useDisplayZone";
 import { FolderOpen } from "lucide-react";
@@ -44,6 +46,8 @@ import OperationResult from "./ui/OperationResult";
  * meant. */
 function PathRow({ path }: { path: string }) {
   const { t } = useI18n();
+  const unavailableRoots = useWizardStore((state) => state.missingDirs);
+  const unavailable = pathUnavailable(path, unavailableRoots);
   const word = fileManagerWord();
   const [error, setError] = useState(false);
   return (
@@ -54,6 +58,7 @@ function PathRow({ path }: { path: string }) {
       <span aria-hidden className="mt-1 h-1 w-1 shrink-0 rounded-full bg-ink-muted" />
       <span className="min-w-0 flex-1 select-text break-all text-xs leading-relaxed text-ink" title={path}>
         {path}
+        {unavailable ? <span className="ml-2 text-warning">{t("item.workUnavailable")}</span> : null}
       </span>
       <button
         aria-label={t("reveal.showIn", { manager: word })}

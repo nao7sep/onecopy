@@ -60,6 +60,14 @@ pub fn restat_dir(
     source_roots: &[String],
     data_root: &Path,
 ) -> Result<u64, String> {
+    restat_dir_with(conn, dir, lists, source_roots, data_root, &|path| crate::volume_io::read_dir(path, true))
+}
+
+fn restat_dir_with(
+    conn: &rusqlite::Connection, dir: &Path, lists: &ScanLists,
+    source_roots: &[String], data_root: &Path,
+    read_dir: &dyn Fn(&Path) -> std::io::Result<Vec<crate::volume_io::DirEntryInfo>>,
+) -> Result<u64, String> {
     if crate::trash::is_trash_path(dir) || crate::paths::is_within_data_root(dir, data_root) {
         return Ok(0);
     }
@@ -68,8 +76,21 @@ pub fn restat_dir(
     // cannot turn one physical file into a second database row.
     let dir = crate::winpath::for_fs(dir);
     let dir = dir.as_ref();
-    let roots = crate::visibility_index::source_root_spellings(conn, source_roots)?;
-    let root = crate::visibility_index::root_for(&roots, dir).ok_or("Changed directory is outside configured sources")?;
+    // Availability has its own source Issue. Restatting an independent folder
+    // must not reopen walk failures for every disconnected configured root.
+    let reachable_roots: Vec<String> = source_roots.iter()
+        .filter(|root| crate::volume_io::is_dir(Path::new(root)).unwrap_or(false))
+        .cloned().collect();
+    let roots = crate::visibility_index::source_root_spellings(conn, &reachable_roots)?;
+    let root = match crate::visibility_index::root_for(&roots, dir) {
+        Some(root) => root,
+        None if crate::visibility_index::root_for(source_roots, dir).is_some() => return Ok(0),
+        None => return Err("Changed directory is outside configured sources".to_string()),
+    };
+    // Losing the configured root does not establish that any indexed file was deleted.
+    if !crate::volume_io::is_dir(&root).unwrap_or(false) {
+        return Ok(0);
+    }
     // Checked up front, before `DirectoryFacts::refresh` (which itself
     // `stat`s every ancestor down to `dir` and would surface the same
     // vanished condition as an `Err` there instead): a directory deleted
@@ -78,6 +99,7 @@ pub fn restat_dir(
     // this one dirty entry rather than aborting the whole watcher batch.
     if matches!(crate::volume_io::symlink_metadata(dir), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
     {
+        if !crate::volume_io::is_dir(&root).unwrap_or(false) { return Ok(0); }
         let dir_str = dir.to_string_lossy().to_string();
         return scanner::mark_missing_under(conn, &dir_str);
     }
@@ -87,11 +109,12 @@ pub fn restat_dir(
     let mut present: HashSet<String> = HashSet::new();
 
     // One bounded listing that also reads each entry's metadata.
-    let entries = match crate::volume_io::read_dir(dir, true) {
+    let entries = match read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             // A race after the check above (deleted between the two calls):
             // same treatment.
+            if !crate::volume_io::is_dir(&root).unwrap_or(false) { return Ok(changed); }
             let dir_str = dir.to_string_lossy().to_string();
             let changed = scanner::mark_missing_under(conn, &dir_str)?;
             return Ok(changed);
@@ -120,7 +143,8 @@ pub fn restat_dir(
                 None,
                 &error,
             )?;
-            return Err(error);
+            present.insert(path.to_string_lossy().into_owned());
+            continue;
         };
         if !file_type.is_file() {
             continue;
@@ -134,25 +158,28 @@ pub fn restat_dir(
             continue;
         }
         present.insert(abs.clone());
-        let upserted = match entry.metadata {
-            Some(Ok(meta)) => scanner::upsert_file(conn, &path, &meta, lists, inherited),
-            Some(Err(error)) => Err(error.to_string()),
-            None => Err("file metadata was not read".to_string()),
-        };
-        match upserted {
-            Ok(scanner::Upsert::Unchanged) => {}
-            Ok(_) => changed += 1,
-            Err(error) => {
-                crate::index_store::upsert_issue_with_descriptor(
-                    conn,
-                    Some(&abs),
-                    scanner::STAT_ERROR,
-                    Some(scanner::scan_issue_message_key(scanner::STAT_ERROR)),
-                    None,
-                    &error,
-                )?;
-                return Err(error);
+        let meta = match entry.metadata {
+            Some(Ok(meta)) => meta,
+            Some(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                present.remove(&abs);
+                continue;
             }
+            failure => {
+                let error = match failure {
+                    Some(Err(error)) => error.to_string(),
+                    _ => "file metadata was not read".to_string(),
+                };
+                crate::index_store::upsert_issue_with_descriptor(
+                    conn, Some(&abs), scanner::STAT_ERROR,
+                    Some(scanner::scan_issue_message_key(scanner::STAT_ERROR)), None, &error,
+                )?;
+                continue;
+            }
+        };
+        // Database failures still stop the pass; only per-file reads are isolated.
+        match scanner::upsert_file(conn, &path, &meta, lists, inherited)? {
+            scanner::Upsert::Unchanged => {},
+            _ => changed += 1,
         }
         crate::index_store::clear_issues(
             conn,
@@ -166,6 +193,8 @@ pub fn restat_dir(
         &[scanner::WALK_ERROR],
     )?;
 
+    // A disconnection during the listing cannot prove any file absent.
+    if !crate::volume_io::is_dir(&root).unwrap_or(false) { return Ok(changed); }
     // Rows directly in this dir whose files are gone → missing.
     let dir_str = dir.to_string_lossy().to_string();
     let mut stmt = conn
@@ -251,54 +280,55 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
     // path the drain loop already uses for `need_rescan()`, so the affected
     // roots are rechecked instead of the process either stalling or growing
     // an unbounded backlog.
-    let mut recovery_flags = Vec::new();
-    // One watcher per root, each registered in its own bounded call, so a
-    // root whose drive does not answer never keeps the others unwatched.
-    let mut watchers = Vec::new();
-    let mut watched = 0usize;
-    for root in &source_dirs {
-        if !owns_generation(generation) {
-            return Ok(());
-        }
-        let handler_overflow = Arc::new(AtomicBool::new(false));
-        recovery_flags.push((root.clone(), handler_overflow.clone()));
-        let registration_failed = handler_overflow.clone();
-        let tx = tx.clone();
-        let handler = move |event: notify::Result<notify::Event>| {
-            forward_or_flag_overflow(&tx, &handler_overflow, event);
-        };
-        let registered = watch_root(Path::new(root), handler);
-        if let Err(err) = registered.map(|watcher| watchers.push(watcher)) {
-            if !owns_generation(generation) {
-                return Ok(());
-            }
-            logging::warn(
-                "watcher could not watch a root",
-                json!({ "root": root, "error": { "message": err.to_string() } }),
-            );
-            record_root_condition(&app, root, Some(&err.to_string()))?;
-            registration_failed.store(true, Ordering::SeqCst);
-        } else {
-            if !owns_generation(generation) {
-                return Ok(());
-            }
-            record_root_condition(&app, root, None)?;
-            watched += 1;
-        }
-    }
-    // Only the watchers' handlers send from here on.
-    drop(tx);
-    if watched == 0 {
-        return Err("none of the configured source folders could be watched".to_string());
-    }
-    crate::failure_runtime::clear("watcher-failed", None);
-    logging::info("watcher started", json!({ "roots": source_dirs.len() }));
-
+    let recovery_flags: Vec<_> = source_dirs.iter()
+        .map(|root| (root.clone(), Arc::new(AtomicBool::new(false)))).collect();
+    let mut watchers: Vec<Option<notify::RecommendedWatcher>> = source_dirs.iter().map(|_| None).collect();
+    let mut last_status = None;
+    let mut next_presence = std::time::Instant::now();
+    // Retain the sender even when every source is offline, so this owner can
+    // observe returning sources without depending on a registered watch.
     let mut dirty: HashSet<PathBuf> = HashSet::new();
     let mut overflowed = false;
     loop {
         if !owns_generation(generation) {
             return Ok(());
+        }
+        if std::time::Instant::now() >= next_presence {
+            let verified = crate::volume::verify_source_dirs(&data_root);
+            let (missing, substituted, unknown) = match verified {
+                Ok(status) => (status.missing, status.substituted, false),
+                Err(error) => {
+                    logging::warn("source availability verification failed", json!({"error": {"message": error}}));
+                    (source_dirs.clone(), Vec::new(), true)
+                }
+            };
+            if !owns_generation(generation) { return Ok(()); }
+            let recovering = last_status.is_some();
+            let status = (missing.clone(), substituted.clone(), unknown);
+            if last_status.as_ref() != Some(&status) {
+                reconcile_source_conditions(&data_root, &source_dirs, &missing, &substituted)?;
+                crate::failure_runtime::emit_or_record(&app, "source://availability",
+                    json!({"missing": missing, "substituted": substituted, "presenceUnknown": unknown}));
+                last_status = Some(status);
+            }
+            let registrations = reconcile_watches(&source_dirs, &mut watchers, &missing, &substituted, unknown, &mut |index, root| {
+                let sender = tx.clone();
+                let overflow = recovery_flags[index].1.clone();
+                watch_root(Path::new(root), move |event| forward_or_flag_overflow(&sender, &overflow, event))
+                    .map_err(|error| error.to_string())
+            });
+            if !owns_generation(generation) { return Ok(()); }
+            if registrations.iter().any(|(_, result)| result.is_ok()) {
+                crate::failure_runtime::clear("watcher-failed", None);
+            }
+            for (index, result) in registrations {
+                record_root_condition(&app, &source_dirs[index], result.as_ref().err().map(String::as_str))?;
+                recovery_flags[index].1.store(recovering && result.is_ok(), Ordering::SeqCst);
+            }
+            for (index, watcher) in watchers.iter().enumerate() {
+                if watcher.is_none() { recovery_flags[index].1.store(false, Ordering::SeqCst); }
+            }
+            next_presence = std::time::Instant::now() + Duration::from_secs(10);
         }
         // Wake periodically so a settings-driven watcher replacement can
         // retire this generation even on a completely quiet filesystem.
@@ -328,7 +358,7 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
             .map(|(root, _)| root.clone()).collect();
         if overflowed {
             overflowed = false;
-            recovery_roots = source_dirs.clone();
+            recovery_roots = source_dirs.iter().enumerate().filter(|(index, _)| watchers[*index].is_some()).map(|(_, root)| root.clone()).collect();
         }
         if !recovery_roots.is_empty() {
             recover_roots(&app, &recovery_roots, generation);
@@ -380,6 +410,24 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
             }
         }
     }
+}
+
+/// Registration belongs to the availability transition, including when no
+/// watch has ever existed. Failed registration stays owed for the next probe.
+fn reconcile_watches<W>(
+    roots: &[String], watches: &mut [Option<W>], missing: &[String], substituted: &[String], unknown: bool,
+    register: &mut dyn FnMut(usize, &str) -> Result<W, String>,
+) -> Vec<(usize, Result<(), String>)> {
+    let mut results = Vec::new();
+    for (index, root) in roots.iter().enumerate() {
+        if unknown || missing.contains(root) || substituted.contains(root) {
+            watches[index] = None;
+        } else if watches[index].is_none() {
+            let result = register(index, root).map(|watch| { watches[index] = Some(watch); });
+            results.push((index, result));
+        }
+    }
+    results
 }
 
 /// Closes watcher admission and invalidates every generation before the app's
@@ -439,6 +487,7 @@ fn recover_roots(app: &tauri::AppHandle, roots: &[String], generation: u64) {
     if roots.is_empty() || !owns_generation(generation) { return; }
     crate::failure_runtime::emit_or_record(app, "watch://rescan-needed", json!({ "roots": roots }));
     for root in roots {
+        if !crate::volume_io::is_dir(Path::new(root)).unwrap_or(false) { continue; }
         let result = crate::scan_runtime::with_watcher_claim(
             move || !owns_generation(generation),
             || {
@@ -465,7 +514,7 @@ fn recover_roots(app: &tauri::AppHandle, roots: &[String], generation: u64) {
                     Err(error) => error,
                     Ok(summary) => format!("{} source entries could not be checked", summary.failures),
                 };
-                if crate::failure_runtime::report(app, "watcher-recovery-failed", Some(root), &detail).is_err() {
+                if crate::failure_runtime::record_active(app, "watcher-recovery-failed", Some(root), &detail).is_err() {
                     return;
                 }
             }
@@ -533,13 +582,42 @@ fn record_activity(
 #[path = "../tests/unit/watcher.rs"]
 mod lifecycle_tests;
 
+/// Source availability is a current condition, not a notification or scan failure.
+pub fn reconcile_source_conditions(
+    data_root: &Path, configured: &[String], missing: &[String], substituted: &[String],
+) -> Result<(), String> {
+    let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
+    let unavailable = missing.iter().chain(substituted).collect::<HashSet<_>>();
+    let mut statement = conn.prepare("SELECT path FROM active_issues WHERE kind = 'source-unavailable'")
+        .map_err(|error| error.to_string())?;
+    let prior = statement.query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| error.to_string())?;
+    drop(statement);
+    for root in prior {
+        if !unavailable.contains(&root) {
+            crate::index_store::clear_issues(&conn, &root, &["source-unavailable"])?;
+        }
+    }
+    for root in configured {
+        if unavailable.contains(root) {
+            crate::index_store::clear_issues(&conn, root, &["watcher-root-failed", "watcher-recovery-failed", scanner::WALK_ERROR])?;
+            let key = if substituted.contains(root) { "source.substitutedTitle" } else {
+                crate::volume::unavailable_message_with(data_root, root, &crate::volume::volume_identity)
+            };
+            crate::index_store::upsert_issue_with_descriptor(&conn, Some(root), "source-unavailable", Some(key), None, "")?;
+        }
+    }
+    Ok(())
+}
+
 fn record_root_condition(
     app: &tauri::AppHandle,
     root: &str,
     error: Option<&str>,
 ) -> Result<(), String> {
     if let Some(message) = error {
-        crate::failure_runtime::report(app, "watcher-root-failed", Some(root), message)
+        crate::failure_runtime::record_active(app, "watcher-root-failed", Some(root), message)
     } else {
         crate::failure_runtime::clear("watcher-root-failed", Some(root));
         Ok(())
@@ -708,6 +786,7 @@ fn process_dirty_claimed(
         .iter()
         .map(|dir| crate::winpath::for_fs(dir).to_string_lossy().to_string())
         .collect();
+    crate::volume::enforce_no_substitution(&data_root, &affected_roots(&settings.source_dirs, dirs))?;
     let repair_roots = scanner::begin_scoped_index_repair(&conn, &affected_dirs)?;
 
     let timezone = crate::queries::display_timezone();

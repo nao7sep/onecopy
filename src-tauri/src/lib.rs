@@ -1259,7 +1259,14 @@ async fn binaries_check(
 // currently present (an unmounted volume manifests as a missing directory).
 #[tauri::command]
 async fn check_source_dirs() -> Result<volume::SourceDirsStatus, String> {
-    let result = dispatch(move || volume::verify_source_dirs(&paths::data_root()?)).await;
+    let result = dispatch(move || {
+        let root = paths::data_root()?;
+        let status = volume::verify_source_dirs(&root)?;
+        let config = storage::config(&root)?;
+        let settings = scanner::settings_from_config(Some(&config), &root, 0);
+        watcher::reconcile_source_conditions(&root, &settings.source_dirs, &status.missing, &status.substituted)?;
+        Ok(status)
+    }).await;
     logging::boundary(
         "check_source_dirs",
         json!({}),

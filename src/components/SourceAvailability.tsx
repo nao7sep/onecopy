@@ -38,7 +38,7 @@ export function MissingSourcesNotice({
         </div>
         <div className="flex shrink-0 gap-2">
           <Button onClick={onReconfigure}>
-            {t("source.rerunSetup")}
+            {t("app.settings")}
           </Button>
           <Button variant="primary" onClick={onRecheck}>
             {t("source.checkAgain")}

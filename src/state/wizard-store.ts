@@ -66,7 +66,7 @@ interface WizardState {
   setLanguage: (preference: LanguagePreference) => Promise<void>;
   /** Abandons a re-run, changing nothing. Never available on a first run. */
   cancel: () => void;
-  recheckPresence: () => Promise<boolean>;
+  recheckPresence: (quiet?: boolean) => Promise<boolean>;
 }
 
 const presenceCheck = requestSeq();
@@ -185,7 +185,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
     set({ open: false, reconfigure: false });
   },
 
-  recheckPresence: async () => {
+  recheckPresence: async (quiet = false) => {
     const fresh = presenceCheck.begin();
     try {
       const status = await invoke<{ missing: string[]; substituted: string[] }>(
@@ -209,7 +209,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
       // volume": it blocks exactly like a known substitution until a recheck
       // succeeds (R3-07).
       set({ substitutedDirs: [], presenceUnknown: true, error: failure });
-      recordActionFailure("configured-source-check-failed", failure, error);
+      if (!quiet) recordActionFailure("configured-source-check-failed", failure, error);
       return false;
     }
   },

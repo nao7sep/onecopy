@@ -97,6 +97,15 @@ describe("date presentation", () => {
 });
 
 describe("item presentation priority", () => {
+  it("shows unavailable without replacing the cached item's other presentation", () => {
+    const result = itemPresentation(item({ copyCount: 2 }), {
+      similarCount: 0, selectionOrdinal: null, selectedCount: 0, showFaceStars: false, unavailable: true,
+    }, t);
+    expect(result.status?.text).toBe("Unavailable");
+    expect(result.status?.tone).toBe("warning");
+    expect(result.relationships).not.toBeNull();
+  });
+
   it("keeps failures above ordinary work", () => {
     const work: ItemWorkStates = {
       ...EMPTY_ITEM_WORK,

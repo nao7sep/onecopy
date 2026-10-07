@@ -44,10 +44,20 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("the issues modal", () => {
+  it("keeps an unavailable source actionable with Check again and Settings", async () => {
+    mockCommands({ get_issues: () => ({ total: 1, rows: [row(1, { kind: "source-unavailable", path: "/source", messageKey: "source.unavailable", message: "" })] }) });
+    render(<IssuesModal open onClose={() => {}} />);
+    expect(await screen.findByRole("button", { name: "Check again" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Settings…" }));
+    expect(useAppShellStore.getState().utilitySurface).toBe("settings");
+    expect(invokeCalls.some((call) => call.command.includes("dismiss"))).toBe(false);
+  });
+
   it("offers source checking beside a failed watcher recovery without dismissing the Issue", async () => {
     useSectionsStore.setState({ sourceCheck: { ...useSectionsStore.getInitialState().sourceCheck, running: false } });
     mockCommands({
       get_issues: () => ({ total: 1, rows: [row(1, { kind: "watcher-recovery-failed", path: "/source" })] }),
+      check_source_dirs: () => ({ missing: [], substituted: [] }),
       start_source_check: () => true,
       index_work_snapshot: () => ({ sourceCheck: { ...useSectionsStore.getInitialState().sourceCheck, running: true }, fileInformation: useSectionsStore.getInitialState().fileInformation }),
       log_event: () => null,

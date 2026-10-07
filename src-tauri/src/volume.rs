@@ -316,6 +316,30 @@ pub struct SourceDirsStatus {
     pub substituted: Vec<String>,
 }
 
+/// A missing pathname alone cannot distinguish a deleted folder from an
+/// absent drive. Compare the containing volume with the recorded identity;
+/// every unanswered probe keeps the deliberately general wording.
+pub fn unavailable_message_with(
+    data_root: &Path, dir: &str, identity_of_path: &dyn Fn(&Path) -> Option<String>,
+) -> &'static str {
+    let path = Path::new(dir);
+    if !matches!(crate::volume_io::symlink_metadata(path), Err(error) if error.kind() == std::io::ErrorKind::NotFound) {
+        return "source.unavailable";
+    }
+    let recorded = {
+        let _guard = store_lock();
+        match load_unlocked(data_root) {
+            Ok(records) => records.get(dir).cloned(),
+            Err(_) => None,
+        }
+    };
+    match (recorded, identity_of_path(path)) {
+        (Some(recorded), Some(current)) if recorded.identity == current => "source.folderMissing",
+        (Some(_), Some(_)) => "source.driveUnavailable",
+        _ => "source.unavailable",
+    }
+}
+
 // Presence AND identity verification over the configured source dirs: a dir
 // that is not there is missing; a dir whose volume identity differs from the
 // recorded one is substituted (the developer's backup drives share identical
