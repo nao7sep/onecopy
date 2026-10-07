@@ -188,9 +188,30 @@ fn run(root: &Path) -> Result<bool, String> {
     let mut kept = previous;
     kept.push(target);
     for old in thinned_out(&kept, chrono::Utc::now()) {
+        if let Err(error) = check_archive_format(&old) {
+            crate::logging::warn(
+                "binary archive kept during thinning",
+                serde_json::json!({ "path": old, "error": { "message": error } }),
+            );
+            continue;
+        }
         std::fs::remove_file(old).map_err(|e| e.to_string())?;
     }
     Ok(true)
+}
+
+fn check_archive_format(path: &Path) -> Result<(), String> {
+    let file = File::open(path).map_err(|error| error.to_string())?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|error| error.to_string())?;
+    let document: serde_json::Value = serde_json::from_reader(
+        archive.by_name("manifest.json").map_err(|error| error.to_string())?,
+    ).map_err(|error| error.to_string())?;
+    let version = crate::formats::json_version(&document)?;
+    if let Some(newer) = crate::formats::NewerStore::check(path, version, crate::formats::ARCHIVE_MANIFEST) {
+        return Err(newer.to_string());
+    }
+    serde_json::from_value::<Manifest>(document).map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 fn archive_time(path: &Path) -> Option<chrono::DateTime<chrono::Utc>> {

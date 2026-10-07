@@ -138,6 +138,58 @@ fn a_run_thins_the_archives_beside_it() {
 }
 
 #[test]
+fn thinning_preserves_future_and_unreadable_candidates_but_removes_supported_peers() {
+    let root = tempfile::tempdir().unwrap();
+    stores(root.path());
+    assert!(run(root.path()).unwrap());
+    let directory = root.path().join(ARCHIVES);
+    let first = archives(&directory).unwrap().pop().unwrap();
+    let candidates = [
+        ("20000101-080000-utc.zip", Some(serde_json::json!({ "formatVersion": 2 }))),
+        ("20000101-090000-utc.zip", Some(serde_json::json!({ "formatVersion": 3 }))),
+        ("20000101-100000-utc.zip", None),
+        ("20000101-110000-utc.zip", Some(serde_json::json!({ "entries": [] }))),
+        ("20000101-120000-utc.zip", Some(serde_json::json!({ "formatVersion": 1, "entries": "invalid" }))),
+    ];
+    let mut preserved = Vec::new();
+    for (name, document) in candidates {
+        let path = directory.join(name);
+        if let Some(document) = document {
+            let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
+            zip.start_file("manifest.json", SimpleFileOptions::default()).unwrap();
+            zip.write_all(&serde_json::to_vec(&document).unwrap()).unwrap();
+            zip.finish().unwrap();
+        } else {
+            std::fs::write(&path, b"unreadable archive bytes").unwrap();
+        }
+        preserved.push((path.clone(), std::fs::read(&path).unwrap()));
+    }
+    let supported_old = directory.join("20000101-130000-utc.zip");
+    let supported_last = directory.join("20000101-140000-utc.zip");
+    for path in [&supported_old, &supported_last] {
+        std::fs::copy(&first, path).unwrap();
+    }
+    let last_bytes = std::fs::read(&supported_last).unwrap();
+    std::fs::remove_file(first).unwrap();
+    let changed = Connection::open(root.path().join("index.sqlite3")).unwrap();
+    changed.execute("INSERT INTO evidence VALUES ('new')", []).unwrap();
+    drop(changed);
+
+    assert!(run(root.path()).unwrap());
+
+    for (path, bytes) in preserved {
+        assert_eq!(std::fs::read(&path).unwrap(), bytes, "{} must stay unchanged", path.display());
+    }
+    assert!(!supported_old.exists());
+    assert_eq!(std::fs::read(&supported_last).unwrap(), last_bytes);
+    assert_eq!(archives(&directory).unwrap().len(), 7);
+    let (_, entries) = read_archive(root.path());
+    assert_eq!(entries.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["index.sqlite3"]);
+    assert!(!directory.join(".lock").exists());
+    assert!(std::fs::read_dir(directory).unwrap().all(|entry| !entry.unwrap().path().extension().is_some_and(|ext| ext == "tmp")));
+}
+
+#[test]
 fn missing_or_unreadable_stores_publish_nothing_and_release_the_lock() {
     let root = tempfile::tempdir().unwrap();
     let directory = root.path().join(ARCHIVES);
