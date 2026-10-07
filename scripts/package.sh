@@ -17,6 +17,7 @@ APP_NAME="OneCopy"
 VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
 TAURI_CLI="node_modules/.bin/tauri"
 DMG_DIR="src-tauri/target/release/bundle/dmg"
+MACOS_DIR="src-tauri/target/release/bundle/macos"
 
 cleanup_dmg_scratch() {
   if [[ -d "$DMG_DIR" ]]; then
@@ -37,13 +38,29 @@ fi
 rm -rf artifacts
 mkdir -p artifacts
 
+# Collect only this build's generated bundles; retain the Cargo build cache.
+rm -rf "$DMG_DIR" "$MACOS_DIR"
+
 # Builds the frontend (beforeBuildCommand), the Rust release binary, the .app, and
 # the .dmg. --bundles overrides tauri.conf.json's targets so macOS emits app + dmg.
 "$TAURI_CLI" build --bundles app,dmg
 
-DMG="$(ls "$DMG_DIR"/*.dmg | head -1)"
-APP="$(ls -d src-tauri/target/release/bundle/macos/*.app | head -1)"
-[ -f "$DMG" ] && [ -d "$APP" ] || { echo "tauri build did not produce the expected .dmg/.app" >&2; exit 1; }
+cleanup_dmg_scratch
+shopt -s nullglob
+DMGS=()
+APPS=()
+for candidate in "$DMG_DIR"/*.dmg; do
+  [[ -f "$candidate" ]] && DMGS+=("$candidate")
+done
+for candidate in "$MACOS_DIR"/*.app; do
+  [[ -d "$candidate" ]] && APPS+=("$candidate")
+done
+[[ ${#DMGS[@]} -eq 1 && ${#APPS[@]} -eq 1 ]] || {
+  echo "tauri build must produce exactly one .dmg and one .app" >&2
+  exit 1
+}
+DMG="${DMGS[0]}"
+APP="${APPS[0]}"
 
 cp "$DMG" "artifacts/$APP_NAME-$VERSION.dmg"
 # Portable: a zip of the .app without AppleDouble resource-fork sidecars.
