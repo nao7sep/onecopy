@@ -9,23 +9,13 @@
 // JSON file, and the failure is a runtime rejection on a machine nobody
 // automated. So the pairing is pinned here instead.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const SOURCES = [
-  "src/App.tsx",
-  "src/hooks/useMainWindowLifecycle.ts",
-  "src/state/preview-store.ts",
-  "src/state/comparison-store.ts",
-  "src/workflows/fullscreen-view.ts",
-  "src/workflows/fullscreen-view-window.ts",
-  "src/windows/PreviewWindow.tsx",
-  "src/windows/FullscreenViewWindow.tsx",
-  "src/windows/ComparisonWindow.tsx",
-  "src/windows/IdentifyWindow.tsx",
-  "src/windows/RecordsWindow.tsx",
-  "src/utils/windowSizing.ts",
-].map((path) => readFileSync(path, "utf8"));
+const SOURCES = readdirSync("src", { recursive: true, encoding: "utf8" })
+  .filter((path) => /\.tsx?$/.test(path))
+  .map((path) => readFileSync(join("src", path), "utf8"));
 const ALL_SOURCE = SOURCES.join("\n");
 
 const capabilities = JSON.parse(
@@ -82,7 +72,7 @@ describe("failed window calls are reported, never swallowed", () => {
     // `.catch(() => {})` is what turned a missing permission into an
     // invisible no-op. These calls stay best-effort — a window the user just
     // closed must not throw — but the reason reaches the log.
-    for (const source of SOURCES) {
+    for (const source of SOURCES.filter((text) => /from ["']@tauri-apps\/api\/(?:window|webviewWindow)["']/.test(text))) {
       expect(source).not.toContain("catch(() => {})");
     }
   });

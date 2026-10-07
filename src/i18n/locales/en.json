@@ -32,7 +32,7 @@
   "nativeMenu.help": "Help",
   "app.starting": "Starting OneCopy",
   "window.titlePreview": "OneCopy Preview",
-  "window.titleFullscreenView": "OneCopy Fullscreen view",
+  "window.titleFullscreenView": "OneCopy Fullscreen View",
   "window.titleComparison": "OneCopy Comparison",
   "window.titleRecords": "OneCopy Records",
   "app.deletePermanentlyBody": { "one": "Permanently delete {count} item and every copy? This bypasses recoverable deletion and cannot be undone.", "other": "Permanently delete {count} items and every copy? This bypasses recoverable deletion and cannot be undone." },
