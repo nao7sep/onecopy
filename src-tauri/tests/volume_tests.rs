@@ -190,3 +190,35 @@ fn a_source_volume_record_written_by_a_newer_onecopy_closes_the_gate_and_is_left
     assert!(error.contains("newer"), "{error}");
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
 }
+
+#[test]
+fn a_returning_source_requires_its_recorded_identity_to_be_readable_and_unchanged() {
+    use onecopy_lib::{storage, volume};
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let source = parent.path().join("photos");
+    let path = source.to_string_lossy().to_string();
+    storage::save_config(app_data.path(), &serde_json::json!({ "sourceDirs": [path] })).unwrap();
+    volume::check_identity(app_data.path(), &path, "original-drive").unwrap();
+
+    let absent = volume::verify_source_dirs_with(app_data.path(), &|_| panic!("absent roots need no identity probe")).unwrap();
+    assert_eq!(absent.missing, vec![path.clone()]);
+    std::fs::create_dir(&source).unwrap();
+    assert!(volume::verify_source_dirs_with(app_data.path(), &|_| None).is_err());
+    let replaced = volume::verify_source_dirs_with(app_data.path(), &|_| Some("different-drive".into())).unwrap();
+    assert_eq!(replaced.substituted, vec![path.clone()]);
+    let restored = volume::verify_source_dirs_with(app_data.path(), &|_| Some("original-drive".into())).unwrap();
+    assert!(restored.missing.is_empty());
+    assert!(restored.substituted.is_empty());
+}
+
+#[test]
+fn a_filesystem_without_a_recorded_identity_retains_presence_only_support() {
+    use onecopy_lib::{storage, volume};
+    let app_data = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    storage::save_config(app_data.path(), &serde_json::json!({ "sourceDirs": [source.path()] })).unwrap();
+    let status = volume::verify_source_dirs_with(app_data.path(), &|_| None).unwrap();
+    assert!(status.missing.is_empty());
+    assert!(status.substituted.is_empty());
+}

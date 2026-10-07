@@ -66,7 +66,7 @@ interface WizardState {
   setLanguage: (preference: LanguagePreference) => Promise<void>;
   /** Abandons a re-run, changing nothing. Never available on a first run. */
   cancel: () => void;
-  recheckPresence: () => Promise<void>;
+  recheckPresence: () => Promise<boolean>;
 }
 
 const presenceCheck = requestSeq();
@@ -198,9 +198,11 @@ export const useWizardStore = create<WizardState>((set, get) => ({
           presenceUnknown: false,
           error: null,
         });
+        return true;
       }
+      return false;
     } catch (error) {
-      if (!fresh()) return;
+      if (!fresh()) return false;
       log.error("presence check failed", toErrorFields(error));
       const failure = message("wizard.sourceCheckFailed");
       // A check that could not even answer must not read as "no substituted
@@ -208,6 +210,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
       // succeeds (R3-07).
       set({ substitutedDirs: [], presenceUnknown: true, error: failure });
       recordActionFailure("configured-source-check-failed", failure, error);
+      return false;
     }
   },
 }));

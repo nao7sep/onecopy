@@ -26,6 +26,8 @@ import {
 } from "../repositories/activity";
 import { transitionCoalescer, type CoalescerState } from "../models/refresh-coalescer";
 
+import { refreshSourceAvailability } from "./source-availability";
+
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let derivedIssuesTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -226,6 +228,7 @@ const install = createEventInstaller(
           recordStaleWork("sourceCheck", event.payload.eventSequence);
           return;
         }
+        void refreshSourceAvailability();
         const operationId =
           latestActivityOperationId("sourceCheck") ?? "sourceCheck:auto";
         recordActivity({
@@ -381,6 +384,7 @@ const install = createEventInstaller(
     });
     await listeners.listen<{ rescanNeeded: boolean }>("watch://recovered", (event) => {
       useSectionsStore.setState({ rescanNeeded: event.payload.rescanNeeded });
+      void refreshSourceAvailability();
       refreshLibraryNow();
       void reconcileComparisonMembership();
     });

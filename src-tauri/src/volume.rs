@@ -324,8 +324,21 @@ pub struct SourceDirsStatus {
 // for since-removed dirs are pruned; a volume without a readable identity
 // degrades to presence-only, logged at debug.
 pub fn verify_source_dirs(data_root: &Path) -> Result<SourceDirsStatus, String> {
+    verify_source_dirs_with(data_root, &volume_identity)
+}
+
+/// Presence verification with a replaceable platform probe. A recorded identity
+/// must remain verifiable before a returning source can leave the safety gate.
+pub fn verify_source_dirs_with(
+    data_root: &Path,
+    identity_of_path: &dyn Fn(&Path) -> Option<String>,
+) -> Result<SourceDirsStatus, String> {
     let config = storage::config(data_root)?;
     let settings = crate::scanner::settings_from_config(Some(&config), data_root, 0);
+    let recorded = {
+        let _guard = store_lock();
+        load_unlocked(data_root)?
+    };
     let mut status = SourceDirsStatus::default();
     for dir in &settings.source_dirs {
         let path = std::path::Path::new(dir);
@@ -335,7 +348,10 @@ pub fn verify_source_dirs(data_root: &Path) -> Result<SourceDirsStatus, String> 
             status.missing.push(dir.clone());
             continue;
         }
-        let Some(current) = volume_identity(path) else {
+        let Some(current) = identity_of_path(path) else {
+            if recorded.contains_key(dir) {
+                return Err(format!("could not verify the recorded volume for {dir}"));
+            }
             logging::debug(
                 "no volume identity readable; presence-only verification",
                 serde_json::json!({ "dir": dir }),

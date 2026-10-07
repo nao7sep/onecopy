@@ -17,6 +17,7 @@ import {
   mockSectionItems,
   resetTauriMocks,
 } from "../mocks/tauri";
+import { useWizardStore } from "../../src/state/wizard-store";
 import { useSectionsStore } from "../../src/state/sections-store";
 import {
   installBinariesEventWiring,
@@ -88,6 +89,7 @@ beforeEach(async () => {
     rescanNeeded: false,
   });
   mockCommands({
+    check_source_dirs: () => ({ missing: [], substituted: [] }),
     activity_record: () => null,
     get_section_counts: () => [],
     get_issues: () => ({ total: 0, rows: [] }),
@@ -237,13 +239,16 @@ describe("watcher events", () => {
   });
 
   it("refreshes after recovery and retains the need to check unresolved roots", async () => {
+    useWizardStore.setState({ missingDirs: ["/photos"] });
     fireEvent("watch://rescan-needed", {});
     fireEvent("watch://recovered", { rescanNeeded: true });
     expect(sections.getState().rescanNeeded).toBe(true);
     await settle();
     fireEvent("watch://recovered", { rescanNeeded: false });
     expect(sections.getState().rescanNeeded).toBe(false);
-    await settle();
+    await settleUntil(() => useWizardStore.getState().missingDirs.length === 0);
+    expect(useWizardStore.getState().missingDirs).toEqual([]);
+    expect(invokeCalls.some((call) => call.command === "check_source_dirs")).toBe(true);
   });
 
   it("flags rescan-needed on overflow", async () => {

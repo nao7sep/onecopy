@@ -58,6 +58,7 @@ import { useMutationStore } from "./state/mutation-store";
 import { useDestinationDragBoundary } from "./hooks/useDestinationDragBoundary";
 import DestinationDragProvider from "./components/DestinationDragProvider";
 import PlaybackControls from "./components/PlaybackControls";
+import { recheckSources } from "./workflows/source-availability";
 import NotificationHost from "./components/NotificationHost";
 import StartupFailureScreen from "./components/StartupFailureScreen";
 import { reportActionFailure } from "./state/notifications-store";
@@ -219,7 +220,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
         <SubstitutedSourceGate
           substituted={substitutedDirs}
           unknown={presenceUnknown}
-          onRecheck={() => void useWizardStore.getState().recheckPresence()}
+          onRecheck={() => void recheckSources()}
           onReconfigure={reopenSetup}
         />
       ) : null}
@@ -260,7 +261,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
       {!wizardOpen && !substitutedSourceGateOpen && missingDirs.length > 0 ? (
         <MissingSourcesNotice
           missing={missingDirs}
-          onRecheck={() => void useWizardStore.getState().recheckPresence()}
+          onRecheck={() => void recheckSources()}
           onReconfigure={reopenSetup}
         />
       ) : null}
