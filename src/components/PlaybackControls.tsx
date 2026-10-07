@@ -26,7 +26,7 @@ export default function PlaybackControls() {
       if (action === "sound") await setSoundEnabled(!audible);
       else await setAutoplay(!autoplay);
     } catch (error) {
-      reportActionFailure(`${action}-setting-failed`, message(action === "sound" ? "app.soundChangeFailed" : "app.autoplayChangeFailed"), error);
+      reportActionFailure(`${action}-setting-failed`, message(action === "sound" ? "settings.saveFailed" : "app.autoplayChangeFailed"), error);
     } finally { busyRef.current = false; setBusy(false); }
   };
   return <span className="inline-flex shrink-0 items-center gap-2">

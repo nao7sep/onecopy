@@ -137,19 +137,29 @@ let configWriteTail: Promise<void> = Promise.resolve();
 function flushConfigPatch(): Promise<void> {
   if (configFlushTimer !== null) clearTimeout(configFlushTimer);
   configFlushTimer = null;
-  const patch = pendingConfigPatch;
-  pendingConfigPatch = null;
-  if (patch === null) return configWriteTail;
-  const write = configWriteTail.then(() =>
-    useAppStore.getState().saveConfig(patch, { reportFailure: false }),
-  );
+  // Keep authored changes until a write succeeds. Take the snapshot when
+  // this queued write starts, so a failed predecessor cannot replay an older
+  // value over edits made while it was in flight.
+  const write = configWriteTail.then(async () => {
+    const patch = pendingConfigPatch;
+    if (patch === null) return;
+    await useAppStore.getState().saveConfig(patch, { reportFailure: false });
+    const remaining = Object.fromEntries(
+      Object.entries(pendingConfigPatch ?? {}).filter(
+        ([key, value]) => !Object.is(patch[key], value),
+      ),
+    );
+    pendingConfigPatch = Object.keys(remaining).length === 0 ? null : remaining;
+  });
   configWriteTail = write.catch(() => undefined);
   return write;
 }
 
 /** Writes any coalesced sound/volume change before the app exits. */
 export async function flushPlaybackConfigForShutdown(): Promise<void> {
-  await flushConfigPatch();
+  do {
+    await flushConfigPatch();
+  } while (pendingConfigPatch !== null);
 }
 
 function queueConfigPatch(patch: Record<string, unknown>): void {
@@ -311,25 +321,10 @@ export function requestPlaybackSeek(key: string, position: number): void {
 }
 
 export async function setSoundEnabled(enabled: boolean): Promise<void> {
-  const previous = session?.soundEnabled;
-  if (session !== null) {
-    session = { ...session, soundEnabled: enabled };
-    broadcast();
-  }
-  try {
-    // The caller shows the failure, so the core stays quiet: one failed write
-    // is one record.
-    pendingConfigPatch = { ...(pendingConfigPatch ?? {}), soundEnabled: enabled };
-    await flushConfigPatch();
-  } catch (error) {
-    // Players and the status bar must not keep claiming a setting that was
-    // never saved.
-    if (session !== null && previous !== undefined) {
-      session = { ...session, soundEnabled: previous };
-      broadcast();
-    }
-    throw error;
-  }
+  // The selected state remains visible and pending when saving fails, just
+  // like volume edits; the caller presents the failure and quit can retry it.
+  queueConfigPatch({ soundEnabled: enabled });
+  await flushConfigPatch();
 }
 
 export async function setAutoplay(enabled: boolean): Promise<void> {

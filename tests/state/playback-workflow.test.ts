@@ -37,7 +37,7 @@ beforeEach(async () => {
 });
 
 describe("sound setting", () => {
-  it("takes Sound back from the players when its write never reached disk", async () => {
+  it("retains the selected Sound state after its save fails and retries it", async () => {
     fireEvent("playback://register", { surface: "preview-split", key: "clip", medium: "video" });
     mockCommands({
       save_config: () => Promise.reject(new TypeError("EACCES writing config.json")),
@@ -45,8 +45,11 @@ describe("sound setting", () => {
 
     await expect(setSoundEnabled(false)).rejects.toBeInstanceOf(TypeError);
 
-    expect(latestState()).toMatchObject({ soundEnabled: true });
-    expect(useAppStore.getState().appData?.config).toMatchObject({ soundEnabled: true });
+    expect(latestState()).toMatchObject({ soundEnabled: false });
+    expect(useAppStore.getState().appData?.config).toMatchObject({ soundEnabled: false });
+    mockCommands({ save_config: ({ changes }) => changes });
+    await flushPlaybackConfigForShutdown();
+    expect(latestState()).toMatchObject({ soundEnabled: false });
   });
 
   it("keeps a saved Sound change", async () => {
@@ -57,6 +60,24 @@ describe("sound setting", () => {
 
     expect(latestState()).toMatchObject({ soundEnabled: false });
     expect(useAppStore.getState().appData?.config).toMatchObject({ soundEnabled: false });
+  });
+  it("keeps a later Sound choice when an earlier save fails", async () => {
+    let failFirst!: (error: Error) => void;
+    let calls = 0;
+    mockCommands({ save_config: ({ changes }) => {
+      if (++calls === 1) return new Promise((_, reject) => { failFirst = reject; });
+      return { ...useAppStore.getState().appData!.config, ...(changes as object) };
+    } });
+    const first = setSoundEnabled(false);
+    const failed = expect(first).rejects.toThrow("disk full");
+    await Promise.resolve();
+    const later = setSoundEnabled(true);
+    failFirst(new Error("disk full"));
+    await failed;
+    await later;
+    expect(useAppStore.getState().appData?.config.soundEnabled).toBe(true);
+    await flushPlaybackConfigForShutdown();
+    expect(calls).toBe(2);
   });
 });
 
@@ -88,6 +109,29 @@ describe("unified playback policy", () => {
     await first;
     expect(useAppStore.getState().appData?.config.playbackVolume).toBe(0.8);
     await flushPlaybackConfigForShutdown();
+    expect(useAppStore.getState().appData?.config.playbackVolume).toBe(0.8);
+  });
+
+  it("retries a failed authored patch with later edits instead of losing or replaying them", async () => {
+    let failFirst!: (error: Error) => void;
+    const writes: Array<Record<string, unknown>> = [];
+    mockCommands({ save_config: ({ changes }) => {
+      writes.push(changes as Record<string, unknown>);
+      if (writes.length === 1) return new Promise((_, reject) => { failFirst = reject; });
+      return { ...useAppStore.getState().appData!.config, ...(changes as object) };
+    } });
+    setPlaybackVolume(0.3);
+    const first = flushPlaybackConfigForShutdown();
+    const failed = expect(first).rejects.toThrow("disk full");
+    await Promise.resolve();
+    setPlaybackVolume(0.8);
+    const retry = flushPlaybackConfigForShutdown();
+    failFirst(new Error("disk full"));
+    await failed;
+    await retry;
+    expect(writes).toEqual([{ soundEnabled: true, playbackVolume: 0.3 }, { soundEnabled: true, playbackVolume: 0.8 }]);
+    await flushPlaybackConfigForShutdown();
+    expect(writes).toHaveLength(2);
     expect(useAppStore.getState().appData?.config.playbackVolume).toBe(0.8);
   });
 
