@@ -52,3 +52,30 @@ impl DimTuple for DynamicImage {
         (self.width(), self.height())
     }
 }
+
+#[test]
+fn decoder_panics_record_one_failure_and_continue_in_serial_and_parallel() {
+    for capacity in [1, 2] {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+        let cache = CachePaths::new(dir.path().join("cache"));
+        let mut rows = Vec::new();
+        for hash in ["bad001", "good01"] {
+            let path = dir.path().join(format!("{hash}.jpg")).to_string_lossy().into_owned();
+            std::fs::write(&path, b"synthetic").unwrap();
+            conn.execute("INSERT INTO contents (hash, byte_size, kind) VALUES (?1, 1, 'image')", [hash]).unwrap();
+            conn.execute("INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash) VALUES (?1, ?2, ?3, 'image', ?3)",
+                rusqlite::params![path, dir.path().to_string_lossy(), hash]).unwrap();
+            rows.push((hash.to_string(), path));
+        }
+        let stats = derive_candidate_rows_with(&conn, &cache, None, None, None, rows, capacity, &|| false,
+            &|hash, _, _| {
+                if hash == "bad001" { panic!("synthetic corrupt decoder input"); }
+                Ok((None, DerivedFacts { width: 10, height: 10, sharpness: 1.0, phash: 1 }))
+            }).unwrap();
+        assert_eq!((stats.failed, stats.derived), (1, 1));
+        let issues: i64 = conn.query_row("SELECT count(*) FROM active_issues WHERE kind = 'decode-error'", [], |row| row.get(0)).unwrap();
+        assert_eq!(issues, 1);
+        assert!(crate::derived_state::image_candidates(&conn, false, None, None).unwrap().is_empty(), "ordinary browsing must not retry the panic");
+    }
+}

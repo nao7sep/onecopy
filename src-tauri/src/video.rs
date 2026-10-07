@@ -275,7 +275,9 @@ fn derive_videos_pending_limit(
 
     let rows = crate::derived_state::video_candidates(conn, true, limit, only_hash)?;
 
-    for (hash, path) in rows {
+    for (hash, _) in rows {
+        let Some(available) = crate::indexed_file::available_path(conn, Some(&hash), None)? else { continue; };
+        let path = available.to_string_lossy().into_owned();
         let _awake = crate::sleep_prevention::begin_work();
         let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::BackgroundWork,
             Some(crate::activity::ActivitySubject::Previews), Some(&hash));
@@ -290,7 +292,7 @@ fn derive_videos_pending_limit(
             // frame when the container reports no duration.
             let staged = temp_dir.join(format!("poster-{}.jpg", crate::nanoid::generate()?));
             let at_ms = duration_ms.map_or(0, |duration| duration * 15 / 100);
-            let poster_result = extract_frame(ffmpeg, src, at_ms, preview_long_edge, &staged)
+            let poster_result = crate::failure_runtime::contain_item(|| extract_frame(ffmpeg, src, at_ms, preview_long_edge, &staged)
                 .and_then(|()| {
                     // The staged poster is a plain JPEG, so the image crate
                     // opens it directly — no ffmpeg needed for this half.
@@ -303,7 +305,7 @@ fn derive_videos_pending_limit(
                         None,
                     )
                     .map(|_| ())
-                });
+                }));
             crate::fs_recovery::remove_file(&staged, "video poster staging cleanup");
             poster_result?;
             Ok(duration_ms)
@@ -385,10 +387,13 @@ pub fn derive_strips_pending(
         ..StripDeriveStats::default()
     };
     let total = rows.len() as u64;
-    for (hash, duration_ms, path) in rows {
+    for (hash, duration_ms, _) in rows {
         if stop() {
             break;
         }
+        stats.last_attempted_hash = Some(hash.clone());
+        let Some(available) = crate::indexed_file::available_path(conn, Some(&hash), None)? else { continue; };
+        let path = available.to_string_lossy().into_owned();
         let _awake = crate::sleep_prevention::begin_work();
         on_item(&hash);
         let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::BackgroundWork,
@@ -402,11 +407,11 @@ pub fn derive_strips_pending(
             for (index, at_ms) in strip_timestamps_ms(duration_ms, count).iter().enumerate() {
                 let staged =
                     temp_dir.join(format!("strip-{}.jpg", crate::nanoid::generate()?));
-                let frame_result = extract_frame(ffmpeg, src, *at_ms, frame_edge, &staged).and_then(|()| {
+                let frame_result = crate::failure_runtime::contain_item(|| extract_frame(ffmpeg, src, *at_ms, frame_edge, &staged).and_then(|()| {
                     let img = crate::resource_limits::decode_file(&staged)?;
                     let target = strip_path(cache, &hash, index as u32);
                     preview::write_webp(&img, &target, 76.0)
-                });
+                }));
                 crate::fs_recovery::remove_file(&staged, "video snapshot staging cleanup");
                 frame_result?;
                 trace.progress(index as u64 + 1, count as u64);

@@ -251,6 +251,13 @@ pub fn emit_or_record<T: Clone + Serialize>(app: &AppHandle, event: &str, payloa
     }
 }
 
+/// Contain external per-item computation before its owner persists the result.
+/// Persistence failures stay outside this boundary and stop the owning pass.
+pub fn contain_item<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
+        .unwrap_or_else(|panic| Err(format!("item processing stopped unexpectedly: {}", panic_message(panic))))
+}
+
 pub fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
     payload
         .downcast_ref::<&str>()

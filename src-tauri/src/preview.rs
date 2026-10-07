@@ -734,7 +734,6 @@ fn derive_images_pending_limit(
 }
 
 type DeriveOutcome = Result<(Option<String>, DerivedFacts), String>;
-type WorkerOutcome = Result<DeriveOutcome, String>;
 
 fn derive_candidate(
     hash: &str,
@@ -770,9 +769,7 @@ fn derive_candidate(
 
 fn derive_native_candidates_parallel(
     rows: &[(usize, String, String)],
-    cache: &CachePaths,
-    thumb_edge: u32,
-    preview_long_edge: u32,
+    decode: &(dyn Fn(&str, &str, Option<&Path>) -> DeriveOutcome + Sync),
 ) -> Result<Vec<(usize, DeriveOutcome)>, String> {
     std::thread::scope(|scope| {
         let (send, receive) = std::sync::mpsc::channel();
@@ -783,25 +780,7 @@ fn derive_native_candidates_parallel(
             std::thread::Builder::new()
                 .name(format!("onecopy-image-preview-{index}"))
                 .spawn_scoped(scope, move || {
-                    let outcome: WorkerOutcome = std::panic::catch_unwind(
-                        std::panic::AssertUnwindSafe(|| {
-                            generate_for_image(
-                                Path::new(&path),
-                                &hash,
-                                cache,
-                                thumb_edge,
-                                preview_long_edge,
-                                None,
-                            )
-                            .map(|facts| (None, facts))
-                        }),
-                    )
-                    .map_err(|panic| {
-                        format!(
-                            "image preview worker stopped unexpectedly: {}",
-                            crate::failure_runtime::panic_message(panic)
-                        )
-                    });
+                    let outcome = crate::failure_runtime::contain_item(|| decode(&hash, &path, None));
                     let _ = send.send((*index, outcome));
                 })
                 .map_err(|error| format!("could not start an image preview worker: {error}"))?;
@@ -809,8 +788,7 @@ fn derive_native_candidates_parallel(
         drop(send);
         let mut outcomes = receive
             .into_iter()
-            .map(|(index, outcome)| outcome.map(|outcome| (index, outcome)))
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Vec<_>>();
         outcomes.sort_by_key(|(index, _)| *index);
         Ok(outcomes)
     })
@@ -829,11 +807,23 @@ fn derive_candidate_rows(
     idle: bool,
     priority_changed: &dyn Fn() -> bool,
 ) -> Result<DeriveStats, String> {
+    derive_candidate_rows_with(conn, cache, ffmpeg, on_item, progress, rows,
+        crate::resource_limits::image_worker_capacity(idle), priority_changed,
+        &|hash, path, tool| derive_candidate(hash, path, cache, thumb_edge, preview_long_edge, tool))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn derive_candidate_rows_with(
+    conn: &Connection, cache: &CachePaths, ffmpeg: Option<&Path>,
+    on_item: Option<&dyn Fn(&str)>, progress: Option<&dyn Fn(u64, u64)>,
+    rows: Vec<(String, String)>, capacity: usize, priority_changed: &dyn Fn() -> bool,
+    decode: &(dyn Fn(&str, &str, Option<&Path>) -> DeriveOutcome + Sync),
+) -> Result<DeriveStats, String> {
     let mut stats = DeriveStats::default();
 
     let total = rows.len() as u64;
     let mut done = 0u64;
-    let capacity = crate::resource_limits::image_worker_capacity(idle).min(rows.len().max(1));
+    let capacity = capacity.max(1).min(rows.len().max(1));
 
     for chunk in rows.chunks(capacity) {
         if priority_changed() {
@@ -842,6 +832,13 @@ fn derive_candidate_rows(
         if crate::derived_runtime::cancelled() {
             return Err(crate::scanner::CANCELLED.to_string());
         }
+        let mut available = Vec::with_capacity(chunk.len());
+        for (hash, _) in chunk {
+            if let Some(path) = crate::indexed_file::available_path(conn, Some(hash), None)? {
+                available.push((hash.clone(), path.to_string_lossy().into_owned()));
+            }
+        }
+        let chunk = available;
         let _awake = crate::sleep_prevention::begin_work();
         if let (Some(report), Some((hash, _))) = (on_item, chunk.first()) {
             report(hash);
@@ -866,7 +863,7 @@ fn derive_candidate_rows(
             crate::activity::ActivityOwner::BackgroundWork, Some(crate::activity::ActivitySubject::Previews), Some(hash))).collect();
         if parallel.len() > 1 {
             for (index, outcome) in
-                derive_native_candidates_parallel(&parallel, cache, thumb_edge, preview_long_edge)?
+                derive_native_candidates_parallel(&parallel, decode)?
             {
                 outcomes[index] = Some(outcome);
             }
@@ -874,7 +871,7 @@ fn derive_candidate_rows(
 
         for (index, (hash, path)) in chunk.iter().enumerate() {
             let mut outcome = outcomes[index].take().unwrap_or_else(|| {
-                derive_candidate(hash, path, cache, thumb_edge, preview_long_edge, ffmpeg)
+                crate::failure_runtime::contain_item(|| decode(hash, path, ffmpeg))
             });
             if outcome
                 .as_ref()
@@ -885,14 +882,7 @@ fn derive_candidate_rows(
                     // one item through bounded ffmpeg only after every parallel
                     // native worker has joined, preserving subprocess
                     // exclusivity.
-                    outcome = derive_candidate(
-                        hash,
-                        path,
-                        cache,
-                        thumb_edge,
-                        preview_long_edge,
-                        ffmpeg,
-                    );
+                    outcome = crate::failure_runtime::contain_item(|| decode(hash, path, ffmpeg));
                 } else {
                     // A large ordinary still needs the same managed fallback as
                     // HEIC. Missing ffmpeg is dependency debt, not a bad file;

@@ -428,3 +428,20 @@ fn face_success_empty_failure_and_cancellation_use_the_production_operation() {
     assert_eq!(failures, [("failed".to_string(), "failed".to_string(), "detector failed".to_string())]);
     assert_eq!(*changed.borrow(), ["smile", "none", "failed"]);
 }
+
+#[test]
+fn face_inference_panic_records_one_failure_and_the_next_item_completes() {
+    let root = tempfile::tempdir().unwrap();
+    let conn = index_store::open(&root.path().join("index.sqlite3")).unwrap();
+    let cache = preview::CachePaths::new(root.path().join("cache"));
+    for hash in ["panic", "healthy"] {
+        insert(&conn, hash, "image", &format!("{hash}.jpg"));
+        write_preview(&cache, hash);
+        let outcome = complete_face_scoring_attempt(&conn, &cache, hash, &format!("{hash}.jpg"), &|| false, |_| {}, |_| {
+            if hash == "panic" { panic!("synthetic inference panic"); }
+            Ok(Vec::new())
+        }).unwrap();
+        assert_eq!(matches!(outcome, FaceScoringAttemptOutcome::Failed { .. }), hash == "panic");
+    }
+    assert_eq!(conn.query_row("SELECT count(*) FROM active_issues WHERE kind = 'face-score-error'", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+}

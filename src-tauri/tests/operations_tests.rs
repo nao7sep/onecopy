@@ -1258,18 +1258,20 @@ fn a_failed_copy_keeps_its_row_and_records_an_issue() {
         .conn
         .query_row("SELECT content_hash FROM paths LIMIT 1", [], |r| r.get(0))
         .unwrap();
-    // Sabotage one copy: replace it with a directory so rename/remove fails.
-    std::fs::remove_file(f.root.join("b").join("ok.jpg")).unwrap();
-    std::fs::create_dir_all(f.root.join("b").join("ok.jpg")).unwrap();
-
-    let outcome = delete_item(
-        &f.conn,
-        &f.app_root,
-        &f.cache,
-        ItemRef::Hash(&hash),
-        DeleteMode::Trash,
-    )
-    .unwrap();
+    // The source changes after the whole-set preflight, so the existing
+    // per-file partial-result contract still applies.
+    let mut sabotaged = false;
+    let outcome = delete_batch(
+        &f.conn, &f.app_root, &f.cache,
+        &[ItemIdentity { hash: Some(hash), path_id: None }], DeleteMode::Trash, &|| false,
+        |_| {
+            if !sabotaged {
+                sabotaged = true;
+                std::fs::remove_file(f.root.join("b/ok.jpg")).unwrap();
+                std::fs::create_dir_all(f.root.join("b/ok.jpg")).unwrap();
+            }
+        },
+    ).unwrap();
     assert_eq!(outcome.deleted_files, 1);
     assert_eq!(outcome.failed_files, 1);
 
@@ -1374,13 +1376,6 @@ fn companion_copy_failure_preserves_that_companion_without_rolling_back_the_prim
     let dest = f._dir.path().join("dest");
     std::fs::create_dir_all(&dest).unwrap();
 
-    // Make the source RAW unreadable so its output alone cannot be staged.
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(f.root.join("x.arw"), std::fs::Permissions::from_mode(0o000))
-            .unwrap();
-    }
-
     let hash: String = f
         .conn
         .query_row(
@@ -1390,15 +1385,14 @@ fn companion_copy_failure_preserves_that_companion_without_rolling_back_the_prim
         )
         .unwrap();
 
-    let outcome = move_out(
-        &f.conn,
-        &f.app_root,
-        &f.cache,
-        ItemRef::Hash(&hash),
-        &dest,
-        MoveOutMode::MoveTrashRest,
-    )
-    .unwrap();
+    let outcome = move_batch(
+        &f.conn, &f.app_root, &f.cache,
+        &[ItemIdentity { hash: Some(hash), path_id: None }], &dest,
+        MoveOutMode::MoveTrashRest, &|| false, |_| {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(f.root.join("x.arw"), std::fs::Permissions::from_mode(0o000)).unwrap();
+        },
+    ).unwrap();
 
     assert_eq!(outcome.post_action.deleted_files, 1);
     assert!(
@@ -2043,13 +2037,13 @@ fn a_copy_whose_owner_cannot_be_established_fails_only_itself() {
 }
 
 #[test]
-fn a_missing_file_fails_as_itself_in_both_deletion_modes() {
+fn a_file_disappearing_after_preflight_fails_as_itself_in_both_deletion_modes() {
     for mode in [DeleteMode::Trash, DeleteMode::Permanent] {
         let f = fixture("missing-delete");
         std::fs::write(f.root.join("gone.jpg"), b"bytes").unwrap();
         scan(&f);
         let item = item_named(&f, "gone.jpg");
-        std::fs::remove_file(f.root.join("gone.jpg")).unwrap();
+        let mut removed = false;
 
         let outcome = delete_batch(
             &f.conn,
@@ -2058,7 +2052,9 @@ fn a_missing_file_fails_as_itself_in_both_deletion_modes() {
             &[item],
             mode,
             &|| false,
-            |_| {},
+            |_| {
+                if !removed { removed = true; std::fs::remove_file(f.root.join("gone.jpg")).unwrap(); }
+            },
         )
         .unwrap();
 
@@ -2256,8 +2252,7 @@ fn overwrite_displaces_nothing_until_the_complete_replacement_is_prepared() {
     )
     .unwrap();
     assert!(review.overwrite_allowed);
-    // The incoming sidecar cannot be read when the operation runs.
-    std::fs::set_permissions(f.root.join("x.xmp"), std::fs::Permissions::from_mode(0o000)).unwrap();
+    // The sidecar becomes unreadable after preflight.
 
     let outcome = move_batch_reviewed(
         &f.conn,
@@ -2271,7 +2266,7 @@ fn overwrite_displaces_nothing_until_the_complete_replacement_is_prepared() {
         review.plan_token.as_deref(),
         RenameStyle::SpaceNumber,
         &|| false,
-        |_| {},
+        |_| { std::fs::set_permissions(f.root.join("x.xmp"), std::fs::Permissions::from_mode(0o000)).unwrap(); },
     )
     .unwrap();
     std::fs::set_permissions(f.root.join("x.xmp"), std::fs::Permissions::from_mode(0o644)).unwrap();
@@ -2361,12 +2356,18 @@ fn move_keeps_companions_of_an_unreadable_main_before_or_after_the_healthy_copy(
                 "SELECT content_hash FROM paths WHERE file_name = 'r.jpg' LIMIT 1",
                 [], |row| row.get(0),
             ).unwrap();
-            std::fs::rename(f.root.join(unreadable).join("r.jpg"), f._dir.path().join("unavailable.jpg")).unwrap();
-            std::fs::create_dir(f.root.join(unreadable).join("r.jpg")).unwrap();
             let healthy = if unreadable == "a" { "b" } else { "a" };
-
-            let outcome = move_out(
-                &f.conn, &f.app_root, &f.cache, ItemRef::Hash(&hash), &dest, mode,
+            let mut changed = false;
+            let outcome = move_batch(
+                &f.conn, &f.app_root, &f.cache,
+                &[ItemIdentity { hash: Some(hash), path_id: None }], &dest, mode, &|| false,
+                |_| {
+                    if !changed {
+                        changed = true;
+                        std::fs::rename(f.root.join(unreadable).join("r.jpg"), f._dir.path().join("unavailable.jpg")).unwrap();
+                        std::fs::create_dir(f.root.join(unreadable).join("r.jpg")).unwrap();
+                    }
+                },
             ).unwrap();
 
             assert_eq!(std::fs::read(dest.join("r.jpg")).unwrap(), b"healthy-bytes");
@@ -2733,7 +2734,7 @@ fn a_permanent_delete_given_up_on_keeps_the_row_until_the_next_check_settles_it(
 }
 
 #[test]
-fn a_stalled_source_volume_does_not_stop_deletes_on_a_healthy_one() {
+fn a_source_stalling_after_preflight_does_not_roll_back_the_other_deletes() {
     let f = fixture("stalled-and-healthy");
     let stalled_root = f._dir.path().join("stalled");
     std::fs::create_dir(&stalled_root).unwrap();
@@ -2745,7 +2746,7 @@ fn a_stalled_source_volume_does_not_stop_deletes_on_a_healthy_one() {
     scanner::hash_pending(&f.conn, &f.cache).unwrap();
     let items = [item_named(&f, "away.jpg"), item_named(&f, "here.jpg")];
     let volume = FakeStallingVolume::mount(&stalled_root, STALL_BOUND);
-    volume.stall(&[], None);
+    let mut stalled = false;
 
     let started = std::time::Instant::now();
     let outcome = delete_batch(
@@ -2755,7 +2756,7 @@ fn a_stalled_source_volume_does_not_stop_deletes_on_a_healthy_one() {
         &items,
         DeleteMode::Trash,
         &|| false,
-        |_| {},
+        |_| { if !stalled { stalled = true; volume.stall(&[], None); } },
     )
     .unwrap();
 
@@ -2802,4 +2803,55 @@ fn a_move_whose_source_cleanup_is_given_up_on_reports_it_as_outcome_unknown() {
     );
     volume.release();
     assert!(volume.wait_until_settled(SETTLE));
+}
+
+#[test]
+fn unavailable_required_copy_refuses_the_whole_delete_or_move_selection() {
+    for action in ["delete", "move"] {
+        let f = fixture("offline-preflight");
+        let first = f.root.join("first.jpg");
+        let second = f.root.join("second.jpg");
+        std::fs::write(&first, b"first").unwrap();
+        std::fs::write(&second, b"second").unwrap();
+        scan(&f);
+        let items: Vec<ItemIdentity> = ["first.jpg", "second.jpg"].into_iter().map(|name| {
+            let hash = f.conn.query_row("SELECT content_hash FROM paths WHERE file_name = ?1", [name], |row| row.get(0)).unwrap();
+            ItemIdentity { hash: Some(hash), path_id: None }
+        }).collect();
+        let accepted = AcceptedFiles::capture(&f.conn, &items).unwrap();
+        std::fs::remove_file(&second).unwrap();
+        let dest = f.root.parent().unwrap().join("output");
+        std::fs::create_dir(&dest).unwrap();
+        let error = if action == "delete" {
+            delete_accepted_batch(&f.conn, &f.app_root, &f.cache, &items, &accepted, DeleteMode::Permanent, &|| false, |_| {}).unwrap_err()
+        } else {
+            move_batch_reviewed(&f.conn, &f.app_root, &f.cache, &items, &accepted, &dest, MoveOutMode::MoveTrashRest, None, None, RenameStyle::SpaceNumber, &|| false, |_| {}).unwrap_err()
+        };
+        assert!(error.contains("second.jpg"), "{error}");
+        assert!(first.exists(), "the earlier item must remain untouched");
+        assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0);
+    }
+}
+
+#[test]
+fn copy_uses_an_available_duplicate_while_move_requires_every_copy() {
+    let f = fixture("offline-duplicate");
+    let first = f.root.join("a.jpg");
+    let second = f.root.join("b.jpg");
+    std::fs::write(&first, b"same").unwrap();
+    std::fs::write(&second, b"same").unwrap();
+    scan(&f);
+    let hash: String = f.conn.query_row("SELECT content_hash FROM paths LIMIT 1", [], |row| row.get(0)).unwrap();
+    let items = [ItemIdentity { hash: Some(hash), path_id: None }];
+    std::fs::remove_file(&first).unwrap();
+    let dest = f.root.parent().unwrap().join("copy-output");
+    std::fs::create_dir(&dest).unwrap();
+    let result = move_batch(&f.conn, &f.app_root, &f.cache, &items, &dest, MoveOutMode::CopyKeepAll, &|| false, |_| {}).unwrap();
+    assert_eq!(result.exported, 1);
+    assert!(second.exists());
+    assert_eq!(std::fs::read(dest.join("a.jpg")).unwrap(), b"same");
+    assert_eq!(f.conn.query_row("SELECT count(*) FROM active_issues WHERE kind = 'copy-error'", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    let refused = delete_batch(&f.conn, &f.app_root, &f.cache, &items, DeleteMode::Trash, &|| false, |_| {});
+    assert!(refused.is_err());
+    assert!(second.exists());
 }

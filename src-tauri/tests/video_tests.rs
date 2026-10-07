@@ -112,6 +112,10 @@ fn a_poster_failure_is_returned_as_an_item_transition() {
     )
     .unwrap();
 
+    let source = dir.path().join("clip.mov");
+    std::fs::write(&source, b"invalid-video").unwrap();
+    conn.execute("UPDATE paths SET abs_path = ?1", [source.to_string_lossy().as_ref()]).unwrap();
+
     let stats = derive_videos_pending(
         &conn,
         &CachePaths::new(dir.path().join("cache")),

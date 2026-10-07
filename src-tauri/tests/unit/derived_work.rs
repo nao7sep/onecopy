@@ -262,3 +262,20 @@ fn a_model_load_failure_keeps_transcription_retryable_and_coalesces_one_class_is
     assert_eq!(paused & WorkClass::Similarity.bit(), 0);
     assert_eq!(crate::derived_runtime::changed_pause_classes(paused, Some(WorkClass::VideoTranscripts.id()), false).unwrap(), 0);
 }
+
+#[test]
+fn a_transcription_panic_becomes_a_durable_item_failure() {
+    let temp = tempfile::tempdir().unwrap();
+    let conn = crate::index_store::open(&temp.path().join("index.sqlite3")).unwrap();
+    conn.execute("INSERT INTO contents (hash, byte_size, kind) VALUES ('media', 1, 'audio')", []).unwrap();
+    let cache = CachePaths::new(temp.path().join("cache"));
+    let attempt = TranscriptionAttempt {
+        conn: &conn, cache: &cache, data_root: temp.path(), temp_dir: temp.path().join("temp"),
+        source_hash: "media", source_path: "/media/audio.wav", replace_existing: false,
+        acceleration: crate::ai_acceleration::Mode::None, cancel_when: None,
+    };
+    let result = crate::failure_runtime::contain_item(|| panic!("synthetic transcription panic"));
+    let outcome = finish_transcription_attempt(&attempt, "media".into(), result).unwrap();
+    assert!(matches!(outcome, TranscriptionAttemptOutcome::Failed { .. }));
+    assert_eq!(crate::derived_state::transcript_result(&conn, "media").unwrap().status, crate::derived_state::FAILED);
+}

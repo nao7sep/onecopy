@@ -440,10 +440,11 @@ pub fn complete_face_scoring_attempt(
     let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::BackgroundWork,
         Some(crate::activity::ActivitySubject::Faces), Some(hash));
     let preview = cache.preview(hash);
-    let decoded = std::fs::read(&preview)
-        .map_err(|error| error.to_string())
-        .and_then(|bytes| crate::resource_limits::decode_bytes(&bytes));
-    let outcome = decoded.and_then(|image| inference(&image));
+    let outcome = crate::failure_runtime::contain_item(|| {
+        let bytes = std::fs::read(&preview).map_err(|error| error.to_string())?;
+        let image = crate::resource_limits::decode_bytes(&bytes)?;
+        inference(&image)
+    });
     match outcome {
         Ok(found) => {
             let issues_changed = crate::derived_state::record_face_success(

@@ -2036,7 +2036,7 @@ pub fn complete_transcription_attempt(
     on_started(&hash);
     let progress_hash = hash.clone();
 
-    let result = crate::transcription::generate_transcript_claimed(
+    let result = crate::failure_runtime::contain_item(|| crate::transcription::generate_transcript_claimed(
         &claim,
         &attempt.temp_dir,
         &model,
@@ -2047,7 +2047,7 @@ pub fn complete_transcription_attempt(
             activity_progress(percent.clamp(0, 100) as u64, 100);
             on_progress(&progress_hash, percent);
         },
-    );
+    ));
     drop(finish_signal);
     if let Some(watch) = watch {
         watch

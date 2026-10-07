@@ -2,8 +2,7 @@
 //!
 //! Webviews identify indexed content by hash or path id; filesystem paths
 //! never cross into commands as authority. Hash resolution follows the same
-//! canonical projection as item presentation, so filename, attributes,
-//! text, and external delegation all describe one representative copy.
+//! canonical presentation order, choosing the first reachable copy.
 
 use std::path::PathBuf;
 
@@ -32,24 +31,50 @@ pub fn live_path(
     hash: Option<&str>,
     path_id: Option<i64>,
 ) -> Result<PathBuf, String> {
-    let path: String = match (hash.filter(|value| !value.is_empty()), path_id) {
-        (Some(hash), None) => conn
-            .query_row(
-                "SELECT p.abs_path FROM logical_contents l \
-                 JOIN paths p ON p.id = l.representative_path_id \
-                 WHERE l.content_hash = ?1 AND p.missing = 0",
-                [hash],
-                |row| row.get(0),
-            )
-            .map_err(|_| "no live copy of this item".to_string())?,
-        (None, Some(path_id)) => conn
-            .query_row(
-                "SELECT abs_path FROM paths WHERE id = ?1 AND missing = 0",
-                [path_id],
-                |row| row.get(0),
-            )
-            .map_err(|_| "no live copy of this item".to_string())?,
+    live_path_with(conn, hash, path_id, &|path| {
+        crate::file_identity::open_regular_nofollow(path).is_ok()
+    })
+}
+
+/// Resolve in presentation order, with an injectable bounded reachability probe.
+pub fn live_path_with(
+    conn: &Connection,
+    hash: Option<&str>,
+    path_id: Option<i64>,
+    reachable: &dyn Fn(&std::path::Path) -> bool,
+) -> Result<PathBuf, String> {
+    available_path_with(conn, hash, path_id, reachable)?
+        .ok_or_else(|| "no available copy of this item".to_string())
+}
+
+/// Background work can leave unavailable content pending without turning it
+/// into a failed decode. Database failures remain errors to the work owner.
+pub fn available_path(conn: &Connection, hash: Option<&str>, path_id: Option<i64>) -> Result<Option<PathBuf>, String> {
+    available_path_with(conn, hash, path_id, &|path| crate::file_identity::open_regular_nofollow(path).is_ok())
+}
+
+fn available_path_with(conn: &Connection, hash: Option<&str>, path_id: Option<i64>, reachable: &dyn Fn(&std::path::Path) -> bool) -> Result<Option<PathBuf>, String> {
+    let paths: Vec<String> = match (hash.filter(|value| !value.is_empty()), path_id) {
+        (Some(hash), None) => {
+            let mut statement = conn.prepare(
+                "SELECT p.abs_path FROM paths p JOIN logical_contents l ON l.content_hash = p.content_hash
+                 WHERE p.content_hash = ?1 AND p.missing = 0 AND p.companion_of IS NULL
+                 ORDER BY (p.id = l.representative_path_id) DESC, p.review_visible DESC,
+                          p.resolved_utc_ms IS NULL, p.resolved_utc_ms,
+                          p.abs_path COLLATE onecopy_nocase, p.abs_path"
+            ).map_err(|error| error.to_string())?;
+            let rows = statement.query_map([hash], |row| row.get(0))
+                .map_err(|error| error.to_string())?;
+            rows.collect::<rusqlite::Result<_>>().map_err(|error| error.to_string())?
+        }
+        (None, Some(path_id)) => {
+            let mut statement = conn.prepare("SELECT abs_path FROM paths WHERE id = ?1 AND missing = 0")
+                .map_err(|error| error.to_string())?;
+            let rows = statement.query_map([path_id], |row| row.get(0))
+                .map_err(|error| error.to_string())?;
+            rows.collect::<rusqlite::Result<_>>().map_err(|error| error.to_string())?
+        }
         _ => return Err("item needs exactly one hash or pathId".to_string()),
     };
-    Ok(PathBuf::from(path))
+    Ok(paths.into_iter().map(PathBuf::from).find(|path| reachable(path)))
 }

@@ -16,7 +16,7 @@ fn logical_resolution_uses_oldest_valid_date_then_case_insensitive_path() {
     .unwrap();
 
     assert_eq!(
-        indexed_file::live_path(&conn, Some("same"), None).unwrap(),
+        indexed_file::live_path_with(&conn, Some("same"), None, &|_| true).unwrap(),
         std::path::PathBuf::from("/a/same.txt")
     );
 }
@@ -33,7 +33,7 @@ fn provisional_resolution_accepts_only_one_live_indexed_identity() {
     .unwrap();
 
     assert_eq!(
-        indexed_file::live_path(&conn, None, Some(7)).unwrap(),
+        indexed_file::live_path_with(&conn, None, Some(7), &|_| true).unwrap(),
         std::path::PathBuf::from("/notes.txt")
     );
     assert!(indexed_file::live_path(&conn, Some("same"), Some(7)).is_err());
@@ -41,7 +41,7 @@ fn provisional_resolution_accepts_only_one_live_indexed_identity() {
 
     conn.execute("UPDATE paths SET missing = 1 WHERE id = 7", [])
         .unwrap();
-    assert!(indexed_file::live_path(&conn, None, Some(7)).is_err());
+    assert!(indexed_file::live_path_with(&conn, None, Some(7), &|_| true).is_err());
 }
 
 #[test]
@@ -57,20 +57,20 @@ fn original_resolution_follows_the_published_representative_after_visibility_cha
            (2, '/b/same.txt', '/b', 'same.txt', 'other', 'same', 200, 'filesystem');
          UPDATE paths SET review_visible = 0 WHERE id = 1;",
     ).unwrap();
-    assert_eq!(indexed_file::live_path(&conn, Some("same"), None).unwrap(),
+    assert_eq!(indexed_file::live_path_with(&conn, Some("same"), None, &|_| true).unwrap(),
         std::path::PathBuf::from("/b/same.txt"));
     // Visibility chooses the file, not the logical date contributed by every copy.
     assert_eq!(conn.query_row("SELECT resolved_utc_ms FROM logical_contents WHERE content_hash = 'same'",
         [], |row| row.get::<_, i64>(0)).unwrap(), 100);
 
     conn.execute("UPDATE paths SET review_visible = 1 WHERE id = 1", []).unwrap();
-    assert_eq!(indexed_file::live_path(&conn, Some("same"), None).unwrap(),
+    assert_eq!(indexed_file::live_path_with(&conn, Some("same"), None, &|_| true).unwrap(),
         std::path::PathBuf::from("/a/.same.txt"));
     conn.execute("UPDATE paths SET missing = 1 WHERE id = 1", []).unwrap();
-    assert_eq!(indexed_file::live_path(&conn, Some("same"), None).unwrap(),
+    assert_eq!(indexed_file::live_path_with(&conn, Some("same"), None, &|_| true).unwrap(),
         std::path::PathBuf::from("/b/same.txt"));
     conn.execute("UPDATE paths SET missing = 1 WHERE id = 2", []).unwrap();
-    assert!(indexed_file::live_path(&conn, Some("same"), None).is_err());
+    assert!(indexed_file::live_path_with(&conn, Some("same"), None, &|_| true).is_err());
 }
 
 #[test]
@@ -85,7 +85,7 @@ fn an_older_companion_never_supplies_the_logical_original() {
            (1, '/main.txt', '/', 'main.txt', 'other', 'same', 200, NULL),
            (2, '/companion.txt', '/', 'companion.txt', 'other', 'same', 100, 1);",
     ).unwrap();
-    assert_eq!(indexed_file::live_path(&conn, Some("same"), None).unwrap(),
+    assert_eq!(indexed_file::live_path_with(&conn, Some("same"), None, &|_| true).unwrap(),
         std::path::PathBuf::from("/main.txt"));
 }
 
@@ -97,4 +97,25 @@ fn an_item_key_names_its_hash_or_its_path_and_parses_back() {
     assert_eq!(parse_item_key("abc"), Some((Some("abc"), None)));
     assert_eq!(parse_item_key(&item_key(None, 7)), Some((None, Some(7))));
     assert_eq!(parse_item_key("path-x"), None);
+}
+
+#[test]
+fn reads_fall_back_to_a_reachable_duplicate_without_forgetting_the_offline_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    conn.execute("INSERT INTO contents (hash, byte_size, kind) VALUES ('same', 5, 'other')", []).unwrap();
+    let absent = dir.path().join("a.txt");
+    let available = dir.path().join("b.txt");
+    std::fs::write(&available, b"hello").unwrap();
+    for path in [&absent, &available] {
+        conn.execute("INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash) VALUES (?1, ?2, 'same.txt', 'other', 'same')",
+            rusqlite::params![path.to_string_lossy(), dir.path().to_string_lossy()]).unwrap();
+    }
+    assert_eq!(indexed_file::live_path(&conn, Some("same"), None).unwrap(), available);
+    std::fs::remove_file(&available).unwrap();
+    assert!(indexed_file::live_path(&conn, Some("same"), None).is_err());
+    let live: i64 = conn.query_row("SELECT count(*) FROM paths WHERE missing = 0", [], |row| row.get(0)).unwrap();
+    assert_eq!(live, 2);
+    std::fs::write(&absent, b"hello").unwrap();
+    assert_eq!(indexed_file::live_path(&conn, Some("same"), None).unwrap(), absent);
 }

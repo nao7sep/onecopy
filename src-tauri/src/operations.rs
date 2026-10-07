@@ -188,6 +188,19 @@ impl AcceptedFiles {
         Ok(Self { files })
     }
 
+    /// Inspect the whole accepted set before any destructive effect. A later
+    /// disconnect still follows the operation's explicit partial-result contract.
+    fn preflight(&self, cancelled: &dyn Fn() -> bool) -> Result<bool, String> {
+        let mut paths = self.abs_paths().collect::<Vec<_>>();
+        paths.sort_unstable();
+        for path in paths {
+            if cancelled() { return Ok(false); }
+            crate::file_identity::open_regular_nofollow(Path::new(path))
+                .map_err(|error| format!("Required source is unavailable: {path}: {error}"))?;
+        }
+        Ok(true)
+    }
+
     fn retain_accepted(&self, rows: &mut Vec<PhysicalRow>) {
         rows.retain(|(path_id, abs_path, _, _)| self.accepts(*path_id, abs_path));
     }
@@ -283,6 +296,7 @@ pub fn delete_item(
         },
     };
     let accepted = AcceptedFiles::capture(conn, std::slice::from_ref(&identity))?;
+    accepted.preflight(&|| false)?;
     let targets = collect_delete_targets(conn, item, &roots, &accepted)?;
     let operation = crate::nanoid::generate()?;
     delete_targets(
@@ -543,6 +557,9 @@ pub fn delete_accepted_batch(
     cancelled: &dyn Fn() -> bool,
     mut on_progress: impl FnMut(DeleteBatchProgress),
 ) -> Result<DeleteBatchOutcome, String> {
+    if !accepted.preflight(cancelled)? {
+        return Ok(DeleteBatchOutcome { cancelled: true, ..DeleteBatchOutcome::default() });
+    }
     let roots = crate::storage::configured_file_roots(app_root)?;
     let trash_context =
         trash::TrashContext::new(trash::TrashKind::Delete, &crate::nanoid::generate()?);
@@ -995,6 +1012,9 @@ pub fn move_batch_reviewed(
     cancelled: &dyn Fn() -> bool,
     mut on_progress: impl FnMut(MoveBatchProgress),
 ) -> Result<MoveBatchOutcome, String> {
+    if mode != MoveOutMode::CopyKeepAll && !accepted.preflight(cancelled)? {
+        return Ok(MoveBatchOutcome { cancelled: true, ..MoveBatchOutcome::default() });
+    }
     let configured = crate::storage::configured_roots(app_root)?;
     let destination_root = admit_destination(dest_dir, &configured)?;
     // Ordinary Copy/Move staging lands flat in `dest_dir` (every delivery
@@ -1034,7 +1054,18 @@ pub fn move_batch_reviewed(
                 ..MoveBatchOutcome::default()
             });
         }
-        let unit = collect_move_unit(conn, item, dest_dir, &roots, accepted, names)?;
+        let mut unit = collect_move_unit(conn, item, dest_dir, &roots, accepted, names)?;
+        if mode == MoveOutMode::CopyKeepAll {
+            for delivery in &mut unit.deliveries {
+                // Preserve the reviewed output name while choosing the first
+                // reachable copy, without reporting an expected offline duplicate.
+                if let Some(index) = delivery.sources.iter().position(|source|
+                    crate::file_identity::open_regular_nofollow(Path::new(&source.abs_path)).is_ok()) {
+                    delivery.sources.swap(0, index);
+                    delivery.bytes = delivery.sources[0].bytes;
+                }
+            }
+        }
         plan.files_total = plan
             .files_total
             .saturating_add(unit.deliveries.len() as u64);
