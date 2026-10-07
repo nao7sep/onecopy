@@ -86,7 +86,7 @@ describe("the title band", () => {
     const view = renderReadyApp();
     fireEvent.click(view.getByRole("button", { name: "Open menu" }));
     expect(view.queryByText("Activity trace…")).toBeNull();
-    for (const name of ["Records…", "Issues…", "Background work…"]) {
+    for (const name of ["Records…", "Issues…", "Background work & tools…"]) {
       expect(view.getByRole("menuitem", { name })).toBeTruthy();
     }
   });

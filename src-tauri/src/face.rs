@@ -510,7 +510,11 @@ pub fn face_scores_pending(
     stats.candidates_found = true;
 
     let _awake = crate::sleep_prevention::begin_work();
-    let mut scorer = FaceScorer::load(runtime, detector_model, emotion_model)?;
+    let mut scorer = FaceScorer::load(runtime, detector_model, emotion_model)
+        .map_err(|error| {
+            if crate::resource_limits::is_safety_error(&error) { error }
+            else { crate::ai_dependencies::model_load_error(error) }
+        })?;
     let total = pending.len() as u64;
     for (hash, path) in pending {
         if crate::scanner::cancelled() {

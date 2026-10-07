@@ -5,7 +5,6 @@ export type UtilitySurface =
   | "backgroundWork"
   | "deletedFiles"
   | "issues"
-  | "managedTools"
   | "settings"
   | "shortcuts";
 

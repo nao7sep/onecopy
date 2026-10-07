@@ -5,6 +5,7 @@
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import { render, cleanup, act, fireEvent, screen } from "@testing-library/react";
 import { useState } from "react";
+import { useAppShellStore } from "../../src/state/app-shell-store";
 import IssuesModal from "../../src/components/IssuesModal";
 import { useIssuesStore, type IssueRow } from "../../src/state/issues-store";
 import { invokeCalls, mockCommands, mockSectionItems, resetTauriMocks } from "../mocks/tauri";
@@ -42,6 +43,17 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("the issues modal", () => {
+  it("takes a model-load Issue directly to its work controls without dismissing it", async () => {
+    mockCommands({ get_issues: () => ({ total: 1, rows: [row(1, { path: null, kind: "model-unavailable-faces", messageKey: "notice.modelUnavailable", message: "invalid model header" })] }) });
+    useAppShellStore.setState({ utilitySurface: "issues" });
+    render(<IssuesModal open onClose={() => {}} />);
+    const action = await screen.findByRole("button", { name: "Background work & tools" });
+    expect(screen.getByRole("heading", { name: "Face scoring" })).toBeTruthy();
+    fireEvent.click(action);
+    expect(useAppShellStore.getState().utilitySurface).toBe("backgroundWork");
+    expect(invokeCalls.some((call) => call.command.includes("dismiss"))).toBe(false);
+  });
+
   it("reveals a file through Main and closes to item-area focus without dismissing diagnostics", async () => {
     mockCommands({
       get_issues: () => ({ total: 1, rows: [row(1)] }),

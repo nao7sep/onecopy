@@ -1537,9 +1537,14 @@ fn run_optional_class(
                     pause_for_resource_safety(app, conn, class, &error)?;
                     return Ok(false);
                 }
+                Err(error) if crate::ai_dependencies::is_model_load_error(&error) => {
+                    pause_for_model_failure(app, conn, class, &error)?;
+                    return Ok(false);
+                }
                 Err(error) => return Err(error),
             };
             if stats.attempted > 0 {
+                clear_model_failure(app, conn, class);
                 // Issues change only when a write actually opened or resolved
                 // one; a clean attempt has nothing new for the Issues inbox (C-M3).
                 if stats.issues_changed {
@@ -1699,6 +1704,29 @@ pub(crate) fn pause_for_storage_safety(
     Ok(())
 }
 
+fn pause_for_model_failure(app: &AppHandle, conn: &Connection, class: WorkClass, error: &str) -> Result<(), String> {
+    crate::derived_runtime::pause_for_safety(app, class)?;
+    record_model_failure(conn, class, error)?;
+    notify_issues(app);
+    Ok(())
+}
+
+fn record_model_failure(conn: &Connection, class: WorkClass, error: &str) -> Result<(), String> {
+    crate::index_store::upsert_issue_with_descriptor(
+        conn, None, &format!("model-unavailable-{}", class.id()),
+        Some("notice.modelUnavailable"), None,
+        crate::ai_dependencies::model_error_detail(error),
+    ).map(|_| ())
+}
+
+fn clear_model_failure(app: &AppHandle, conn: &Connection, class: WorkClass) {
+    match crate::index_store::clear_issues(conn, "", &[&format!("model-unavailable-{}", class.id())]) {
+        Ok(true) => notify_issues(app),
+        Ok(false) => {},
+        Err(error) => logging::warn("model Issue could not be cleared", json!({ "class": class.id(), "error": { "message": error } })),
+    }
+}
+
 /// Runs a `with_active` result through the storage-safety gate: a cache-write
 /// failure pauses `class` and answers "no work done" instead of propagating as
 /// an ordinary pass error that would otherwise unwind the whole background
@@ -1844,6 +1872,7 @@ pub enum TranscriptionAttemptOutcome {
     Cancelled { hash: String },
     Unavailable { hash: String, message: String },
     ResourceSafety { hash: String, message: String },
+    ModelUnavailable { hash: String, message: String },
     Failed {
         hash: String,
         message: String,
@@ -1920,6 +1949,9 @@ fn finish_transcription_attempt(
         }
         Err(error) if error == crate::scanner::CANCELLED => {
             Ok(TranscriptionAttemptOutcome::Cancelled { hash })
+        }
+        Err(error) if crate::ai_dependencies::is_model_load_error(&error) => {
+            Ok(TranscriptionAttemptOutcome::ModelUnavailable { hash, message: error })
         }
         Err(error) if crate::resource_limits::is_safety_error(&error) => {
             Ok(TranscriptionAttemptOutcome::ResourceSafety {
@@ -2071,7 +2103,7 @@ pub fn complete_transcription_attempt(
         Ok(TranscriptionAttemptOutcome::Completed { hash, .. }) => trace.finish(crate::activity::ActivityState::Succeeded, Some(hash)),
         Ok(TranscriptionAttemptOutcome::Cancelled { .. }) => trace.finish(crate::activity::ActivityState::Cancelled, None),
         Ok(TranscriptionAttemptOutcome::Unavailable { .. }) => trace.finish(crate::activity::ActivityState::Waiting, None),
-        Ok(TranscriptionAttemptOutcome::ResourceSafety { .. }) => trace.finish(crate::activity::ActivityState::Paused, None),
+        Ok(TranscriptionAttemptOutcome::ResourceSafety { .. } | TranscriptionAttemptOutcome::ModelUnavailable { .. }) => trace.finish(crate::activity::ActivityState::Paused, None),
         Ok(TranscriptionAttemptOutcome::Failed { .. }) => trace.finish(crate::activity::ActivityState::Failed, None),
         Err(_) => trace.result(&outcome),
     }
@@ -2168,7 +2200,8 @@ fn transcribe_next(
         },
         TranscriptionAttemptOutcome::Cancelled { .. }
         | TranscriptionAttemptOutcome::Unavailable { .. }
-        | TranscriptionAttemptOutcome::ResourceSafety { .. } => TranscriptStep::default(),
+        | TranscriptionAttemptOutcome::ResourceSafety { .. }
+        | TranscriptionAttemptOutcome::ModelUnavailable { .. } => TranscriptStep::default(),
     })
 }
 
@@ -2234,7 +2267,8 @@ fn transcription_report(
             event: requested.then(|| error(hash, message)),
             pause_message: None,
         },
-        TranscriptionAttemptOutcome::ResourceSafety { hash, message } => TranscriptionReport {
+        TranscriptionAttemptOutcome::ModelUnavailable { hash, message }
+        | TranscriptionAttemptOutcome::ResourceSafety { hash, message } => TranscriptionReport {
             item_hash: None,
             event: requested.then(|| error(hash, message)),
             pause_message: Some(message.clone()),
@@ -2316,7 +2350,14 @@ fn run_transcription(
     )?;
     let report = transcription_report(run, &outcome);
     if let Some(message) = &report.pause_message {
-        pause_for_resource_safety(context.app, context.conn, class, message)?;
+        if crate::ai_dependencies::is_model_load_error(message) {
+            pause_for_model_failure(context.app, context.conn, class, message)?;
+        } else {
+            pause_for_resource_safety(context.app, context.conn, class, message)?;
+        }
+    }
+    if matches!(outcome, TranscriptionAttemptOutcome::Completed { .. }) {
+        clear_model_failure(context.app, context.conn, class);
     }
     if let Some(hash) = &report.item_hash {
         notify_item_update(
@@ -2332,7 +2373,8 @@ fn run_transcription(
         TranscriptionAttemptOutcome::Completed { .. } => ("completed", None),
         TranscriptionAttemptOutcome::Cancelled { .. } => ("cancelled", None),
         TranscriptionAttemptOutcome::Unavailable { message, .. } => ("unavailable", Some(message)),
-        TranscriptionAttemptOutcome::ResourceSafety { message, .. } => ("paused", Some(message)),
+        TranscriptionAttemptOutcome::ResourceSafety { message, .. }
+        | TranscriptionAttemptOutcome::ModelUnavailable { message, .. } => ("paused", Some(message)),
         TranscriptionAttemptOutcome::Failed { message, .. } => ("failed", Some(message)),
     };
     logging::debug(

@@ -250,7 +250,7 @@ pub fn run_whisper(
     let mut context_params = WhisperContextParameters::default();
     context_params.use_gpu(matches!(acceleration, crate::ai_acceleration::Mode::Metal));
     let context = WhisperContext::new_with_params(model, context_params)
-        .map_err(|e| format!("model load failed: {e}"))?;
+        .map_err(crate::ai_dependencies::model_load_error)?;
     let mut state = context
         .create_state()
         .map_err(|e| format!("whisper state failed: {e}"))?;

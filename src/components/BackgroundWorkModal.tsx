@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { reasonRemedy, reasonText } from "../models/workReasons";
+import { reasonRemedy, reasonText, reasonTools } from "../models/workReasons";
 import { useAppShellStore } from "../state/app-shell-store";
 import { Pause, Play, Square } from "lucide-react";
 import {
@@ -9,6 +9,8 @@ import {
   type BackgroundClassSnapshot,
   useDerivedWorkStore,
 } from "../state/derived-work-store";
+import ManagedTools, { ManagedToolRow } from "./ManagedTools";
+import { useBinariesStore } from "../state/binaries-store";
 import ModalShell from "./ModalShell";
 import Button from "./ui/Button";
 import { useSectionsStore } from "../state/sections-store";
@@ -60,6 +62,7 @@ export default function BackgroundWorkModal({
   onClose: () => void;
 }) {
   const { t, text, percent } = useI18n();
+  const tools = useBinariesStore((state) => state.entries);
   const snapshot = useDerivedWorkStore((state) => state.snapshot);
   const loading = useDerivedWorkStore((state) => state.loading);
   const changing = useDerivedWorkStore((state) => state.changing);
@@ -75,7 +78,8 @@ export default function BackgroundWorkModal({
   );
 
   useEffect(() => {
-    if (open) void useDerivedWorkStore.getState().load();
+    useDerivedWorkStore.getState().setDetailsOpen(open);
+    return () => useDerivedWorkStore.getState().setDetailsOpen(false);
   }, [open]);
 
   if (!open) return null;
@@ -205,7 +209,7 @@ export default function BackgroundWorkModal({
             return (
               <li
                 key={row.id}
-                className="flex items-center gap-4 rounded-xl border border-border bg-surface-muted/40 px-4 py-3"
+                className="flex flex-wrap items-center gap-4 rounded-xl border border-border bg-surface-muted/40 px-4 py-3"
               >
                 <span className="min-w-0 flex-1">
                   <span className="block text-sm font-semibold text-ink-strong">
@@ -224,7 +228,7 @@ export default function BackgroundWorkModal({
                       : stateText(row, t)}
                   </span>
                 </span>
-                {row.state === "unavailable" ? (
+                {row.state === "unavailable" && reasonRemedy(row.reason) === "settings" ? (
                   <Button
                     size="sm"
                     variant="ghost"
@@ -234,7 +238,7 @@ export default function BackgroundWorkModal({
                   >
                     {reasonRemedy(row.reason) === "settings"
                       ? t("settings.title")
-                      : t("app.openManagedTools")}
+                      : t("app.openBackgroundWork")}
                   </Button>
                 ) : row.state === "failed" ? (
                   <Button
@@ -261,11 +265,18 @@ export default function BackgroundWorkModal({
                       ? t("work.resume")
                       : t("work.pause")}
                 </Button>
+                {row.state === "unavailable" && reasonTools(row.reason).length > 0 ? (
+                  <div className="w-full space-y-2">
+                    {tools.filter((tool) => reasonTools(row.reason).includes(tool.id) && tool.status === "not-installed")
+                      .map((entry) => <ManagedToolRow key={entry.id} entry={entry} />)}
+                  </div>
+                ) : null}
               </li>
             );
           })}
         </ul>
       )}
+      <ManagedTools />
     </ModalShell>
   );
 }

@@ -122,6 +122,7 @@ beforeEach(() => {
     save_config: (args) => effectiveConfig((args.changes ?? {}) as Record<string, unknown>),
     log_event: () => null,
     logging_debug_enabled: () => false,
+    background_work_runtime: () => ({ workerRunning: true, pausedClasses: [], active: null }),
     background_work_snapshot: () => ({
       workerRunning: true, pausedClasses: [],
       classes: [],
@@ -231,10 +232,11 @@ describe("the culling workflow", () => {
     expect(commands.filter((command) => command === "load_app_data")).toHaveLength(1);
     expect(commands.filter((command) => command === "get_section_counts")).toHaveLength(1);
     expect(commands.filter((command) => command === "get_issues")).toHaveLength(1);
-    expect(commands.filter((command) => command === "background_work_snapshot")).toHaveLength(1);
+    expect(commands.filter((command) => command === "background_work_snapshot")).toHaveLength(0);
+    expect(commands.filter((command) => command === "background_work_runtime")).toHaveLength(1);
     expect(commands.filter((command) => command === "check_github_release")).toHaveLength(1);
     expect(commands.indexOf("check_github_release"))
-      .toBeGreaterThan(commands.indexOf("background_work_snapshot"));
+      .toBeGreaterThan(commands.indexOf("background_work_runtime"));
   });
 
   it("shows the authored blocked-start shell without querying feature backends", async () => {

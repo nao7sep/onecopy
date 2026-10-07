@@ -827,6 +827,13 @@ pub(crate) fn emit_state_changed(app: &AppHandle) {
     if shutting_down() {
         return;
     }
+    match state_payload() {
+        Ok(payload) => crate::failure_runtime::emit_or_record(app, "derived://state-changed", payload),
+        Err(_) => report_poison_once(Some(app)),
+    }
+}
+
+pub fn state_payload() -> Result<serde_json::Value, String> {
     let preemption = Preemption::current();
     let payload = match RUNTIME.0.lock() {
         Ok(runtime) => {
@@ -848,11 +855,11 @@ pub(crate) fn emit_state_changed(app: &AppHandle) {
             })
         }
         Err(_) => {
-            report_poison_once(Some(app));
-            return;
+            report_poison_once(None);
+            return Err(STATE_UNAVAILABLE.to_string());
         }
     };
-    crate::failure_runtime::emit_or_record(app, "derived://state-changed", payload);
+    Ok(payload)
 }
 
 pub fn snapshot(conditions: RuntimeConditions) -> Result<RuntimeSnapshot, String> {

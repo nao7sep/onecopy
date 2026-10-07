@@ -193,3 +193,21 @@ fn iou_and_softmax_hold_their_edges() {
     // Large logits must not overflow to NaN — the stability the max-shift buys.
     assert!(face::softmax(&[1000.0, 999.0]).iter().all(|p| p.is_finite()));
 }
+
+#[cfg(not(windows))]
+#[test]
+fn corrupt_face_models_fail_as_a_dependency_before_any_media_receipt() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = db();
+    seed_image(&conn, "img", "a.jpg");
+    conn.execute("UPDATE contents SET derived_version = ?1 WHERE hash = 'img'", [onecopy_lib::derived_state::DERIVE_VERSION]).unwrap();
+    assert_eq!(onecopy_lib::derived_state::face_candidates(&conn, None, 10).unwrap().len(), 1);
+    let cache = onecopy_lib::preview::CachePaths::new(dir.path().join("cache"));
+    let model = dir.path().join("corrupt.onnx");
+    std::fs::write(&model, b"not an ONNX model").unwrap();
+    let result = face::face_scores_pending(&conn, &cache, Some((None, &model, &model)), &[], |_| {}, |_| {}, |_, _| {}, None, &|| false);
+    let error = match result { Err(error) => error, Ok(_) => panic!("corrupt model was accepted") };
+    assert!(onecopy_lib::ai_dependencies::is_model_load_error(&error), "{error}");
+    let failures: i64 = conn.query_row("SELECT count(*) FROM active_issues WHERE path != ''", [], |r| r.get(0)).unwrap();
+    assert_eq!(failures, 0);
+}

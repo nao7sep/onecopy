@@ -25,7 +25,6 @@ import {
 import ComparisonView from "./components/ComparisonView";
 import IssuesModal from "./components/IssuesModal";
 import QuarantineNotice from "./components/QuarantineNotice";
-import BinariesModal from "./components/BinariesModal";
 import ShortcutsModal from "./components/ShortcutsModal";
 import SettingsModal from "./components/SettingsModal";
 import { Menu, MenuItem, MenuSeparator } from "./components/Menu";
@@ -43,7 +42,7 @@ import {
 import { managedInstallActivityLine } from "./models/dependencyProgress";
 import { usePreviewStore } from "./state/preview-store";
 import {
-  backgroundWorkLine,
+  backgroundRuntimeLine,
   useDerivedWorkStore,
 } from "./state/derived-work-store";
 import PreviewSurface from "./components/PreviewSurface";
@@ -148,8 +147,8 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
   const substitutedDirs = useWizardStore((s) => s.substitutedDirs);
   const presenceUnknown = useWizardStore((s) => s.presenceUnknown);
   const issuesTotal = useIssuesStore((s) => s.total);
-  const derivedWorkSnapshot = useDerivedWorkStore((s) => s.snapshot);
-  const derivedWorkLine = backgroundWorkLine(derivedWorkSnapshot, t);
+  const derivedWorkSnapshot = useDerivedWorkStore((s) => s.runtime);
+  const derivedWorkLine = backgroundRuntimeLine(derivedWorkSnapshot, t);
   const binariesEntries = useBinariesStore((s) => s.entries);
   // The chip narrates ffmpeg's own install only; a model download in flight
   // is the modal's story.
@@ -230,10 +229,6 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
       ) : null}
       <ComparisonView onRevealTrash={() => openUtility("deletedFiles")} />
       <NotificationHost />
-      <BinariesModal
-        open={utilitySurface === "managedTools"}
-        onClose={closeUtility}
-      />
       <BackgroundWorkModal
         open={utilitySurface === "backgroundWork"}
         onClose={closeUtility}
@@ -314,7 +309,6 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
               <MenuItem onSelect={() => openUtility("deletedFiles")}>{t("app.deletedFiles")}</MenuItem>
               <MenuSeparator />
               <MenuItem onSelect={openSettings}>{t("app.settings")}</MenuItem>
-              <MenuItem onSelect={() => openUtility("managedTools")}>{t("app.managedTools")}</MenuItem>
               <MenuItem
                 onSelect={() =>
                   reopenSetup()
@@ -668,8 +662,8 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
                     ? "text-warning hover:underline"
                     : "text-ink-muted hover:text-ink"
                 }
-                title={t("app.openManagedTools")}
-                onClick={() => openUtility("managedTools")}
+                title={t("app.openBackgroundWork")}
+                onClick={() => openUtility("backgroundWork")}
               >
                 {text(chip.text)}
               </button>

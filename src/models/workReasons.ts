@@ -34,10 +34,28 @@ export function reasonText(
 }
 
 // Where the user resolves a condition that makes work unavailable: a missing
-// managed tool is installed from Managed tools, and a saved acceleration this
+// managed tool is installed from Background work & tools, and a saved acceleration this
 // computer does not offer is changed in Settings.
 export function reasonRemedy(
   reason: string | null | undefined,
-): "managedTools" | "settings" {
-  return reason === "unsupported-acceleration" ? "settings" : "managedTools";
+): "backgroundWork" | "settings" {
+  return reason === "unsupported-acceleration" ? "settings" : "backgroundWork";
+}
+
+export function reasonTools(reason: string | null): readonly string[] {
+  switch (reason) {
+    case "waiting-for-ffmpeg": return ["ffmpeg"];
+    case "waiting-for-transcription-model": return ["whisper-large-v3-turbo"];
+    case "waiting-for-face-models": return ["onnxruntime-win-x64", "ultraface-rfb640", "hsemotion-enet-b2"];
+    default: return [];
+  }
+}
+
+export function modelIssueLabel(kind: string): MessageKey | null {
+  switch (kind) {
+    case "model-unavailable-faces": return "wizard.faceScoring";
+    case "model-unavailable-video-transcripts": return "wizard.videoTranscription";
+    case "model-unavailable-audio-transcripts": return "wizard.audioTranscription";
+    default: return null;
+  }
 }

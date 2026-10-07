@@ -5,7 +5,6 @@ import {
 import { toolLabel } from "../models/coreLabels";
 import { managedInstallActivityLine } from "../models/dependencyProgress";
 import { useAppStore } from "../state/app-store";
-import ModalShell from "./ModalShell";
 import Button from "./ui/Button";
 import { Row, Toggle } from "./ui/Field";
 import { formatLocalMinute } from "../utils/displayTime";
@@ -16,25 +15,10 @@ import { useI18n } from "../i18n/I18nContext";
 import type { Translator } from "../i18n/translate";
 import { configFlag } from "../models/config";
 
-// "Managed tools" — grouped by the two genuinely different LIFECYCLES the
-// registry holds (developer, 2026-08-17; one flat list forced an update
-// vocabulary that only a single entry could honor):
-//
-//   ffmpeg resolves live from upstream. It has a real version, a real
-//   "latest", and a check worth running — so the check button lives in ITS
-//   row, where its scope is unmistakable. A registry-wide "Check for
-//   updates" that in truth only ever checked ffmpeg was a promise the app
-//   could not keep.
-//
-//   Pinned runtimes and models are chosen BY THIS APP BUILD. There is no upstream to ask, so
-//   they never say "Up to date" (a claim about a comparison nobody made) —
-//   installed is simply "Installed" — and they never carry a "checked at"
-//   stamp. They do show their upstream RELEASE DATE, which is the only
-//   honest answer to "how old is this model?". A re-pinned model still
-//   surfaces as an update, because it genuinely is one: this app version now
-//   expects a different file.
-//
-// Installs run in PARALLEL, so one row's download never disables another's.
+// The approved Background work & tools surface combines management with its
+// dependent jobs. Acquisition remains app-owned when this section unmounts.
+// Only ffmpeg has an upstream update check; pinned assets show installed
+// identity and release date without claiming to be up to date.
 
 /** What a row's state is called, which depends on whether "latest" is a
  * thing this entry can even have. */
@@ -77,7 +61,7 @@ function factLine(entry: DependencyState, t: Translator["t"]): string | null {
   return [version, released].filter((part) => part !== null).join(" · ") || null;
 }
 
-function EntryRow({ entry }: { entry: DependencyState }) {
+export function ManagedToolRow({ entry }: { entry: DependencyState }) {
   useDisplayZone();
   const { t, text, dateTime, number, percent } = useI18n();
   const progress = useBinariesStore((s) => s.installing[entry.id]);
@@ -207,13 +191,7 @@ function EntryRow({ entry }: { entry: DependencyState }) {
   );
 }
 
-export default function BinariesModal({
-  open,
-  onClose,
-}: {
-  open: boolean;
-  onClose: () => void;
-}) {
+export default function ManagedTools() {
   const { t, text } = useI18n();
   const entries = useBinariesStore((s) => s.entries);
   const loading = useBinariesStore((s) => s.loading);
@@ -222,8 +200,6 @@ export default function BinariesModal({
   const installAll = useBinariesStore((s) => s.installAll);
   const checkAtLaunch =
     useAppStore((s) => configFlag(s.appData?.config, "checkUpdatesAtLaunch"));
-
-  if (!open) return null;
 
   const actionable = entries.filter(
     (entry) =>
@@ -234,16 +210,9 @@ export default function BinariesModal({
   const appSelected = entries.filter((entry) => !entry.checkable);
 
   return (
-    <ModalShell
-      title={t("binaries.title")}
-      onClose={onClose}
-      widthClass="w-[min(680px,calc(100vw-3rem))]"
-      footerResult={
-        entries.length > 0 && loadError !== null ? (
-          <OperationResult level="error">{text(loadError)}</OperationResult>
-        ) : undefined
-      }
-    >
+    <section className="mt-5" aria-labelledby="managed-tools-heading">
+      <h2 id="managed-tools-heading" className="mb-2 text-sm font-semibold text-ink-strong">{t("binaries.title")}</h2>
+      {entries.length > 0 && loadError !== null ? <OperationResult level="error">{text(loadError)}</OperationResult> : null}
       {actionable > 1 ? (
         <div className="mb-3">
           <Button variant="primary" onClick={() => void installAll()}>
@@ -266,7 +235,7 @@ export default function BinariesModal({
 
       <div className="space-y-2">
         {upstream.map((entry) => (
-          <EntryRow key={entry.id} entry={entry} />
+          <ManagedToolRow key={entry.id} entry={entry} />
         ))}
       </div>
 
@@ -278,7 +247,7 @@ export default function BinariesModal({
           </p>
           <div className="space-y-2">
             {appSelected.map((entry) => (
-              <EntryRow key={entry.id} entry={entry} />
+              <ManagedToolRow key={entry.id} entry={entry} />
             ))}
           </div>
         </section>
@@ -303,6 +272,6 @@ export default function BinariesModal({
       <p className="mt-2 text-xs text-ink-muted">
         {t("binaries.toolsNote")}
       </p>
-    </ModalShell>
+    </section>
   );
 }

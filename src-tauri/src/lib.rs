@@ -992,6 +992,11 @@ fn media_use_released(window: tauri::WebviewWindow, token: u64) -> Result<bool, 
 }
 
 #[tauri::command]
+fn background_work_runtime() -> Result<Value, String> {
+    derived_runtime::state_payload()
+}
+
+#[tauri::command]
 async fn background_work_snapshot() -> Result<background_work::BackgroundWorkSnapshot, String> {
     dispatch(move || {
         let data_root = paths::data_root()?;
@@ -1651,6 +1656,7 @@ pub fn run() {
             media_use_current,
             media_use_released,
             note_user_activity,
+            background_work_runtime,
             background_work_snapshot,
             background_work_set_paused,
             prioritize_derived_work,

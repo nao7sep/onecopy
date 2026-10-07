@@ -3,7 +3,6 @@
 // pause/resume intent back to that single owner.
 
 import { invoke } from "@tauri-apps/api/core";
-import { workReasonKey } from "../models/workReasons";
 import { create } from "zustand";
 import type { MessageKey } from "../i18n/catalogues";
 import { message, type Message, type Translator } from "../i18n/translate";
@@ -51,7 +50,7 @@ export interface ActiveItemWork {
   stopping: boolean;
 }
 
-interface BackgroundRuntimeSnapshot {
+export interface BackgroundRuntimeSnapshot {
   workerRunning: boolean;
   pausedClasses: BackgroundClassSnapshot["id"][];
   active: ActiveItemWork | null;
@@ -59,6 +58,9 @@ interface BackgroundRuntimeSnapshot {
 
 interface DerivedWorkState {
   snapshot: BackgroundWorkSnapshot | null;
+  runtime: BackgroundRuntimeSnapshot | null;
+  detailsOpen: boolean;
+  setDetailsOpen: (open: boolean) => void;
   loading: boolean;
   changing: string | null;
   error: Message | null;
@@ -74,9 +76,10 @@ let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** Coalesce output invalidations; a large library must never accumulate snapshot reads. */
 export function refreshBackgroundWorkSoon(): void {
-  if (refreshTimer !== null) return;
+  if (!useDerivedWorkStore.getState().detailsOpen || refreshTimer !== null) return;
   refreshTimer = setTimeout(() => {
     refreshTimer = null;
+    if (!useDerivedWorkStore.getState().detailsOpen) return;
     if (useDerivedWorkStore.getState().loading) { refreshBackgroundWorkSoon(); return; }
     void useDerivedWorkStore.getState().load();
   }, 1000);
@@ -84,6 +87,19 @@ export function refreshBackgroundWorkSoon(): void {
 
 export const useDerivedWorkStore = create<DerivedWorkState>((set, get) => ({
   snapshot: null,
+  runtime: null,
+  detailsOpen: false,
+  setDetailsOpen: (open) => {
+    if (get().detailsOpen === open) return;
+    set({ detailsOpen: open });
+    if (open) { void get().load(); }
+    else {
+      loadSequence.begin();
+      if (refreshTimer !== null) clearTimeout(refreshTimer);
+      refreshTimer = null;
+      set({ loading: false, snapshot: null });
+    }
+  },
   loading: false,
   changing: null,
   error: null,
@@ -111,6 +127,7 @@ export const useDerivedWorkStore = create<DerivedWorkState>((set, get) => ({
   },
 
   setPaused: async (classId, paused) => {
+    if (get().changing !== null) return;
     const changing = classId ?? "all";
     set({ changing, error: null });
     try {
@@ -129,7 +146,7 @@ export const useDerivedWorkStore = create<DerivedWorkState>((set, get) => ({
       finishActivityOperation("backgroundWork", operationId);
       await invoke("background_work_set_paused", { classId, paused });
       if (classId === null) await useSectionsStore.getState().loadIndexWork();
-      await get().load();
+      if (get().detailsOpen) await get().load();
     } catch (error) {
       set({ error: message("work.changeFailed") });
       log.warn("background-work pause failed", toErrorFields(error));
@@ -183,43 +200,20 @@ export function backgroundClassLabel(id: BackgroundClassSnapshot["id"]): Message
   return CLASS_LABELS[id];
 }
 
-/** The chip's one line. Which fact wins depends on the live snapshot, and a
- * waiting row may carry a reason the core recorded, so this resolves words
- * here rather than returning a descriptor. */
-export function backgroundWorkLine(
-  snapshot: BackgroundWorkSnapshot | null,
-  t: Translator["t"],
-): string {
-  if (snapshot === null) return t("work.title");
-  const rows = backgroundRows(snapshot);
-  const stopping = rows.find((row) => row.state === "stopping");
-  if (stopping) return t(STOPPING_LINES[stopping.id]);
-  const running = rows.find((row) => row.state === "running");
-  if (running) {
-    const name = t(backgroundClassLabel(running.id));
-    return running.done !== null && running.total !== null
-      ? t("work.classProgress", { name, done: running.done, total: running.total })
+/** The status bar consumes only pushed lifecycle facts, never a stale queue count. */
+export function backgroundRuntimeLine(runtime: BackgroundRuntimeSnapshot | null, t: Translator["t"]): string {
+  if (runtime === null) return t("work.title");
+  const active = runtime.active;
+  if (active !== null) {
+    if (active.stopping || runtime.pausedClasses.includes(active.id)) return t(STOPPING_LINES[active.id]);
+    const name = t(backgroundClassLabel(active.id));
+    return active.done !== null && active.total !== null
+      ? t("work.classProgress", { name, done: active.done, total: active.total })
       : t("work.classRunning", { name });
   }
-  if (!snapshot.workerRunning) return t("work.enrichmentStopped");
-  if (rows.some((row) => row.state === "paused") && rows.every((row) => row.state === "paused" || row.state === "disabled")) {
-    return t("work.allPaused");
-  }
-  const queued = rows.find((row) => row.state === "queued" && row.queued > 0);
-  if (queued) {
-    return t("work.classQueued", {
-      name: t(backgroundClassLabel(queued.id)),
-      count: queued.queued,
-    });
-  }
-  if (rows.some((row) => row.state === "paused")) return t("work.somePaused");
-  const waiting = rows.find((row) => row.state === "waiting" || row.state === "unavailable");
-  // A waiting row's reason is recorded by the core; it shows as it arrived.
-  if (waiting) {
-    const key = workReasonKey(waiting.reason);
-    return key === null ? (waiting.reason ?? t("work.waiting")) : t(key);
-  }
-  if (rows.some((row) => row.state === "failed")) return t("work.someFailed");
+  if (!runtime.workerRunning) return t("work.enrichmentStopped");
+  if (runtime.pausedClasses.length === 6) return t("work.allPaused");
+  if (runtime.pausedClasses.length > 0) return t("work.somePaused");
   return t("work.noWorkRunning");
 }
 
@@ -321,6 +315,7 @@ const installEvents = createEventInstaller(
       runtimeVersion += 1;
       latestRuntime = event.payload;
       useDerivedWorkStore.setState((state) => ({
+        runtime: event.payload,
         snapshot: mergeBackgroundRuntime(state.snapshot, event.payload),
         activeItem: event.payload.active,
       }));
@@ -333,7 +328,12 @@ const installEvents = createEventInstaller(
       "file-information://done", "watch://updated", "derived://issues",
       "derived://similarity-updated", "binaries://changed",
     ]) await listeners.listen(event, refreshBackgroundWorkSoon);
-    await useDerivedWorkStore.getState().load();
+    const version = runtimeVersion;
+    const runtime = await invoke<BackgroundRuntimeSnapshot>("background_work_runtime");
+    if (version === runtimeVersion) {
+      latestRuntime = runtime;
+      useDerivedWorkStore.setState({ runtime, activeItem: runtime.active });
+    }
   },
   (error) => {
     log.warn("derived-work event wiring failed", toErrorFields(error));

@@ -139,7 +139,7 @@ describe("transcript presentation owners", () => {
   });
 
   it.each([
-    ["waiting-for-transcription-model", "Managed tools", "managedTools"],
+    ["waiting-for-transcription-model", "Background work & tools", "backgroundWork"],
     ["unsupported-acceleration", "Settings", "settings"],
   ] as const)("offers the remedy for %s where it is resolved", async (reason, label, surface) => {
     mockCommands({ transcript_get: () => ({ status: "pending", text: null, message: null }), log_event: () => null });

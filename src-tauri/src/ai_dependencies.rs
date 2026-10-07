@@ -96,3 +96,15 @@ pub fn production_transcription(root: &Path) -> TranscriptionDependencies {
         model: production_path(root, WHISPER),
     }
 }
+
+// Model loading is a class dependency failure, never a receipt against a media file.
+const MODEL_UNAVAILABLE: &str = "model-unavailable: ";
+pub fn model_load_error(error: impl std::fmt::Display) -> String {
+    format!("{MODEL_UNAVAILABLE}{error}")
+}
+pub fn is_model_load_error(error: &str) -> bool {
+    error.starts_with(MODEL_UNAVAILABLE)
+}
+pub fn model_error_detail(error: &str) -> &str {
+    error.strip_prefix(MODEL_UNAVAILABLE).unwrap_or(error)
+}

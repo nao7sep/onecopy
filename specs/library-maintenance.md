@@ -2,6 +2,10 @@
 
 This contract defines how OneCopy discovers source changes, completes known file information, prepares required presentation data, schedules optional enrichment, generates transcripts, exposes Background Work controls, and rebuilds reconstructible library state. Logical-item calculation is owned by `library-items.md`; completed-content presentation is owned by `content-presentation.md`; general failure presentation is owned by `failures-and-recovery.md`.
 
+Background work & tools is the single surface for job controls and managed dependencies. Missing dependencies offer explicit installation beside the blocked work; opening or closing the surface never starts or cancels a download. Detailed queue totals are read only while the surface is open; the status bar follows runtime events.
+
+A model-load failure pauses only the affected class with one current Issue linking to these controls. Resume retries explicitly. A model failure is not a media-file failure; unrelated classes continue. Unexpected whole-pass failures stop and report without an automatic retry loop.
+
 ## Independent maintenance lifecycles
 
 OneCopy maintains separate ownership for:

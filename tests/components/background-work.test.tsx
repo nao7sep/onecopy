@@ -2,9 +2,11 @@
 
 import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { useBinariesStore } from "../../src/state/binaries-store";
+import { managedToolsFixture } from "../fixtures/managed-tools";
 import BackgroundWorkModal from "../../src/components/BackgroundWorkModal";
 import {
-  backgroundWorkLine,
+  backgroundRuntimeLine,
   backgroundRows,
   backgroundRowCanResume,
   mergeBackgroundRuntime,
@@ -55,8 +57,10 @@ let wiringInstalled = false;
 
 beforeEach(async () => {
   resetTauriMocks({ keepListeners: true });
+  useBinariesStore.setState({ entries: [], loading: false, installing: {}, errors: {}, loadError: null });
   current = snapshot({}, { previews: { state: "queued", queued: 12 } });
   mockCommands({
+    background_work_runtime: () => ({ workerRunning: true, pausedClasses: [], active: null }),
     background_work_snapshot: () => ({ ...current, activeItem: null }),
     background_work_set_paused: ({ classId, paused }) => {
       const targets = classId === null ? ids : [classId as typeof ids[number]];
@@ -114,7 +118,7 @@ describe("Background work", () => {
     });
     useDerivedWorkStore.setState({ snapshot: current });
     const view = render(<BackgroundWorkModal open onClose={() => {}} />);
-    expect(backgroundWorkLine(current, t)).toBe("Preparation and enrichment stopped");
+    expect(backgroundRuntimeLine({ workerRunning: current.workerRunning, pausedClasses: current.pausedClasses, active: current.activeItem }, t)).toBe("Preparation and enrichment stopped");
     const previews = [...view.container.querySelectorAll("li")].find((row) => row.textContent?.includes("Thumbnails, previews, and posters"))!;
     expect(previews.textContent).toContain("Stopped");
     expect(previews.querySelector("button")!.textContent).toBe("Resume");
@@ -142,7 +146,6 @@ describe("Background work", () => {
   });
 
   it.each([
-    ["faces", "waiting-for-face-models", "Face scoring", "Managed tools", "managedTools"],
     ["video-transcripts", "unsupported-acceleration", "Video transcription", "Settings", "settings"],
   ] as const)("offers %s waiting on %s a direct action where it is resolved", async (id, reason, label, action, surface) => {
     current = snapshot({}, { [id]: { state: "unavailable", queued: 3, reason } });
@@ -159,35 +162,36 @@ describe("Background work", () => {
     expect([...available.querySelectorAll("button")].map((button) => button.textContent)).toEqual(["Pause"]);
   });
 
+  it("installs a missing dependency beside its blocked work only after an explicit click", async () => {
+    const entries = managedToolsFixture("macos").map((entry) => ({ ...entry, status: "not-installed" as const }));
+    const calls: string[] = [];
+    const originalInstall = useBinariesStore.getState().install;
+    useBinariesStore.setState({ entries, install: async (id) => { calls.push(id); } });
+    current = snapshot({}, { "video-transcripts": { state: "unavailable", reason: "waiting-for-transcription-model" } });
+    useDerivedWorkStore.setState({ snapshot: current });
+    const view = render(<BackgroundWorkModal open onClose={() => {}} />);
+    const row = [...view.container.querySelectorAll("li")].find((item) => item.textContent?.includes("Video transcription"))!;
+    const install = [...row.querySelectorAll("button")].find((button) => button.textContent === "Install")!;
+    await act(async () => install.click());
+    expect(calls).toEqual(["whisper-large-v3-turbo"]);
+    view.unmount();
+    expect(calls).toHaveLength(1);
+    useBinariesStore.setState({ install: originalInstall });
+  });
+
   it("keeps active manual work pausable when its automatic coordinator is stopped", () => {
     const state = snapshot({ workerRunning: false, activeItem: { id: "video-transcripts", hash: "manual", done: 2, total: 10, stopping: false } });
     const rows = backgroundRows(state);
     const transcription = rows.find((row) => row.id === "video-transcripts")!;
     expect(backgroundRowCanResume(state, transcription)).toBe(false);
     expect(backgroundRowCanResume(state, rows[0])).toBe(true);
-    expect(backgroundWorkLine(state, t)).toBe("Video transcription 2/10");
+    expect(backgroundRuntimeLine({ workerRunning: state.workerRunning, pausedClasses: state.pausedClasses, active: state.activeItem }, t)).toBe("Video transcription 2/10");
   });
 
 
-  it("keeps the status segment meaningful for running, queued, and settled work", () => {
-    expect(backgroundWorkLine(current, t)).toBe("Thumbnails, previews, and posters: 12 queued");
-    expect(
-      backgroundWorkLine(
-        snapshot(
-          {},
-          {
-            "video-transcripts": {
-              state: "running",
-              queued: 1,
-              done: 42,
-              total: 100,
-            },
-          },
-        ),
-        t,
-      ),
-    ).toBe("Video transcription 42/100");
-    expect(backgroundWorkLine(snapshot(), t)).toBe("Background work: no work running");
+  it("keeps the status segment meaningful without querying queue totals", () => {
+    expect(backgroundRuntimeLine({ workerRunning: true, pausedClasses: [], active: null }, t)).toBe("Background work: no work running");
+    expect(backgroundRuntimeLine({ workerRunning: true, pausedClasses: [], active: { id: "video-transcripts", hash: "x", done: 42, total: 100, stopping: false } }, t)).toBe("Video transcription 42/100");
   });
 
   it("patches runtime progress without re-reading output debt", () => {
@@ -327,7 +331,6 @@ describe("Background work", () => {
     current = snapshot({}, { previews: { state: "failed", failed: 2 } });
     useDerivedWorkStore.setState({ snapshot: current });
     const view = render(<BackgroundWorkModal open onClose={() => {}} />);
-    expect(backgroundWorkLine(current, t)).toBe("Background work: some items failed — see Issues");
     const previews = [...view.container.querySelectorAll("li")].find((row) => row.textContent?.includes("Thumbnails, previews, and posters"))!;
     expect(previews.textContent).toContain("Some items failed. See Issues.");
     const issues = [...previews.querySelectorAll("button")].find((button) => button.textContent === "Issues")!;

@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { modelIssueLabel } from "../models/workReasons";
+import { useAppShellStore } from "../state/app-shell-store";
 import { X } from "lucide-react";
 import { useIssuesStore, type IssueRow } from "../state/issues-store";
 import { noticeSentence } from "../state/notifications-store";
@@ -110,11 +112,19 @@ export default function IssuesModal({ open, onClose }: {
               </div>
               {row.path ? <button className="mt-2 w-full select-text break-all text-left text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-ring"
                 title={t("issues.revealInMain")} onClick={() => void reveal(row.path!)}>{row.path}</button> : null}
+              {modelIssueLabel(row.kind) !== null ? (
+                <h3 className="mt-2 font-semibold text-ink-strong">{t(modelIssueLabel(row.kind)!)}</h3>
+              ) : null}
               {/* The condition in the reader's language, then what the core
                   recorded when that says something the sentence does not. */}
               <div className="mt-1.5 select-text break-words leading-relaxed text-ink-muted">
                 {noticeSentence(row, text)}
               </div>
+              {modelIssueLabel(row.kind) !== null ? (
+                <Button className="mt-2" onClick={() => useAppShellStore.getState().openUtility("backgroundWork")}>
+                  {t("app.openBackgroundWork")}
+                </Button>
+              ) : null}
               {recordedDetail(row) !== null ? (
                 <div className="mt-1 select-text break-words text-xs leading-relaxed text-ink-muted opacity-80">
                   {recordedDetail(row)}

@@ -453,7 +453,7 @@ export default function TranscriptBlock({
           key="tools"
           onClick={() => useAppShellStore.getState().openUtility(remedy)}
         >
-          {remedy === "settings" ? t("settings.title") : t("app.openManagedTools")}
+          {remedy === "settings" ? t("settings.title") : t("app.openBackgroundWork")}
         </Button>,
       );
       if (failed) {

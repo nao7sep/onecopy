@@ -10,7 +10,7 @@
 
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { render, cleanup, act } from "@testing-library/react";
-import BinariesModal from "../../src/components/BinariesModal";
+import ManagedTools from "../../src/components/ManagedTools";
 import { useBinariesStore, type DependencyState } from "../../src/state/binaries-store";
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 import { managedToolsFixture } from "../fixtures/managed-tools";
@@ -110,11 +110,21 @@ const buttons = (label: string) =>
   [...document.querySelectorAll("button")].filter((b) => b.textContent === label);
 
 describe("parallel installs", () => {
+  it("keeps installation progress when its management view closes and reopens", () => {
+    useBinariesStore.setState({ installing: { "whisper-large-v3-turbo": downloading } });
+    const view = render(<ManagedTools />);
+    view.unmount();
+    expect(useBinariesStore.getState().installing["whisper-large-v3-turbo"]).toEqual(downloading);
+    expect(invokeCalls.some((call) => call.command === "binaries_cancel")).toBe(false);
+    render(<ManagedTools />);
+    expect(document.body.textContent).toContain("Downloading — 100 MB / 1.2 GB (8%)");
+  });
+
   it("keeps every other row's button live while one entry downloads", () => {
     useBinariesStore.setState({
       installing: { "whisper-large-v3-turbo": downloading },
     });
-    render(<BinariesModal open onClose={() => {}} />);
+    render(<ManagedTools />);
     const install = buttons("Install");
     expect(install).toHaveLength(1); // ffmpeg's — the model row shows progress
     expect(install[0]!.disabled).toBe(false);
@@ -138,7 +148,7 @@ describe("parallel installs", () => {
       },
     });
 
-    render(<BinariesModal open onClose={() => {}} />);
+    render(<ManagedTools />);
 
     expect(document.body.textContent).toContain(
       "Verifying — 84 MB / 84 MB (100%)",
@@ -151,7 +161,7 @@ describe("parallel installs", () => {
     useBinariesStore.setState({
       installing: { "whisper-large-v3-turbo": downloading },
     });
-    render(<BinariesModal open onClose={() => {}} />);
+    render(<ManagedTools />);
 
     await act(async () => buttons("Cancel")[0]!.click());
 
@@ -172,7 +182,7 @@ describe("parallel installs", () => {
     useBinariesStore.setState({
       installing: { "whisper-large-v3-turbo": downloading },
     });
-    render(<BinariesModal open onClose={() => {}} />);
+    render(<ManagedTools />);
 
     await act(async () => buttons("Cancel")[0]!.click());
 
@@ -187,18 +197,18 @@ describe("registry state", () => {
   it("distinguishes loading, failure, and an ordinary empty registry", () => {
     seed([]);
     useBinariesStore.setState({ loading: true });
-    const loading = render(<BinariesModal open onClose={() => {}} />);
+    const loading = render(<ManagedTools />);
     expect(document.body.textContent).toContain("Loading managed tools…");
     loading.unmount();
 
     useBinariesStore.setState({ loading: false, loadError: message("binaries.unavailable") });
-    const failed = render(<BinariesModal open onClose={() => {}} />);
+    const failed = render(<ManagedTools />);
     expect(document.body.textContent).toContain("Managed tools are unavailable.");
     expect(document.body.textContent).not.toContain("No managed tools are configured.");
     failed.unmount();
 
     useBinariesStore.setState({ loadError: null });
-    render(<BinariesModal open onClose={() => {}} />);
+    render(<ManagedTools />);
     expect(document.body.textContent).toContain("No managed tools are configured.");
   });
 
@@ -207,7 +217,7 @@ describe("registry state", () => {
     // label the core sent with it.
     const label = t("tool.whisperLargeV3Turbo");
     seed([entry("whisper-large-v3-turbo", "not-installed", { label })]);
-    render(<BinariesModal open onClose={() => {}} />);
+    render(<ManagedTools />);
 
     const renderedLabel = [...document.querySelectorAll("span")].find(
       (element) => element.textContent === label,
@@ -224,7 +234,7 @@ describe("registry state", () => {
         requiredForCore: false,
       }),
     ]);
-    render(<BinariesModal open onClose={() => {}} />);
+    render(<ManagedTools />);
 
     const rows = [...document.querySelectorAll("div.rounded-xl")];
     const ffmpegStatus = rows
@@ -241,7 +251,7 @@ describe("registry state", () => {
 
 describe("installing everything", () => {
   it("puts Install all above the list", () => {
-    render(<BinariesModal open onClose={() => {}} />);
+    render(<ManagedTools />);
     const installAll = buttons("Install all")[0]!;
     const firstRow = [...document.querySelectorAll("span")].find(
       (el) => el.textContent === "ffmpeg",
@@ -252,7 +262,7 @@ describe("installing everything", () => {
   });
 
   it("targets exactly the missing and updatable entries", async () => {
-    render(<BinariesModal open onClose={() => {}} />);
+    render(<ManagedTools />);
     await act(async () => buttons("Install all")[0]!.click());
     const installed = invokeCalls
       .filter((c) => c.command === "binaries_install")
@@ -268,12 +278,12 @@ describe("installing everything", () => {
 describe("an entry whose version could not be read", () => {
   it("offers Update, which a merely-unchecked entry does not", () => {
     seed([entry("ffmpeg", "installed-unchecked", { installedVersion: null })]);
-    render(<BinariesModal open onClose={() => {}} />);
+    render(<ManagedTools />);
     expect(buttons("Update")).toHaveLength(1);
     expect(document.body.textContent).not.toContain("Up to date");
 
     seed([entry("ffmpeg", "installed-unchecked")]);
-    render(<BinariesModal open onClose={() => {}} />);
+    render(<ManagedTools />);
     expect(buttons("Update")).toHaveLength(0);
   });
 });
@@ -282,7 +292,7 @@ describe("the two lifecycles", () => {
   it("discloses every selected model and the runtime's actual download size before installation", () => {
     const entries = managedToolsFixture("windows");
     seed(entries);
-    render(<BinariesModal open onClose={() => {}} />);
+    render(<ManagedTools />);
     for (const entry of entries.filter((entry) => entry.kind !== "binary")) {
       const row = [...document.querySelectorAll("div.rounded-xl")]
         .find((row) => row.textContent?.includes(entry.label));
@@ -296,7 +306,7 @@ describe("the two lifecycles", () => {
 
   it.each(["macos", "windows"] as const)("shows installed and available ffmpeg identities together on %s", (platform) => {
     seed(managedToolsFixture(platform));
-    render(<BinariesModal open onClose={() => {}} />);
+    render(<ManagedTools />);
     const row = [...document.querySelectorAll("div.rounded-xl")]
       .find((row) => row.textContent?.includes("ffmpeg"))!;
     expect(row.textContent).toContain("Update available");
@@ -311,7 +321,7 @@ describe("the two lifecycles", () => {
   it.each(["unreadable", "long"] as const)("retains truthful, wrapping build facts for the %s fixture", (identity) => {
     const entries = managedToolsFixture("windows", identity);
     seed(entries);
-    render(<BinariesModal open onClose={() => {}} />);
+    render(<ManagedTools />);
     const row = [...document.querySelectorAll("div.rounded-xl")]
       .find((row) => row.textContent?.includes("ffmpeg"))!;
     const facts = row.querySelector("p")!;
@@ -331,7 +341,7 @@ describe("the two lifecycles", () => {
     // claim about a check nobody ran. It is simply installed — with the
     // artifact's real publication date answering "how old is this?".
     seed([entry("whisper-large-v3-turbo", "up-to-date")]);
-    render(<BinariesModal open onClose={() => {}} />);
+    render(<ManagedTools />);
     expect(document.body.textContent).toContain("Installed");
     expect(document.body.textContent).not.toContain("Up to date");
     expect(document.body.textContent).not.toContain("1fc70f774d38");
@@ -354,7 +364,7 @@ describe("the two lifecycles", () => {
         },
       }),
     ]);
-    render(<BinariesModal open onClose={() => {}} />);
+    render(<ManagedTools />);
 
     expect(document.body.textContent).toContain("Build 2026-08-23 13:03");
     expect(document.body.textContent).toContain("2026-08-24 14:04 available");
@@ -363,7 +373,7 @@ describe("the two lifecycles", () => {
 
   it("offers the check only on the entry that has an upstream", () => {
     seed([entry("ffmpeg", "up-to-date"), entry("whisper-large-v3-turbo", "up-to-date")]);
-    render(<BinariesModal open onClose={() => {}} />);
+    render(<ManagedTools />);
     const check = buttons("Check for updates");
     expect(check).toHaveLength(1);
     // It sits INSIDE the ffmpeg row, not floating above a list it cannot
@@ -378,7 +388,7 @@ describe("the two lifecycles", () => {
     vi.useFakeTimers();
     try {
       seed([entry("ffmpeg", "up-to-date"), entry("whisper-large-v3-turbo", "up-to-date")]);
-      render(<BinariesModal open onClose={() => {}} />);
+      render(<ManagedTools />);
       await act(async () => {
         buttons("Check for updates")[0]!.click();
         await vi.advanceTimersByTimeAsync(700);
@@ -398,7 +408,7 @@ describe("check feedback", () => {
     vi.useFakeTimers();
     try {
       seed([entry("ffmpeg", "up-to-date")]);
-      render(<BinariesModal open onClose={() => {}} />);
+      render(<ManagedTools />);
 
       await act(async () => {
         buttons("Check for updates")[0]!.click();
@@ -422,7 +432,7 @@ describe("check feedback", () => {
         }),
       });
       seed([entry("ffmpeg", "up-to-date")]);
-      render(<BinariesModal open onClose={() => {}} />);
+      render(<ManagedTools />);
       await act(async () => buttons("Check for updates")[0]!.click());
       expect(buttons("Checking…")).toHaveLength(1);
       await act(async () => {
@@ -452,7 +462,7 @@ describe("check feedback", () => {
         },
       });
       seed([entry("ffmpeg", "up-to-date")]);
-      render(<BinariesModal open onClose={() => {}} />);
+      render(<ManagedTools />);
 
       await act(async () => buttons("Check for updates")[0]!.click());
       await act(async () => buttons("Cancel check")[0]!.click());

@@ -231,3 +231,34 @@ fn a_transcription_class_follows_its_content_kind() {
     );
     assert_eq!(WorkClass::transcription_for_kind("image"), None);
 }
+
+#[test]
+fn a_model_load_failure_keeps_transcription_retryable_and_coalesces_one_class_issue() {
+    let temp = tempfile::tempdir().unwrap();
+    let conn = crate::index_store::open(&temp.path().join("index.sqlite3")).unwrap();
+    let cache = CachePaths::new(temp.path().join("cache"));
+    let attempt = TranscriptionAttempt {
+        conn: &conn, cache: &cache, data_root: temp.path(), temp_dir: temp.path().join("temp"),
+        source_hash: "media", source_path: "/media/video.mp4", replace_existing: false,
+        acceleration: crate::ai_acceleration::Mode::None, cancel_when: None,
+    };
+    let error = crate::ai_dependencies::model_load_error("invalid model header");
+    let outcome = finish_transcription_attempt(&attempt, "media".into(), Err(error.clone())).unwrap();
+    assert!(matches!(outcome, TranscriptionAttemptOutcome::ModelUnavailable { .. }));
+    let failed: i64 = conn.query_row("SELECT count(*) FROM active_issues WHERE path != ''", [], |r| r.get(0)).unwrap();
+    assert_eq!(failed, 0, "a dependency failure must never blame the media file");
+    for _ in 0..2 {
+        record_model_failure(&conn, WorkClass::VideoTranscripts, &error).unwrap();
+    }
+    let count: i64 = conn.query_row("SELECT count(*) FROM active_issues WHERE kind = 'model-unavailable-video-transcripts'", [], |r| r.get(0)).unwrap();
+    assert_eq!(count, 1);
+    let automatic = transcription_report(TranscriptionRun::Automatic, &outcome);
+    assert_eq!(automatic.pause_message.as_deref(), Some(error.as_str()));
+    assert!(automatic.event.is_none(), "no per-file failure event for automatic work");
+    let requested = transcription_report(TranscriptionRun::Requested { replacement: false }, &outcome);
+    assert_eq!(requested.event.unwrap().0, "transcribe://error");
+    let paused = crate::derived_runtime::changed_pause_classes(0, Some(WorkClass::VideoTranscripts.id()), true).unwrap();
+    assert_eq!(paused & WorkClass::VideoTranscripts.bit(), WorkClass::VideoTranscripts.bit());
+    assert_eq!(paused & WorkClass::Similarity.bit(), 0);
+    assert_eq!(crate::derived_runtime::changed_pause_classes(paused, Some(WorkClass::VideoTranscripts.id()), false).unwrap(), 0);
+}
