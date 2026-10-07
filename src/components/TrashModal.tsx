@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useMutationRefresh } from "../hooks/useMutationRefresh";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { formatBytes } from "../models/items";
@@ -14,8 +15,8 @@ import { message, type Message } from "../i18n/translate";
 
 // Deleted files: one permission-preserving location below each configured
 // source or destination root, with per-root sizes, Reveal, and the deliberately
-// destructive convenience: Empty. Sizes are computed when the modal opens
-// (it opens rarely; a cached number would only be a chance to lie).
+// destructive convenience: Empty. Sizes are remeasured while operations change
+// them; a confirmation retains exactly the measurement the user reviewed.
 // Emptying is PERMANENT, so it confirms with the exact totals it is about to
 // destroy. The storage stays write-only otherwise: the app never purges it.
 
@@ -63,30 +64,24 @@ export default function TrashModal({
   const [cancelling, setCancelling] = useState(false);
   // The message, not a finished sentence, so it follows a language change.
   const [error, setError] = useState<Message | null>(null);
+  const [loadError, setLoadError] = useState<Message | null>(null);
+  const processed = useRef(false);
 
-  useEffect(() => {
-    if (!open) return;
-    let current = true;
-    setRows(null);
-    setError(null);
-    void invoke<TrashRootInfo[]>("trash_overview")
-      .then((result) => {
-        if (current) setRows(result);
-      })
-      .catch((error) => {
-        if (!current) return;
-        log.error("trash overview failed", toErrorFields(error));
-        setError(message("trash.locationsUnavailable"));
-        recordActionFailure(
-          "trash-overview-failed",
-          message("trash.locationsUnavailable"),
-          error,
-        );
-      });
-    return () => {
-      current = false;
-    };
-  }, [open]);
+  const refresh = useMutationRefresh(open ? "overview" : null, async (current) => {
+    try {
+      const result = await invoke<TrashRootInfo[]>("trash_overview");
+      if (current()) { setRows(result); setLoadError(null); }
+    } catch (failure) {
+      if (!current()) return;
+      log.error("trash overview failed", toErrorFields(failure));
+      setLoadError(message(processed.current ? "trash.totalsNotRefreshed" : "trash.locationsUnavailable"));
+      recordActionFailure("trash-overview-failed", message("trash.locationsUnavailable"), failure);
+    }
+  }, (failure) => {
+    setError(message("trash.progressUnavailable"));
+    recordActionFailure("trash-progress-unavailable", message("trash.progressUnavailable"), failure);
+  });
+  useEffect(() => { if (!open) { setRows(null); setError(null); setLoadError(null); processed.current = false; setBrowsing(null); setConfirm(null); } }, [open]);
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
@@ -130,20 +125,13 @@ export default function TrashModal({
         root: row.root,
         planToken: row.planToken,
       });
-      let outcomeError: Message | null = outcome.planChanged
+      const outcomeError: Message | null = outcome.planChanged
         ? message("trash.changedSinceReview")
         : outcome.failures > 0
           ? message("trash.entriesNotRemoved", { count: outcome.failures })
           : null;
-      try {
-        setRows(await invoke<TrashRootInfo[]>("trash_overview"));
-      } catch (error) {
-        log.error("trash remeasurement failed", toErrorFields(error));
-        setRows(null);
-        outcomeError = outcomeError === null
-          ? message("trash.totalsNotRefreshed")
-          : message("trash.partialTotalsNotRefreshed", { reason: outcomeError });
-      }
+      processed.current = true;
+      refresh();
       setError(outcomeError);
       if (outcomeError !== null && !outcome.planChanged) {
         recordActionFailure("trash-empty-partial", outcomeError);
@@ -152,6 +140,7 @@ export default function TrashModal({
       log.error("trash empty failed", toErrorFields(error));
       setError(message("trash.emptyFailed"));
       recordActionFailure("trash-empty-failed", message("trash.emptyFailed"), error);
+      refresh();
     } finally {
       busyRef.current = false;
       setBusy(false);
@@ -186,8 +175,8 @@ export default function TrashModal({
       closeDisabled={busy}
       widthClass="w-[min(820px,calc(100vw-3rem))]"
       footerResult={
-        rows !== null && error !== null ? (
-          <OperationResult level="error">{text(error)}</OperationResult>
+        rows !== null && (error !== null || loadError !== null) ? (
+          <OperationResult level="error">{[error, loadError].filter((value) => value !== null).map(text).join(" ")}</OperationResult>
         ) : undefined
       }
     >
@@ -216,9 +205,9 @@ export default function TrashModal({
         {t("trash.intro")}
       </p>
       {rows === null ? (
-        error !== null ? (
+        (error ?? loadError) !== null ? (
           <OperationResult level="error" className="my-4">
-            {text(error)}
+            {text((error ?? loadError)!)}
           </OperationResult>
         ) : (
           <p className="py-4 text-center text-sm text-ink-muted">{t("trash.measuring")}</p>

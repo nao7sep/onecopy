@@ -589,7 +589,7 @@
   "notice.occurrences": { "one": "Occurred {count} time", "other": "Occurred {count} times" },
   "notice.activeRegion": "Active notifications",
   "notice.unavailable": "Notifications are unavailable. Reload the window to restore them.",
-  "mutation.revealDeletedFiles": "Reveal deleted files…",
+  "mutation.openDeletedFiles": "Deleted files & Restore…",
   "mutation.dismissResult": "Dismiss file-operation result",
   "startup.quit": "Quit OneCopy",
   "crash.needsReloadBody": "This window could not finish drawing. Completed file operations remain completed.",

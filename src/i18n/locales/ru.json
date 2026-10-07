@@ -589,7 +589,7 @@
   "notice.occurrences": { "one": "Произошло {count} раз", "few": "Произошло {count} раза", "many": "Произошло {count} раз", "other": "Произошло {count} раза" },
   "notice.activeRegion": "Активные уведомления",
   "notice.unavailable": "Уведомления недоступны. Перезагрузите окно, чтобы вернуть их.",
-  "mutation.revealDeletedFiles": "Показать удалённые файлы…",
+  "mutation.openDeletedFiles": "Удалённые файлы и восстановление…",
   "mutation.dismissResult": "Закрыть результат файловой операции",
   "startup.quit": "Завершить OneCopy",
   "crash.needsReloadBody": "Это окно не смогло завершить отрисовку. Завершённые файловые операции остаются завершёнными.",

@@ -589,7 +589,7 @@
   "notice.occurrences": { "one": "{count}-mal aufgetreten", "other": "{count}-mal aufgetreten" },
   "notice.activeRegion": "Aktive Mitteilungen",
   "notice.unavailable": "Mitteilungen sind nicht verfügbar. Laden Sie das Fenster neu, um sie wiederherzustellen.",
-  "mutation.revealDeletedFiles": "Gelöschte Dateien anzeigen…",
+  "mutation.openDeletedFiles": "Gelöschte Dateien & Wiederherstellen…",
   "mutation.dismissResult": "Ergebnis des Dateivorgangs schließen",
   "startup.quit": "OneCopy beenden",
   "crash.needsReloadBody": "Dieses Fenster konnte das Zeichnen nicht abschließen. Abgeschlossene Dateivorgänge bleiben abgeschlossen.",

@@ -589,7 +589,7 @@
   "notice.occurrences": { "other": "{count}회 발생" },
   "notice.activeRegion": "활성 알림",
   "notice.unavailable": "알림을 사용할 수 없습니다. 창을 다시 불러오면 복구됩니다.",
-  "mutation.revealDeletedFiles": "삭제된 파일 표시…",
+  "mutation.openDeletedFiles": "삭제된 파일 및 복원…",
   "mutation.dismissResult": "파일 작업 결과 닫기",
   "startup.quit": "OneCopy 종료",
   "crash.needsReloadBody": "이 창이 화면 그리기를 완료할 수 없습니다. 이미 완료된 파일 작업은 완료된 상태로 남습니다.",

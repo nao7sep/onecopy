@@ -589,7 +589,7 @@
   "notice.occurrences": { "one": "Si è verificato {count} volta", "many": "Si è verificato {count} di volte", "other": "Si è verificato {count} volte" },
   "notice.activeRegion": "Notifiche attive",
   "notice.unavailable": "Le notifiche non sono disponibili. Ricarica la finestra per ripristinarle.",
-  "mutation.revealDeletedFiles": "Mostra i file eliminati…",
+  "mutation.openDeletedFiles": "File eliminati e ripristino…",
   "mutation.dismissResult": "Chiudi il risultato dell’operazione sui file",
   "startup.quit": "Esci da OneCopy",
   "crash.needsReloadBody": "Questa finestra non è riuscita a mostrare tutto il suo contenuto. Le operazioni sui file già completate restano completate.",

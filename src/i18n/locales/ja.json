@@ -589,7 +589,7 @@
   "notice.occurrences": { "other": "{count} 回発生しました" },
   "notice.activeRegion": "表示中の通知",
   "notice.unavailable": "通知を利用できません。元に戻すには、ウインドウを再読み込みしてください。",
-  "mutation.revealDeletedFiles": "削除済みファイルの場所を表示…",
+  "mutation.openDeletedFiles": "削除済みファイル・復元…",
   "mutation.dismissResult": "ファイル操作の結果を閉じる",
   "startup.quit": "OneCopy を終了",
   "crash.needsReloadBody": "このウインドウは描画を完了できませんでした。完了したファイル操作は、そのまま完了しています。",

@@ -589,7 +589,7 @@
   "notice.occurrences": { "one": "Survenu {count} fois", "many": "Survenu {count} de fois", "other": "Survenu {count} fois" },
   "notice.activeRegion": "Notifications actives",
   "notice.unavailable": "Les notifications sont indisponibles. Rechargez la fenêtre pour les rétablir.",
-  "mutation.revealDeletedFiles": "Afficher les fichiers supprimés…",
+  "mutation.openDeletedFiles": "Fichiers supprimés et restauration…",
   "mutation.dismissResult": "Fermer le résultat de l’opération sur les fichiers",
   "startup.quit": "Quitter OneCopy",
   "crash.needsReloadBody": "Cette fenêtre n’a pas pu terminer son affichage. Les opérations sur les fichiers déjà terminées le restent.",

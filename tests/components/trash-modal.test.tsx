@@ -5,7 +5,7 @@
 // contents, so it has to confirm with the exact totals it is about to
 // destroy, and the command must not fire before that confirmation.
 
-import { beforeEach, afterEach, describe, expect, it } from "vitest";
+import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { render, cleanup, act } from "@testing-library/react";
 import TrashModal from "../../src/components/TrashModal";
 import { fireEvent, invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
@@ -59,6 +59,7 @@ describe("the trash modal", () => {
       },
     });
     const view = render(<TrashModal open onClose={() => {}} />);
+    await act(async () => {});
     view.rerender(<TrashModal open={false} onClose={() => {}} />);
     view.rerender(<TrashModal open onClose={() => {}} />);
     await act(async () => {});
@@ -67,6 +68,46 @@ describe("the trash modal", () => {
 
     expect(document.body.textContent).toContain("/new");
     expect(document.body.textContent).not.toContain(ROWS[0].root);
+  });
+
+  it("coalesces operation events from other windows and freezes an open Empty review", async () => {
+    vi.useFakeTimers();
+    try {
+      let current = ROWS;
+      mockCommands({ trash_overview: () => current, trash_empty: () => ({ cancelled: false, failures: 0, planChanged: true }) });
+      const view = render(<TrashModal open onClose={() => {}} />);
+      await act(async () => {});
+      await act(async () => view.getAllByRole("button", { name: "Empty" })[0].click());
+      current = [{ ...ROWS[0], files: 99, planToken: "new-token" }];
+      await act(async () => {
+        for (let i = 0; i < 20; i++) fireEvent("mutation://progress", { kind: "destination-move", phase: "running", filesDone: i + 1 });
+        fireEvent("mutation://done", { summary: { filesCompleted: 20 } });
+        await vi.advanceTimersByTimeAsync(250);
+      });
+      expect(invokeCalls.filter((call) => call.command === "trash_overview")).toHaveLength(2);
+      expect(document.body.textContent).toContain("99 files");
+      expect(document.body.textContent).toContain("42 files");
+      await act(async () => view.getByRole("button", { name: "Empty deleted files" }).click());
+      expect(invokeCalls.find((call) => call.command === "trash_empty")?.args.planToken).toBe("measured-42");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("rejects a read invalidated by a later mutation and runs one trailing read", async () => {
+    let finish: ((rows: typeof ROWS) => void) | undefined;
+    let calls = 0;
+    mockCommands({ trash_overview: () => ++calls === 1
+      ? new Promise<typeof ROWS>((resolve) => { finish = resolve; })
+      : [{ ...ROWS[0], files: 7 }] });
+    render(<TrashModal open onClose={() => {}} />);
+    await act(async () => {});
+    await act(async () => {
+      fireEvent("mutation://error", { summary: { filesCompleted: 1 } });
+      fireEvent("mutation://done", { summary: { filesCompleted: 2 } });
+      finish!(ROWS);
+    });
+    expect(calls).toBe(2);
+    expect(document.body.textContent).toContain("7 files");
+    expect(document.body.textContent).not.toContain("42 files");
   });
 
   it("disables Empty for a root that is already empty", async () => {

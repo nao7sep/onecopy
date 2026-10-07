@@ -5,7 +5,8 @@
 // collapse a deleted item. Rows carry no focusable controls of their own;
 // Reveal acts on the active row from the footer.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useMutationRefresh } from "../hooks/useMutationRefresh";
 import { invoke } from "@tauri-apps/api/core";
 import { ChevronDown, ChevronRight, Square, SquareCheck, SquareMinus } from "lucide-react";
 import { useI18n } from "../i18n/I18nContext";
@@ -24,6 +25,7 @@ import {
   groupSelected,
   isRestorable,
   reconcileSelection,
+  restoredBrowseScroll,
   toggleEntry,
   toggleGroup,
   type BrowseRow,
@@ -60,9 +62,11 @@ export const STATUS_REASONS: Record<Exclude<EntryStatus, "restorable">, MessageK
   excluded: "deletedFiles.statusExcluded",
 };
 
-let nextRequest = 0;
+export default function DeletedFilesModal(props: { location: string; onClose: () => void }) {
+  return <DeletedFilesBrowser key={props.location} {...props} />;
+}
 
-export default function DeletedFilesModal({
+function DeletedFilesBrowser({
   location,
   onClose,
 }: {
@@ -74,6 +78,7 @@ export default function DeletedFilesModal({
   useDisplayZone();
   const manager = fileManagerWord();
   const [listing, setListing] = useState<TrashListing | null>(null);
+  const [updatesError, setUpdatesError] = useState<Message | null>(null);
   const [loadError, setLoadError] = useState<Message | null>(null);
   const [error, setError] = useState<Message | null>(null);
   const [query, setQuery] = useState("");
@@ -85,7 +90,6 @@ export default function DeletedFilesModal({
   // list, shows the keyboard cursor, and only while the list has focus.
   const [listFocused, setListFocused] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
-  const request = useRef(0);
   const { handlers: composingHandlers } = useComposing();
   const [restoring, setRestoring] = useState(false);
   const restoringRef = useRef(false);
@@ -99,30 +103,28 @@ export default function DeletedFilesModal({
   const progress = useMutationStore((state) => state.progress);
   const cancelling = useMutationStore((state) => state.cancelling);
 
-  const load = () => {
-    // A late answer for a superseded request (or a closed modal) is dropped.
-    const id = ++nextRequest;
-    request.current = id;
-    setLoadError(null);
-    void invoke<TrashListing>("trash_entries", { root: location })
-      .then((result) => {
-        if (request.current !== id) return;
-        setListing(result);
-        setSelected((current) => reconcileSelection(current, result.entries));
-      })
-      .catch((failure) => {
-        if (request.current !== id) return;
-        log.warn("deleted files listing failed", { location, ...toErrorFields(failure) });
-        setLoadError(message("deletedFiles.loadFailed"));
-      });
-  };
-
-  useEffect(() => {
-    load();
-    return () => {
-      request.current = 0;
-    };
-  }, [location]);
+  const anchor = useRef<{ key: string | null; index: number; offset: number } | null>(null);
+  const displayedRows = useRef<BrowseRow[]>([]);
+  const load = useMutationRefresh(location, async (current) => {
+    try {
+      const result = await invoke<TrashListing>("trash_entries", { root: location });
+      if (!current()) return;
+      setLoadError(null);
+      const top = listRef.current?.scrollTop ?? 0;
+      const index = Math.floor(top / ROW_HEIGHT);
+      anchor.current = { key: displayedRows.current[index]?.key ?? null, index, offset: top % ROW_HEIGHT };
+      setListing(result);
+      setSelected((selected) => reconcileSelection(selected, result.entries));
+    } catch (failure) {
+      if (!current()) return;
+      log.warn("deleted files listing failed", { location, ...toErrorFields(failure) });
+      setLoadError(message("deletedFiles.loadFailed"));
+    }
+  }, (failure) => {
+    log.warn("deleted files event wiring failed", toErrorFields(failure));
+    setUpdatesError(message("trash.progressUnavailable"));
+    recordActionFailure("trash-progress-unavailable", message("trash.progressUnavailable"), failure);
+  });
 
   const groups = useMemo(() => groupEntries(listing?.entries ?? []), [listing]);
   const visible = useMemo(() => filterGroups(groups, query), [groups, query]);
@@ -130,6 +132,18 @@ export default function DeletedFilesModal({
     () => browseRows(bucketByDay(visible), expanded),
     [visible, expanded],
   );
+  displayedRows.current = rows;
+  useLayoutEffect(() => {
+    const saved = anchor.current;
+    if (saved === null) return;
+    anchor.current = null;
+    const list = listRef.current;
+    if (list !== null) {
+      list.scrollTop = restoredBrowseScroll(rows, saved, ROW_HEIGHT, list.clientHeight || FALLBACK_VIEWPORT);
+      setScrollTop(list.scrollTop);
+    }
+    setActiveKey((key) => rows.some((row) => row.key === key) ? key : null);
+  }, [rows]);
   const navigable = useMemo(
     () => rows.map((row, index) => ({ row, index })).filter(({ row }) => row.type !== "day"),
     [rows],
@@ -284,6 +298,7 @@ export default function DeletedFilesModal({
     });
   };
 
+  const feedbackErrors = [error, listing !== null ? loadError : null, updatesError].filter((value) => value !== null);
   const liveProgress = restoring && progress?.kind === "restore" ? progress : null;
   const optionId = (row: BrowseRow) => `deleted-${encodeURIComponent(row.key)}`;
 
@@ -458,8 +473,8 @@ export default function DeletedFilesModal({
               {cancelling ? t("common.cancelling") : t("common.cancel")}
             </Button>
           </span>
-        ) : error !== null ? (
-          <OperationResult level="error">{text(error)}</OperationResult>
+        ) : feedbackErrors.length > 0 ? (
+          <OperationResult level="error">{feedbackErrors.map(text).join(" ")}</OperationResult>
         ) : outcome !== null ? (
           <OperationResult
             level={outcome.failed > 0 || outcome.error !== null ? "warning" : "info"}

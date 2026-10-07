@@ -4,10 +4,10 @@
 // searchable, and selectable from the keyboard without any row taking a tab
 // stop of its own.
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent as fire, render } from "@testing-library/react";
 import DeletedFilesModal from "../../src/components/DeletedFilesModal";
-import { mockCommands, resetTauriMocks } from "../mocks/tauri";
+import { fireEvent, invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 import type { TrashEntry, TrashListing } from "../../src/models/deletedFiles";
 
 const LOCATION = "/Photos/.onecopy-trash";
@@ -57,6 +57,47 @@ function list(): HTMLElement {
 }
 
 describe("Deleted files browse", () => {
+  it("refreshes after another window deletes files while retaining selection and the visible row", async () => {
+    vi.useFakeTimers();
+    try {
+      let entries = Array.from({ length: 40 }, (_, i) => entry({ id: `20260927-utc/item-${String(i).padStart(2, "0")}.jpg`, item: String(i), group: `group-${i}` }));
+      mockCommands({ trash_entries: () => ({ ...LISTING, entries }) });
+      render(<DeletedFilesModal location={LOCATION} onClose={() => {}} />);
+      await act(async () => {});
+      const box = list();
+      await act(async () => { fire.keyDown(box, { key: "ArrowDown" }); });
+      await act(async () => { fire.keyDown(box, { key: " " }); });
+      const active = box.getAttribute("aria-activedescendant");
+      await act(async () => { box.scrollTop = 480; fire.scroll(box); });
+      entries = [entry({ id: "20261001-utc/new.jpg", day: "20261001-utc", deletedAtUtc: "2026-10-01T00:00:00Z", item: "new", group: "new" }), ...entries];
+      await act(async () => {
+        fireEvent("mutation://done", { summary: { filesCompleted: 1 } });
+        await vi.advanceTimersByTimeAsync(250);
+      });
+      expect(box.getAttribute("aria-activedescendant")).toBe(active);
+      expect(box.scrollTop).toBe(576); // the new day and group precede the old anchor
+      expect(document.body.textContent).toContain("1 file selected");
+      expect(invokeCalls.filter((call) => call.command === "trash_entries")).toHaveLength(2);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps the last good listing and shows a live refresh failure", async () => {
+    vi.useFakeTimers();
+    try {
+      let failed = false;
+      mockCommands({ trash_entries: () => { if (failed) throw new Error("offline"); return LISTING; } });
+      render(<DeletedFilesModal location={LOCATION} onClose={() => {}} />);
+      await act(async () => {});
+      failed = true;
+      await act(async () => { fireEvent("mutation://error", {}); await vi.advanceTimersByTimeAsync(250); });
+      expect(document.body.textContent).toContain("beach.jpg");
+      expect(document.body.textContent).toContain("Couldn’t read the deleted files");
+      failed = false;
+      await act(async () => { fireEvent("mutation://done", { summary: {} }); await vi.advanceTimersByTimeAsync(250); });
+      expect(document.body.textContent).not.toContain("Couldn’t read the deleted files");
+    } finally { vi.useRealTimers(); }
+  });
+
   it("lists one row per deleted item with its counts and reasons", async () => {
     render(<DeletedFilesModal location={LOCATION} onClose={() => {}} />);
     await act(async () => {});

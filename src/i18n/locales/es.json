@@ -589,7 +589,7 @@
   "notice.occurrences": { "one": "Ocurrió {count} vez", "many": "Ocurrió {count} de veces", "other": "Ocurrió {count} veces" },
   "notice.activeRegion": "Notificaciones activas",
   "notice.unavailable": "Las notificaciones no están disponibles. Vuelve a cargar la ventana para restaurarlas.",
-  "mutation.revealDeletedFiles": "Mostrar los archivos eliminados…",
+  "mutation.openDeletedFiles": "Archivos eliminados y restauración…",
   "mutation.dismissResult": "Descartar el resultado de la operación de archivos",
   "startup.quit": "Salir de OneCopy",
   "crash.needsReloadBody": "Esta ventana no pudo terminar de dibujarse. Las operaciones de archivos completadas siguen completadas.",

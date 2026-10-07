@@ -239,6 +239,19 @@ export type BrowseRow =
   | { type: "group"; key: string; group: DeletionGroup; expanded: boolean }
   | { type: "entry"; key: string; group: DeletionGroup; entry: TrashEntry };
 
+/** Keep the first visible row at its pixel offset; if it vanished, retain
+ * the nearest surviving ordinal and clamp to the new viewport extent. */
+export function restoredBrowseScroll(
+  rows: readonly BrowseRow[],
+  anchor: { key: string | null; index: number; offset: number },
+  rowHeight: number,
+  viewport: number,
+): number {
+  const found = rows.findIndex((row) => row.key === anchor.key);
+  const index = found >= 0 ? found : Math.min(anchor.index, Math.max(0, rows.length - 1));
+  return Math.min(Math.max(0, rows.length * rowHeight - viewport), index * rowHeight + anchor.offset);
+}
+
 export function browseRows(
   buckets: readonly DayBucket[],
   expanded: ReadonlySet<string>,

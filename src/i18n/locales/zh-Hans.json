@@ -589,7 +589,7 @@
   "notice.occurrences": { "other": "已出现 {count} 次" },
   "notice.activeRegion": "当前通知",
   "notice.unavailable": "通知不可用。请重新载入窗口以恢复。",
-  "mutation.revealDeletedFiles": "显示已删除的文件…",
+  "mutation.openDeletedFiles": "已删除文件与恢复…",
   "mutation.dismissResult": "关闭文件操作结果",
   "startup.quit": "退出 OneCopy",
   "crash.needsReloadBody": "此窗口无法完成绘制。已完成的文件操作仍然有效。",

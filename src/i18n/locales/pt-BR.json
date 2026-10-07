@@ -589,7 +589,7 @@
   "notice.occurrences": { "one": "Ocorreu {count} vez", "many": "Ocorreu {count} de vezes", "other": "Ocorreu {count} vezes" },
   "notice.activeRegion": "Notificações ativas",
   "notice.unavailable": "As notificações estão indisponíveis. Recarregue a janela para restaurá-las.",
-  "mutation.revealDeletedFiles": "Mostrar os arquivos apagados…",
+  "mutation.openDeletedFiles": "Arquivos apagados e restauração…",
   "mutation.dismissResult": "Dispensar o resultado da operação de arquivos",
   "startup.quit": "Encerrar o OneCopy",
   "crash.needsReloadBody": "Esta janela não conseguiu terminar de desenhar. As operações de arquivo já concluídas continuam concluídas.",

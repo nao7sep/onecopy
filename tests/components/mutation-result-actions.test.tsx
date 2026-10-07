@@ -39,7 +39,7 @@ describe("persistent mutation result remedies", () => {
     );
 
     fireEvent.click(
-      view.getByRole("button", { name: "Reveal deleted files…" }),
+      view.getByRole("button", { name: "Deleted files & Restore…" }),
     );
     expect(reveal).toHaveBeenCalledOnce();
     expect(
@@ -54,7 +54,7 @@ describe("persistent mutation result remedies", () => {
       />,
     );
     expect(
-      view.queryByRole("button", { name: "Reveal deleted files…" }),
+      view.queryByRole("button", { name: "Deleted files & Restore…" }),
     ).toBeNull();
   });
 });

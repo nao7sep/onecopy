@@ -22,7 +22,7 @@ export default function MutationResultActions({
           className="text-ink-muted hover:text-ink hover:underline"
           onClick={onRevealTrash}
         >
-          {t("mutation.revealDeletedFiles")}
+          {t("mutation.openDeletedFiles")}
         </button>
       ) : null}
       <button
