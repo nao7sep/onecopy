@@ -106,6 +106,10 @@ pub fn init(store_file: PathBuf) {
 }
 
 fn open(store_file: &Path) -> Result<Connection, String> {
+    open_before_setup(store_file, || {})
+}
+
+fn open_before_setup(store_file: &Path, before_setup: impl FnOnce()) -> Result<Connection, String> {
     // not recorded: backups.sqlite3 is the store itself — binary, and written by
     // this backup layer, not through the managed-text atomic-write path — so it
     // never records itself. No recursion, no special case (data-backup
@@ -115,6 +119,13 @@ fn open(store_file: &Path) -> Result<Connection, String> {
     if let Some(parent) = store_file.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
+    // Only the opener that exclusively created the file may initialize an
+    // empty history. An existing unmarked file is unreadable provenance.
+    let fresh = match std::fs::OpenOptions::new().write(true).create_new(true).open(store_file) { // data root
+        Ok(file) => { drop(file); true }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+        Err(error) => return Err(error.to_string()),
+    };
     let mut conn = Connection::open(store_file).map_err(|e| e.to_string())?;
     conn.busy_timeout(std::time::Duration::from_millis(100))
         .map_err(|e| e.to_string())?;
@@ -124,16 +135,25 @@ fn open(store_file: &Path) -> Result<Connection, String> {
     match crate::formats::sqlite_marker(&conn, store_file, crate::formats::BACKUPS)? {
         crate::formats::SqliteMarker::Newer(newer) => return Err(newer.to_string()),
         crate::formats::SqliteMarker::Missing => return Err(crate::formats::missing_marker(store_file)),
+        crate::formats::SqliteMarker::New if !fresh => return Err(crate::formats::missing_marker(store_file)),
         crate::formats::SqliteMarker::New | crate::formats::SqliteMarker::Current => {}
     }
     // WAL for cross-process overlap. SQLite contention uses a 100 ms timeout
     // before this best-effort record is dropped and warned.
     static JOURNAL: crate::sqlite::JournalSetup = crate::sqlite::JournalSetup::new();
     JOURNAL.configure(&conn, std::time::Duration::from_millis(100))?;
+    before_setup();
     // The schema and its marker commit together.
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
+    match crate::formats::sqlite_marker(&tx, store_file, crate::formats::BACKUPS)? {
+        crate::formats::SqliteMarker::Newer(newer) => return Err(newer.to_string()),
+        crate::formats::SqliteMarker::Missing => return Err(crate::formats::missing_marker(store_file)),
+        crate::formats::SqliteMarker::New if fresh => {}
+        crate::formats::SqliteMarker::New => return Err(crate::formats::missing_marker(store_file)),
+        crate::formats::SqliteMarker::Current => { tx.commit().map_err(|e| e.to_string())?; return Ok(conn); }
+    }
     tx.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
     tx.pragma_update(None, "user_version", crate::formats::BACKUPS)
         .map_err(|e| e.to_string())?;

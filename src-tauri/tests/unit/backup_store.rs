@@ -1,19 +1,9 @@
 use super::*;
 use serial_test::serial;
-use std::sync::atomic::{AtomicU32, Ordering};
-
-
-fn unique_store_file(label: &str) -> PathBuf {
-    static COUNTER: AtomicU32 = AtomicU32::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "onecopy-backupstore-test-{}-{}-{}",
-        label,
-        std::process::id(),
-        n
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir.join("backups.sqlite3")
+fn unique_store_file(label: &str) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::Builder::new().prefix(&format!("onecopy-backupstore-{label}-")).tempdir().unwrap();
+    let path = dir.path().join("backups.sqlite3");
+    (dir, path)
 }
 
 // Opens a throwaway store, runs `body` against a direct connection to the same
@@ -22,10 +12,12 @@ fn unique_store_file(label: &str) -> PathBuf {
 // an in-module lock, so this group is also mutually exclusive with the lib.rs
 // atomic-write test that shares the same key.
 fn with_store<F: FnOnce(&Path)>(label: &str, body: F) {
-    let file = unique_store_file(label);
+    let (_directory, file) = unique_store_file(label);
+    struct Close;
+    impl Drop for Close { fn drop(&mut self) { close_for_test(); } }
+    let _close = Close;
     init(file.clone());
     body(&file);
-    close_for_test();
 }
 
 // A read-only view of every row for a path, in insert order, for assertions.
@@ -172,7 +164,7 @@ fn record_never_panics_on_a_broken_connection() {
 
 #[test]
 fn concurrent_connections_serialize_the_latest_decision_before_insert() {
-    let file = unique_store_file("cross-connection-dedup");
+    let (_directory, file) = unique_store_file("cross-connection-dedup");
     let setup = open(&file).unwrap();
     drop(setup);
     let path = "/abs/concurrent.json";
@@ -194,8 +186,10 @@ fn concurrent_connections_serialize_the_latest_decision_before_insert() {
         let mut conn = open(&file_b).unwrap();
         try_record(&mut conn, path, b"same").unwrap();
     });
-    first.join().unwrap();
-    second.join().unwrap();
+    let first_result = first.join();
+    let second_result = second.join();
+    assert!(first_result.is_ok());
+    assert!(second_result.is_ok());
 
     assert_eq!(rows_for(&file, path).len(), 1);
 }
@@ -216,7 +210,7 @@ fn the_history_records_format_version_1() {
 #[test]
 #[serial(backup_store)]
 fn a_history_without_its_marker_disables_recording_and_is_left_as_it_is() {
-    let file = unique_store_file("unmarked");
+    let (_directory, file) = unique_store_file("unmarked");
     {
         let conn = Connection::open(&file).unwrap();
         conn.execute_batch(SCHEMA).unwrap();
@@ -239,7 +233,7 @@ fn a_history_without_its_marker_disables_recording_and_is_left_as_it_is() {
 #[test]
 #[serial(backup_store)]
 fn a_history_written_by_a_newer_onecopy_disables_recording_and_is_left_as_it_is() {
-    let file = unique_store_file("newer");
+    let (_directory, file) = unique_store_file("newer");
     {
         let conn = Connection::open(&file).unwrap();
         conn.execute_batch(SCHEMA).unwrap();
@@ -251,4 +245,32 @@ fn a_history_written_by_a_newer_onecopy_disables_recording_and_is_left_as_it_is(
     close_for_test();
     assert_eq!(std::fs::read(&file).unwrap(), before, "nothing is written to it");
     assert!(rows_for(&file, "/abs/new.json").is_empty());
+}
+
+#[test]
+fn existing_empty_and_negative_histories_are_left_uninitialized() {
+    for version in [0, -1] {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("backups.sqlite3");
+        let conn = Connection::open(&file).unwrap();
+        conn.pragma_update(None, "user_version", version).unwrap();
+        drop(conn);
+        let before = std::fs::read(&file).unwrap();
+        assert!(open(&file).is_err());
+        assert_eq!(std::fs::read(&file).unwrap(), before);
+    }
+}
+
+#[test]
+fn a_newer_marker_committed_before_history_setup_is_not_downgraded() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("backups.sqlite3");
+    let result = open_before_setup(&file, || {
+        let conn = Connection::open(&file).unwrap();
+        conn.execute_batch("CREATE TABLE future(value); PRAGMA user_version = 2;").unwrap();
+    });
+    assert!(result.unwrap_err().contains("newer OneCopy"));
+    let conn = Connection::open(&file).unwrap();
+    assert_eq!(conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0)).unwrap(), 2);
+    assert_eq!(conn.query_row("SELECT count(*) FROM sqlite_master WHERE name = 'backups'", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
 }

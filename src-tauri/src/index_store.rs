@@ -428,6 +428,10 @@ CREATE TABLE IF NOT EXISTS scan_dirs (
 /// WAL so the scanner writes while the UI reads, and a busy timeout so a
 /// contended write waits rather than failing with SQLITE_BUSY.
 pub fn open(db_file: &Path) -> Result<Connection, String> {
+    open_before_setup(db_file, || {})
+}
+
+fn open_before_setup(db_file: &Path, before_setup: impl FnOnce()) -> Result<Connection, String> {
     // not recorded: index.sqlite3 is a binary, reconstructible scan cache.
     if let Some(parent) = db_file.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -437,11 +441,11 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
         .map_err(|error| error.to_string())?;
     // Read before anything is set or written: an index a newer OneCopy wrote
     // is left exactly as it is (store-recovery conventions).
-    if let crate::formats::SqliteMarker::Newer(newer) =
-        crate::formats::sqlite_marker(&conn, db_file, crate::formats::INDEX)?
-    {
-        return Err(newer.to_string());
-    }
+    let needs_setup = match crate::formats::sqlite_marker(&conn, db_file, crate::formats::INDEX)? {
+        crate::formats::SqliteMarker::Newer(newer) => return Err(newer.to_string()),
+        crate::formats::SqliteMarker::Current => false,
+        crate::formats::SqliteMarker::New | crate::formats::SqliteMarker::Missing => true,
+    };
     conn.create_collation("onecopy_nocase", |left, right| {
         // Allocation-free case-insensitive compare: char::to_lowercase yields a
         // small stack iterator per character, so this never heap-allocates a
@@ -456,14 +460,17 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
     // A new index gets its schema once, and an index without its marker is
     // unreadable and, being re-derived, is rebuilt from the files. Ordinary
     // opens of a marked index replay no DDL.
-    if raw_user_version(&conn)? == 0 {
+    if needs_setup {
+        before_setup();
         conn.execute_batch("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE")
             .map_err(|error| format!("claim index setup: {error}"))?;
         let setup = (|| {
             // Another opener may have created the schema while this one
             // waited for SQLite's write lock.
-            if raw_user_version(&conn)? != 0 {
-                return Ok(());
+            match crate::formats::sqlite_marker(&conn, db_file, crate::formats::INDEX)? {
+                crate::formats::SqliteMarker::Newer(newer) => return Err(newer.to_string()),
+                crate::formats::SqliteMarker::Current => return Ok(()),
+                crate::formats::SqliteMarker::New | crate::formats::SqliteMarker::Missing => {}
             }
             let objects = conn
                 .prepare(
@@ -528,7 +535,12 @@ pub fn open(db_file: &Path) -> Result<Connection, String> {
     Ok(conn)
 }
 
+#[cfg(test)]
+#[path = "../tests/unit/index_store.rs"]
+mod setup_tests;
+
 /// `user_version` as stored: 0 until the schema is created.
+#[cfg(test)]
 fn raw_user_version(conn: &Connection) -> Result<i64, String> {
     conn.pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|error| format!("read index format version: {error}"))

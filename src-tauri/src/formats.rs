@@ -79,7 +79,7 @@ pub enum SqliteMarker {
     New,
     /// The version this build reads.
     Current,
-    /// A schema without its marker: unreadable.
+    /// A schema without its marker, or an invalid negative marker: unreadable.
     Missing,
     Newer(NewerStore),
 }
@@ -96,6 +96,9 @@ pub fn sqlite_marker(connection: &Connection, path: &Path, supported: i64) -> Re
             Some(newer) => SqliteMarker::Newer(newer),
             None => SqliteMarker::Current,
         });
+    }
+    if recorded < 0 {
+        return Ok(SqliteMarker::Missing);
     }
     let objects: i64 = connection
         .query_row("SELECT COUNT(*) FROM sqlite_master", [], |row| row.get(0))
