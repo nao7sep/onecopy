@@ -217,11 +217,15 @@ fn available_memory_bytes() -> Option<u64> {
     if page_size <= 0 {
         return None;
     }
-    let reclaimable_pages = u64::from(statistics.free_count)
+    Some(macos_reclaimable_pages(&statistics).saturating_mul(page_size as u64))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_reclaimable_pages(statistics: &libc::vm_statistics64_data_t) -> u64 {
+    // vm_statistics64 includes speculative pages in free_count already.
+    u64::from(statistics.free_count)
         .saturating_add(u64::from(statistics.inactive_count))
-        .saturating_add(u64::from(statistics.speculative_count))
-        .saturating_add(u64::from(statistics.purgeable_count));
-    Some(reclaimable_pages.saturating_mul(page_size as u64))
+        .saturating_add(u64::from(statistics.purgeable_count))
 }
 
 #[cfg(windows)]

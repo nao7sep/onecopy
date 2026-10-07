@@ -3,6 +3,20 @@ use super::{
     IMAGE_CONCURRENCY_HEADROOM, IMAGE_JOB_RESERVATION,
 };
 
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_speculative_pages_are_not_available_twice() {
+    // Native fixture: speculative pages are a subset of reported free pages.
+    let mut statistics: libc::vm_statistics64_data_t = unsafe { std::mem::zeroed() };
+    statistics.free_count = 12;
+    statistics.speculative_count = 8;
+    statistics.inactive_count = 3;
+    statistics.purgeable_count = 2;
+    assert_eq!(super::macos_reclaimable_pages(&statistics), 17);
+    statistics.speculative_count = 0;
+    assert_eq!(super::macos_reclaimable_pages(&statistics), 17);
+}
+
 #[test]
 fn active_image_work_leaves_cpu_headroom() {
     let abundant = Some(IMAGE_CONCURRENCY_HEADROOM + 64 * IMAGE_JOB_RESERVATION);
