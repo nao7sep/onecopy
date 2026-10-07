@@ -772,12 +772,7 @@ pub fn create_new(path: &Path) -> io::Result<VolumeFile> {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let file = options.open(&target)?;
-        if let Err(error) = crate::copy_metadata::make_private(&file) {
-            crate::file_identity::remove_private_if_owned(&target, &file);
-            return Err(error);
-        }
-        Ok(file)
+        options.open(&target)
     })?;
     Ok(VolumeFile::new(file, path.to_path_buf()))
 }

@@ -1,34 +1,28 @@
 use onecopy_lib::file_identity::*;
 
 #[test]
-fn private_cleanup_preserves_a_replacement() {
+fn unpublished_private_output_is_cleaned_without_a_hold_rename() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("stage.tmp");
-    let held = dir.path().join("held.tmp");
-    std::fs::write(&path, b"ours").unwrap();
-    let ours = std::fs::File::open(&path).unwrap();
-    std::fs::rename(&path, &held).unwrap();
-    std::fs::write(&path, b"winner").unwrap();
-
-    remove_private_if_owned(&path, &ours);
-
-    assert_eq!(std::fs::read(&path).unwrap(), b"winner");
-    assert_eq!(std::fs::read(&held).unwrap(), b"ours");
+    let path = dir.path().join(private_stage_file_name().unwrap());
+    let file = onecopy_lib::volume_io::create_new(&path).unwrap();
+    let private = PrivateFile::new(path.clone(), file);
+    drop(private);
+    assert!(!path.exists());
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
 }
 
 #[test]
-fn physical_claim_rejects_and_restores_a_replacement() {
+fn occupied_public_target_survives_and_the_private_output_is_cleaned() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("stage.tmp");
-    let ours = dir.path().join("ours.tmp");
-    std::fs::write(&path, b"ours").unwrap();
-    let descriptor = std::fs::File::open(&path).unwrap();
-    std::fs::rename(&path, &ours).unwrap();
-    std::fs::write(&path, b"winner").unwrap();
-
-    assert!(claim_private(&path, &descriptor).is_err());
-    assert_eq!(std::fs::read(&path).unwrap(), b"winner");
-    assert_eq!(std::fs::read(&ours).unwrap(), b"ours");
+    let path = dir.path().join(private_stage_file_name().unwrap());
+    let target = dir.path().join("photo.jpg");
+    std::fs::write(&target, b"winner").unwrap();
+    let file = onecopy_lib::volume_io::create_new(&path).unwrap();
+    let mut private = PrivateFile::new(path.clone(), file);
+    assert_eq!(private.publish(&target).unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
+    drop(private);
+    assert!(!path.exists());
+    assert_eq!(std::fs::read(&target).unwrap(), b"winner");
 }
 
 #[cfg(unix)]

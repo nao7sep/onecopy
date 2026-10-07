@@ -1,10 +1,4 @@
-//! Physical file identity for app-created private files, published outputs,
-//! and filesystem alias checks.
-//!
-//! A pathname is only a lookup. Once this operation creates or opens a file,
-//! private cleanup and verified publication bind to the filesystem identity
-//! returned by that handle so an unrelated replacement is never treated as an
-//! app-created temporary output.
+//! Physical file identity for published outputs and filesystem alias checks.
 //!
 //! Every filesystem call here runs on a `volume_io` worker: path probes go
 //! through its bounded primitives, and the functions taking a raw `File` run
@@ -210,8 +204,8 @@ pub fn path_names_file(path: &Path, file: &File) -> bool {
 /// Shared prefix and suffix of every private pathname this app creates for
 /// its own bookkeeping beside a real output: a staged output
 /// (`.onecopy-stage-<owner>-<nanoid>.tmp`, `private_stage_file_name`) or a
-/// publication ownership hold (`.onecopy-claim-<owner>-<nanoid>.tmp`,
-/// `claim_private` below). Nothing else ever names a file this way.
+/// former publication hold (`.onecopy-claim-<owner>-<nanoid>.tmp`).
+/// Former hold names remain recognized for abandoned-leftover cleanup.
 const PRIVATE_TMP_PREFIX: &str = ".onecopy-";
 const PRIVATE_TMP_SUFFIX: &str = ".tmp";
 const STAGE_PREFIX: &str = ".onecopy-stage-";
@@ -374,7 +368,7 @@ struct PrivateTmpOwner {
     pid: u32,
 }
 
-/// Parses the owner fields `private_stage_file_name`/`claim_private` embed
+/// Parses the owner fields `private_stage_file_name` and former claim names embed
 /// out of a file name already known to satisfy `is_private_tmp_name`. A name
 /// that does not carry them in the expected shape (an older build's leftover,
 /// or a name only coincidentally shaped like ours) parses to `None` rather
@@ -512,83 +506,26 @@ fn sweep_private_tmp_leftovers_against(dir: &Path, current_fingerprint: Option<&
     }
 }
 
-/// Moves a private staging pathname into a fresh private hold and verifies the
-/// physical file that actually moved against this operation's open
-/// descriptor. This is the operation-owned claim used by both publication and
-/// cleanup. A replacement is restored (or retained in the hold if its old name
-/// was occupied again), never treated as ours. Runs on the `volume_io` worker
-/// holding `file`.
-pub fn claim_private(path: &Path, file: &File) -> io::Result<std::path::PathBuf> {
-    let Some(parent) = path.parent() else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "private staging path has no parent",
-        ));
-    };
-    for _ in 0..4 {
-        let hold = parent.join(format!(
-            "{CLAIM_PREFIX}{}-{}{PRIVATE_TMP_SUFFIX}",
-            this_process_owner_tag(),
-            crate::nanoid::generate().map_err(io::Error::other)?
-        ));
-        match crate::fs_publish::rename_no_replace(path, &hold) {
-            Ok(()) => {
-                if path_names_file(&hold, file) {
-                    return Ok(hold);
-                } else {
-                    // The pathname was replaced before our claim. Put that
-                    // file back when possible; otherwise leave it recoverable
-                    // under the private hold rather than deleting a winner.
-                    return match crate::fs_publish::rename_no_replace(&hold, path) {
-                        Ok(()) => Err(io::Error::new(
-                            io::ErrorKind::AlreadyExists,
-                            "private staging pathname was replaced",
-                        )),
-                        Err(restore_error) => Err(io::Error::new(
-                            io::ErrorKind::AlreadyExists,
-                            format!(
-                                "private staging pathname was replaced; the replacement remains at {} because restoring it failed: {restore_error}",
-                                hold.display()
-                            ),
-                        )),
-                    };
-                }
-            }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error),
+/// Best-effort cleanup of an operation's private staging pathname.
+/// Runs on the `volume_io` worker holding `file`; public targets never use it.
+fn remove_private(path: &Path, file: &File) {
+    #[cfg(windows)]
+    if let Ok(metadata) = file.metadata() {
+        let mut permissions = metadata.permissions();
+        if permissions.readonly() {
+            permissions.set_readonly(false);
+            let _ = file.set_permissions(permissions);
         }
     }
-    Err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "could not reserve a private physical-claim pathname",
-    ))
-}
-
-/// Best-effort cleanup of a private staging pathname. Callers never use this
-/// for a public committed target; public targets are never unlinked as rollback.
-/// Runs on the `volume_io` worker holding `file`.
-pub fn remove_private_if_owned(path: &Path, file: &File) {
-    match claim_private(path, file) {
-        Ok(hold) => crate::fs_recovery::remove_file(&hold, "private staging cleanup"),
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::AlreadyExists
-            ) => {}
-        Err(error) => crate::logging::warn(
-            "private staging claim failed during cleanup",
-            serde_json::json!({
-                "path": path,
-                "error": { "message": error.to_string() },
-            }),
-        ),
-    }
+    #[cfg(not(windows))]
+    let _ = file;
+    crate::fs_recovery::remove_file(path, "private staging cleanup");
 }
 
 /// One file this operation created under a private destination name, bound
 /// to the descriptor that wrote it. Until it is published, dropping it removes
-/// the private file, but only while that name still holds this file, so every
-/// early return, failure, and cancellation abandons its private output.
+/// the operation-owned private file, so every early return, failure, and
+/// cancellation abandons its private output.
 ///
 /// When a call on the file is given up on (its volume stopped answering), the
 /// descriptor stays with that call; once the call returns, the file settles on
@@ -617,7 +554,7 @@ impl PrivateFile {
                     serde_json::json!({ "path": path }),
                 );
             } else {
-                remove_private_if_owned(&path, &file);
+                remove_private(&path, &file);
             }
         }));
         Self {
@@ -634,26 +571,6 @@ impl PrivateFile {
 
     pub fn file_mut(&mut self) -> &mut VolumeFile {
         &mut self.file
-    }
-
-    /// Whether `path` currently names this file.
-    pub fn is_named_by(&mut self, path: &Path) -> bool {
-        let path = path.to_path_buf();
-        self.file
-            .with(Op::Stat, None, None, move |file| Ok(path_names_file(&path, file)))
-            .unwrap_or(false)
-    }
-
-    /// Moves the file to a fresh private hold so no other writer can have
-    /// replaced the name between this check and publication.
-    pub fn claim(&mut self) -> io::Result<()> {
-        let path = self.path.clone();
-        self.file.with(Op::Rename, None, None, move |file| {
-            let current = lock_path(&path).clone();
-            let hold = claim_private(&current, file)?;
-            *lock_path(&path) = hold;
-            Ok(())
-        })
     }
 
     /// Publishes the file at `target` without replacing another entry, in one
@@ -690,7 +607,7 @@ impl Drop for PrivateFile {
         }
         let path = self.path();
         let _ = self.file.with(Op::Remove, None, None, move |file| {
-            remove_private_if_owned(&path, file);
+            remove_private(&path, file);
             Ok(())
         });
     }

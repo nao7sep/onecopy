@@ -1931,10 +1931,6 @@ fn execute_move_unit(
         // cancellation is deliberately deferred: each of those short steps
         // finishes within its own bound. The next output is the next safe
         // boundary.
-        output
-            .private
-            .claim()
-            .map_err(|error| format!("private output changed before publication: {error}"))?;
         let delivered = match output.private.publish(&output.target) {
             Err(error) if volume_io::wait_failure(&error).is_some() => {
                 return publication_given_up(conn, outcome, &output, &error, on_progress);

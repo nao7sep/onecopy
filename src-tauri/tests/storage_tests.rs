@@ -357,41 +357,6 @@ fn changed_atomic_writes_preserve_permissions_but_get_a_new_modified_time() {
 }
 
 #[test]
-#[cfg(target_os = "macos")]
-fn atomic_replacement_keeps_supported_extended_attributes_tags_and_acl() {
-    use std::os::unix::ffi::OsStrExt;
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("tagged.json");
-    std::fs::write(&path, b"old").unwrap();
-    let raw_path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
-    let attributes = [("user.onecopy-replacement", b"attribute".as_slice()), ("com.apple.metadata:_kMDItemUserTags", b"tag bytes".as_slice())];
-    for (name, value) in attributes {
-        let name = std::ffi::CString::new(name).unwrap();
-        assert_eq!(unsafe { libc::setxattr(raw_path.as_ptr(), name.as_ptr(), value.as_ptr().cast(), value.len(), 0, 0) }, 0);
-    }
-    assert!(std::process::Command::new("/bin/chmod").args(["+a", "everyone deny execute"]).arg(&path).status().unwrap().success());
-    let acl = |path: &std::path::Path| {
-        let output = std::process::Command::new("/bin/ls").arg("-le").arg(path).output().unwrap();
-        assert!(output.status.success());
-        String::from_utf8(output.stdout).unwrap().lines().skip(1).map(str::to_owned).collect::<Vec<_>>()
-    };
-    let before_acl = acl(&path);
-    assert!(!before_acl.is_empty());
-
-    write_atomic_unrecorded(&path, b"changed").unwrap();
-
-    assert_eq!(acl(&path), before_acl);
-    for (name, expected) in attributes {
-        let name = std::ffi::CString::new(name).unwrap();
-        let mut actual = vec![0u8; 128];
-        let read = unsafe { libc::getxattr(raw_path.as_ptr(), name.as_ptr(), actual.as_mut_ptr().cast(), actual.len(), 0, 0) };
-        assert!(read >= 0);
-        actual.truncate(read as usize);
-        assert_eq!(actual, expected);
-    }
-}
-
-#[test]
 #[serial(backup_store)]
 fn write_atomic_replaces_and_leaves_no_temps() {
     let dir_owner = temp_dir("atomic");

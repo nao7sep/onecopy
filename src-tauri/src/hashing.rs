@@ -131,16 +131,6 @@ pub fn hash_while_copying(
         .map_err(CopyFailure::into_io)
 }
 
-#[cfg(test)]
-fn hash_while_copying_with_after_sync(
-    src: &Path,
-    dst: &Path,
-    after_sync: impl FnOnce(&Path),
-) -> std::io::Result<(String, u64, crate::file_identity::PrivateFile)> {
-    hash_while_copying_detailed(src, dst, &|| false, &mut |_, _| {}, after_sync)
-        .map_err(CopyFailure::into_io)
-}
-
 /// The destination-batch variant may stop while the bytes are still private.
 /// Publication is a later step, so cancellation here never creates a partial
 /// public output.

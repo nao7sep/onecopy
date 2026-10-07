@@ -208,17 +208,15 @@ fn with_language_fields_reflects_the_current_value_after_it_changes() {
     assert_eq!(second["systemLocale"], "en-US");
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[test]
-fn an_app_local_new_stage_does_not_keep_inherited_read_grants() {
+fn an_app_local_new_stage_uses_private_mode_and_failed_publication_preserves_the_target() {
+    use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
-    assert!(std::process::Command::new("/bin/chmod").args(["+a", "everyone allow read,file_inherit"]).arg(dir.path()).status().unwrap().success());
     let target = dir.path().join("settings.json");
     write_atomic_inner(&target, b"protected bytes", false, || {
         let staged = std::fs::read_dir(dir.path()).unwrap().next().unwrap().unwrap().path();
-        let listing = std::process::Command::new("/bin/ls").arg("-le").arg(staged).output().unwrap();
-        assert!(listing.status.success());
-        assert_eq!(String::from_utf8(listing.stdout).unwrap().lines().count(), 1, "the empty inherited ACL was removed before writing");
+        assert_eq!(std::fs::metadata(staged).unwrap().permissions().mode() & 0o777, 0o600);
         Ok(())
     }).unwrap();
     assert_eq!(std::fs::read(&target).unwrap(), b"protected bytes");

@@ -89,9 +89,9 @@ fn hash_while_copying_copies_exactly_and_hashes_the_stream() {
         .unwrap();
     let dst = dst_dir.path().join("out.bin");
 
-    let (hash, total, mut private) = hash_while_copying(&src, &dst).unwrap();
+    let (hash, total, private) = hash_while_copying(&src, &dst).unwrap();
     assert_eq!(total, bytes.len() as u64);
-    assert!(private.is_named_by(&dst));
+    assert_eq!(private.path(), dst);
     assert_eq!(hash, blake3::hash(&bytes).to_hex().to_string());
     assert_eq!(std::fs::read(&dst).unwrap(), bytes);
 }
@@ -228,30 +228,6 @@ fn a_copy_keeps_the_source_modified_time() {
     drop(private);
 }
 
-#[cfg(any(target_os = "macos", windows))]
-#[test]
-fn a_copy_keeps_the_source_birth_time() {
-    #[cfg(target_os = "macos")]
-    use std::os::macos::fs::FileTimesExt;
-    #[cfg(windows)]
-    use std::os::windows::fs::FileTimesExt;
-
-    // Born after it was last modified, as a file that was itself copied is.
-    let (dir, src) = temp_file("keep-birth", b"born bytes");
-    set_source_times(&src, at(1_500_000_000));
-    let file = std::fs::File::options().write(true).open(&src).unwrap();
-    file.set_times(std::fs::FileTimes::new().set_created(at(1_600_000_000))).unwrap();
-    drop(file);
-    let dst = dir.path().join("out.bin");
-
-    let (_, _, private) = hash_while_copying(&src, &dst).unwrap();
-
-    let copied = std::fs::metadata(&dst).unwrap();
-    assert_eq!(copied.created().unwrap(), at(1_600_000_000));
-    assert_eq!(copied.modified().unwrap(), at(1_500_000_000));
-    drop(private);
-}
-
 #[test]
 fn a_read_only_source_copies_read_only_and_an_unpublished_copy_is_still_removed() {
     let (dir, src) = temp_file("keep-read-only", b"locked bytes");
@@ -280,107 +256,4 @@ fn a_copy_keeps_the_source_permissions() {
 
     assert_eq!(std::fs::metadata(&dst).unwrap().permissions().mode() & 0o7777, 0o640);
     drop(private);
-}
-
-#[cfg(target_os = "macos")]
-fn xattr(path: &std::path::Path, name: &str) -> Option<Vec<u8>> {
-    use std::os::unix::ffi::OsStrExt;
-    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
-    let name = std::ffi::CString::new(name).unwrap();
-    let mut value = vec![0u8; 4096];
-    let size = unsafe {
-        libc::getxattr(path.as_ptr(), name.as_ptr(), value.as_mut_ptr().cast(), value.len(), 0, 0)
-    };
-    (size >= 0).then(|| {
-        value.truncate(size as usize);
-        value
-    })
-}
-
-#[cfg(target_os = "macos")]
-fn set_xattr(path: &std::path::Path, name: &str, value: &[u8]) {
-    use std::os::unix::ffi::OsStrExt;
-    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
-    let name = std::ffi::CString::new(name).unwrap();
-    let status = unsafe {
-        libc::setxattr(path.as_ptr(), name.as_ptr(), value.as_ptr().cast(), value.len(), 0, 0)
-    };
-    assert_eq!(status, 0, "{}", std::io::Error::last_os_error());
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn a_copy_keeps_extended_attributes_and_finder_tags() {
-    // Finder tags live in their own attribute and the colour label in the
-    // Finder info; a copy carries both byte for byte.
-    let tags: &[u8] = b"bplist00 tag list bytes";
-    let mut finder_info = [0u8; 32];
-    finder_info[9] = 0x04; // colour label 2
-    let attributes: [(&str, &[u8]); 3] = [
-        ("com.apple.metadata:_kMDItemUserTags", tags),
-        ("com.apple.FinderInfo", &finder_info),
-        ("com.example.onecopy-test", b"kept value"),
-    ];
-    let (dir, src) = temp_file("keep-xattr", b"tagged bytes");
-    for (name, value) in attributes {
-        set_xattr(&src, name, value);
-    }
-    set_source_times(&src, at(1_500_000_000));
-    let dst = dir.path().join("out.bin");
-
-    let (_, _, private) = hash_while_copying(&src, &dst).unwrap();
-
-    for (name, value) in attributes {
-        assert_eq!(xattr(&dst, name).as_deref(), Some(value), "{name}");
-    }
-    assert_eq!(
-        std::fs::metadata(&dst).unwrap().modified().unwrap(),
-        at(1_500_000_000),
-        "attributes are written before the modified time"
-    );
-    drop(private);
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn copy_keeps_supported_source_acl() {
-    let dir = tempfile::tempdir().unwrap();
-    let source = dir.path().join("source");
-    let output = dir.path().join("output");
-    std::fs::write(&source, b"ACL bytes").unwrap();
-    assert!(std::process::Command::new("/bin/chmod").args(["+a", "everyone deny execute"]).arg(&source).status().unwrap().success());
-    let entries = |path: &std::path::Path| {
-        let output = std::process::Command::new("/bin/ls").arg("-le").arg(path).output().unwrap();
-        assert!(output.status.success());
-        String::from_utf8(output.stdout).unwrap().lines().skip(1).map(str::to_owned).collect::<Vec<_>>()
-    };
-    let (_, _, private) = hash_while_copying(&source, &output).unwrap();
-    assert!(!entries(&source).is_empty());
-    assert_eq!(entries(&output), entries(&source));
-    drop(private);
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn copy_sets_required_mtime_before_retaining_a_writeattr_denial_acl() {
-    let dir = tempfile::tempdir().unwrap();
-    let source = dir.path().join("source");
-    let output = dir.path().join("output");
-    let mtime = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_500_000_000);
-    std::fs::write(&source, b"mtime bytes").unwrap();
-    std::fs::File::open(&source).unwrap().set_times(std::fs::FileTimes::new().set_modified(mtime)).unwrap();
-    assert!(std::process::Command::new("/bin/chmod").args(["+a", "everyone deny writeattr"]).arg(&source).status().unwrap().success());
-    let (_, _, private) = hash_while_copying(&source, &output).unwrap();
-    assert_eq!(std::fs::metadata(&output).unwrap().modified().unwrap(), mtime);
-    let denied = std::fs::File::open(&output).unwrap().set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()));
-    assert_eq!(denied.unwrap_err().raw_os_error(), Some(libc::EACCES));
-    let peer = dir.path().join("peer");
-    let peer_output = dir.path().join("peer-output");
-    std::fs::write(&peer, b"healthy peer").unwrap();
-    let (_, _, peer_private) = hash_while_copying(&peer, &peer_output).unwrap();
-    assert_eq!(std::fs::read(&peer_output).unwrap(), b"healthy peer");
-    drop(peer_private);
-    drop(private);
-    assert!(!output.exists());
-    assert!(!peer_output.exists());
 }

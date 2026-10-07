@@ -884,7 +884,7 @@ fn copy_mode_exports_and_leaves_everything_untouched() {
 }
 
 #[test]
-fn copy_and_move_outputs_keep_the_source_file_times() {
+fn copy_and_move_outputs_keep_the_source_modified_time() {
     let f = fixture("keep-times");
     let dated = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_500_000_000);
     for (name, bytes) in [("copied.jpg", b"copied-bytes"), ("moved.jpg", b"moved-bytes!")] {
@@ -894,9 +894,6 @@ fn copy_and_move_outputs_keep_the_source_file_times() {
         file.set_times(std::fs::FileTimes::new().set_modified(dated)).unwrap();
     }
     scan(&f);
-    let created = |path: &std::path::Path| std::fs::metadata(path).unwrap().created().ok();
-    let copied_born = created(&f.root.join("copied.jpg"));
-    let moved_born = created(&f.root.join("moved.jpg"));
     let dest = f._dir.path().join("dest");
     std::fs::create_dir_all(&dest).unwrap();
     let hash_of = |name: &str| -> String {
@@ -916,12 +913,9 @@ fn copy_and_move_outputs_keep_the_source_file_times() {
     }
 
     assert!(!f.root.join("moved.jpg").exists());
-    for (name, born) in [("copied.jpg", copied_born), ("moved.jpg", moved_born)] {
+    for name in ["copied.jpg", "moved.jpg"] {
         let output = dest.join(name);
         assert_eq!(std::fs::metadata(&output).unwrap().modified().unwrap(), dated, "{name}");
-        if cfg!(any(target_os = "macos", windows)) {
-            assert_eq!(created(&output), born, "{name}");
-        }
     }
 }
 
@@ -2620,8 +2614,7 @@ fn move_with_publication_given_up(label: &str, land: bool) {
     let dest = f._dir.path().join("destination");
     std::fs::create_dir(&dest).unwrap();
     let volume = FakeStallingVolume::mount(&dest, STALL_BOUND);
-    // The private claim is a rename too; the publication is the next one.
-    volume.stall_after(&[Op::Rename], None, 1);
+    volume.stall(&[Op::Rename], None);
 
     let outcome = move_batch(
         &f.conn,

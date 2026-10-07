@@ -830,10 +830,7 @@ fn write_atomic_inner(
         options.mode(0o600);
     }
     let mut file = options.open(&tmp).map_err(|error| error.to_string())?;
-    if let Err(error) = crate::copy_metadata::make_private(&file) {
-        crate::file_identity::remove_private_if_owned(&tmp, &file);
-        return Err(error.to_string());
-    }
+
     let publish = (|| -> Result<(), String> {
         file.write_all(bytes).map_err(|error| error.to_string())?;
         if let Some(source) = &existing {
