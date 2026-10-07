@@ -81,18 +81,14 @@ describe("the title band", () => {
     }
   });
 
-  it("exposes Activity trace independently of the developer gate", () => {
-    const releaseView = renderReadyApp();
-    fireEvent.click(releaseView.getByRole("button", { name: "Open menu" }));
-    expect(releaseView.getByText("Activity trace…")).toBeTruthy();
-    releaseView.unmount();
-
-    useAppStore.setState({
-      appData: { ...READY_APP_DATA, debugEnabled: true },
-    });
-    const debugView = renderReadyApp();
-    fireEvent.click(debugView.getByRole("button", { name: "Open menu" }));
-    expect(debugView.getByText("Activity trace…")).toBeTruthy();
+  it.each([false, true])("keeps Records, Issues and Background Work without Activity trace (debug=%s)", (debugEnabled) => {
+    useAppStore.setState({ appData: { ...READY_APP_DATA, debugEnabled } });
+    const view = renderReadyApp();
+    fireEvent.click(view.getByRole("button", { name: "Open menu" }));
+    expect(view.queryByText("Activity trace…")).toBeNull();
+    for (const name of ["Records…", "Issues…", "Background work…"]) {
+      expect(view.getByRole("menuitem", { name })).toBeTruthy();
+    }
   });
 
   it("opens the Records window from the menu, which no longer reveals the logs folder", async () => {

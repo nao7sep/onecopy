@@ -300,7 +300,6 @@ describe("focus rings belong to what the key acts on", () => {
     for (const role of CONTAINER_ROLES) {
       expect(covering!.selector).toContain(`[role="${role}"]`);
     }
-    expect(covering!.selector).toContain("[data-passive-scroll-region]");
   });
 
   it("lets no other focus rule draw on a container, by role or by class", () => {

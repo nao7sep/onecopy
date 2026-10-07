@@ -4,7 +4,6 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::menu::{OPEN_SETTINGS_MENU_ID, SAFE_QUIT_MENU_ID};
 
 pub mod activity;
-pub mod activity_history;
 mod sqlite;
 pub mod ai_acceleration;
 pub mod ai_dependencies;
@@ -1375,32 +1374,6 @@ async fn activity_record(
     dispatch(move || activity::record(draft)).await
 }
 
-#[tauri::command]
-async fn activity_page(
-    before: Option<i64>,
-    after: Option<i64>,
-    limit: Option<usize>,
-) -> Result<activity_history::OperationPage, String> {
-    dispatch(move || {
-        let mut page = activity::operations(before, after, limit)?;
-        if page.operations.iter().any(|row| row.target_hash.is_some()) {
-            let conn = index_store::open(&paths::data_root()?.join(storage::INDEX_DB_FILE_NAME))?;
-            activity_history::resolve_targets(&conn, &mut page.operations)?;
-        }
-        Ok(page)
-    })
-    .await
-}
-
-#[tauri::command]
-async fn activity_events(
-    operation: i64,
-    before: Option<i64>,
-    limit: Option<usize>,
-) -> Result<activity::ActivityPage, String> {
-    dispatch(move || activity::events(operation, before, limit)).await
-}
-
 // The Records window (records_window.rs). Its reads log nothing on success:
 // each log line is a stored record whose signal would start the next read.
 #[tauri::command]
@@ -1715,8 +1688,6 @@ pub fn run() {
             log_event,
             logging_debug_enabled,
             activity_record,
-            activity_page,
-            activity_events,
             open_records_window,
             records_page,
             records_detail,

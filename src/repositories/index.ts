@@ -11,13 +11,10 @@ export type {
 } from "./app-data";
 export {
   finishActivityOperation,
-  loadActivityPage,
   latestActivityOperationId,
   newActivityOperationId,
   recordActivity,
 } from "./activity";
 export type {
   ActivityDraft,
-  ActivityEvent,
-  ActivityPage,
 } from "./activity";

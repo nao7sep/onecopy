@@ -10,11 +10,9 @@ fn debug_diagnostics_do_not_create_ordinary_work_rows() {
         .record_with_visibility(draft, "2026-09-09T00:00:00.000Z".into(), 0, false)
         .unwrap();
     assert_eq!(recorder.page(None, 100).unwrap().0.len(), 1);
-    assert!(recorder
-        .operations(None, None, 100)
-        .unwrap()
-        .operations
-        .is_empty());
+    let connection = crate::records::open(&temp.path().join("records.sqlite3")).unwrap();
+    let visible: bool = connection.query_row("SELECT user_visible FROM activity_events", [], |row| row.get(0)).unwrap();
+    assert!(!visible);
 }
 
 // (W-M3) Per-item background preview traces must never become ordinary

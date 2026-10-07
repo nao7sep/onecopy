@@ -10,7 +10,6 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-const DEFAULT_PAGE_SIZE: usize = 100;
 const MAX_PAGE_SIZE: usize = 500;
 const MAX_ID_LEN: usize = 64;
 
@@ -174,16 +173,6 @@ pub struct ActivityEvent {
     pub draft: ActivityDraft,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ActivityPage {
-    pub debug_enabled: bool,
-    pub session_id: Option<String>,
-    pub monotonic_now_ms: u64,
-    pub events: Vec<ActivityEvent>,
-    pub next_cursor: Option<i64>,
-}
-
 pub struct ActivityRecorder {
     session_id: String,
     started: Instant,
@@ -290,41 +279,6 @@ impl ActivityRecorder {
             .map_err(|_| "activity history is unavailable".to_string())?;
         let state = state.as_ref().ok_or("activity history is closed")?;
         read_page(&state.connection, before, limit)
-    }
-
-    pub fn operations(
-        &self,
-        before: Option<i64>,
-        after: Option<i64>,
-        limit: usize,
-    ) -> Result<crate::activity_history::OperationPage, String> {
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| "activity history is unavailable".to_string())?;
-        let state = state.as_ref().ok_or("activity history is closed")?;
-        crate::activity_history::operations(
-            &state.connection,
-            before,
-            after,
-            limit,
-            self.session_id.clone(),
-            self.started.elapsed().as_millis() as u64,
-        )
-    }
-
-    pub fn events(
-        &self,
-        operation: i64,
-        before: Option<i64>,
-        limit: usize,
-    ) -> Result<(Vec<ActivityEvent>, Option<i64>), String> {
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| "activity history is unavailable".to_string())?;
-        let state = state.as_ref().ok_or("activity history is closed")?;
-        crate::activity_history::events(&state.connection, operation, before, limit)
     }
 }
 
@@ -653,34 +607,6 @@ pub fn observe_work(draft: ActivityDraft) {
             json!({"error": {"message": error}}),
         );
     }
-}
-
-pub fn operations(
-    before: Option<i64>,
-    after: Option<i64>,
-    limit: Option<usize>,
-) -> Result<crate::activity_history::OperationPage, String> {
-    RECORDER
-        .get()
-        .ok_or("Activity history is unavailable.")?
-        .operations(before, after, limit.unwrap_or(DEFAULT_PAGE_SIZE))
-}
-
-pub fn events(
-    operation: i64,
-    before: Option<i64>,
-    limit: Option<usize>,
-) -> Result<ActivityPage, String> {
-    let recorder = RECORDER.get().ok_or("Activity history is unavailable.")?;
-    let (events, next_cursor) =
-        recorder.events(operation, before, limit.unwrap_or(DEFAULT_PAGE_SIZE))?;
-    Ok(ActivityPage {
-        debug_enabled: crate::logging::debug_enabled(),
-        session_id: Some(recorder.session_id.clone()),
-        monotonic_now_ms: recorder.started.elapsed().as_millis() as u64,
-        events,
-        next_cursor,
-    })
 }
 
 pub fn record_app_admitted() {

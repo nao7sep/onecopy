@@ -50,7 +50,6 @@ import PreviewSurface from "./components/PreviewSurface";
 import { log, toErrorFields, type LoadedAppData } from "./repositories";
 import { openRecordsWindow } from "./repositories/records";
 import BackgroundWorkModal from "./components/BackgroundWorkModal";
-import ActivityTraceModal from "./components/ActivityTraceModal";
 import { closePreview } from "./workflows/preview";
 import { useAppBootstrapAndRestore } from "./hooks/useAppBootstrapAndRestore";
 import { useGlobalCommands } from "./hooks/useGlobalCommands";
@@ -239,12 +238,6 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
         open={utilitySurface === "backgroundWork"}
         onClose={closeUtility}
       />
-      {appData.debugEnabled ? (
-        <ActivityTraceModal
-          open={utilitySurface === "activityTrace"}
-          onClose={closeUtility}
-        />
-      ) : null}
       <ShortcutsModal
         open={utilitySurface === "shortcuts"}
         onClose={closeUtility}
@@ -331,7 +324,6 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
               </MenuItem>
               <MenuSeparator />
               <MenuItem onSelect={() => openUtility("issues")}>{t("app.issues")}</MenuItem>
-              <MenuItem onSelect={() => openUtility("activityTrace")}>{t("app.activityTrace")}</MenuItem>
               <MenuItem
                 onSelect={() => {
                   void openRecordsWindow().catch((error: unknown) => {

@@ -104,42 +104,6 @@ export interface ActivityDraft {
   targetHash?: string;
 }
 
-export interface ActivityEvent extends ActivityDraft {
-  eventId: number;
-  sessionId: string;
-  sequence: number;
-  eventTimeUtc: string;
-  monotonicMs: number;
-}
-
-export interface ActivityEventPage {
-  debugEnabled: boolean;
-  sessionId: string | null;
-  monotonicNowMs: number;
-  events: ActivityEvent[];
-  nextCursor: number | null;
-}
-
-export interface ActivityOperation {
-  id: number;
-  first: ActivityEvent;
-  latest: ActivityEvent;
-  started: ActivityEvent | null;
-  progress: ActivityEvent | null;
-  eventCount: number;
-  targetHash: string | null;
-  target: { name: string; path: string } | null;
-}
-
-export interface ActivityPage {
-  operations: ActivityOperation[];
-  nextCursor: number | null;
-  revision: number;
-  hasMore: boolean;
-  sessionId: string;
-  monotonicNowMs: number;
-}
-
 const latestOperations = new Map<ActivityOwner, string>();
 let pendingRecord: Promise<unknown> = Promise.resolve();
 
@@ -167,16 +131,4 @@ export function recordActivity(draft: ActivityDraft): void {
   // native commands without making product work wait for diagnostic I/O.
   pendingRecord = pendingRecord.then(() => invoke("activity_record", { draft }))
     .catch((error) => log.warn("activity recording failed", toErrorFields(error)));
-}
-
-export function loadActivityPage(
-  before: number | null = null,
-  limit = 100,
-  after: number | null = null,
-): Promise<ActivityPage> {
-  return invoke<ActivityPage>("activity_page", { before, after, limit });
-}
-
-export function loadActivityEvents(operation: number, before: number | null = null): Promise<ActivityEventPage> {
-  return invoke("activity_events", { operation, before, limit: 100 });
 }

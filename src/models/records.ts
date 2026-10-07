@@ -135,7 +135,6 @@ const FIELDS: Readonly<Record<string, FieldPresentation>> = {
   operation_id: { label: "records.operation", shape: "value" },
   owner: { label: "records.owner", shape: "value" },
   draft_json: { label: "records.details", shape: "json" },
-  user_visible: { label: "records.inActivityTrace", shape: "value" },
   action: { label: "records.action", shape: "value" },
   content_hash: { label: "records.contentHash", shape: "value" },
   original_path: { label: "records.originalPath", shape: "value" },

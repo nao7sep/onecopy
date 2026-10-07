@@ -67,10 +67,4 @@ describe("scrollbar styling", () => {
     expect(valueIn(blockAfter(":root"))).not.toBe(valueIn(dark));
   });
 
-  it("gives the passive owner one app-controlled proximity indicator", () => {
-    expect(css).toMatch(/\.passive-scroll-viewport\s*{[^}]*scrollbar-width:\s*none/);
-    expect(css).toMatch(/\.passive-scroll-track\s*{[^}]*width:\s*16px/);
-    expect(css).toMatch(/\.passive-scroll-thumb\s*{[^}]*width:\s*10px/);
-    expect(css).toMatch(/data-scrollbar-visible="true"/);
-  });
 });

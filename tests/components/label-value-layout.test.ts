@@ -35,12 +35,6 @@ const ROWS: Array<{ file: string; describe: string; container: string; label: st
     label: 'className="whitespace-nowrap text-ink-muted">{t("common.kind")}',
   },
   {
-    file: "ActivityTraceModal.tsx",
-    describe: "the Session/Operation/Caused by/Events detail rows",
-    container: "grid grid-cols-[max-content_minmax(0,1fr)]",
-    label: 'className="whitespace-nowrap">{t("activity.session")}',
-  },
-  {
     file: "ShortcutsModal.tsx",
     describe: "the shortcut-key label beside its description",
     container: "max-w-[48%] shrink-0",

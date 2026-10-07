@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { formatLocalMinute } from "../../src/utils/displayTime";
-import { formatActivityTime } from "../../src/models/activity-history";
 import { createEnglish } from "../helpers/i18n";
 
 afterEach(() => vi.unstubAllEnvs());
@@ -13,18 +12,16 @@ function shown(input: string | number): string {
 }
 
 describe.each([
-  ["UTC", "Jan 31, 2026, 8:00 PM", "2026-01-31 20:00"],
-  ["Asia/Tokyo", "Feb 1, 2026, 5:00 AM", "2026-02-01 05:00"],
-  ["Asia/Kathmandu", "Feb 1, 2026, 1:45 AM", "2026-02-01 01:45"],
-  ["America/New_York", "Jan 31, 2026, 3:00 PM", "2026-01-31 15:00"],
-])("local display in %s", (zone, expected, traceExpected) => {
+  ["UTC", "Jan 31, 2026, 8:00 PM"],
+  ["Asia/Tokyo", "Feb 1, 2026, 5:00 AM"],
+  ["Asia/Kathmandu", "Feb 1, 2026, 1:45 AM"],
+  ["America/New_York", "Jan 31, 2026, 3:00 PM"],
+])("local display in %s", (zone, expected) => {
   it("renders serialized and epoch instants in the same local calendar", () => {
     vi.stubEnv("TZ", zone);
     const instant = "2026-01-31T20:00:12.345Z";
     expect(shown(instant)).toBe(expected);
     expect(shown(Date.parse(instant))).toBe(expected);
-    // The activity trace keeps a sortable diagnostic stamp, not a localized one.
-    expect(formatActivityTime(instant)).toBe(`${traceExpected}:12.345`);
   });
 });
 

@@ -2,7 +2,6 @@ import { create } from "zustand";
 
 export type UtilitySurface =
   | "about"
-  | "activityTrace"
   | "backgroundWork"
   | "deletedFiles"
   | "issues"

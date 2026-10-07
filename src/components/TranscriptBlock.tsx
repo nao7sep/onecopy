@@ -24,7 +24,7 @@ import { log, toErrorFields } from "../repositories";
 import { recordActionFailure } from "../state/notifications-store";
 import { useAppShellStore } from "../state/app-shell-store";
 import { transcriptOwnsScrollKey } from "../utils/viewerKeys";
-import { passiveScrollKey } from "./ui/PassiveScrollRegion";
+import { passiveScrollKey } from "../utils/passiveScrollKey";
 import { configFlag } from "../models/config";
 
 interface TranscriptSegment {

@@ -2,7 +2,6 @@ use onecopy_lib::activity::{
     ActivityDraft, ActivityKind, ActivityOwner, ActivityReason, ActivityRecorder, ActivityState,
     ActivitySubject,
 };
-use onecopy_lib::{activity_history, index_store, visibility::Policy, visibility_index};
 
 fn draft(operation_id: Option<&str>) -> ActivityDraft {
     ActivityDraft {
@@ -83,6 +82,44 @@ fn recorder_persists_every_event_and_pages_with_a_stable_cursor() {
         vec![1]
     );
     assert_eq!(end, None);
+}
+
+#[test]
+fn records_reads_background_lifecycle_and_details_after_recorder_reopens() {
+    use onecopy_lib::records_view::{self, RecordKind, RecordsQuery};
+    let (temp, recorder) = recorder("background-session");
+    let mut event = draft(Some("backgroundWork:one"));
+    event.owner = ActivityOwner::BackgroundWork;
+    event.subject = Some(ActivitySubject::VideoTranscription);
+    event.item_count = None;
+    recorder.record_at(event.clone(), "2026-09-07T00:00:00.000Z".into(), 0).unwrap();
+    event.kind = ActivityKind::Progressed;
+    event.done = Some(2);
+    event.total = Some(3);
+    let progress = recorder.record_at(event.clone(), "2026-09-07T00:00:01.000Z".into(), 1000).unwrap();
+    event.kind = ActivityKind::Completed;
+    event.current = Some(ActivityState::Succeeded);
+    event.done = Some(3);
+    recorder.record_at(event, "2026-09-07T00:00:02.000Z".into(), 2000).unwrap();
+    drop(recorder);
+
+    let path = temp.path().join("records.sqlite3");
+    let _reopened = ActivityRecorder::new("next-session".into(), path.clone()).unwrap();
+    let reader = records_view::open_reader(&path).unwrap();
+    let page = records_view::page(&reader, &RecordsQuery {
+        session: Some("background-session".into()),
+        kind: Some(RecordKind::Activity),
+        search: "backgroundWork:one".into(),
+        ..Default::default()
+    }).unwrap();
+    assert_eq!(page.records.len(), 3);
+    assert!(page.records.iter().all(|row| row.kind == RecordKind::Activity));
+    let detail = records_view::detail(&reader, RecordKind::Activity, progress.event_id).unwrap().unwrap();
+    let json = &detail.fields.iter().find(|field| field.name == "draft_json").unwrap().value;
+    let draft: serde_json::Value = serde_json::from_str(json.as_str().unwrap()).unwrap();
+    assert_eq!(draft["done"], 2);
+    assert_eq!(draft["total"], 3);
+    assert_eq!(draft["subject"], "videoTranscription");
 }
 
 #[test]
@@ -176,124 +213,6 @@ fn concrete_timing_owners_serialize_without_free_form_payloads() {
 }
 
 #[test]
-fn operation_pages_keep_start_and_duration_outside_the_latest_raw_slice() {
-    let (_temp, recorder) = recorder("one");
-    recorder
-        .record_at(draft(Some("long")), "2026-09-07T00:00:00.000Z".into(), 10)
-        .unwrap();
-    for i in 1..=250 {
-        let mut progress = draft(Some("long"));
-        progress.kind = ActivityKind::Progressed;
-        progress.done = Some(i);
-        progress.total = Some(250);
-        recorder
-            .record_at(progress, "2026-09-07T00:00:01.000Z".into(), i + 10)
-            .unwrap();
-    }
-    recorder
-        .record_at(draft(Some("new")), "2026-09-07T00:00:02.000Z".into(), 300)
-        .unwrap();
-    let mut terminal = draft(Some("long"));
-    terminal.kind = ActivityKind::Completed;
-    terminal.current = Some(ActivityState::Succeeded);
-    terminal.item_count = None;
-    recorder
-        .record_at(terminal, "2026-09-07T00:00:03.000Z".into(), 400)
-        .unwrap();
-    let page = recorder.operations(None, None, 1).unwrap();
-    assert_eq!(
-        page.operations[0].first.draft.operation_id.as_deref(),
-        Some("new")
-    );
-    let older = recorder.operations(page.next_cursor, None, 1).unwrap();
-    let row = &older.operations[0];
-    assert_eq!(row.event_count, 252);
-    assert_eq!(row.started.as_ref().unwrap().monotonic_ms, 10);
-    assert_eq!(row.latest.monotonic_ms, 400);
-    assert_eq!(row.latest.draft.current, Some(ActivityState::Succeeded));
-    assert_eq!(row.progress.as_ref().unwrap().draft.done, Some(250));
-    let (events, cursor) = recorder.events(row.id, None, 100).unwrap();
-    assert_eq!(events.len(), 100);
-    assert!(cursor.is_some());
-    assert!(events
-        .iter()
-        .all(|event| event.draft.operation_id.as_deref() == Some("long")));
-    let mut all = events;
-    let mut before = cursor;
-    while before.is_some() {
-        let (events, next) = recorder.events(row.id, before, 100).unwrap();
-        all.extend(events);
-        before = next;
-    }
-    assert_eq!(all.len(), 252);
-    assert_eq!(all.last().unwrap().event_id, row.first.event_id);
-}
-
-#[test]
-fn projection_reads_use_seek_indexes() {
-    let (temp, recorder) = recorder("one");
-    drop(recorder);
-    let conn = rusqlite::Connection::open(temp.path().join("records.sqlite3")).unwrap();
-    for (query, expected) in [
-        ("SELECT * FROM activity_operations WHERE last_id > 1 ORDER BY last_id LIMIT 101", "activity_operations_changed"),
-        ("SELECT * FROM activity_operations WHERE first_id < 100 ORDER BY first_id DESC LIMIT 101", "INTEGER PRIMARY KEY"),
-        ("SELECT * FROM activity_events WHERE session_id = 'one' AND operation_id = 'work:1' AND id < 100 ORDER BY id DESC LIMIT 101", "activity_events_operation"),
-    ] {
-        let mut statement = conn.prepare(&format!("EXPLAIN QUERY PLAN {query}")).unwrap();
-        let details = statement.query_map([], |row| row.get::<_, String>(3)).unwrap()
-            .collect::<Result<Vec<_>, _>>().unwrap().join(" ");
-        assert!(details.contains(expected), "{details}");
-        assert!(!details.contains("SCAN "), "{details}");
-    }
-    conn.pragma_update(None, "user_version", 2).unwrap();
-    drop(conn);
-    assert!(onecopy_lib::records::open(&temp.path().join("records.sqlite3")).is_err());
-}
-
-#[test]
-fn forward_operation_cursor_catches_every_burst_and_changes_to_old_rows() {
-    let (_temp, recorder) = recorder("one");
-    recorder
-        .record_at(draft(Some("old")), "2026-09-07T00:00:00.000Z".into(), 0)
-        .unwrap();
-    let mut revision = recorder.operations(None, None, 100).unwrap().revision;
-    for i in 0..251 {
-        recorder
-            .record_at(
-                draft(Some(&format!("burst:{i}"))),
-                "2026-09-07T00:00:01.000Z".into(),
-                i + 1,
-            )
-            .unwrap();
-    }
-    let mut end = draft(Some("old"));
-    end.kind = ActivityKind::Failed;
-    end.current = Some(ActivityState::Failed);
-    recorder
-        .record_at(end, "2026-09-07T00:00:02.000Z".into(), 999)
-        .unwrap();
-    let mut seen = std::collections::HashSet::new();
-    loop {
-        let page = recorder.operations(None, Some(revision), 100).unwrap();
-        assert!(page.operations.len() <= 100);
-        for row in page.operations {
-            assert!(seen.insert(row.id));
-        }
-        revision = page.revision;
-        if !page.has_more {
-            break;
-        }
-    }
-    assert_eq!(seen.len(), 252);
-    assert!(seen.contains(&1));
-    assert!(recorder
-        .operations(None, Some(revision), 100)
-        .unwrap()
-        .operations
-        .is_empty());
-}
-
-#[test]
 fn the_purge_drops_old_start_and_progress_events_and_keeps_every_operation_readable() {
     let (temp, recorder) = recorder("one");
     let at = |day: u32| format!("2026-06-{day:02}T00:00:00.000Z");
@@ -320,56 +239,10 @@ fn the_purge_drops_old_start_and_progress_events_and_keeps_every_operation_reada
     let records = onecopy_lib::records::open(&temp.path().join("records.sqlite3")).unwrap();
     assert_eq!(onecopy_lib::records::purge_transient(&records, now).unwrap(), 3);
 
-    let page = recorder.operations(None, None, 100).unwrap();
-    let ids = page.operations.iter().map(|row| row.latest.draft.operation_id.clone().unwrap()).collect::<Vec<_>>();
-    assert_eq!(ids, ["recent", "old"]);
-    let old = &page.operations[1];
-    assert_eq!(old.first.draft.kind, ActivityKind::Completed);
-    assert_eq!(old.event_count, 1);
-    assert!(old.started.is_none());
-    assert_eq!(old.progress.as_ref().map(|event| event.draft.kind), Some(ActivityKind::Completed));
-    assert_eq!(recorder.events(old.id, None, 100).unwrap().0.len(), 1);
-    assert!(page.operations[0].started.is_some());
-}
-
-// R4.4 E5: a target hidden entirely by review-visibility policy resolves to
-// "unavailable" (no Target, even though the event still carries the hash it
-// happened to), and the target reappears once the policy lifts.
-#[test]
-fn a_hidden_only_activity_target_resolves_to_unavailable() {
-    let (_temp, recorder) = recorder("session-one");
-    let mut with_target = draft(Some("op"));
-    with_target.target_hash = Some("h".to_string());
-    recorder
-        .record_at(with_target, "2026-09-07T00:00:00.000Z".to_string(), 0)
-        .unwrap();
-
-    let index_dir = tempfile::tempdir().unwrap();
-    let index = index_store::open(&index_dir.path().join("index.sqlite3")).unwrap();
-    index
-        .execute_batch(
-            "INSERT INTO contents(hash, kind, byte_size) VALUES ('h', 'image', 1);
-            INSERT INTO paths(abs_path, dir_path, file_name, kind, content_hash)
-              VALUES ('/root/photo.jpg', '/root', 'photo.jpg', 'image', 'h');",
-        )
-        .unwrap();
-    visibility_index::apply_policy(
-        &index,
-        &Policy::from_config(&serde_json::json!({"ignoredFileNames": ["photo.jpg"]})).unwrap(),
-    )
-    .unwrap();
-
-    let mut page = recorder.operations(None, None, 100).unwrap();
-    activity_history::resolve_targets(&index, &mut page.operations).unwrap();
-    assert_eq!(page.operations[0].target_hash.as_deref(), Some("h"));
-    assert!(
-        page.operations[0].target.is_none(),
-        "a hidden-only target must resolve as unavailable, not disappear"
-    );
-
-    visibility_index::apply_policy(&index, &Policy::from_config(&serde_json::json!({})).unwrap())
-        .unwrap();
-    let mut page = recorder.operations(None, None, 100).unwrap();
-    activity_history::resolve_targets(&index, &mut page.operations).unwrap();
-    assert_eq!(page.operations[0].target.as_ref().unwrap().name, "photo.jpg");
+    let (events, cursor) = recorder.page(None, 100).unwrap();
+    assert_eq!(cursor, None);
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].draft.operation_id.as_deref(), Some("recent"));
+    assert_eq!(events[1].draft.operation_id.as_deref(), Some("old"));
+    assert_eq!(events[1].draft.kind, ActivityKind::Completed);
 }
