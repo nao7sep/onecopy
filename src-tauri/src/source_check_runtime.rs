@@ -277,7 +277,7 @@ fn run(app: &AppHandle) -> Result<crate::scanner::ScanSummary, String> {
     if crate::app_lifecycle::shutting_down() {
         return Err(crate::scanner::CANCELLED.to_string());
     }
-    crate::failure_runtime::clear("source-check-failed", None)?;
+    crate::failure_runtime::clear("source-check-failed", None);
     Ok(summary)
 }
 

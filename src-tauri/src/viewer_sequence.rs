@@ -112,7 +112,7 @@ pub fn start(
         path: path.clone(),
         published: false,
     };
-    let mut conn = Connection::open(&path).map_err(|error| error.to_string())?;
+    let conn = Connection::open(&path).map_err(|error| error.to_string())?;
     conn.execute_batch(
         "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; \
          CREATE TABLE members (\
@@ -130,7 +130,7 @@ pub fn start(
         Scope::Selection
     };
     let anchor_key = identity_key(anchor);
-    let transaction = conn.transaction().map_err(|error| error.to_string())?;
+    let transaction = crate::sqlite::write_transaction(&conn).map_err(|error| error.to_string())?;
     let mut insert = transaction
         .prepare(
             "INSERT INTO members (ordinal, hash, path_id, section_index) VALUES (?1, ?2, ?3, ?4)",

@@ -64,7 +64,6 @@ impl Harness {
                     if !std::mem::take(&mut first_recovery) || fail_first {
                         recovered.send(Event::Recovered).unwrap();
                     }
-                    Ok(())
                 },
             )
         });
@@ -257,7 +256,7 @@ fn disable_during_native_acquisition_cannot_lose_the_release_wakeup() {
                 })
             },
             |_| Ok(()),
-            || Ok(()),
+            || {},
         )
     });
     ready.recv_timeout(Duration::from_secs(3)).unwrap();
@@ -281,7 +280,7 @@ fn reporting_failure_terminates_only_the_assertion_owner() {
         &control,
         || Err("OS rejected".to_string()),
         |_| Err("diagnostic store unavailable".to_string()),
-        || Ok(()),
+        || {},
     );
     assert_eq!(result, Err("diagnostic store unavailable".to_string()));
     assert_eq!(control.state.lock().unwrap().active, 1);
@@ -302,7 +301,6 @@ fn first_success_resolves_a_condition_retained_from_a_previous_run() {
         || {
             recovered = true;
             control.update(|state| state.stopped = true);
-            Ok(())
         },
     )
     .unwrap();

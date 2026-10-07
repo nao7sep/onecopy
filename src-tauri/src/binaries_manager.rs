@@ -1210,9 +1210,7 @@ pub fn install_reported(
     let operation_id = operation_id.to_string();
     Ok(match outcome {
         Ok(Ok(_facts)) => {
-            if let Err(error) = crate::failure_runtime::clear("dependency-install-failed", Some(id)) {
-                let _ = crate::failure_runtime::report(app, "issue-recovery-failed", Some(id), &error);
-            }
+            crate::failure_runtime::clear("dependency-install-failed", Some(id));
             crate::derived_work::wake();
             InstallResult::Installed { operation_id, state }
         }

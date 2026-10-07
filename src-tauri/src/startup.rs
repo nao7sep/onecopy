@@ -285,7 +285,7 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
                                 }),
                             );
                         }
-                        crate::failure_runtime::clear("cache-sweep-failed", None)?;
+                        crate::failure_runtime::clear("cache-sweep-failed", None);
                         Ok(())
                     },
                 )
@@ -360,7 +360,7 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
                                     crate::failure_runtime::clear(
                                         "update-check-failed",
                                         Some(&id),
-                                    )?;
+                                    );
                                     crate::logging::info(
                                         "launch update check",
                                         json!({
@@ -389,7 +389,7 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
                         crate::failure_runtime::clear(
                             "update-check-worker-failed",
                             None,
-                        )?;
+                        );
                         Ok(())
                     },
                 )

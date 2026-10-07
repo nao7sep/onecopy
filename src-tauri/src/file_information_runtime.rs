@@ -292,7 +292,7 @@ fn run_requested(app: &AppHandle) -> Result<Option<crate::scanner::ScanSummary>,
     if crate::app_lifecycle::shutting_down() {
         return Ok(None);
     }
-    crate::failure_runtime::clear("file-information-failed", None)?;
+    crate::failure_runtime::clear("file-information-failed", None);
     Ok(summary)
 }
 

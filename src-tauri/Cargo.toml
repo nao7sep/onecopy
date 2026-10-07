@@ -239,6 +239,6 @@ tempfile = "3.24"
 # A paused tokio clock, so a test of a fixed request timeout advances time
 # instead of waiting it out.
 tokio = { version = "1.53.1", features = ["test-util"] }
-# Connection limits, so a test can lower SQLite's bound-parameter ceiling
-# instead of building tens of thousands of rows to exceed the default.
-rusqlite = { version = "0.40", features = ["limits"] }
+# Connection limits and hooks let tests exercise engine limits and force
+# competing writes at the statement boundary without timing-dependent races.
+rusqlite = { version = "0.40", features = ["limits", "hooks"] }

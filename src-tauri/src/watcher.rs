@@ -286,7 +286,7 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
     if watched == 0 {
         return Err("none of the configured source folders could be watched".to_string());
     }
-    crate::failure_runtime::clear("watcher-failed", None)?;
+    crate::failure_runtime::clear("watcher-failed", None);
     logging::info("watcher started", json!({ "roots": source_dirs.len() }));
 
     let mut dirty: HashSet<PathBuf> = HashSet::new();
@@ -351,7 +351,7 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
                 // watcher failure and asks for a recheck instead of clearing it.
                 match pass.failure() {
                     Some(failure) => report_failure(&app, &failure),
-                    None => crate::failure_runtime::clear("watcher-failed", None)?,
+                    None => crate::failure_runtime::clear("watcher-failed", None),
                 }
                 if pass.changed == 0 {
                     continue;
@@ -482,7 +482,8 @@ fn record_root_condition(
     if let Some(message) = error {
         crate::failure_runtime::report(app, "watcher-root-failed", Some(root), message)
     } else {
-        crate::failure_runtime::clear("watcher-root-failed", Some(root))
+        crate::failure_runtime::clear("watcher-root-failed", Some(root));
+        Ok(())
     }
 }
 

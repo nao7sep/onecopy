@@ -368,7 +368,7 @@ pub fn purge_transient(connection: &Connection, now: chrono::DateTime<chrono::Ut
         .map(serde_json::to_string)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
-    let transaction = connection.unchecked_transaction().map_err(|error| error.to_string())?;
+    let transaction = crate::sqlite::write_transaction(connection).map_err(|error| error.to_string())?;
     transaction
         .execute(
             "CREATE TEMP TABLE purged_activity AS

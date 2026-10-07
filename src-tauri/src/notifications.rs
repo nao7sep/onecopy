@@ -98,8 +98,7 @@ fn record_notice(
 ) -> Result<NotificationRecord, String> {
     validate(request)?;
     let now = crate::logging::now_iso_millis();
-    let transaction = conn
-        .unchecked_transaction()
+    let transaction = crate::sqlite::write_transaction(conn)
         .map_err(|error| error.to_string())?;
     let message_values_json = request
         .message_values

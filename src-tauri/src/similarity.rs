@@ -390,8 +390,7 @@ pub fn ensure_config_current(conn: &Connection, config: &SimilarityConfig) -> Re
         return Ok(());
     }
 
-    let transaction = conn
-        .unchecked_transaction()
+    let transaction = crate::sqlite::write_transaction(conn)
         .map_err(|error| error.to_string())?;
     mark_all_buckets_dirty_in(&transaction)?;
     transaction

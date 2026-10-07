@@ -200,10 +200,19 @@ fn present_unrecorded(
     direct
 }
 
-pub fn clear(kind: &str, path: Option<&str>) -> Result<(), String> {
-    let root = crate::paths::data_root()?;
-    let conn = crate::index_store::open(&root.join(crate::storage::INDEX_DB_FILE_NAME))?;
-    crate::index_store::clear_issues(&conn, path.unwrap_or(""), &[kind]).map(|_| ())
+pub fn clear(kind: &str, path: Option<&str>) {
+    // Recovery has already succeeded; an old Issue must not stop its owner.
+    let result = (|| -> Result<(), String> {
+        let root = crate::paths::data_root()?;
+        let conn = crate::index_store::open(&root.join(crate::storage::INDEX_DB_FILE_NAME))?;
+        crate::index_store::clear_issues(&conn, path.unwrap_or(""), &[kind]).map(|_| ())
+    })();
+    if let Err(error) = result {
+        crate::logging::warn(
+            "could not clear recovered Issue",
+            json!({ "kind": kind, "path": path, "error": { "message": error } }),
+        );
+    }
 }
 
 pub fn emit_checked<T: Clone + Serialize>(

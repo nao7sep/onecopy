@@ -1078,8 +1078,7 @@ pub fn record_preview_success(
     sharpness: f64,
     phash: u64,
 ) -> Result<bool, String> {
-    let transaction = conn
-        .unchecked_transaction()
+    let transaction = crate::sqlite::write_transaction(conn)
         .map_err(|error| error.to_string())?;
     transaction
         .execute(
@@ -1120,8 +1119,7 @@ fn record_content_failure(
     issue_kind: &str,
     message: &str,
 ) -> Result<bool, String> {
-    let transaction = conn
-        .unchecked_transaction()
+    let transaction = crate::sqlite::write_transaction(conn)
         .map_err(|error| error.to_string())?;
     transaction
         .execute(
@@ -1192,8 +1190,7 @@ pub fn record_poster_success(
     path: &str,
     duration_ms: Option<u64>,
 ) -> Result<bool, String> {
-    let transaction = conn
-        .unchecked_transaction()
+    let transaction = crate::sqlite::write_transaction(conn)
         .map_err(|error| error.to_string())?;
     transaction
         .execute(
@@ -1232,8 +1229,7 @@ pub fn record_strip_success(
     path: &str,
     frame_count: u32,
 ) -> Result<bool, String> {
-    let transaction = conn
-        .unchecked_transaction()
+    let transaction = crate::sqlite::write_transaction(conn)
         .map_err(|error| error.to_string())?;
     transaction
         .execute(
@@ -1253,8 +1249,7 @@ pub fn record_strip_failure(
     path: &str,
     message: &str,
 ) -> Result<bool, String> {
-    let transaction = conn
-        .unchecked_transaction()
+    let transaction = crate::sqlite::write_transaction(conn)
         .map_err(|error| error.to_string())?;
     transaction
         .execute(
@@ -1274,8 +1269,7 @@ pub fn record_face_success(
     found: &[crate::face::FoundFace],
     model: &crate::ai_dependencies::ModelIdentity,
 ) -> Result<bool, String> {
-    let transaction = conn
-        .unchecked_transaction()
+    let transaction = crate::sqlite::write_transaction(conn)
         .map_err(|error| error.to_string())?;
     transaction
         .execute("DELETE FROM faces WHERE content_hash = ?1", [hash])
@@ -1368,8 +1362,7 @@ pub fn record_face_failure(
     path: &str,
     message: &str,
 ) -> Result<bool, String> {
-    let transaction = conn
-        .unchecked_transaction()
+    let transaction = crate::sqlite::write_transaction(conn)
         .map_err(|error| error.to_string())?;
     record_analysis_failure(
         &transaction,
@@ -1391,8 +1384,7 @@ pub fn record_transcript_success(
     transcript: &Transcript,
     model: crate::ai_dependencies::ModelIdentity,
 ) -> Result<bool, String> {
-    let transaction = conn
-        .unchecked_transaction()
+    let transaction = crate::sqlite::write_transaction(conn)
         .map_err(|error| error.to_string())?;
     transaction
         .execute(
@@ -1425,8 +1417,7 @@ pub fn record_transcript_failure(
     path: &str,
     message: &str,
 ) -> Result<bool, String> {
-    let transaction = conn
-        .unchecked_transaction()
+    let transaction = crate::sqlite::write_transaction(conn)
         .map_err(|error| error.to_string())?;
     record_analysis_failure(
         &transaction,
@@ -1476,7 +1467,7 @@ pub fn reset_failed_outputs(
     conn: &Connection,
     scope: FailedOutputScope,
 ) -> Result<u64, String> {
-    let transaction = conn.unchecked_transaction().map_err(|error| error.to_string())?;
+    let transaction = crate::sqlite::write_transaction(conn).map_err(|error| error.to_string())?;
     let count = reset_failed_outputs_in_transaction(&transaction, scope)?;
     crate::records::commit(transaction).map_err(|error| error.to_string())?;
     Ok(count)

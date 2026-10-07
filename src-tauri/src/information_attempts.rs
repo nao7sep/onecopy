@@ -47,8 +47,7 @@ pub fn failed(
             "path": path, "kind": stage.issue_kind(), "error": { "message": error }
         }),
     );
-    let transaction = conn
-        .unchecked_transaction()
+    let transaction = crate::sqlite::write_transaction(conn)
         .map_err(|error| error.to_string())?;
     transaction
         .execute(

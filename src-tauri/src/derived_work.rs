@@ -619,7 +619,7 @@ fn run_worker_loop(app: &AppHandle, lane: Lane) -> Result<(), String> {
         match pass {
             Ok(did_work) => {
                 if !cleared_previous_failure {
-                    crate::failure_runtime::clear(WORKER_FAILED, None)?;
+                    crate::failure_runtime::clear(WORKER_FAILED, None);
                     cleared_previous_failure = true;
                 }
                 run_again = did_work;

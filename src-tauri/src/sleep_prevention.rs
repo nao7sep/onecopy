@@ -129,7 +129,7 @@ fn run<L>(
     control: &Control,
     mut acquire: impl FnMut() -> Result<L, String>,
     mut report: impl FnMut(&str) -> Result<(), String>,
-    mut recovered: impl FnMut() -> Result<(), String>,
+    mut recovered: impl FnMut(),
 ) -> Result<(), String> {
     let mut lease = None;
     let mut failed_preference = None;
@@ -145,7 +145,7 @@ fn run<L>(
                 Ok(assertion) => {
                     lease = Some(assertion);
                     if has_failure {
-                        recovered()?;
+                        recovered();
                         has_failure = false;
                     }
                 }

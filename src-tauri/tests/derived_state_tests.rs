@@ -69,6 +69,69 @@ fn seeded() -> (tempfile::TempDir, rusqlite::Connection) {
 }
 
 #[test]
+fn failure_recording_keeps_a_competing_log_write_out_until_commit() {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    use std::sync::{Arc, Mutex};
+
+    for class in ["preview", "face"] {
+        let (dir, conn) = seeded();
+        let records_path = dir.path().join("records.sqlite3");
+        let logger = onecopy_lib::records::open(&records_path).unwrap();
+        // Probe the held lock, not how long the logger waits for it.
+        logger.busy_timeout(std::time::Duration::ZERO).unwrap();
+        let outcome = Arc::new(Mutex::new(None));
+        let observed = outcome.clone();
+        let table = if class == "preview" { "issue_events" } else { "analysis_events" };
+        conn.authorizer(Some(move |context: AuthContext<'_>| {
+            if context.database_name == Some("records")
+                && matches!(context.action, AuthAction::Insert { table_name } if table_name == table)
+            {
+                let mut result = observed.lock().unwrap();
+                if result.is_none() {
+                    *result = Some(logger.execute(
+                        "INSERT INTO log_lines (session_id, time_utc, level, message, line)
+                         VALUES ('test', 'now', 'warn', 'decoder failed', '{}')", [],
+                    ));
+                }
+            }
+            Authorization::Allow
+        })).unwrap();
+
+        let recorded = if class == "preview" {
+            derived_state::record_preview_failure(&conn, "image", "/image.jpg", "decode")
+        } else {
+            derived_state::record_face_failure(&conn, "face", "/face.jpg", "decode")
+        };
+        assert!(recorded.is_ok(), "{class}: {recorded:?}");
+        let probe = outcome.lock().unwrap().take().expect("competing writer was exercised");
+        assert_eq!(probe.unwrap_err().sqlite_error_code(), Some(rusqlite::ErrorCode::DatabaseBusy));
+
+        // After the result commits, the independent logging connection can write.
+        let logger = onecopy_lib::records::open(&records_path).unwrap();
+        logger.execute(
+            "INSERT INTO log_lines (session_id, time_utc, level, message, line)
+             VALUES ('test', 'now', 'warn', 'decoder failed', '{}')", [],
+        ).unwrap();
+    }
+}
+
+#[test]
+fn an_unsaved_failure_still_propagates_and_rolls_back_its_result() {
+    let (_dir, conn) = seeded();
+    conn.execute_batch(
+        "UPDATE contents SET derive_outcome = NULL WHERE hash = 'image';
+         CREATE TEMP TRIGGER reject_issue BEFORE INSERT ON records.issue_events
+         BEGIN SELECT RAISE(ABORT, 'injected records write failure'); END;",
+    ).unwrap();
+    let result = derived_state::record_preview_failure(&conn, "image", "/image.jpg", "decode");
+    assert!(result.unwrap_err().contains("injected records write failure"));
+    let outcome: Option<String> = conn.query_row(
+        "SELECT derive_outcome FROM contents WHERE hash = 'image'", [], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(outcome, None);
+}
+
+#[test]
 fn explicit_attempt_boundary_reopens_failures_without_using_or_erasing_issues() {
     let (_dir, conn) = seeded();
     // Dismissal/history cannot decide whether an output is eligible again.

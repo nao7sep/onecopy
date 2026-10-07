@@ -134,8 +134,7 @@ impl DirectoryFacts {
             .as_ref()
             .is_none_or(|old| old != &(parent.map(str::to_string), own, flags))
         {
-            let tx = conn
-                .unchecked_transaction()
+            let tx = crate::sqlite::write_transaction(conn)
                 .map_err(|error| error.to_string())?;
             tx.execute("INSERT INTO visibility_directories (abs_path, parent_path, own_flags, flags) VALUES (?1, ?2, ?3, ?4)
                 ON CONFLICT(abs_path) DO UPDATE SET parent_path=excluded.parent_path, own_flags=excluded.own_flags, flags=excluded.flags",

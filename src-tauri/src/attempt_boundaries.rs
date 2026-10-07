@@ -5,8 +5,7 @@ use crate::{derived_state, index_store, information_attempts};
 use rusqlite::{params, Connection};
 
 pub fn begin_run(conn: &Connection) -> Result<(), String> {
-    let transaction = conn
-        .unchecked_transaction()
+    let transaction = crate::sqlite::write_transaction(conn)
         .map_err(|error| error.to_string())?;
     transaction.execute("UPDATE paths SET visibility_checked = 0 WHERE visibility_checked = -1", [])
         .map_err(|error| error.to_string())?;
@@ -24,8 +23,7 @@ pub fn recheck_section(
     bounds: Option<(i64, i64)>,
 ) -> Result<u64, String> {
     let members = information_attempts::section_paths(bounds)?;
-    let transaction = conn
-        .unchecked_transaction()
+    let transaction = crate::sqlite::write_transaction(conn)
         .map_err(|error| error.to_string())?;
     index_store::close_issues(
         &transaction,

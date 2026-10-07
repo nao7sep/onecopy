@@ -212,17 +212,10 @@ fn run_listener(
                             .map_err(|error| error.to_string());
                         match activation {
                             Ok(()) => {
-                                if let Err(error) = crate::failure_runtime::clear(
+                                crate::failure_runtime::clear(
                                     "instance-activation-failed",
                                     Some("main"),
-                                ) {
-                                    let _ = crate::failure_runtime::report(
-                                        app,
-                                        "issue-recovery-failed",
-                                        Some("main"),
-                                        &error,
-                                    );
-                                }
+                                );
                             }
                             Err(error) => crate::failure_runtime::report(
                                 app,

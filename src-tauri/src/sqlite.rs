@@ -1,6 +1,13 @@
 //! Connection setup shared by the independently owned SQLite stores.
-use rusqlite::Connection;
+use rusqlite::{Connection, Transaction, TransactionBehavior};
 use std::{sync::Mutex, time::Duration};
+
+// transaction-and-external-effect-conventions. With an attached records store,
+// taking its write lock before reading prevents a concurrent logger commit
+// from invalidating a snapshot that this transaction later needs to write.
+pub(crate) fn write_transaction(conn: &Connection) -> rusqlite::Result<Transaction<'_>> {
+    Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+}
 
 pub(crate) struct JournalSetup(Mutex<()>);
 
