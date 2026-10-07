@@ -314,10 +314,12 @@ fn commit_trash(
     before_move: impl FnOnce(&Path),
 ) -> Result<TrashedRecord, TrashError> {
     before_move(&plan.stored);
-    let moved = crate::fs_publish::rename_no_replace(source, &plan.stored).map_err(|error| TrashError {
-        message: format!("trash move failed for {}: {error}", source.display()),
-        outcome_unknown: volume_io::outcome_unknown(&error),
-    });
+    let moved = refuse_newer_day(&plan.day_dir)
+        .map_err(|message| TrashError { message, outcome_unknown: false })
+        .and_then(|()| crate::fs_publish::rename_no_replace(source, &plan.stored).map_err(|error| TrashError {
+            message: format!("trash move failed for {}: {error}", source.display()),
+            outcome_unknown: volume_io::outcome_unknown(&error),
+        }));
     record_trash_action(&plan.record, moved.as_ref().err());
     moved?;
     if let Err(error) = crate::fs_publish::sync_directory(&plan.day_dir) {
@@ -454,6 +456,11 @@ fn append_manifest(day_dir: &Path, record: &TrashedRecord) -> Result<(), String>
     let line = serde_json::to_string(record).map_err(|e| e.to_string())?;
     // not recorded: a sidecar of the trashed files beside it
     // (data-backup conventions); each action is a record instead.
+    append_manifest_line(day_dir, line)
+}
+
+fn append_manifest_line(day_dir: &Path, line: String) -> Result<(), String> {
+    refuse_newer_day(day_dir)?;
     volume_io::append_line_synced(&day_dir.join(MANIFEST_FILE_NAME), line)
         .map_err(|e| e.to_string())
 }
@@ -554,6 +561,25 @@ fn parse_line(line: &str) -> Option<ParsedLine> {
     valid_stored_name(&record.stored_name).then_some(ParsedLine::Record(record))
 }
 
+fn read_manifest(day_dir: &Path) -> Result<Vec<u8>, String> {
+    match volume_io::read(&day_dir.join(MANIFEST_FILE_NAME)) {
+        Ok(bytes) => Ok(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(format!("could not read deleted-file records: {error}")),
+    }
+}
+
+pub(crate) fn refuse_newer_day(day_dir: &Path) -> Result<(), String> {
+    let manifest = read_manifest(day_dir)?;
+    if String::from_utf8_lossy(&manifest).lines().any(|line| matches!(parse_line(line), Some(ParsedLine::Newer))) {
+        return Err(format!(
+            "{} contains deleted-file records written by a newer OneCopy and was left in place",
+            day_dir.display(),
+        ));
+    }
+    Ok(())
+}
+
 /// Reads one day folder: its manifest, line by line, and its entries. For a
 /// stored name the LATEST record naming it is authoritative: a name is only
 /// handed out while it is free, so a later record always describes the file
@@ -561,11 +587,7 @@ fn parse_line(line: &str) -> Option<ParsedLine> {
 /// file restored since) describes nothing. Only entries directly inside this
 /// day folder resolve. A missing manifest is an empty one.
 pub fn read_day(day_dir: &Path) -> Result<DayListing, String> {
-    let manifest = match volume_io::read(&day_dir.join(MANIFEST_FILE_NAME)) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => return Err(format!("could not read deleted-file records: {error}")),
-    };
+    let manifest = read_manifest(day_dir)?;
     let entries = volume_io::read_dir(day_dir, true)
         .map_err(|error| format!("could not list deleted files: {error}"))?;
 
@@ -589,6 +611,10 @@ pub fn read_day(day_dir: &Path) -> Result<DayListing, String> {
             Some(ParsedLine::Newer) => listing.newer_lines += 1,
             None => listing.malformed_lines += 1,
         }
+    }
+    if listing.newer_lines > 0 {
+        latest.clear();
+        restored_lines.clear();
     }
 
     let mut stored: std::collections::HashMap<String, StoredState> =
@@ -653,8 +679,7 @@ pub fn append_restored(day_dir: &Path, stored_name: &str, restored_to: &str) {
         stored_path: &day_dir.join(stored_name).to_string_lossy(),
         detail: line.clone(),
     });
-    if let Err(error) =
-        volume_io::append_line_synced(&day_dir.join(MANIFEST_FILE_NAME), line.to_string())
+    if let Err(error) = append_manifest_line(day_dir, line.to_string())
     {
         crate::logging::warn(
             "restored record could not be written",

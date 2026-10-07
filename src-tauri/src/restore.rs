@@ -644,6 +644,7 @@ fn restore_one(
 ) -> Result<(), StepFailure> {
     let stored = Path::new(&entry.stored_path);
     let day_dir = stored.parent().unwrap_or(root);
+    trash::refuse_newer_day(day_dir).map_err(|error| StepFailure::File(FAILED, error))?;
     // The stored file must still be the one the record describes.
     match volume_io::symlink_metadata(stored) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -712,6 +713,7 @@ fn restore_one(
             format!("a different drive is at {}", parent.display()),
         ));
     }
+    trash::refuse_newer_day(day_dir).map_err(|error| StepFailure::File(FAILED, error))?;
     match crate::fs_publish::rename_no_replace(stored, target) {
         Ok(()) => {}
         Err(error) if volume_io::outcome_unknown(&error) => {

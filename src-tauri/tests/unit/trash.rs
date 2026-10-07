@@ -24,6 +24,29 @@ fn exact_boundary_winner_survives_and_source_remains_authoritative() {
 }
 
 #[test]
+fn newer_records_added_after_trash_preparation_leave_the_source_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("source");
+    std::fs::create_dir(&root).unwrap();
+    let source = root.join("photo.jpg");
+    std::fs::write(&source, b"keep").unwrap();
+    let mut manifest = PathBuf::new();
+    let mut bytes = Vec::new();
+
+    let error = trash_file_with_before_move(&source, &root, None, &ctx(), |target| {
+        manifest = target.parent().unwrap().join(MANIFEST_FILE_NAME);
+        bytes = std::fs::read(&manifest).unwrap();
+        bytes.extend_from_slice(b"{\"formatVersion\":2}\n");
+        std::fs::write(&manifest, &bytes).unwrap();
+    }).unwrap_err();
+
+    assert!(!error.outcome_unknown);
+    assert_eq!(std::fs::read(&source).unwrap(), b"keep");
+    assert_eq!(std::fs::read(&manifest).unwrap(), bytes);
+    assert!(!manifest.parent().unwrap().join("photo.jpg").exists());
+}
+
+#[test]
 fn replacement_before_the_move_is_the_file_that_gets_trashed() {
     let dir = tempfile::tempdir().unwrap();
     let source_dir = dir.path().join("source");

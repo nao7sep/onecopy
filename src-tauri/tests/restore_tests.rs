@@ -306,6 +306,61 @@ fn fixture(label: &str, indexed: bool) -> Fixture {
     }
 }
 
+#[test]
+fn a_day_that_gains_newer_records_after_restore_preparation_stays_untouched() {
+    let f = fixture("newer-after-preparation", false);
+    let blocked = f.deleted("missing/a.jpg", b"blocked", "a", TrashRole::Main);
+    let today = f.root.join(TRASH_DIR_NAME).join(blocked.split('/').next().unwrap());
+    let old_day = f.root.join(TRASH_DIR_NAME).join("20000101-utc");
+    std::fs::rename(today, &old_day).unwrap();
+    std::fs::remove_dir(f.root.join("missing")).unwrap();
+    let healthy = f.deleted("b.jpg", b"healthy", "b", TrashRole::Main);
+    let (plan, _, _) = f.plan(&["20000101-utc/a.jpg".to_string(), healthy]);
+    let manifest = old_day.join(onecopy_lib::trash::MANIFEST_FILE_NAME);
+    let mut bytes = std::fs::read(&manifest).unwrap();
+    bytes.extend_from_slice(b"{\"formatVersion\":2,\"storedName\":\"a.jpg\"}\n");
+    std::fs::write(&manifest, &bytes).unwrap();
+
+    let outcome = f.execute(&plan);
+
+    assert_eq!(outcome.failed, 1);
+    assert_eq!(outcome.restored.len(), 1);
+    assert!(!f.root.join("missing").exists());
+    assert_eq!(std::fs::read(old_day.join("a.jpg")).unwrap(), b"blocked");
+    assert_eq!(std::fs::read(&manifest).unwrap(), bytes);
+    assert_eq!(std::fs::read(f.root.join("b.jpg")).unwrap(), b"healthy");
+}
+
+#[test]
+fn a_day_that_gains_newer_records_during_restore_volume_checks_is_not_renamed() {
+    let f = fixture("newer-before-rename", false);
+    let id = f.deleted("a.jpg", b"blocked", "a", TrashRole::Main);
+    let (plan, _, _) = f.plan(&[id]);
+    let stored = Path::new(&plan.steps[0].entry.stored_path);
+    let manifest = stored.parent().unwrap().join(onecopy_lib::trash::MANIFEST_FILE_NAME);
+    let mut bytes = std::fs::read(&manifest).unwrap();
+    bytes.extend_from_slice(b"{\"formatVersion\":2}\n");
+    let injected = std::cell::Cell::new(false);
+
+    let (outcome, _) = execute(
+        &f.conn, &f.root, &plan, &f.settings,
+        &|path| {
+            if !injected.replace(true) {
+                std::fs::write(&manifest, &bytes).unwrap();
+            }
+            onecopy_lib::file_identity::volume_of(path)
+        },
+        &|| false, &mut |_| {},
+    ).unwrap();
+
+    assert!(injected.get());
+    assert_eq!(outcome.failed, 1);
+    assert!(outcome.restored.is_empty());
+    assert!(!f.root.join("a.jpg").exists());
+    assert_eq!(std::fs::read(stored).unwrap(), b"blocked");
+    assert_eq!(std::fs::read(manifest).unwrap(), bytes);
+}
+
 impl Fixture {
     /// Writes `relative` with `bytes` and deletes it into this root's
     /// Deleted files as one operation's item; returns its entry id.

@@ -776,9 +776,15 @@ fn lines_a_newer_onecopy_wrote_are_counted_and_left_as_they_are() {
     let file = f.source.join("one.jpg");
     std::fs::write(&file, b"one").unwrap();
     let record = trash_file(&file, &f.source, None, &ctx()).unwrap();
+    let unrelated = f.source.join("two.jpg");
+    std::fs::write(&unrelated, b"two").unwrap();
+    trash_file(&unrelated, &f.source, None, &ctx()).unwrap();
     let day = day_of(&record);
     let manifest = day.join("manifest.jsonl");
     let mut text = std::fs::read_to_string(&manifest).unwrap();
+    text.push_str(&record_line("gone.jpg", "gone.jpg", 3, 0));
+    text.push('\n');
+    text.push_str("{\"formatVersion\":1,\"event\":\"restored\",\"storedName\":\"gone.jpg\",\"restoredTo\":\"gone 2.jpg\"}\n");
     text.push_str("{\"formatVersion\":2,\"storedName\":\"later.jpg\",\"somethingNew\":true}\n");
     text.push_str("{\"formatVersion\":2,\"event\":\"restored\",\"storedName\":\"one.jpg\"}\n");
     std::fs::write(&manifest, &text).unwrap();
@@ -786,10 +792,61 @@ fn lines_a_newer_onecopy_wrote_are_counted_and_left_as_they_are() {
     let listing = read_day(&day).unwrap();
     assert_eq!(listing.newer_lines, 2);
     assert_eq!(listing.malformed_lines, 0);
-    assert_eq!(listing.records.len(), 1, "a newer restored line is not read as one");
+    assert!(listing.records.is_empty(), "no earlier row in the affected day is authoritative");
+    assert_eq!(listing.restored, 0);
+    assert!(listing.restored_to.is_empty());
+    assert_eq!(listing.unrecorded_files, 2);
+    let other_day = hand_day(&f.source, "20000101-utc", &[], &[("other.jpg", b"other")]);
+    hand_day(&f.source, "20000101-utc", &[record_line("other.jpg", "other.jpg", 5, mtime_of(&other_day.join("other.jpg")))], &[]);
     let root = list_root(&f.source, &f._dir.path().join("apphome")).unwrap();
     assert_eq!(root.newer_lines, 2);
+    assert_eq!(root.entries.len(), 1);
+    assert_eq!(root.entries[0].day, "20000101-utc");
     assert_eq!(std::fs::read_to_string(&manifest).unwrap(), text, "never rewritten");
+    assert_eq!(std::fs::read(&record.stored_path).unwrap(), b"one");
+    assert_eq!(std::fs::read(day.join("two.jpg")).unwrap(), b"two");
+}
+
+#[test]
+fn newer_day_refuses_recoverable_moves_and_restored_manifest_appends() {
+    let f = fixture("newer-append");
+    let first = f.source.join("first.jpg");
+    std::fs::write(&first, b"first").unwrap();
+    let record = trash_file(&first, &f.source, None, &ctx()).unwrap();
+    let day = day_of(&record);
+    let manifest = day.join(MANIFEST_FILE_NAME);
+    let mut bytes = std::fs::read(&manifest).unwrap();
+    bytes.extend_from_slice(b"{\"formatVersion\":2}\n");
+    std::fs::write(&manifest, &bytes).unwrap();
+    let source = f.source.join("keep.jpg");
+    std::fs::write(&source, b"keep").unwrap();
+
+    let error = trash_file(&source, &f.source, None, &ctx()).unwrap_err();
+    assert!(error.message.contains(day.to_string_lossy().as_ref()), "{error}");
+    assert_eq!(std::fs::read(&source).unwrap(), b"keep");
+    assert!(!day.join("keep.jpg").exists());
+    append_restored(&day, &record.stored_name, "first.jpg");
+    assert_eq!(std::fs::read(&manifest).unwrap(), bytes);
+    assert_eq!(std::fs::read(&record.stored_path).unwrap(), b"first");
+}
+
+#[test]
+fn explicit_empty_removes_a_protected_day_without_interpreting_its_records() {
+    let f = fixture("newer-empty");
+    let day = hand_day(&f.source, "20000101-utc", &["{\"formatVersion\":2}".to_string()], &[("photo.jpg", b"protected")]);
+    let root = f.source.join(TRASH_DIR_NAME);
+    let before = overview(std::slice::from_ref(&f.source));
+    assert_eq!(before[0].files, 1);
+    let outcome = empty_root_with_progress(
+        &root, &reviewed_token(&root), &std::sync::atomic::AtomicBool::new(false),
+        &|_| {}, &|_, _| Ok(()),
+    ).unwrap();
+
+    assert_eq!(outcome.failures, 0);
+    assert!(!outcome.plan_changed);
+    assert!(!day.exists());
+    let after = overview(std::slice::from_ref(&f.source));
+    assert_eq!((after[0].bytes, after[0].files), (0, 0));
 }
 
 #[test]
