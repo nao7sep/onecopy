@@ -2301,6 +2301,93 @@ fn move_out_modes_have_one_wire_name() {
 }
 
 #[test]
+fn move_keeps_a_later_changed_copy_and_all_its_companions() {
+    for mode in [MoveOutMode::MoveTrashRest, MoveOutMode::MoveDeleteRest] {
+        let (f, _, dest) = rotten_copy_fixture("rot-later-companions");
+        for sub in ["a", "b"] {
+            std::fs::write(f.root.join(sub).join("r.xmp"), format!("{sub}-sidecar")).unwrap();
+        }
+        std::fs::write(f.root.join("b/r.aae"), b"b-only-sidecar").unwrap();
+        scan(&f);
+        let hash: String = f.conn.query_row(
+            "SELECT content_hash FROM paths WHERE abs_path = ?1",
+            [f.root.join("a/r.jpg").to_string_lossy().as_ref()],
+            |row| row.get(0),
+        ).unwrap();
+        let paired: i64 = f.conn.query_row(
+            "SELECT COUNT(*) FROM paths WHERE companion_of IS NOT NULL",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(paired, 3);
+        std::fs::write(f.root.join("b/r.jpg"), b"rotten!-bytes").unwrap();
+
+        let outcome = move_out(
+            &f.conn, &f.app_root, &f.cache, ItemRef::Hash(&hash), &dest, mode,
+        ).unwrap();
+
+        assert_eq!(std::fs::read(dest.join("r.jpg")).unwrap(), b"healthy-bytes");
+        assert_eq!(std::fs::read(dest.join("r.xmp")).unwrap(), b"a-sidecar");
+        assert!(!dest.join("r.aae").exists());
+        for (name, bytes) in [
+            ("r.jpg", b"rotten!-bytes".as_slice()),
+            ("r.xmp", b"b-sidecar".as_slice()),
+            ("r.aae", b"b-only-sidecar".as_slice()),
+        ] {
+            assert_eq!(std::fs::read(f.root.join("b").join(name)).unwrap(), bytes);
+        }
+        assert!(!f.root.join("a/r.jpg").exists());
+        assert!(!f.root.join("a/r.xmp").exists());
+        assert_eq!(outcome.exported, 2);
+        assert_eq!(outcome.post_action.deleted_files, 2);
+        let issues: i64 = f.conn.query_row(
+            "SELECT COUNT(*) FROM active_issues WHERE kind = 'copy-error' AND path = ?1",
+            [f.root.join("b/r.jpg").to_string_lossy().as_ref()],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(issues, 1);
+    }
+}
+
+#[test]
+fn move_keeps_companions_of_an_unreadable_main_before_or_after_the_healthy_copy() {
+    for mode in [MoveOutMode::MoveTrashRest, MoveOutMode::MoveDeleteRest] {
+        for unreadable in ["a", "b"] {
+            let (f, _, dest) = rotten_copy_fixture("unreadable-main-companion");
+            for sub in ["a", "b"] {
+                std::fs::write(f.root.join(sub).join("r.xmp"), format!("{sub}-sidecar")).unwrap();
+            }
+            scan(&f);
+            let hash: String = f.conn.query_row(
+                "SELECT content_hash FROM paths WHERE file_name = 'r.jpg' LIMIT 1",
+                [], |row| row.get(0),
+            ).unwrap();
+            std::fs::rename(f.root.join(unreadable).join("r.jpg"), f._dir.path().join("unavailable.jpg")).unwrap();
+            std::fs::create_dir(f.root.join(unreadable).join("r.jpg")).unwrap();
+            let healthy = if unreadable == "a" { "b" } else { "a" };
+
+            let outcome = move_out(
+                &f.conn, &f.app_root, &f.cache, ItemRef::Hash(&hash), &dest, mode,
+            ).unwrap();
+
+            assert_eq!(std::fs::read(dest.join("r.jpg")).unwrap(), b"healthy-bytes");
+            assert_eq!(std::fs::read(dest.join("r.xmp")).unwrap(), format!("{healthy}-sidecar").as_bytes());
+            assert!(f.root.join(unreadable).join("r.jpg").is_dir());
+            assert_eq!(std::fs::read(f.root.join(unreadable).join("r.xmp")).unwrap(), format!("{unreadable}-sidecar").as_bytes());
+            assert!(!f.root.join(healthy).join("r.jpg").exists());
+            assert!(!f.root.join(healthy).join("r.xmp").exists());
+            assert_eq!(outcome.exported, 2);
+            assert_eq!(outcome.post_action.deleted_files, 2);
+            let issues: i64 = f.conn.query_row(
+                "SELECT COUNT(*) FROM active_issues WHERE kind = 'copy-error' AND path = ?1",
+                [f.root.join(unreadable).join("r.jpg").to_string_lossy().as_ref()],
+                |row| row.get(0),
+            ).unwrap();
+            assert_eq!(issues, 1);
+        }
+    }
+}
+
+#[test]
 fn move_keeps_a_changed_copys_companion_beside_it() {
     for mode in [MoveOutMode::MoveTrashRest, MoveOutMode::MoveDeleteRest] {
         let (f, _, dest) = rotten_copy_fixture("rot-companion");

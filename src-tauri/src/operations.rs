@@ -2231,11 +2231,14 @@ fn stage_delivery(
     cancelled: &dyn Fn() -> bool,
     on_progress: &mut dyn FnMut(MoveUnitProgress),
 ) -> Result<StageResult, String> {
-    let mut changed_sources = Vec::new();
-    for source in &delivery.sources {
-        if source.beside.is_some_and(|main| changed_mains.contains(&main)) {
-            // Paired with a main copy left in place because it changed.
-            changed_sources.push(source.path_id);
+    let mut changed_sources = delivery
+        .sources
+        .iter()
+        .filter(|source| source.beside.is_some_and(|main| changed_mains.contains(&main)))
+        .map(|source| source.path_id)
+        .collect::<Vec<_>>();
+    for (index, source) in delivery.sources.iter().enumerate() {
+        if changed_sources.contains(&source.path_id) {
             continue;
         }
         let staged = output_stage_path(&delivery.target)?;
@@ -2263,6 +2266,42 @@ fn stage_delivery(
                 changed_sources.push(source.path_id);
             }
             Ok((hash, bytes, private)) => {
+                if let Some(recorded) = recorded_hash {
+                    for remaining in &delivery.sources[index + 1..] {
+                        let verified = crate::file_identity::open_regular_nofollow(
+                            Path::new(&remaining.abs_path),
+                        )
+                        .and_then(|(mut file, _)| {
+                            crate::hashing::full_hash_file_cancellable(
+                                &mut file,
+                                remaining.bytes,
+                                cancelled,
+                                &mut |done, total| on_progress(MoveUnitProgress::Stream { done, total }),
+                            )
+                        });
+                        let (descriptor, detail) = match verified {
+                            Ok(current) if current == recorded => continue,
+                            Ok(_) => ("notice.copySourceChanged", String::new()),
+                            Err(error) if error.kind() == std::io::ErrorKind::Interrupted && cancelled() => {
+                                return Ok(StageResult::Cancelled);
+                            }
+                            Err(error) => ("notice.copySourceReadFailed", error.to_string()),
+                        };
+                        logging::warn(
+                            "move left an uncovered source copy in place",
+                            json!({ "path": remaining.abs_path, "target": delivery.target.to_string_lossy(), "error": { "message": detail } }),
+                        );
+                        crate::index_store::upsert_issue_with_descriptor(
+                            conn,
+                            Some(&remaining.abs_path),
+                            "copy-error",
+                            Some(descriptor),
+                            None,
+                            &detail,
+                        )?;
+                        changed_sources.push(remaining.path_id);
+                    }
+                }
                 return Ok(StageResult::Ready(
                     StagedOutput {
                         target: delivery.target.clone(),
@@ -2276,6 +2315,7 @@ fn stage_delivery(
             }
             Err(crate::hashing::CopyFailure::Cancelled) => return Ok(StageResult::Cancelled),
             Err(crate::hashing::CopyFailure::Source(error)) => {
+                changed_sources.push(source.path_id);
                 logging::warn(
                     "copy-out staging failed for one source",
                     json!({ "path": source.abs_path, "target": delivery.target.to_string_lossy(), "error": { "message": error.to_string() } }),
