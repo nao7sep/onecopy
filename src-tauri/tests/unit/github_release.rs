@@ -49,31 +49,43 @@ fn the_response_cap_admits_an_ordinary_release_with_assets_and_notes() {
 // `request_latest_tag`'s own `url` seam against a local raw-socket listener —
 // never a fake GitHub-shaped server, and never real network.
 
-/// Accepts exactly one connection, hands the raw request bytes back over
-/// `sender`, and writes `response` before closing. Nothing here understands
-/// GitHub's API shape; it is a bare byte-level stand-in for "some server".
-fn respond_once(response: &'static str) -> (std::net::SocketAddr, std::sync::mpsc::Receiver<String>) {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+/// Owns a local server task; a failed assertion cancels its socket work.
+struct Server {
+    addr: std::net::SocketAddr,
+    requests: tokio::sync::oneshot::Receiver<String>,
+    task: tokio::task::JoinHandle<()>,
+}
+impl Drop for Server {
+    fn drop(&mut self) { self.task.abort(); }
+}
+impl Server {
+    async fn stop(&mut self) {
+        self.task.abort();
+        let _ = (&mut self.task).await;
+    }
+}
+async fn respond_once(response: Option<String>) -> Server {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        use std::io::{Read, Write};
-        if let Ok((mut stream, _)) = listener.accept() {
-            let mut buf = [0u8; 8192];
-            let mut request = Vec::new();
-            loop {
-                let n = stream.read(&mut buf).unwrap_or(0);
-                request.extend_from_slice(&buf[..n]);
-                if n == 0 || request.windows(4).any(|w| w == b"\r\n\r\n") {
-                    break;
-                }
-            }
-            let _ = tx.send(String::from_utf8_lossy(&request).to_string());
-            let _ = stream.write_all(response.as_bytes());
-            let _ = stream.flush();
+    let (tx, requests) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let Ok((mut stream, _)) = listener.accept().await else { return; };
+        let mut buf = [0u8; 8192];
+        let mut request = Vec::new();
+        loop {
+            let Ok(n) = stream.read(&mut buf).await else { return; };
+            request.extend_from_slice(&buf[..n]);
+            if n == 0 || request.windows(4).any(|w| w == b"\r\n\r\n") { break; }
+        }
+        let _ = tx.send(String::from_utf8_lossy(&request).into_owned());
+        if let Some(response) = response {
+            let _ = stream.write_all(response.as_bytes()).await;
+        } else {
+            std::future::pending::<()>().await;
         }
     });
-    (addr, rx)
+    Server { addr, requests, task }
 }
 
 fn tag_response(tag: &str) -> String {
@@ -86,13 +98,16 @@ fn tag_response(tag: &str) -> String {
 
 #[tokio::test]
 async fn the_request_carries_its_fixed_headers_and_no_authorization() {
-    let (addr, requests) = respond_once(Box::leak(tag_response("v1.0.0").into_boxed_str()));
+    let mut server = respond_once(Some(tag_response("v1.0.0"))).await;
+    let addr = server.addr;
     let url = format!("http://{addr}/repos/nao7sep/onecopy/releases/latest");
 
     let result = request_latest_tag(&url).await;
 
+    let request = tokio::time::timeout(Duration::from_secs(5), &mut server.requests).await;
+    server.stop().await;
     assert_eq!(result, Ok("v1.0.0".to_string()));
-    let request = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+    let request = request.unwrap().unwrap();
     let lower = request.to_ascii_lowercase();
     assert!(request.contains("GET /repos/nao7sep/onecopy/releases/latest"));
     assert!(lower.contains("accept: application/vnd.github+json"));
@@ -106,44 +121,44 @@ async fn the_request_carries_its_fixed_headers_and_no_authorization() {
 
 #[tokio::test]
 async fn a_failed_response_is_not_retried() {
-    let (addr, requests) = respond_once(
-        "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-    );
+    let mut server = respond_once(Some(
+        "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into(),
+    )).await;
+    let addr = server.addr;
     let url = format!("http://{addr}/repos/nao7sep/onecopy/releases/latest");
 
     let result = request_latest_tag(&url).await;
 
+    let request = tokio::time::timeout(Duration::from_secs(5), &mut server.requests).await;
+    server.stop().await;
     assert!(result.is_err());
-    // The listener accepts exactly one connection; a retry would hang here
-    // waiting for a second one that never arrives, instead of finishing.
-    assert!(requests.recv_timeout(Duration::from_secs(5)).is_ok());
+    assert!(request.unwrap().is_ok());
 }
 
-// The clock is paused: once the request waits on a silent server, tokio
-// advances virtual time straight to the next timer, so the fixed timeout is
-// observed exactly without being waited out.
-#[tokio::test(start_paused = true)]
+// Start virtual time only after the server has actually read the request.
+#[tokio::test]
 async fn a_request_that_never_gets_a_response_is_bounded_by_the_fixed_timeout() {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
-    std::thread::spawn(move || {
-        // Accept and hold the connection open with no response, forever.
-        if let Ok((stream, _)) = listener.accept() {
-            std::thread::sleep(Duration::from_secs(60));
-            drop(stream);
-        }
-    });
-    let url = format!("http://{addr}/repos/nao7sep/onecopy/releases/latest");
-
+    let mut server = respond_once(None).await;
+    let url = format!("http://{}/repos/nao7sep/onecopy/releases/latest", server.addr);
+    let request = request_latest_tag(&url);
+    tokio::pin!(request);
+    let ready = tokio::select! {
+        result = &mut request => panic!("request finished before the silent server received it: {result:?}"),
+        ready = tokio::time::timeout(Duration::from_secs(5), &mut server.requests) => ready,
+    };
+    // Settle the server before reporting readiness errors as well.
+    if !matches!(ready, Ok(Ok(_))) {
+        server.stop().await;
+        panic!("silent server did not receive the request: {ready:?}");
+    }
+    tokio::time::pause();
     let started = tokio::time::Instant::now();
-    let result = request_latest_tag(&url).await;
+    let result = request.await;
     let elapsed = started.elapsed();
-
+    server.stop().await;
     assert!(result.is_err());
-    assert!(
-        (REQUEST_TIMEOUT..REQUEST_TIMEOUT + Duration::from_secs(1)).contains(&elapsed),
-        "the 10 s request timeout did not end the wait: {elapsed:?}"
-    );
+    assert!((REQUEST_TIMEOUT - Duration::from_secs(1)..REQUEST_TIMEOUT + Duration::from_secs(1)).contains(&elapsed),
+        "the request timeout did not end the established wait: {elapsed:?}");
 }
 
 #[tokio::test]
