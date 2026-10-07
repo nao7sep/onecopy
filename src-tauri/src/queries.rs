@@ -34,7 +34,7 @@ pub struct SectionCounts {
     pub others: Vec<MonthSection>,
 }
 
-#[derive(Serialize, Debug, PartialEq, Eq)]
+#[derive(Serialize, Debug, PartialEq, Eq, Clone, Hash)]
 pub struct SectionLocation {
     pub kind: String,
     pub month: String,
@@ -94,17 +94,57 @@ pub fn section_for_identity(
             [identity.path_id], |row| Ok((row.get(0)?, row.get(1)?)),
         ).optional()
     }.map_err(|error| error.to_string())?;
-    facts.map(|(kind, instant)| {
-        let month = match instant {
-            None => "undated".to_string(),
-            Some(value) => {
-                let local = display_tz.timestamp_millis_opt(value).single()
-                    .ok_or_else(|| "Item date is outside the supported range".to_string())?;
-                format!("{:04}-{:02}", local.year(), local.month())
-            }
-        };
-        Ok(SectionLocation { kind, month })
-    }).transpose()
+    facts.map(|(kind, instant)| section_from_facts(kind, instant, display_tz)).transpose()
+}
+
+fn section_from_facts(kind: String, instant: Option<i64>, display_tz: Tz) -> Result<SectionLocation, String> {
+    let month = match instant {
+        None => "undated".to_string(),
+        Some(value) => {
+            let local = display_tz.timestamp_millis_opt(value).single()
+                .ok_or_else(|| "Item date is outside the supported range".to_string())?;
+            format!("{:04}-{:02}", local.year(), local.month())
+        }
+    };
+    Ok(SectionLocation { kind, month })
+}
+
+/// Conservative section scope for directory restats, captured on both sides
+/// of a change. Include descendants (deleted folders) and resolve hashes via
+/// the logical item so copies in other roots keep their shared display month.
+pub(crate) fn sections_under_directories(
+    conn: &Connection,
+    dirs: &[String],
+    display_tz: Tz,
+) -> Result<HashSet<SectionLocation>, String> {
+    let mut sections = HashSet::new();
+    // Read logical dates in one query per directory, never one query per file.
+    // Prefix bounds retain the directory index and exclude sibling prefixes.
+    let mut statement = conn.prepare(
+        "WITH affected AS (
+           SELECT content_hash, kind, resolved_utc_ms, review_visible FROM paths
+           WHERE missing = 0 AND companion_of IS NULL
+             AND (dir_path = ?1 OR (dir_path >= ?2 AND dir_path < ?3))
+         )
+         SELECT logical.kind, logical.resolved_utc_ms FROM affected
+         JOIN review_contents AS logical USING (content_hash) WHERE logical.live_copy_count > 0
+         UNION
+         SELECT 'other', resolved_utc_ms FROM affected
+         WHERE content_hash IS NULL AND kind NOT IN ('image', 'video') AND review_visible = 1"
+    ).map_err(|error| error.to_string())?;
+    for dir in dirs {
+        let base = dir.trim_end_matches(std::path::MAIN_SEPARATOR);
+        let prefix = format!("{base}{}", std::path::MAIN_SEPARATOR);
+        let upper = format!("{base}{}", char::from(std::path::MAIN_SEPARATOR as u8 + 1));
+        let facts = statement.query_map(rusqlite::params![dir, prefix, upper], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+        }).map_err(|error| error.to_string())?;
+        for fact in facts {
+            let (kind, instant) = fact.map_err(|error| error.to_string())?;
+            sections.insert(section_from_facts(kind, instant, display_tz)?);
+        }
+    }
+    Ok(sections)
 }
 
 const LOGICAL_MONTH_COUNT_SQL: &str =

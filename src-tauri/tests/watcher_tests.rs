@@ -463,3 +463,15 @@ fn a_root_that_does_not_answer_never_keeps_another_root_unwatched() {
     volume.release();
     assert!(volume.wait_until_settled(std::time::Duration::from_secs(5)));
 }
+
+#[test]
+fn callback_failure_marks_only_its_root_for_recovery_even_without_a_queued_event() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let affected_root = AtomicBool::new(false);
+    let other_root = AtomicBool::new(false);
+    forward_or_flag_overflow(&tx, &affected_root, Err(notify::Error::generic("events lost")));
+    assert!(affected_root.load(Ordering::SeqCst));
+    assert!(!other_root.load(Ordering::SeqCst));
+    assert!(rx.try_recv().is_err(), "the root's flag drives recovery even on an idle queue");
+}

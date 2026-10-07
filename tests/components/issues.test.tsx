@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 //
-// One current-run diagnostic inbox, without work-admission controls.
+// One current-run diagnostic inbox with actions for the affected condition.
 
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import { render, cleanup, act, fireEvent, screen } from "@testing-library/react";
@@ -9,6 +9,7 @@ import { useAppShellStore } from "../../src/state/app-shell-store";
 import IssuesModal from "../../src/components/IssuesModal";
 import { useIssuesStore, type IssueRow } from "../../src/state/issues-store";
 import { invokeCalls, mockCommands, mockSectionItems, resetTauriMocks } from "../mocks/tauri";
+import { useSectionsStore } from "../../src/state/sections-store";
 import { useItemsStore } from "../../src/state/items-store";
 import { EMPTY_ITEM_WORK } from "../../src/models/items";
 import { I18nProvider } from "../../src/i18n/I18nContext";
@@ -43,6 +44,23 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("the issues modal", () => {
+  it("offers source checking beside a failed watcher recovery without dismissing the Issue", async () => {
+    useSectionsStore.setState({ sourceCheck: { ...useSectionsStore.getInitialState().sourceCheck, running: false } });
+    mockCommands({
+      get_issues: () => ({ total: 1, rows: [row(1, { kind: "watcher-recovery-failed", path: "/source" })] }),
+      start_source_check: () => true,
+      index_work_snapshot: () => ({ sourceCheck: { ...useSectionsStore.getInitialState().sourceCheck, running: true }, fileInformation: useSectionsStore.getInitialState().fileInformation }),
+      log_event: () => null,
+      activity_record: () => null,
+    });
+    render(<IssuesModal open onClose={() => {}} />);
+    const action = await screen.findByRole("button", { name: "Check source folders" });
+    await act(async () => fireEvent.click(action));
+    expect(invokeCalls.some((call) => call.command === "start_source_check")).toBe(true);
+    expect(invokeCalls.some((call) => call.command.includes("dismiss"))).toBe(false);
+    expect(action.hasAttribute("disabled")).toBe(true);
+  });
+
   it("takes a model-load Issue directly to its work controls without dismissing it", async () => {
     mockCommands({ get_issues: () => ({ total: 1, rows: [row(1, { path: null, kind: "model-unavailable-faces", messageKey: "notice.modelUnavailable", message: "invalid model header" })] }) });
     useAppShellStore.setState({ utilitySurface: "issues" });

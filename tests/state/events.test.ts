@@ -214,6 +214,38 @@ describe("library work events", () => {
 });
 
 describe("watcher events", () => {
+  it("skips an unchanged section, unions a burst, and reads the current section at refresh time", async () => {
+    const { useItemsStore } = await import("../../src/state/items-store");
+    await settle();
+    vi.useFakeTimers();
+    const refresh = vi.spyOn(useItemsStore.getState(), "refresh").mockResolvedValue();
+    try {
+      useItemsStore.setState({ selected: { kind: "image", month: "2026-01" } });
+      fireEvent("watch://updated", { sections: [{ kind: "video", month: "2026-01" }] });
+      await vi.advanceTimersByTimeAsync(250);
+      expect(refresh).not.toHaveBeenCalled();
+      fireEvent("watch://updated", { sections: [{ kind: "image", month: "2026-02" }] });
+      fireEvent("watch://updated", { sections: [{ kind: "video", month: "2026-03" }] });
+      useItemsStore.setState({ selected: { kind: "image", month: "2026-02" } });
+      await vi.advanceTimersByTimeAsync(250);
+      expect(refresh).toHaveBeenCalledTimes(1);
+      fireEvent("watch://updated", { sections: [] });
+      fireEvent("watch://updated", {}); // unknown scope must dominate
+      await vi.advanceTimersByTimeAsync(250);
+      expect(refresh).toHaveBeenCalledTimes(2);
+    } finally { refresh.mockRestore(); vi.useRealTimers(); }
+  });
+
+  it("refreshes after recovery and retains the need to check unresolved roots", async () => {
+    fireEvent("watch://rescan-needed", {});
+    fireEvent("watch://recovered", { rescanNeeded: true });
+    expect(sections.getState().rescanNeeded).toBe(true);
+    await settle();
+    fireEvent("watch://recovered", { rescanNeeded: false });
+    expect(sections.getState().rescanNeeded).toBe(false);
+    await settle();
+  });
+
   it("flags rescan-needed on overflow", async () => {
     sections.setState({ rescanNeeded: false });
 

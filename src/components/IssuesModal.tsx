@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { modelIssueLabel } from "../models/workReasons";
+import { useSectionsStore } from "../state/sections-store";
 import { useAppShellStore } from "../state/app-shell-store";
 import { X } from "lucide-react";
 import { useIssuesStore, type IssueRow } from "../state/issues-store";
@@ -29,6 +30,7 @@ export default function IssuesModal({ open, onClose }: {
   useDisplayZone();
   const { t, text, dateTime } = useI18n();
   const { rows, total, loading, loadingMore, error, load, loadMore, dismiss, dismissAll } = useIssuesStore();
+  const checkingSources = useSectionsStore((state) => state.sourceCheck.running);
   const request = useRef(0);
   const revealed = useRef(false);
   // The key, not a finished sentence, so the message follows a language change.
@@ -123,6 +125,11 @@ export default function IssuesModal({ open, onClose }: {
               {modelIssueLabel(row.kind) !== null ? (
                 <Button className="mt-2" onClick={() => useAppShellStore.getState().openUtility("backgroundWork")}>
                   {t("app.openBackgroundWork")}
+                </Button>
+              ) : null}
+              {["source-check-failed", "watcher-failed", "watcher-root-failed", "watcher-recovery-failed"].includes(row.kind) ? (
+                <Button className="mt-2" disabled={checkingSources} onClick={() => void useSectionsStore.getState().startSourceCheck()}>
+                  {t("app.checkSources")}
                 </Button>
               ) : null}
               {recordedDetail(row) !== null ? (

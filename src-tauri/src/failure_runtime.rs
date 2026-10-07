@@ -22,7 +22,7 @@ fn presentation_for(kind: &str) -> &'static str {
             "Preparation and enrichment stopped unexpectedly. Resume a row in Background work to restart processing.",
         "config-save-failed" | "state-save-failed" =>
             "OneCopy could not save an application setting. Your library files were not changed.",
-        "source-check-failed" | "watcher-failed" | "watcher-root-failed" =>
+        "source-check-failed" | "watcher-failed" | "watcher-root-failed" | "watcher-recovery-failed" =>
             "OneCopy could not monitor a source folder. Check that the folder is available, then retry the scan.",
         "file-information-state-failed" | "background-work-state-failed" =>
             "OneCopy could not save background-work progress. Restart OneCopy before continuing.",
@@ -63,7 +63,7 @@ pub(crate) fn condition_message_key(kind: &str) -> &'static str {
         "sleep-prevention-failed" => "notice.sleepPreventionFailed",
         "derived-worker-failed" => "notice.derivedWorkerFailed",
         "config-save-failed" | "state-save-failed" => "notice.configSaveFailed",
-        "source-check-failed" | "watcher-failed" | "watcher-root-failed" =>
+        "source-check-failed" | "watcher-failed" | "watcher-root-failed" | "watcher-recovery-failed" =>
             "notice.sourceCheckFailed",
         "file-information-state-failed" | "background-work-state-failed" =>
             "notice.fileInformationStateFailed",

@@ -735,6 +735,17 @@ pub fn run_source_check(
     settings: &ScanSettings,
     progress: &dyn Fn(ScanProgress),
 ) -> Result<ScanSummary, String> {
+    run_source_check_scoped(conn, settings, None, progress)
+}
+
+/// A recovery keeps the complete configuration authority but walks only the
+/// affected configured roots. Narrowing settings would forget unrelated roots.
+pub fn run_source_check_scoped(
+    conn: &Connection,
+    settings: &ScanSettings,
+    roots: Option<&[String]>,
+    progress: &dyn Fn(ScanProgress),
+) -> Result<ScanSummary, String> {
     let _awake = crate::sleep_prevention::begin_work();
     let mut summary = ScanSummary::default();
 
@@ -742,13 +753,16 @@ pub fn run_source_check(
     // stop appearing the moment the next scan runs, not linger until someone
     // notices its files in a section.
     let cache = crate::preview::CachePaths::new(settings.cache_root.clone());
-    forget_unconfigured_roots(conn, &settings.source_dirs, &cache)?;
+    if roots.is_none() { forget_unconfigured_roots(conn, &settings.source_dirs, &cache)?; }
 
-    let root_total = settings.source_dirs.len() as u64;
+    let checked_roots: Vec<String> = settings.source_dirs.iter()
+        .filter(|root| roots.is_none_or(|scope| scope.contains(root)))
+        .cloned().collect();
+    let root_total = checked_roots.len() as u64;
     let visibility_roots = crate::visibility_index::source_root_spellings(conn, &settings.source_dirs)?;
     let mut walk_failures = 0u64;
     progress(ScanProgress::phase(ScanPhase::Walk, root_total, None));
-    for (root_index, root) in settings.source_dirs.iter().enumerate() {
+    for (root_index, root) in checked_roots.iter().enumerate() {
         // The volume-substitution gate is per root, not per source pass
         // (R3-07, R1-14): a backup drive swapped mid-session at one
         // configured path must not be walked under the original drive's
@@ -792,7 +806,7 @@ pub fn run_source_check(
                 continue;
             }
         };
-        let configured_root = settings.source_dirs[root_index].as_str();
+        let configured_root = checked_roots[root_index].as_str();
         let root = root.to_string_lossy().to_string();
         let root = root.as_str();
         let stats = walk_root_with_progress(
@@ -807,6 +821,9 @@ pub fn run_source_check(
             Some(settings.data_root()),
             progress,
         )?;
+        if stats.errors == 0 {
+            crate::index_store::clear_issues(conn, configured_root, &["watcher-recovery-failed"])?;
+        }
         summary.roots += 1;
         summary.seen += stats.seen;
         summary.added += stats.added;
@@ -816,7 +833,7 @@ pub fn run_source_check(
 
     // Force one later companion projection even when a walk changed only
     // absence or relationships rather than creating ordinary pending rows.
-    begin_scoped_index_repair(conn, &settings.source_dirs)?;
+    begin_scoped_index_repair(conn, &checked_roots)?;
     Ok(summary)
 }
 

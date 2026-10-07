@@ -39,3 +39,37 @@ fn a_directory_that_fails_to_restat_keeps_the_watcher_failure_visible() {
     let clean = super::restat_batch(&conn, &[root], &settings, &|| Ok(())).unwrap();
     assert!(clean.failure().is_none(), "a clean pass clears the condition");
 }
+
+#[test]
+fn recovery_scope_uses_path_boundaries_and_includes_overlapping_configured_roots() {
+    use std::path::PathBuf;
+    let roots = vec!["/photos".to_string(), "/photos/sub".to_string(), "/photos-other".to_string()];
+    assert_eq!(super::affected_roots(&roots, &[PathBuf::from("/photos/sub/day")]), roots[..2]);
+    assert_eq!(super::affected_roots(&roots, &[PathBuf::from("/photos-extra")]), roots);
+}
+
+#[test]
+fn watcher_section_scope_covers_descendants_but_not_sibling_prefixes() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("photos");
+    let sibling = temp.path().join("photos-other");
+    std::fs::create_dir_all(root.join("child")).unwrap();
+    std::fs::create_dir_all(&sibling).unwrap();
+    std::fs::write(root.join("child/a.txt"), b"a").unwrap();
+    std::fs::write(sibling.join("b.txt"), b"b").unwrap();
+    let conn = crate::index_store::open(&temp.path().join("index.sqlite3")).unwrap();
+    let roots: Vec<String> = [&root, &sibling].iter().map(|path| crate::winpath::for_fs(path).to_string_lossy().into_owned()).collect();
+    let settings = crate::scanner::settings_from_config(Some(&serde_json::json!({ "sourceDirs": roots })), &temp.path().join("app"), 0);
+    crate::scanner::run_source_check(&conn, &settings, &|_| {}).unwrap();
+    conn.execute("UPDATE paths SET resolved_utc_ms = CASE WHEN file_name = 'a.txt' THEN 1767225600000 ELSE 1769904000000 END", []).unwrap();
+    let stored = vec![crate::scanner::settled_root(&conn, &root).unwrap().to_string_lossy().into_owned()];
+    let sections = crate::queries::sections_under_directories(&conn, &stored, chrono_tz::UTC).unwrap();
+    assert_eq!(sections.len(), 1);
+    assert!(sections.contains(&crate::queries::SectionLocation { kind: "other".to_string(), month: "2026-01".to_string() }));
+    // Capturing before and after a changed date retains both affected months.
+    conn.execute("UPDATE paths SET resolved_utc_ms = 1772323200000 WHERE file_name = 'a.txt'", []).unwrap();
+    let mut both = sections;
+    both.extend(crate::queries::sections_under_directories(&conn, &stored, chrono_tz::UTC).unwrap());
+    assert_eq!(both.len(), 2);
+    assert!(both.contains(&crate::queries::SectionLocation { kind: "other".to_string(), month: "2026-03".to_string() }));
+}

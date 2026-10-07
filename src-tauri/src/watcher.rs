@@ -3,8 +3,8 @@
 //! debounced background pass re-stats exactly those directories, runs the
 //! pending pipeline stages over whatever changed, and tells the UI. Correctness
 //! never depends on it — app-owned mutations update the index synchronously,
-//! and a watcher overflow ("events lost") flags roots as rescan-needed in the
-//! UI instead of failing silently.
+//! and a watcher overflow ("events lost") rechecks the affected roots
+//! automatically. Failed recovery stays in Issues.
 //!
 //! One watcher thread per app run; events are collected into a dirty set and
 //! drained every couple of seconds. While a full scan is running the drain
@@ -208,12 +208,13 @@ pub fn start(app: tauri::AppHandle, source_dirs: Vec<String>) -> Result<bool, St
         .name("onecopy-watcher".to_string())
         .spawn(move || {
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run(handle.clone(), source_dirs, generation)
+                run(handle.clone(), source_dirs.clone(), generation)
             }));
             match outcome {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) if owns_generation(generation) => {
-                    report_failure(&handle, &error)
+                    report_failure(&handle, &error);
+                    recover_roots(&handle, &source_dirs, generation);
                 }
                 Ok(Err(_)) => {}
                 Err(payload) => {
@@ -224,6 +225,7 @@ pub fn start(app: tauri::AppHandle, source_dirs: Vec<String>) -> Result<bool, St
                         .unwrap_or_else(|| "watcher stopped unexpectedly".to_string());
                     if owns_generation(generation) {
                         report_failure(&handle, &error);
+                        recover_roots(&handle, &source_dirs, generation);
                     } else {
                         logging::error(
                             "watcher failed after its generation retired",
@@ -249,8 +251,7 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
     // path the drain loop already uses for `need_rescan()`, so the affected
     // roots are rechecked instead of the process either stalling or growing
     // an unbounded backlog.
-    let overflowed_while_blocked = Arc::new(AtomicBool::new(false));
-    let handler_overflow = overflowed_while_blocked.clone();
+    let mut recovery_flags = Vec::new();
     // One watcher per root, each registered in its own bounded call, so a
     // root whose drive does not answer never keeps the others unwatched.
     let mut watchers = Vec::new();
@@ -259,7 +260,10 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
         if !owns_generation(generation) {
             return Ok(());
         }
-        let (tx, handler_overflow) = (tx.clone(), handler_overflow.clone());
+        let handler_overflow = Arc::new(AtomicBool::new(false));
+        recovery_flags.push((root.clone(), handler_overflow.clone()));
+        let registration_failed = handler_overflow.clone();
+        let tx = tx.clone();
         let handler = move |event: notify::Result<notify::Event>| {
             forward_or_flag_overflow(&tx, &handler_overflow, event);
         };
@@ -273,6 +277,7 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
                 json!({ "root": root, "error": { "message": err.to_string() } }),
             );
             record_root_condition(&app, root, Some(&err.to_string()))?;
+            registration_failed.store(true, Ordering::SeqCst);
         } else {
             if !owns_generation(generation) {
                 return Ok(());
@@ -299,10 +304,13 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
         // retire this generation even on a completely quiet filesystem.
         match rx.recv_timeout(Duration::from_secs(1)) {
             Ok(event) => collect(event, &mut dirty, &mut overflowed, &data_root),
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Timeout) => {},
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 return Err("watcher event channel disconnected".to_string())
             }
+        }
+        if dirty.is_empty() && !overflowed && recovery_flags.iter().all(|(_, flag)| !flag.load(Ordering::SeqCst)) {
+            continue;
         }
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         while let Ok(event) =
@@ -315,26 +323,15 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
             return Ok(());
         }
 
-        if overflowed_while_blocked.swap(false, Ordering::SeqCst) {
-            overflowed = true;
-        }
+        let mut recovery_roots: Vec<String> = recovery_flags.iter()
+            .filter(|(_, flag)| flag.swap(false, Ordering::SeqCst))
+            .map(|(root, _)| root.clone()).collect();
         if overflowed {
             overflowed = false;
-            dirty.clear();
-            record_activity(
-                crate::activity::ActivityKind::Failed,
-                generation,
-                crate::activity::ActivityState::Failed,
-                Some(crate::activity::ActivityReason::Error),
-                None,
-            );
-            crate::failure_runtime::emit_or_record(
-                &app,
-                "watch://rescan-needed",
-                json!({ "reason": "event overflow" }),
-            );
-            logging::warn("watcher overflow; roots flagged rescan-needed", json!({}));
-            continue;
+            recovery_roots = source_dirs.clone();
+        }
+        if !recovery_roots.is_empty() {
+            recover_roots(&app, &recovery_roots, generation);
         }
         if dirty.is_empty() {
             continue;
@@ -350,7 +347,11 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
                 // library stale until a source check, so the pass reports the
                 // watcher failure and asks for a recheck instead of clearing it.
                 match pass.failure() {
-                    Some(failure) => report_failure(&app, &failure),
+                    Some(failure) => {
+                        logging::warn("watcher pass needs recovery", json!({ "error": { "message": failure } }));
+                        let roots = affected_roots(&source_dirs, &pass.failed.iter().map(|(dir, _)| dir.clone()).collect::<Vec<_>>());
+                        recover_roots(&app, &roots, generation);
+                    },
                     None => crate::failure_runtime::clear("watcher-failed", None),
                 }
                 if pass.changed == 0 {
@@ -367,7 +368,7 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
                 crate::failure_runtime::emit_or_record(
                     &app,
                     "watch://updated",
-                    json!({ "changed": changed }),
+                    json!({ "changed": changed, "sections": pass.sections }),
                 );
             }
             Err(err) => {
@@ -375,7 +376,7 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
                     "watcher pass failed",
                     json!({ "error": { "message": &err } }),
                 );
-                report_failure(&app, &err);
+                recover_roots(&app, &affected_roots(&source_dirs, &dirs), generation);
             }
         }
     }
@@ -424,6 +425,64 @@ fn join_finished(workers: &mut Vec<JoinHandle<()>>) {
             index += 1;
         }
     }
+}
+
+fn affected_roots(configured: &[String], dirs: &[PathBuf]) -> Vec<String> {
+    let matched: Vec<String> = configured.iter().filter(|root| dirs.iter().any(|dir|
+        crate::winpath::for_fs(dir).starts_with(crate::winpath::for_fs(Path::new(root)).as_ref())
+    )).cloned().collect();
+    // A path alias which cannot be attributed safely must not drop recovery.
+    if matched.is_empty() { configured.to_vec() } else { matched }
+}
+
+fn recover_roots(app: &tauri::AppHandle, roots: &[String], generation: u64) {
+    if roots.is_empty() || !owns_generation(generation) { return; }
+    crate::failure_runtime::emit_or_record(app, "watch://rescan-needed", json!({ "roots": roots }));
+    for root in roots {
+        let result = crate::scan_runtime::with_watcher_claim(
+            move || !owns_generation(generation),
+            || {
+                let data_root = crate::paths::data_root()?;
+                let config = crate::storage::config(&data_root)?;
+                let settings = scanner::settings_from_config(Some(&config), &data_root, chrono::Utc::now().timestamp_millis());
+                let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
+                let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::Watcher, None, None);
+                let report = trace.progress_reporter();
+                let result = scanner::run_source_check_scoped(&conn, &settings, Some(std::slice::from_ref(root)), &|progress| report(progress.done, progress.total));
+                if result.as_ref().is_ok_and(|summary| summary.failures > 0) {
+                    trace.finish(crate::activity::ActivityState::Failed, None);
+                } else { trace.result(&result); }
+                result
+            },
+        );
+        if !owns_generation(generation) { return; }
+        match result {
+            Ok(summary) if summary.failures == 0 => {
+                crate::failure_runtime::clear("watcher-recovery-failed", Some(root));
+            }
+            result => {
+                let detail = match result {
+                    Err(error) => error,
+                    Ok(summary) => format!("{} source entries could not be checked", summary.failures),
+                };
+                if crate::failure_runtime::report(app, "watcher-recovery-failed", Some(root), &detail).is_err() {
+                    return;
+                }
+            }
+        }
+    }
+    crate::file_information_runtime::wake(app.clone());
+    // A successful check of one root cannot hide an unresolved condition in
+    // another root, or claim that a watcher which stopped is running again.
+    let unresolved = crate::paths::data_root().and_then(|root| {
+        let conn = crate::index_store::open(&root.join(crate::storage::INDEX_DB_FILE_NAME))?;
+        conn.query_row("SELECT EXISTS(SELECT 1 FROM active_issues WHERE kind IN ('watcher-recovery-failed', 'watcher-failed', 'watcher-root-failed'))", [], |row| row.get::<_, bool>(0)).map_err(|error| error.to_string())
+    });
+    let rescan_needed = match unresolved {
+        Ok(value) => value,
+        Err(error) => { crate::scan_runtime::record_runtime_failure(app, "watcher-recovery-failed", &error); true }
+    };
+    crate::failure_runtime::emit_or_record(app, "watch://recovered", json!({ "roots": roots, "rescanNeeded": rescan_needed }));
 }
 
 fn report_failure(app: &tauri::AppHandle, error: &str) {
@@ -497,7 +556,7 @@ pub fn forward_or_flag_overflow(
     overflowed: &AtomicBool,
     event: notify::Result<notify::Event>,
 ) {
-    if tx.try_send(event).is_err() {
+    if event.as_ref().map_or(true, |event| event.need_rescan()) || tx.try_send(event).is_err() {
         overflowed.store(true, Ordering::SeqCst);
     }
 }
@@ -570,6 +629,7 @@ pub fn collect(
 pub(crate) struct WatchPass {
     changed: u64,
     failed: Vec<(PathBuf, String)>,
+    sections: Option<HashSet<crate::queries::SectionLocation>>,
 }
 
 impl WatchPass {
@@ -598,7 +658,7 @@ pub(crate) fn restat_batch(
     settings: &scanner::ScanSettings,
     between: &dyn Fn() -> Result<(), String>,
 ) -> Result<WatchPass, String> {
-    let mut pass = WatchPass { changed: 0, failed: Vec::new() };
+    let mut pass = WatchPass { changed: 0, failed: Vec::new(), sections: None };
     let data_root = settings.data_root();
     for dir in dirs {
         between()?;
@@ -650,7 +710,9 @@ fn process_dirty_claimed(
         .collect();
     let repair_roots = scanner::begin_scoped_index_repair(&conn, &affected_dirs)?;
 
-    let WatchPass { changed, failed } = restat_batch(&conn, dirs, &settings, &|| {
+    let timezone = crate::queries::display_timezone();
+    let before = crate::queries::sections_under_directories(&conn, &affected_dirs, timezone)?;
+    let WatchPass { changed, failed, .. } = restat_batch(&conn, dirs, &settings, &|| {
         if !owns_generation(generation) {
             return Err(scanner::CANCELLED.to_string());
         }
@@ -670,5 +732,7 @@ fn process_dirty_claimed(
     } else if failed.is_empty() {
         scanner::complete_scoped_index_repair(&conn, &repair_roots)?;
     }
-    Ok(WatchPass { changed, failed })
+    let mut sections = before;
+    sections.extend(crate::queries::sections_under_directories(&conn, &affected_dirs, timezone)?);
+    Ok(WatchPass { changed, failed, sections: (!sections.is_empty()).then_some(sections) })
 }

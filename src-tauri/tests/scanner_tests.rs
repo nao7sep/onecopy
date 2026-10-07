@@ -715,6 +715,50 @@ fn source_check_leaves_relationship_work_for_the_independent_tail() {
 }
 
 #[test]
+fn scoped_source_check_repairs_only_the_requested_root_and_retains_other_sources() {
+    let f = fixture("scoped-recovery");
+    let other = f._dir.path().join("other");
+    std::fs::create_dir(&other).unwrap();
+    std::fs::write(f.root.join("gone.txt"), b"gone").unwrap();
+    std::fs::write(other.join("retained.txt"), b"retained").unwrap();
+    let settings = ScanSettings {
+        source_dirs: vec![f.root.to_string_lossy().to_string(), other.to_string_lossy().to_string()],
+        lists: lists(), resolution: resolution_config(), pairing_enabled: true,
+        cache_root: f._dir.path().join("apphome/cache"),
+    };
+    run_source_check(&f.conn, &settings, &|_| {}).unwrap();
+    std::fs::remove_file(f.root.join("gone.txt")).unwrap();
+    std::fs::write(f.root.join("new.txt"), b"new").unwrap();
+    std::fs::write(other.join("not-yet-discovered.txt"), b"later").unwrap();
+    let summary = run_source_check_scoped(&f.conn, &settings, Some(&settings.source_dirs[..1]), &|_| {}).unwrap();
+    assert_eq!(summary.roots, 1);
+    assert_eq!(summary.failures, 0);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths WHERE file_name = 'gone.txt' AND missing = 1"), 1);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths WHERE file_name IN ('new.txt', 'retained.txt') AND missing = 0"), 2);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths WHERE file_name = 'not-yet-discovered.txt'"), 0);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM scan_dirs"), 2);
+}
+
+#[test]
+fn failed_scoped_recovery_retains_the_retry_issue_until_that_root_is_checked_successfully() {
+    let f = fixture("failed-scoped-recovery");
+    let root = f.root.to_string_lossy().to_string();
+    let settings = ScanSettings {
+        source_dirs: vec![root.clone()], lists: lists(), resolution: resolution_config(),
+        pairing_enabled: true, cache_root: f._dir.path().join("apphome/cache"),
+    };
+    index_store::upsert_issue(&f.conn, Some(&root), "watcher-recovery-failed", "offline").unwrap();
+    std::fs::remove_dir(&f.root).unwrap();
+    let failed = run_source_check_scoped(&f.conn, &settings, Some(&settings.source_dirs), &|_| {}).unwrap();
+    assert_eq!(failed.failures, 1);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM active_issues WHERE kind = 'watcher-recovery-failed'"), 1);
+    std::fs::create_dir(&f.root).unwrap();
+    let recovered = run_source_check(&f.conn, &settings, &|_| {}).unwrap();
+    assert_eq!(recovered.failures, 0);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM active_issues WHERE kind = 'watcher-recovery-failed'"), 0);
+}
+
+#[test]
 fn source_check_continues_after_an_unavailable_root() {
     let f = fixture("missing-root-continues");
     let missing = f.root.join("Missing");

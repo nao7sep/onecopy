@@ -1,7 +1,7 @@
 // Application-edge reactions to source checking, file-information completion,
 // watcher updates, and derived-output events.
 
-import type { SectionItem } from "../models/items";
+import type { SectionItem, SectionLocation } from "../models/items";
 import type { ScanProgress } from "../models/scan";
 import { log, toErrorFields } from "../repositories";
 import { message } from "../i18n/translate";
@@ -65,14 +65,31 @@ interface SequencedProgress {
 // downgrading.
 let libraryRefreshState: CoalescerState = "idle";
 let libraryRefreshFull = false;
+// null means an unscoped event; it dominates any narrower pending changes.
+let libraryRefreshSections: Map<string, SectionLocation> | null = new Map();
+let libraryRefreshComparison = false;
+function addRefreshScope(sections?: SectionLocation[] | null): void {
+  if (sections == null) libraryRefreshSections = null;
+  else if (libraryRefreshSections !== null) {
+    for (const section of sections) libraryRefreshSections.set(`${section.kind}:${section.month}`, section);
+  }
+}
 
 function runLibraryRefreshRound(): void {
   const full = libraryRefreshFull;
   libraryRefreshFull = false;
+  const scope = libraryRefreshSections;
+  libraryRefreshSections = new Map();
+  const comparison = libraryRefreshComparison;
+  libraryRefreshComparison = false;
+  const selected = useItemsStore.getState().selected;
+  const affected = scope === null || (selected !== null && [...scope.values()].some((section) =>
+    section.kind === selected.kind && section.month === selected.month));
   void Promise.allSettled([
     useSectionsStore.getState().loadCounts(),
-    full ? useItemsStore.getState().refresh() : useItemsStore.getState().refreshWindow(),
+    affected ? (full ? useItemsStore.getState().refresh() : useItemsStore.getState().refreshWindow()) : Promise.resolve(),
     useIssuesStore.getState().load(),
+    comparison ? reconcileComparisonMembership() : Promise.resolve(),
   ]).then(() => {
     driveLibraryRefresh({ kind: "roundCompleted" });
   });
@@ -107,6 +124,7 @@ function driveLibraryRefresh(event: Parameters<typeof transitionCoalescer>[1]): 
  * signals (source-check/file-information progress, similarity relabeling):
  * coalesces bursts and never starts a round on top of one already in flight. */
 function refreshLibrarySoon(): void {
+  addRefreshScope();
   driveLibraryRefresh({ kind: "trigger" });
 }
 
@@ -114,7 +132,8 @@ function refreshLibrarySoon(): void {
  * members but still arrive as a burst (watcher updates): still coalesced, but
  * the eventual round reconciles the whole selection rather than only the
  * window. */
-function refreshLibrarySoonFull(): void {
+function refreshLibrarySoonFull(sections?: SectionLocation[] | null): void {
+  addRefreshScope(sections);
   libraryRefreshFull = true;
   driveLibraryRefresh({ kind: "trigger" });
 }
@@ -124,6 +143,7 @@ function refreshLibrarySoonFull(): void {
  * round is already running, this queues exactly one trailing rerun rather
  * than starting a second round concurrently. */
 function refreshLibraryNow(): void {
+  addRefreshScope();
   libraryRefreshFull = true;
   driveLibraryRefresh({ kind: "triggerImmediate" });
 }
@@ -327,11 +347,11 @@ const install = createEventInstaller(
       void useSectionsStore.getState().loadIndexWork();
     });
 
-    await listeners.listen("watch://updated", () => {
+    await listeners.listen<{ sections?: SectionLocation[] | null }>("watch://updated", (event) => {
       // The watcher can remove section members (an external delete/move),
       // so it requests a full round.
-      refreshLibrarySoonFull();
-      void reconcileComparisonMembership();
+      libraryRefreshComparison = true;
+      refreshLibrarySoonFull(event.payload.sections);
     });
     await listeners.listen<{ previousHash: string; item: SectionItem }>(
       "derived://item",
@@ -358,6 +378,11 @@ const install = createEventInstaller(
     });
     await listeners.listen("watch://rescan-needed", () => {
       useSectionsStore.setState({ rescanNeeded: true });
+    });
+    await listeners.listen<{ rescanNeeded: boolean }>("watch://recovered", (event) => {
+      useSectionsStore.setState({ rescanNeeded: event.payload.rescanNeeded });
+      refreshLibraryNow();
+      void reconcileComparisonMembership();
     });
     await listeners.listen<{ reason: string }>("watch://failed", (event) => {
       useSectionsStore.setState({ rescanNeeded: true });
