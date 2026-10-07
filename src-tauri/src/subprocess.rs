@@ -91,6 +91,31 @@ pub fn kill_all_running() {
     }
 }
 
+/// Last best-effort signals before a forced process exit. Never wait for a
+/// registry lock, child lock, child reap, or diagnostic: the ordinary owners
+/// still reap; a held owner must not extend the aggregate quit deadline.
+pub(crate) fn signal_all_running_for_exit() {
+    let running = match RUNNING.try_lock() {
+        Ok(running) => running,
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return,
+    };
+    for child in running.iter() {
+        let mut child = match child.try_lock() {
+            Ok(child) => child,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => continue,
+        };
+        if !matches!(child.try_wait(), Ok(None)) { continue; }
+        #[cfg(unix)]
+        // SAFETY: this registered child owns the process group created before
+        // exec. Only signal it; a wait after SIGKILL can still stall on I/O.
+        unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL); }
+        #[cfg(not(unix))]
+        { let _ = child.kill(); }
+    }
+}
+
 pub struct Run {
     pub status_ok: bool,
     pub stdout: Vec<u8>,
@@ -401,3 +426,10 @@ fn kill_owned(child: &mut std::process::Child) {
         );
     }
 }
+
+#[cfg(test)]
+// EXCEPTION: the deadline-only signal and registry are crate-private; these
+// fixtures verify live child ownership and contended cleanup without exposing
+// shutdown internals as a public API.
+#[path = "../tests/unit/subprocess.rs"]
+mod tests;

@@ -8,6 +8,7 @@ mod sqlite;
 pub mod ai_acceleration;
 pub mod ai_dependencies;
 mod app_lifecycle;
+mod quit;
 mod sleep_prevention;
 pub mod background_work;
 pub mod backup_store;
@@ -1426,11 +1427,16 @@ async fn records_list_width(app: AppHandle) -> Result<Option<f64>, String> {
     .await
 }
 
-// Control-like command: hands off to Tauri's own exit machinery, which the
-// ExitRequested/Exit handlers below drive; no index or filesystem access here.
+// Renderer consent starts the one native drain; no index or filesystem
+// access runs in this synchronous control command.
 #[tauri::command]
 fn request_app_exit(app: AppHandle) {
-    app.exit(0);
+    app_lifecycle::quiesce(&app);
+}
+
+#[tauri::command]
+fn session_end_saved(id: u64) {
+    quit::session_end_saved(id);
 }
 
 #[tauri::command]
@@ -1491,6 +1497,10 @@ pub fn run() {
         .manage(language)
         .on_window_event(move |window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    api.prevent_close();
+                    quit::request_quit(window.app_handle());
+                }
                 if let Some(session_event) = fullscreen::session_close_event(window.label()) {
                     api.prevent_close();
                     if let Err(error) = window.emit_to("main", session_event, ()) {
@@ -1526,6 +1536,7 @@ pub fn run() {
         // takes the recorded theme as its page starts loading, before it paints.
         .on_page_load(|webview, payload| {
             if payload.event() == tauri::webview::PageLoadEvent::Started {
+                quit::window_loaded(&webview.window());
                 let current = webview.state::<theme::ThemeState>().current();
                 if let Err(error) = theme::apply_to_webview(webview, current) {
                     logging::warn(
@@ -1547,16 +1558,7 @@ pub fn run() {
         })
         .on_menu_event(|app, event| {
             if event.id() == SAFE_QUIT_MENU_ID {
-                if let Some(window) = app.get_webview_window("main") {
-                    if let Err(error) = window.close() {
-                        logging::warn(
-                            "route quit through main window failed",
-                            json!({ "error": { "message": error.to_string() } }),
-                        );
-                    }
-                } else {
-                    app.exit(0);
-                }
+                quit::request_quit(app);
             } else if event.id() == OPEN_SETTINGS_MENU_ID {
                 // The native item cannot call into the webview directly; Main
                 // owns the only Settings surface, the same one the webview's
@@ -1620,6 +1622,7 @@ pub fn run() {
                     );
                 }
             }
+            quit::install(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1707,6 +1710,7 @@ pub fn run() {
             records_sources,
             records_list_width,
             request_app_exit,
+            session_end_saved,
             check_github_release
         ])
         .build(tauri::generate_context!());
@@ -1734,10 +1738,8 @@ pub fn run() {
                 );
             }
         }
-        // Every exit request first captures placement. Until the exit
-        // sequence reports that exiting is safe, the request is prevented and
-        // joins the one sequence (`app_lifecycle::quiesce`), which ends by
-        // requesting exit itself.
+        // Unapproved native exit requests reach the same renderer save owner.
+        // Only the completed native drain may let Tauri finish exiting.
         tauri::RunEvent::ExitRequested { api, .. } => {
             if let Some(window) = app_handle.get_webview_window("main") {
                 window_placement::capture(&window.as_ref().window(), &placement_state);
@@ -1755,7 +1757,7 @@ pub fn run() {
                 return;
             }
             api.prevent_exit();
-            app_lifecycle::quiesce(app_handle);
+            quit::request_quit(app_handle);
         }
         tauri::RunEvent::Exit => {
             window_placement::save(&placement_state);

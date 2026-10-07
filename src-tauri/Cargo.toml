@@ -154,6 +154,7 @@ windows-sys = { version = "0.61.2", features = [
     # GetForegroundWindow/GetWindowThreadProcessId tell whether OneCopy is the
     # active app (fullscreen::application_active).
     "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
 ] }
 # Load the packaged runtime only when face scoring actually starts. This keeps
 # optional model code out of process initialization on older Windows CPUs.

@@ -11,17 +11,18 @@
 // state. The third pins that the derived window minimum actually reserves the
 // band, which is what stops the footer being overlapped at the smallest size.
 
-import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import { render, cleanup, act, fireEvent } from "@testing-library/react";
 import { ReadyApp } from "../../src/App";
+import { installQuitWorkflow, requestQuit } from "../../src/workflows/quit";
 import { retainStatePatch, useAppStore } from "../../src/state/app-store";
 import type { LoadedAppData } from "../../src/repositories";
 import { computeMinWindowHeight, HEADER_HEIGHT } from "../../src/utils/windowSizing";
 import {
   isMaximized,
   invokeCalls,
+  fireEvent as fireNativeEvent,
   mockCommands,
-  onCloseRequested,
   onResized,
   resetTauriMocks,
   setMinSize,
@@ -190,24 +191,15 @@ describe("the dynamic window minimum", () => {
 
 describe("application close", () => {
   it("flushes interface state before requesting the Rust shutdown path", async () => {
-    let closeHandler: ((event: { preventDefault: () => void }) => Promise<void>) | null = null;
-    onCloseRequested.mockImplementation(async (handler: unknown) => {
-      closeHandler = handler as typeof closeHandler;
-      return () => {};
-    });
-    const preventDefault = vi.fn();
+    await installQuitWorkflow();
     renderReadyApp();
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 600));
-    });
-
-    expect(closeHandler).not.toBeNull();
+    await act(async () => {});
     retainStatePatch({ zoomLevel: 1.2 });
     await act(async () => {
-      await closeHandler?.({ preventDefault });
+      fireNativeEvent("app://quit-request", null);
+      await requestQuit();
     });
 
-    expect(preventDefault).toHaveBeenCalledOnce();
     const commands = invokeCalls.map((call) => call.command);
     expect(commands.indexOf("patch_state")).toBeGreaterThanOrEqual(0);
     expect(commands.indexOf("patch_state")).toBeLessThan(

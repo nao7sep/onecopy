@@ -150,3 +150,40 @@ fn unsuccessful_worker_quiescence_cannot_authorize_a_clean_archive() {
     rx.recv_timeout(Duration::from_secs(2)).unwrap();
     assert!(!clean_rx.recv().unwrap());
 }
+
+#[test]
+fn a_stalled_final_tail_cannot_outlive_the_aggregate_exit_budget() {
+    let budget = Arc::new(super::ExitBudget::new());
+    assert!(budget.arm(Duration::from_millis(40)));
+    let worker_budget = budget.clone();
+    let (expired, observed) = std::sync::mpsc::channel();
+    let watchdog = std::thread::spawn(move || { worker_budget.wait(); expired.send(()).unwrap(); });
+    let (release, stalled) = std::sync::mpsc::channel::<()>();
+    let (started, entered) = std::sync::mpsc::channel();
+    let (tail_finished, finished) = std::sync::mpsc::channel();
+    let mut sequence = sequence(&Steps::default(), Box::new(|| {}), Duration::ZERO).0;
+    sequence.exit = Box::new(move |_| {
+        started.send(()).unwrap();
+        let _ = stalled.recv();
+        tail_finished.send(()).unwrap();
+    });
+    run_exit(sequence, spawn_thread, Duration::from_secs(1));
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    observed.recv_timeout(Duration::from_secs(2)).expect("the independent exit deadline expires despite held cleanup");
+    release.send(()).unwrap();
+    finished.recv_timeout(Duration::from_secs(2)).unwrap();
+    watchdog.join().unwrap();
+}
+
+#[test]
+fn os_takeover_shortens_a_running_exit_budget_and_repeats_never_extend_it() {
+    let budget = Arc::new(super::ExitBudget::new());
+    budget.arm(Duration::from_secs(30));
+    let worker_budget = budget.clone();
+    let (expired, observed) = std::sync::mpsc::channel();
+    let watchdog = std::thread::spawn(move || { worker_budget.wait(); expired.send(()).unwrap(); });
+    assert!(!budget.arm(Duration::from_millis(30)));
+    assert!(!budget.arm(Duration::from_secs(60)));
+    observed.recv_timeout(Duration::from_secs(2)).expect("OS takeover wakes the existing owner and cannot extend it");
+    watchdog.join().unwrap();
+}

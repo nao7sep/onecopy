@@ -6,8 +6,8 @@
 //! asks every owner to stop, waits for them, and exits the process.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
-use std::time::Duration;
+use std::sync::{mpsc, Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
@@ -82,6 +82,57 @@ const EXIT_JOIN_DEADLINE: Duration = Duration::from_secs(10);
 /// final name, and it is removed at the next launch's discovery pass.
 const MUTATION_QUIESCE_DEADLINE: Duration = Duration::from_secs(30);
 
+// The normal budget retains both existing waits and gives optional cleanup
+// two seconds. The watchdog includes shutdown setup and the Tauri Exit tail;
+// no diagnostic or final archive can prevent it from exiting the process.
+const EXIT_TOTAL_DEADLINE: Duration = Duration::from_secs(42);
+pub(crate) const SESSION_EXIT_DEADLINE: Duration = Duration::from_secs(5);
+
+struct ExitBudget {
+    deadline: Mutex<Option<Instant>>,
+    changed: Condvar,
+}
+
+impl ExitBudget {
+    const fn new() -> Self {
+        Self { deadline: Mutex::new(None), changed: Condvar::new() }
+    }
+
+    fn arm(&self, budget: Duration) -> bool {
+        let mut deadline = self.deadline.lock().unwrap_or_else(|p| p.into_inner());
+        let first = deadline.is_none();
+        let proposed = Instant::now() + budget;
+        *deadline = Some(deadline.map_or(proposed, |existing| existing.min(proposed)));
+        self.changed.notify_all();
+        first
+    }
+
+    fn wait(&self) {
+        let mut deadline = self.deadline.lock().unwrap_or_else(|p| p.into_inner());
+        loop {
+            let remaining = deadline.expect("armed exit budget").saturating_duration_since(Instant::now());
+            if remaining.is_zero() { return; }
+            (deadline, _) = self.changed.wait_timeout(deadline, remaining).unwrap_or_else(|p| p.into_inner());
+        }
+    }
+}
+
+static EXIT_BUDGET: ExitBudget = ExitBudget::new();
+
+pub(crate) fn start_exit_deadline(budget: Duration) {
+    if !EXIT_BUDGET.arm(budget) { return; }
+    let started = spawn_thread("onecopy-exit-deadline", Box::new(|| {
+        EXIT_BUDGET.wait();
+        crate::subprocess::signal_all_running_for_exit();
+        // Deliberately independent of the event loop, logs, and stalled I/O.
+        std::process::exit(0);
+    }));
+    if started.is_err() {
+        crate::subprocess::signal_all_running_for_exit();
+        std::process::exit(0);
+    }
+}
+
 /// Set once the exit sequence has reached the point where exiting is safe;
 /// only then may an exit request close the process.
 static EXIT_READY: AtomicBool = AtomicBool::new(false);
@@ -97,6 +148,7 @@ pub(crate) fn exit_ready() -> bool {
 /// running. The event loop is never blocked unless no thread can be started,
 /// and then the sequence still finishes and quits on this thread.
 pub(crate) fn quiesce(app: &AppHandle) {
+    start_exit_deadline(EXIT_TOTAL_DEADLINE);
     if !begin_shutdown() {
         return;
     }
@@ -136,6 +188,7 @@ pub(crate) fn quiesce(app: &AppHandle) {
                     crate::binary_archive::clean_exit();
                 }
                 EXIT_READY.store(true, Ordering::SeqCst);
+                crate::quit::finish_session_end(&media);
                 media.exit(0);
             }),
             report: Arc::new(move |error: String| {

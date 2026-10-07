@@ -9,6 +9,8 @@ import { InterfaceLanguage } from "./i18n/InterfaceLanguage";
 import { message } from "./i18n/translate";
 import { installMediaUseBoundary } from "./media-use";
 import { presentEscapedFailure, recordInterfaceFailure } from "./utils/failureSurface";
+import QuitSaveModal from "./components/QuitSaveModal";
+import { cancelQuitDecision, installQuitWorkflow } from "./workflows/quit";
 import { closeComparisonAfterMainRendererFailure } from "./state/comparison-store";
 
 const App = lazy(() => import("./App"));
@@ -22,6 +24,7 @@ const RecordsWindow = lazy(() => import("./windows/RecordsWindow"));
 // each renderer's initial load.
 const params = new URLSearchParams(window.location.search);
 const view = params.get("view");
+if (view === null) void installQuitWorkflow().catch((error) => log.error("quit workflow installation failed", toErrorFields(error)));
 const slice = Number.parseInt(params.get("slice") ?? "0", 10) || 0;
 
 // Learn the core's debug gate as early as possible. Fire-and-forget: emit()
@@ -44,6 +47,9 @@ window.addEventListener("contextmenu", (event) => {
 let presentationFailureHandled = false;
 
 function recoverComparisonPresentation(): void {
+  // The quit question can disappear after it acknowledged presentation.
+  // Settle its consent before the unrelated comparison-recovery dedup gate.
+  if (view === null) cancelQuitDecision();
   if (presentationFailureHandled) return;
   presentationFailureHandled = true;
   if (view === "comparison") {
@@ -95,6 +101,7 @@ void Promise.all([installMediaUseBoundary(), installWindowAppearance()])
                 <App />
               )}
             </Suspense>
+            {view === null ? <QuitSaveModal /> : null}
           </InterfaceLanguage>
         </RootErrorBoundary>
       </React.StrictMode>,

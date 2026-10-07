@@ -2,7 +2,6 @@
 // the physical window/webview lifetime, content minimum, and persisted zoom.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import {
   getCurrentWindow,
@@ -12,9 +11,6 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { LoadedAppData } from "../repositories";
 import { reportWindowCall } from "../repositories";
 import {
-  flushStatePatchesForShutdown,
-  reportStatePatchFailure,
-  resumeStatePatchesAfterFailedShutdown,
   retainStatePatch,
 } from "../state/app-store";
 import { installActivityPings } from "../state/derived-work-store";
@@ -24,7 +20,6 @@ import { isComposingEvent } from "./useComposing";
 import { isEditableTarget, shadowsMacTextEditing } from "../utils/shortcuts";
 import { computeMinWindowHeight, computeMinWindowWidth } from "../utils/windowSizing";
 import { installDisplayZoneReconciliation } from "../workflows/display-zone";
-import { flushPlaybackConfigForShutdown } from "../workflows/playback";
 import {
   ZOOM_DEFAULT,
   isZoomIn,
@@ -105,34 +100,6 @@ export function useMainWindowLifecycle({
       disposed = true;
       unlisten?.();
     };
-  }, []);
-
-  // Main-window close is also the application quit edge. The Rust menu routes
-  // Cmd/Ctrl+Q here so ordinary shutdown quiescence has one owner.
-  const closeHandlerStarted = useRef(false);
-  useEffect(() => {
-    if (closeHandlerStarted.current) return;
-    closeHandlerStarted.current = true;
-    const appWindow = getCurrentWindow();
-    let closing = false;
-    void appWindow.onCloseRequested(async (event) => {
-      event.preventDefault();
-      if (closing) return;
-      closing = true;
-      try {
-        await flushStatePatchesForShutdown();
-        await flushPlaybackConfigForShutdown();
-      } catch (error) {
-        reportStatePatchFailure(error);
-      }
-      try {
-        await invoke("request_app_exit");
-      } catch (error) {
-        closing = false;
-        resumeStatePatchesAfterFailedShutdown();
-        reportWindowCall("request application exit")(error);
-      }
-    }).catch(reportWindowCall("listen for main window close"));
   }, []);
 
   const zoomRef = useRef(ZOOM_DEFAULT);
