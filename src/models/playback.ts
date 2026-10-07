@@ -49,12 +49,16 @@ export function clampPlaybackVolume(value: unknown): number {
     : 1;
 }
 
+export function volumeIconLevel(audible: boolean, volume: number): 0 | 1 | 2 | 3 {
+  if (!audible || volume <= 0) return 0;
+  return volume <= 1 / 3 ? 1 : volume <= 2 / 3 ? 2 : 3;
+}
+
 export function choosePlaybackSession(
   registrations: Iterable<PlaybackRegistration>,
   current: PlaybackSession | null,
   policy: {
-    videoAutoplay: boolean;
-    audioAutoplay: boolean;
+    autoplay: boolean;
     soundEnabled: boolean;
     volume: number;
   },
@@ -72,9 +76,7 @@ export function choosePlaybackSession(
     playing:
       sameContent
         ? current.playing
-        : desired.medium === "video"
-          ? policy.videoAutoplay
-          : policy.audioAutoplay,
+        : policy.autoplay,
     soundEnabled: policy.soundEnabled,
     volume: clampPlaybackVolume(policy.volume),
   };

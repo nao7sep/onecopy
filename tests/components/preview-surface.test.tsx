@@ -104,8 +104,7 @@ beforeEach(() => {
   useAppStore.setState({
     appData: {
       config: {
-        videoAutoplay: false,
-        audioAutoplay: false,
+        autoplay: false,
         soundEnabled: true,
         playbackVolume: 1,
       },
@@ -660,7 +659,7 @@ describe("shared video presentation", () => {
       useAppStore.setState({
         appData: {
           config: {
-            videoAutoplay: false, audioAutoplay: false, soundEnabled: true, playbackVolume: 1,
+            autoplay: false, soundEnabled: true, playbackVolume: 1,
             enlargeSmallImages: true,
           },
           state: null,

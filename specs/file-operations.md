@@ -61,7 +61,7 @@ Destination names follow the destination filesystem's natural case behavior. One
 
 Before filesystem work begins, OneCopy checks the complete selected set and presents every known destination conflict together. The user chooses one policy for the complete operation: Cancel, Rename and Copy/Move, or Overwrite. Overwrite is offered only when every conflict is with an existing regular file outside the selected set; when a conflict lies between selected items or the existing entry is not a regular file, the choices are Cancel and Rename. There is no Skip and no intentionally partial selected set. Cancel performs no filesystem work; resolving or cancelling expected conflicts does not itself create an Issue.
 
-Rename treats the main output and its companion outputs as one family and applies one available suffix consistently. The default is `name 2.ext` on macOS and `name (2).ext` on Windows. One simple setting may choose between those styles; OneCopy does not expose an unrestricted filename format string.
+Rename treats the main output and its companion outputs as one family and applies one available suffix consistently. The suffix is `name 2.ext` on macOS and `name (2).ext` on Windows, following the system without a separate setting.
 
 Overwrite first prepares and read-back-verifies the complete replacement privately: every output of the item. It then sends the existing destination file and its companion family to recoverable deleted-file storage before publishing the verified replacement. When any output of the item cannot be prepared, nothing of that item is displaced; its conflicting outputs fail and the existing destination files stay in place. It never silently destroys the replaced destination group.
 

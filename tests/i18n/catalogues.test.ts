@@ -25,6 +25,7 @@ const translations = LANGUAGES.filter((language) => language !== "en");
 // Keys whose text is the same word in that language as in English.
 const SAME_AS_ENGLISH: Partial<Record<Language, readonly string[]>> = {
   de: [
+    "settings.groupingNormal",
     "app.zoom",
     "app.detailsTab",
     "settings.languageSystem",
@@ -47,6 +48,7 @@ const SAME_AS_ENGLISH: Partial<Record<Language, readonly string[]>> = {
     "records.details",
   ],
   es: [
+    "settings.groupingNormal",
     "app.zoom",
     "nativeMenu.zoom",
     "settings.audio",
@@ -61,6 +63,7 @@ const SAME_AS_ENGLISH: Partial<Record<Language, readonly string[]>> = {
     "records.levelError",
   ],
   fr: [
+    "settings.groupingNormal",
     "deletedFiles.copies",
     "nativeMenu.services",
     "app.zoom",
@@ -111,6 +114,7 @@ const SAME_AS_ENGLISH: Partial<Record<Language, readonly string[]>> = {
     "records.levelDebug",
   ],
   "pt-BR": [
+    "settings.groupingNormal",
     "app.zoom",
     "nativeMenu.zoom",
     "quarantine.ok",

@@ -50,6 +50,19 @@ pub struct SimilarityConfig {
     pub diameter_multiplier: u32,
 }
 
+impl SimilarityConfig {
+    /// Normal retains the established grouping. The other presets narrow or
+    /// widen both visual distance and the time window for a burst.
+    pub fn from_preset(preset: Option<&str>) -> Self {
+        let (max_gap_seconds, phash_max_distance, phash_max_distance_burst, diameter_multiplier) = match preset {
+            Some("stricter") => (45, 2, 6, 2),
+            Some("looser") => (180, 5, 14, 2),
+            _ => (90, 3, 10, 2),
+        };
+        Self { max_gap_seconds, phash_max_distance, phash_max_distance_burst, diameter_multiplier }
+    }
+}
+
 #[derive(Default, Debug, PartialEq, Eq)]
 pub struct GroupStats {
     pub groups: u64,

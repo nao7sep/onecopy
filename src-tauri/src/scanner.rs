@@ -301,15 +301,10 @@ pub fn settings_from_config(
         },
         resolution: ResolutionConfig {
             default_timezone: tz,
-            good_range_start_year: get("goodRangeStartYear")
-                .and_then(|v| v.as_i64())
-                .and_then(|v| i32::try_from(v).ok())
-                .unwrap_or(defaults.good_range_start_year),
+            good_range_start_year: 1995,
             now_ms,
         },
-        pairing_enabled: get("pairingEnabled")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(defaults.pairing_enabled),
+        pairing_enabled: true,
         cache_root: data_root.join(crate::storage::CACHE_DIR_NAME),
     }
 }

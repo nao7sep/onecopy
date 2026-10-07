@@ -11,7 +11,7 @@ use unicode_normalization::UnicodeNormalization;
 use crate::volume_io;
 
 /// The Rename suffix style: `name 2.ext` (macOS default) or `name (2).ext`
-/// (Windows default), chosen by the one setting that picks between them.
+/// (Windows default), selected by the platform.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum RenameStyle {
@@ -20,17 +20,8 @@ pub enum RenameStyle {
 }
 
 impl RenameStyle {
-    /// The style the settings choose (`destinationConflictRenameStyle`).
-    pub fn from_config(config: Option<&serde_json::Value>) -> Self {
-        let defaults = crate::storage::DefaultConfig::default();
-        match config
-            .and_then(|value| value.get("destinationConflictRenameStyle"))
-            .and_then(serde_json::Value::as_str)
-            .or(Some(defaults.destination_conflict_rename_style.as_str()))
-        {
-            Some("parenthesized-number") => Self::ParenthesizedNumber,
-            _ => Self::SpaceNumber,
-        }
+    pub fn platform_default() -> Self {
+        if cfg!(target_os = "windows") { Self::ParenthesizedNumber } else { Self::SpaceNumber }
     }
 }
 

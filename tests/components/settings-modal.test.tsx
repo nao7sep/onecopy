@@ -332,27 +332,16 @@ describe("Settings categories", () => {
     expect(document.activeElement).toBe(last);
   });
 
-  it("resets only the four optimized similar-photo settings, to the core's defaults", () => {
-    useSettingsStore.getState().beginEditing({
-      ...config,
-      goodRangeStartYear: 2007,
-      similarity: { maxGapSeconds: 12, phashMaxDistance: 19, phashMaxDistanceBurst: 27, diameterMultiplier: 4 },
-      previewLongEdgePx: 2048,
-      confirmTrashDelete: true,
-    }, [], DEFAULT_CONFIG);
-    const before = useSettingsStore.getState().draft;
+  it("offers one grouping preset and one autoplay setting without internal tuning fields", () => {
+    useSettingsStore.getState().beginEditing({ ...config, similarPhotoGrouping: "looser" }, [], DEFAULT_CONFIG);
     render(<SettingsModal open onClose={() => {}} />);
     fireEvent.click(screen.getByRole("tab", { name: "Media" }));
-
-    fireEvent.click(screen.getByRole("button", { name: "Reset similar photo settings" }));
-
-    expect(useSettingsStore.getState().draft).toEqual({
-      ...before,
-      similarityMaxGapSeconds: (DEFAULT_CONFIG.similarity as Record<string, number>).maxGapSeconds,
-      similarityPhashMaxDistance: (DEFAULT_CONFIG.similarity as Record<string, number>).phashMaxDistance,
-      similarityPhashMaxDistanceBurst: (DEFAULT_CONFIG.similarity as Record<string, number>).phashMaxDistanceBurst,
-      similarityDiameterMultiplier: (DEFAULT_CONFIG.similarity as Record<string, number>).diameterMultiplier,
-    });
+    fireEvent.change(screen.getByDisplayValue("Looser"), { target: { value: "normal" } });
+    expect(useSettingsStore.getState().draft?.similarPhotoGrouping).toBe("normal");
+    expect(screen.getAllByRole("checkbox", { name: "Autoplay" })).toHaveLength(1);
+    expect(screen.queryByText("Preview long edge (px)")).toBeNull();
+    expect(screen.queryByText("Show face stars")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reset similar photo settings" })).toBeNull();
   });
 
   it("confirms library reconstruction from Settings, keeping previews and transcripts by default", async () => {
@@ -400,13 +389,12 @@ describe("Settings categories", () => {
   it("groups related controls without changing any draft value on tab changes", () => {
     const before = useSettingsStore.getState().draft;
     render(<SettingsModal open onClose={() => {}} />);
-    expect(screen.getByLabelText(/Pair companion files/)).toBeTruthy();
+    expect(screen.queryByLabelText(/Pair companion files/)).toBeNull();
     expect(screen.getByLabelText("Keep the system awake during background work")).toBeTruthy();
     expect(screen.getByLabelText("Check source folders after OneCopy opens")).toBeTruthy();
     expect(screen.queryByLabelText("Sound")).toBeNull();
     fireEvent.click(screen.getByRole("tab", { name: "Media" }));
-    expect(screen.getByLabelText("Play videos automatically when shown")).toBeTruthy();
-    expect(screen.getByLabelText("Play audio automatically when shown")).toBeTruthy();
+    expect(screen.getByLabelText("Autoplay")).toBeTruthy();
     expect(screen.queryByLabelText("Play after choosing a snapshot")).toBeNull();
 
     expect(screen.getByLabelText("Sound")).toBeTruthy();
@@ -415,18 +403,9 @@ describe("Settings categories", () => {
     );
     const labelIndex = (prefix: string) =>
       labels.findIndex((label) => label?.startsWith(prefix));
-    expect(labelIndex("Score faces for photo ordering")).toBeLessThan(
-      labelIndex("Show face-score stars on photos"),
-    );
-    expect(labelIndex("Show face-score stars on photos")).toBeLessThan(
-      labelIndex("Maximum images in Comparison"),
-    );
-    expect(labelIndex("Snapshot frames (max)")).toBeLessThan(
-      labelIndex("Transcribe videos automatically"),
-    );
-    expect(
-      (screen.getByLabelText("Show face-score stars on photos") as HTMLInputElement).checked,
-    ).toBe(true);
+    expect(labelIndex("Score faces for photo ordering")).toBeLessThan(labelIndex("Maximum images in Comparison"));
+    expect(screen.queryByLabelText("Show face-score stars on photos")).toBeNull();
+    expect(screen.queryByLabelText("Snapshot frames (max)")).toBeNull();
     expect(
       (screen.getByLabelText(/Maximum images in Comparison/) as HTMLInputElement).value,
     ).toBe("16");

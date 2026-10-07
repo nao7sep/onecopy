@@ -196,9 +196,7 @@ function NumberField({
   onChange,
 }: {
   label: string;
-  /** What the number MEANS, for the knobs whose effect is not obvious from
-   * their name — a similarity threshold is a judgement call, so the row says
-   * which direction is stricter. */
+  /** Explain a numeric choice when its label alone is insufficient. */
   hint?: string;
   value: number;
   min: number;
@@ -330,9 +328,6 @@ export default function SettingsModal({
   const messageLevel = useSettingsStore((s) => s.messageLevel);
   const discardDraft = useSettingsStore((s) => s.discardDraft);
   const update = useSettingsStore((s) => s.update);
-  const resetSimilarPhotoSettings = useSettingsStore(
-    (s) => s.resetSimilarPhotoSettings,
-  );
   const addSourceDir = useSettingsStore((s) => s.addSourceDir);
   const removeSourceDir = useSettingsStore((s) => s.removeSourceDir);
   const accelerationCapabilities = useSettingsStore(
@@ -496,15 +491,6 @@ export default function SettingsModal({
           </Button>
 
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
-            {t("settings.companionFiles")}
-          </h2>
-          <CheckField
-            label={t("settings.pairCompanionFiles")}
-            checked={draft.pairingEnabled}
-            onChange={(v) => update({ pairingEnabled: v })}
-          />
-
-          <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             {t("settings.visibility")}
           </h2>
           <p className="mb-3 text-xs text-ink-muted">
@@ -550,12 +536,6 @@ export default function SettingsModal({
               ))}
             </Select>
           </Row>
-          <NumberField
-            label={t("settings.goodRangeStartYear")}
-            value={draft.goodRangeStartYear}
-            min={1900}
-            onChange={(v) => update({ goodRangeStartYear: v })}
-          />
 
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             {t("settings.applicationUpdates")}
@@ -604,38 +584,13 @@ export default function SettingsModal({
           <h2 className="mb-2 mt-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             {t("settings.previews")}
           </h2>
-          <NumberField
-            label={t("settings.previewLongEdge")}
-            value={draft.previewLongEdgePx}
-            min={480}
-            onChange={(v) => update({ previewLongEdgePx: v })}
-          />
-          <NumberField
-            label={t("settings.thumbnailEdge")}
-            value={draft.thumbnailEdgePx}
-            min={96}
-            onChange={(v) => update({ thumbnailEdgePx: v })}
-          />
+
           <CheckField
             label={t("settings.enlargeSmallImages")}
             checked={draft.enlargeSmallImages}
             onChange={(v) => update({ enlargeSmallImages: v })}
           />
-          <NumberField
-            label={t("settings.textPreviewLimit")}
-            hint={t("settings.textPreviewLimitHint")}
-            value={Math.max(1, Math.round(draft.textPreviewMaxBytes / 1024))}
-            min={1}
-            max={textOptions === null ? undefined : textOptions.maxAllowedBytes / 1024}
-            onChange={(v) =>
-              update({
-                textPreviewMaxBytes:
-                  textOptions === null
-                    ? v * 1024
-                    : Math.min(v * 1024, textOptions.maxAllowedBytes),
-              })
-            }
-          />
+
           <Row label={t("settings.fallbackTextEncoding")}>
             <Select
               value={draft.textFallbackEncoding}
@@ -661,50 +616,18 @@ export default function SettingsModal({
             checked={draft.similarPhotoAnalysisEnabled}
             onChange={(v) => update({ similarPhotoAnalysisEnabled: v })}
           />
-          <NumberField
-            label={t("settings.similarityMaxGap")}
-            value={draft.similarityMaxGapSeconds}
-            min={1}
-            onChange={(v) => update({ similarityMaxGapSeconds: v })}
-          />
-          <NumberField
-            label={t("settings.visualDistanceLimit")}
-            hint={t("settings.visualDistanceLimitHint")}
-            value={draft.similarityPhashMaxDistance}
-            min={0}
-            onChange={(v) => update({ similarityPhashMaxDistance: v })}
-          />
-          <NumberField
-            label={t("settings.burstVisualDistance")}
-            hint={t("settings.burstVisualDistanceHint")}
-            value={draft.similarityPhashMaxDistanceBurst}
-            min={0}
-            onChange={(v) => update({ similarityPhashMaxDistanceBurst: v })}
-          />
-          <NumberField
-            label={t("settings.familyWidth")}
-            hint={t("settings.familyWidthHint")}
-            value={draft.similarityDiameterMultiplier}
-            min={1}
-            onChange={(v) =>
-              update({ similarityDiameterMultiplier: Math.min(4, v) })
-            }
-          />
-          <div className="mt-3 flex justify-end">
-            <Button onClick={resetSimilarPhotoSettings}>
-              {t("settings.resetSimilarPhotoSettings")}
-            </Button>
-          </div>
+
+          <Row label={t("settings.similarPhotoGrouping")}>
+            <Select value={draft.similarPhotoGrouping} onChange={(event) => update({ similarPhotoGrouping: event.target.value as typeof draft.similarPhotoGrouping })}>
+              <option value="stricter">{t("settings.groupingStricter")}</option>
+              <option value="normal">{t("settings.groupingNormal")}</option>
+              <option value="looser">{t("settings.groupingLooser")}</option>
+            </Select>
+          </Row>
           <CheckField
             label={t("settings.scoreFaces")}
             checked={draft.scoreFaces}
             onChange={(v) => update({ scoreFaces: v })}
-          />
-
-          <CheckField
-            label={t("settings.showFaceStars")}
-            checked={draft.showFaceStars}
-            onChange={(v) => update({ showFaceStars: v })}
           />
 
           <NumberField
@@ -718,6 +641,7 @@ export default function SettingsModal({
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             {t("settings.playback")}
           </h2>
+          <CheckField label={t("settings.autoplay")} checked={draft.autoplay} onChange={(v) => update({ autoplay: v })} />
           <CheckField
             label={t("settings.sound")}
             checked={draft.soundEnabled}
@@ -734,34 +658,13 @@ export default function SettingsModal({
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             {t("settings.videos")}
           </h2>
-          <CheckField
-            label={t("settings.videoAutoplay")}
-            checked={draft.videoAutoplay}
-            onChange={(v) => update({ videoAutoplay: v })}
-          />
+
           <CheckField
             label={t("settings.generateSceneSnapshots")}
             checked={draft.videoSnapshotsEnabled}
             onChange={(v) => update({ videoSnapshotsEnabled: v })}
           />
-          <NumberField
-            label={t("settings.secondsPerSnapshotFrame")}
-            value={draft.videoStripSecondsPerFrame}
-            min={1}
-            onChange={(v) => update({ videoStripSecondsPerFrame: v })}
-          />
-          <NumberField
-            label={t("settings.snapshotFramesMin")}
-            value={draft.videoStripMinFrames}
-            min={1}
-            onChange={(v) => update({ videoStripMinFrames: v })}
-          />
-          <NumberField
-            label={t("settings.snapshotFramesMax")}
-            value={draft.videoStripMaxFrames}
-            min={1}
-            onChange={(v) => update({ videoStripMaxFrames: v })}
-          />
+
           <CheckField
             label={t("settings.transcribeVideos")}
             checked={draft.videoTranscriptionEnabled}
@@ -771,11 +674,7 @@ export default function SettingsModal({
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             {t("settings.audio")}
           </h2>
-          <CheckField
-            label={t("settings.audioAutoplay")}
-            checked={draft.audioAutoplay}
-            onChange={(v) => update({ audioAutoplay: v })}
-          />
+
           <CheckField
             label={t("settings.transcribeAudio")}
             checked={draft.audioTranscriptionEnabled}
@@ -908,25 +807,7 @@ export default function SettingsModal({
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             {t("settings.fileOperations")}
           </h2>
-          <Row
-            label={t("settings.destinationConflictNames")}
-            hint={t("settings.destinationConflictNamesHint")}
-          >
-            <Select
-              value={draft.destinationConflictRenameStyle}
-              onChange={(event) =>
-                update({
-                  destinationConflictRenameStyle:
-                    event.target.value === "parenthesized-number"
-                      ? "parenthesized-number"
-                      : "space-number",
-                })
-              }
-            >
-              <option value="space-number">{t("settings.conflictSpaceNumber")}</option>
-              <option value="parenthesized-number">{t("settings.conflictParenthesizedNumber")}</option>
-            </Select>
-          </Row>
+
           <CheckField
             label={t("settings.confirmTrashDelete")}
             checked={draft.confirmTrashDelete}

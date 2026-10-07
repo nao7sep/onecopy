@@ -759,8 +759,7 @@ pub(crate) fn move_items_out(
                 });
             };
             publisher.progress(&last_progress);
-            let config = crate::storage::config(&data_root)?;
-            let rename_style = crate::file_names::RenameStyle::from_config(Some(&config));
+            let rename_style = crate::file_names::RenameStyle::platform_default();
             // Destination admission belongs to the operation itself.
             let destination = std::path::Path::new(&dest_dir);
             let cache =
@@ -1179,7 +1178,7 @@ fn restore_claimed<H: RestoreHost>(
             };
             host.progress(&last_progress);
             let config = crate::storage::config(&data_root)?;
-            let style = crate::file_names::RenameStyle::from_config(Some(&config));
+            let style = crate::file_names::RenameStyle::platform_default();
             let settings = crate::scanner::settings_from_config(
                 Some(&config),
                 &data_root,

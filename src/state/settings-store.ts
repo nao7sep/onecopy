@@ -29,29 +29,17 @@ export interface SettingsDraft {
   hideHiddenAttributes: boolean;
   hideSystemAttributes: boolean;
   defaultTimezone: string;
-  goodRangeStartYear: number;
-  similarityMaxGapSeconds: number;
-  similarityPhashMaxDistance: number;
-  similarityPhashMaxDistanceBurst: number;
-  similarityDiameterMultiplier: number;
-  previewLongEdgePx: number;
-  thumbnailEdgePx: number;
-  videoStripSecondsPerFrame: number;
-  videoStripMinFrames: number;
-  videoStripMaxFrames: number;
   videoSnapshotsEnabled: boolean;
   similarPhotoAnalysisEnabled: boolean;
   videoTranscriptionEnabled: boolean;
   audioTranscriptionEnabled: boolean;
   aiAcceleration: Record<string, string>;
-  videoAutoplay: boolean;
-  audioAutoplay: boolean;
+  autoplay: boolean;
+  similarPhotoGrouping: "stricter" | "normal" | "looser";
   soundEnabled: boolean;
   playbackVolume: number;
   enlargeSmallImages: boolean;
-  textPreviewMaxBytes: number;
   textFallbackEncoding: string;
-  pairingEnabled: boolean;
   theme: "system" | "light" | "dark";
   language: LanguagePreference;
   uiFontFamily: string;
@@ -60,19 +48,10 @@ export interface SettingsDraft {
   checkSourceFoldersAtLaunch: boolean;
   confirmTrashDelete: boolean;
   scoreFaces: boolean;
-  showFaceStars: boolean;
   maximumImagesInComparison: number;
   notificationDisplaySeconds: number;
-  destinationConflictRenameStyle: "space-number" | "parenthesized-number";
   sourceDirs: string[];
 }
-
-const SIMILAR_PHOTO_KEYS = [
-  "similarityMaxGapSeconds",
-  "similarityPhashMaxDistance",
-  "similarityPhashMaxDistanceBurst",
-  "similarityDiameterMultiplier",
-] as const satisfies readonly (keyof SettingsDraft)[];
 
 // The configuration arrives as the core's effective values (see
 // models/config.ts), so the draft reads each member as it is and validates
@@ -119,29 +98,17 @@ function draftFrom(
     hideHiddenAttributes: flag("hideHiddenAttributes"),
     hideSystemAttributes: flag("hideSystemAttributes"),
     defaultTimezone: stringField(config, "defaultTimezone"),
-    goodRangeStartYear: numberField(config, "goodRangeStartYear"),
-    similarityMaxGapSeconds: numberField(config?.similarity as AppConfig, "maxGapSeconds"),
-    similarityPhashMaxDistance: numberField(config?.similarity as AppConfig, "phashMaxDistance"),
-    similarityPhashMaxDistanceBurst: numberField(config?.similarity as AppConfig, "phashMaxDistanceBurst"),
-    similarityDiameterMultiplier: numberField(config?.similarity as AppConfig, "diameterMultiplier"),
-    previewLongEdgePx: numberField(config, "previewLongEdgePx"),
-    thumbnailEdgePx: numberField(config, "thumbnailEdgePx"),
-    videoStripSecondsPerFrame: numberField(config, "videoStripSecondsPerFrame"),
-    videoStripMinFrames: numberField(config, "videoStripMinFrames"),
-    videoStripMaxFrames: numberField(config, "videoStripMaxFrames"),
     videoSnapshotsEnabled: flag("videoSnapshotsEnabled"),
     similarPhotoAnalysisEnabled: flag("similarPhotoAnalysisEnabled"),
     videoTranscriptionEnabled: flag("videoTranscriptionEnabled"),
     audioTranscriptionEnabled: flag("audioTranscriptionEnabled"),
     aiAcceleration,
-    videoAutoplay: flag("videoAutoplay"),
-    audioAutoplay: flag("audioAutoplay"),
+    autoplay: flag("autoplay"),
+    similarPhotoGrouping: config?.similarPhotoGrouping === "stricter" || config?.similarPhotoGrouping === "looser" ? config.similarPhotoGrouping : "normal",
     soundEnabled: flag("soundEnabled"),
     playbackVolume: clampPlaybackVolume(config?.playbackVolume),
     enlargeSmallImages: flag("enlargeSmallImages"),
-    textPreviewMaxBytes: Math.max(1, numberField(config, "textPreviewMaxBytes")),
     textFallbackEncoding: stringField(config, "textFallbackEncoding"),
-    pairingEnabled: flag("pairingEnabled"),
     theme:
       config?.theme === "light" || config?.theme === "dark"
         ? config.theme
@@ -153,9 +120,6 @@ function draftFrom(
     checkSourceFoldersAtLaunch: flag("checkSourceFoldersAtLaunch"),
     confirmTrashDelete: confirmsTrashDelete(config),
     scoreFaces: flag("scoreFaces"),
-    // Presentation is independent of scoring: existing results remain useful
-    // after the optional background analysis is turned off.
-    showFaceStars: flag("showFaceStars"),
     maximumImagesInComparison: Math.max(
       2,
       Math.floor(numberField(config, "maximumImagesInComparison")),
@@ -164,10 +128,6 @@ function draftFrom(
       60,
       Math.max(1, numberField(config, "notificationDisplaySeconds")),
     ),
-    destinationConflictRenameStyle:
-      config?.destinationConflictRenameStyle === "parenthesized-number"
-        ? "parenthesized-number"
-        : "space-number",
     sourceDirs: stringArrayField(config, "sourceDirs"),
   };
 }
@@ -189,7 +149,6 @@ interface SettingsState {
   ) => void;
   discardDraft: () => void;
   update: (patch: Partial<SettingsDraft>) => void;
-  resetSimilarPhotoSettings: () => void;
   addSourceDir: () => Promise<void>;
   removeSourceDir: (path: string) => void;
 }
@@ -225,16 +184,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     if (draft) set({ draft: { ...draft, ...patch } });
   },
 
-  resetSimilarPhotoSettings: () => {
-    const defaults = get().defaults;
-    if (defaults === null) return;
-    get().update(
-      Object.fromEntries(
-        SIMILAR_PHOTO_KEYS.map((key) => [key, numberField(defaults?.similarity as AppConfig, key.slice("similarity".length).replace(/^./, (letter) => letter.toLowerCase()))]),
-      ) as Pick<SettingsDraft, (typeof SIMILAR_PHOTO_KEYS)[number]>,
-    );
-  },
-
   addSourceDir: async () => {
     try {
       const picked = await openDialog({ directory: true, multiple: true });
@@ -262,17 +211,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 }));
 
 
-function draftSets(draft: SettingsDraft): AppConfig {
-  const sets: AppConfig = { ...draft };
-  sets.similarity = Object.fromEntries(SIMILAR_PHOTO_KEYS.map((key) => {
-    delete sets[key];
-    return [key.slice("similarity".length).replace(/^./, (letter) => letter.toLowerCase()), draft[key]];
-  }));
-  return sets;
-}
-
 export function changedSettingsSets(draft: SettingsDraft, opened: SettingsDraft | null): AppConfig {
-  const sets = draftSets(draft);
-  const baseline = opened && draftSets(opened);
-  return Object.fromEntries(Object.entries(sets).filter(([key, value]) => !baseline || JSON.stringify(value) !== JSON.stringify(baseline[key])));
+  const sets: AppConfig = { ...draft };
+  const baseline = opened;
+  return Object.fromEntries(Object.entries(sets).filter(([key, value]) => !baseline || JSON.stringify(value) !== JSON.stringify(baseline[key as keyof SettingsDraft])));
 }

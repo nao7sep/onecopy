@@ -57,13 +57,12 @@ import { usePaneLayout } from "./hooks/usePaneLayout";
 import { useMutationStore } from "./state/mutation-store";
 import { useDestinationDragBoundary } from "./hooks/useDestinationDragBoundary";
 import DestinationDragProvider from "./components/DestinationDragProvider";
-import { setMediumAutoplay, setSoundEnabled } from "./workflows/playback";
+import PlaybackControls from "./components/PlaybackControls";
 import NotificationHost from "./components/NotificationHost";
 import StartupFailureScreen from "./components/StartupFailureScreen";
 import { reportActionFailure } from "./state/notifications-store";
 import { bootstrapApplication } from "./workflows/app-lifecycle";
 import { useAppShellStore } from "./state/app-shell-store";
-import { configFlag } from "./models/config";
 
 function ZoomOutIcon() {
   return <Minus aria-hidden="true" className="inline-block h-[1em] w-[1em]" />;
@@ -110,9 +109,6 @@ export default function App() {
 export function ReadyApp({ appData }: { appData: LoadedAppData }) {
   const { t, text, number, percent } = useI18n();
   useDestinationDragBoundary();
-  const soundEnabled = configFlag(appData?.config, "soundEnabled");
-  const videoAutoplay = configFlag(appData?.config, "videoAutoplay");
-  const audioAutoplay = configFlag(appData?.config, "audioAutoplay");
   const counts = useSectionsStore((s) => s.counts);
   const sourceCheck = useSectionsStore((s) => s.sourceCheck);
   const fileInformation = useSectionsStore((s) => s.fileInformation);
@@ -546,57 +542,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
           {status.text}
         </span>
         <span className="flex min-w-0 shrink items-center gap-3 [&>button]:min-w-0 [&>button]:truncate">
-          <button
-            className={soundEnabled ? "text-ink" : "text-ink-muted"}
-            aria-pressed={soundEnabled}
-            title={t("app.soundToggle")}
-            onClick={() => {
-              void setSoundEnabled(!soundEnabled).catch((error) => {
-                log.error("sound setting failed", toErrorFields(error));
-                reportActionFailure(
-                  "sound-setting-failed",
-                  message("app.soundChangeFailed"),
-                  error,
-                );
-              });
-            }}
-          >
-            {soundEnabled ? t("app.soundOn") : t("app.soundOff")}
-          </button>
-          <button
-            className={videoAutoplay ? "text-ink" : "text-ink-muted"}
-            aria-pressed={videoAutoplay}
-            title={t("app.videoAutoplayToggle")}
-            onClick={() => {
-              void setMediumAutoplay("video", !videoAutoplay).catch((error) => {
-                log.error("video autoplay setting failed", toErrorFields(error));
-                reportActionFailure(
-                  "video-autoplay-setting-failed",
-                  message("app.videoAutoplayChangeFailed"),
-                  error,
-                );
-              });
-            }}
-          >
-            {videoAutoplay ? t("app.videoAutoplayOn") : t("app.videoAutoplayOff")}
-          </button>
-          <button
-            className={audioAutoplay ? "text-ink" : "text-ink-muted"}
-            aria-pressed={audioAutoplay}
-            title={t("app.audioAutoplayToggle")}
-            onClick={() => {
-              void setMediumAutoplay("audio", !audioAutoplay).catch((error) => {
-                log.error("audio autoplay setting failed", toErrorFields(error));
-                reportActionFailure(
-                  "audio-autoplay-setting-failed",
-                  message("app.audioAutoplayChangeFailed"),
-                  error,
-                );
-              });
-            }}
-          >
-            {audioAutoplay ? t("app.audioAutoplayOn") : t("app.audioAutoplayOff")}
-          </button>
+          <PlaybackControls />
           {mutationProgress === null && mutationResult !== null && !exitQuiescing ? (
             <MutationResultActions
               result={mutationResult}

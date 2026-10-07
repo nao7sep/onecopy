@@ -51,17 +51,17 @@ describe("Settings save boundary", () => {
   });
 
   it("writes one changed set and leaves every other set absent", async () => {
-    useSettingsStore.getState().update({ previewLongEdgePx: 2000 });
+    useSettingsStore.getState().update({ notificationDisplaySeconds: 10 });
     await saveSettings();
-    expect(invokeCalls.find((call) => call.command === "save_config")?.args.changes).toEqual({ previewLongEdgePx: 2000 });
+    expect(invokeCalls.find((call) => call.command === "save_config")?.args.changes).toEqual({ notificationDisplaySeconds: 10 });
   });
 
   it("saves the similarity reset as the built-in values, which the core then leaves out of the file", async () => {
-    useSettingsStore.getState().beginEditing(effectiveConfig({ similarity: { maxGapSeconds: 12, phashMaxDistance: 19, phashMaxDistanceBurst: 27, diameterMultiplier: 4 } }), [], effectiveConfig());
-    useSettingsStore.getState().resetSimilarPhotoSettings();
+    useSettingsStore.getState().beginEditing(effectiveConfig({ similarPhotoGrouping: "looser" }), [], effectiveConfig());
+    useSettingsStore.getState().update({ similarPhotoGrouping: "normal" });
     await saveSettings();
     expect(invokeCalls.find((call) => call.command === "save_config")?.args.changes).toEqual({
-      similarity: effectiveConfig().similarity,
+      similarPhotoGrouping: "normal",
     });
   });
 

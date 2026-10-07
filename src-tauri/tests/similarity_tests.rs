@@ -57,6 +57,23 @@ fn insert_image(
 }
 
 #[test]
+fn grouping_presets_change_real_group_membership() {
+    // Eight changed hash bits: too different for Stricter, grouped by Normal.
+    // Twelve changed bits: grouped only by Looser.
+    for (bits, expected) in [(8, [0, 1, 1]), (12, [0, 0, 1])] {
+        for (preset, groups) in ["stricter", "normal", "looser"].into_iter().zip(expected) {
+            let (_dir, conn) = seeded();
+            let time = 1_700_000_000_000;
+            insert_image(&conn, "a", "Ricoh", time, 0, 1.0);
+            insert_image(&conn, "b", "Ricoh", time + 1_000, (1 << bits) - 1, 1.0);
+            rebuild_groups(&conn, &SimilarityConfig::from_preset(Some(preset))).unwrap();
+            let actual: i64 = conn.query_row("SELECT COUNT(*) FROM similar_groups", [], |row| row.get(0)).unwrap();
+            assert_eq!(actual, groups, "{preset}: {bits} bits");
+        }
+    }
+}
+
+#[test]
 fn spare_shots_within_the_gap_group_together() {
     let (_d, conn) = seeded();
     let t = 1_700_000_000_000i64;

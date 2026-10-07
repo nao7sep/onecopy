@@ -9,7 +9,7 @@ describe("effective configuration readers", () => {
   });
 
   it("supply no default of their own", () => {
-    expect(configFlag({}, "videoAutoplay")).toBe(false);
+    expect(configFlag({}, "autoplay")).toBe(false);
     expect(configNumber({}, "maximumImagesInComparison")).toBeNull();
     expect(configNumber({ maximumImagesInComparison: "16" }, "maximumImagesInComparison")).toBeNull();
   });

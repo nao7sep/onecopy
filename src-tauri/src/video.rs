@@ -2,8 +2,7 @@
 //! duration (skipping black/fade-in openings) that flows through the SAME
 //! thumb/preview cache pipeline as images — so the grid and comparison
 //! surfaces need no video-specific rendering — plus an evenly spaced snapshot
-//! strip, duration-scaled (one frame per `videoStripSecondsPerFrame`, clamped
-//! to the configured min/max). Duration comes from `ffmpeg -i` stderr parsing
+//! strip, duration-scaled (one frame per 20 seconds, clamped to 5–40 frames). Duration comes from `ffmpeg -i` stderr parsing
 //! (one managed executable, no separate ffprobe, per the
 //! managed-runtime-dependencies conventions' one-binary rule).
 //!
@@ -22,6 +21,10 @@ pub struct StripConfig {
     pub seconds_per_frame: u32,
     pub min_frames: u32,
     pub max_frames: u32,
+}
+
+impl Default for StripConfig {
+    fn default() -> Self { Self { seconds_per_frame: 20, min_frames: 5, max_frames: 40 } }
 }
 
 /// Strip cache entry: `strips/<h2>/<hash>-<index>.webp` beside the

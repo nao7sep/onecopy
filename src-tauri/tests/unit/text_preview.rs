@@ -152,7 +152,7 @@ fn every_presented_encoding_is_a_working_canonical_decoder() {
 }
 
 #[test]
-fn saved_limits_are_read_and_clamped_with_defaults_for_absent_keys() {
+fn text_limit_is_internal_while_encoding_remains_configurable() {
     let defaults = Limits::from_config(None);
     assert_eq!(defaults.max_bytes, DEFAULT_MAX_BYTES);
     assert_eq!(defaults.fallback_encoding, DEFAULT_FALLBACK_ENCODING);
@@ -160,11 +160,11 @@ fn saved_limits_are_read_and_clamped_with_defaults_for_absent_keys() {
         "textPreviewMaxBytes": MAX_ALLOWED_BYTES * 2,
         "textFallbackEncoding": "shift_jis",
     })));
-    assert_eq!(saved.max_bytes, MAX_ALLOWED_BYTES);
+    assert_eq!(saved.max_bytes, DEFAULT_MAX_BYTES);
     assert_eq!(saved.fallback_encoding, "shift_jis");
     assert_eq!(
         Limits::from_config(Some(&serde_json::json!({ "textPreviewMaxBytes": 0 }))).max_bytes,
-        1
+        DEFAULT_MAX_BYTES
     );
 }
 

@@ -464,7 +464,7 @@ export default function Grid({
   const previewError = usePreviewStore((s) => s.error);
   const clearPreviewError = usePreviewStore((s) => s.clearError);
   const showFaceStars = useAppStore(
-    (state) => configFlag(state.appData?.config, "showFaceStars"),
+    (state) => configFlag(state.appData?.config, "scoreFaces"),
   );
   const selectItem = useItemsStore((s) => s.selectItem);
   const toggleItem = useItemsStore((s) => s.toggleItem);

@@ -2,7 +2,6 @@ import { emit } from "@tauri-apps/api/event";
 import {
   choosePlaybackSession,
   clampPlaybackVolume,
-  type PlaybackMedium,
   type PlaybackRegistration,
   type PlaybackSession,
   type PlaybackSurface,
@@ -40,8 +39,7 @@ function booleanConfig(key: string, fallback = true): boolean {
 
 function policy() {
   return {
-    videoAutoplay: booleanConfig("videoAutoplay"),
-    audioAutoplay: booleanConfig("audioAutoplay"),
+    autoplay: booleanConfig("autoplay"),
     soundEnabled: booleanConfig("soundEnabled"),
     volume: clampPlaybackVolume(
       useAppStore.getState().appData?.config?.playbackVolume,
@@ -334,12 +332,14 @@ export async function setSoundEnabled(enabled: boolean): Promise<void> {
   }
 }
 
-export async function setMediumAutoplay(
-  medium: PlaybackMedium,
-  enabled: boolean,
-): Promise<void> {
-  await useAppStore.getState().saveConfig(
-    { [medium === "video" ? "videoAutoplay" : "audioAutoplay"]: enabled },
-    { reportFailure: false },
-  );
+export async function setAutoplay(enabled: boolean): Promise<void> {
+  await useAppStore.getState().saveConfig({ autoplay: enabled }, { reportFailure: false });
+}
+
+/** Zero mutes without discarding the previous audible volume. */
+export function setPlaybackVolume(value: number): void {
+  if (!Number.isFinite(value)) return;
+  queueConfigPatch(value <= 0
+    ? { soundEnabled: false }
+    : { soundEnabled: true, playbackVolume: clampPlaybackVolume(value) });
 }

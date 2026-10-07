@@ -70,6 +70,15 @@ describe("comparison pointer decisions", () => {
     expect(getByText("0")).toBeTruthy();
   });
 
+  it("shows existing face scores only while face scoring is enabled", () => {
+    seedAppConfig({ scoreFaces: false, showFaceStars: true });
+    const view = renderSlot({ ...MEMBER, faceScore: 0.66 });
+    expect(view.queryByRole("img", { name: /Advisory:/ })).toBeNull();
+    view.unmount();
+    seedAppConfig({ scoreFaces: true, showFaceStars: false });
+    expect(renderSlot({ ...MEMBER, faceScore: 0.66 }).getByRole("img", { name: /Advisory:/ })).toBeTruthy();
+  });
+
   it("draws face ratings as icons rather than font characters", () => {
     const { getByRole } = renderSlot({ ...MEMBER, faceScore: 0.66 });
     const rating = getByRole("img", {

@@ -35,7 +35,7 @@ export default function ComparisonSlot({
   // Pixel, byte and duration facts are still assembled in models/items.
   const facts = factsLine(member, number);
   const showFaceStars = useAppStore(
-    (state) => configFlag(state.appData?.config, "showFaceStars"),
+    (state) => configFlag(state.appData?.config, "scoreFaces"),
   );
   const faceStars = showFaceStars ? faceStarRating(member.faceScore) : 0;
   return (

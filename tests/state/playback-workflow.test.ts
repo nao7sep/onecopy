@@ -6,7 +6,7 @@ import { useAppStore } from "../../src/state/app-store";
 import { usePreviewStore } from "../../src/state/preview-store";
 import { useFullscreenViewStore } from "../../src/state/fullscreen-view-store";
 import { handleFullscreenViewKey } from "../../src/workflows/fullscreen-view";
-import { installPlaybackWorkflow, setSoundEnabled } from "../../src/workflows/playback";
+import { installPlaybackWorkflow, setSoundEnabled, setPlaybackVolume, setAutoplay, flushPlaybackConfigForShutdown } from "../../src/workflows/playback";
 import { emitCalls, fireEvent, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
 function latestState(): PlaybackSession | null {
@@ -21,8 +21,7 @@ beforeEach(async () => {
   useAppStore.setState({
     appData: {
       config: {
-        videoAutoplay: true,
-        audioAutoplay: false,
+        autoplay: true,
         soundEnabled: true,
         playbackVolume: 0.7,
       },
@@ -58,6 +57,52 @@ describe("sound setting", () => {
 
     expect(latestState()).toMatchObject({ soundEnabled: false });
     expect(useAppStore.getState().appData?.config).toMatchObject({ soundEnabled: false });
+  });
+});
+
+describe("unified playback policy", () => {
+  it("applies the same autoplay choice when navigating to either audio or video", async () => {
+    mockCommands({ save_config: ({ changes }) => ({ ...useAppStore.getState().appData!.config, ...(changes as object) }) });
+    for (const autoplay of [false, true]) {
+      await setAutoplay(autoplay);
+      for (const medium of ["audio", "video"]) {
+        fireEvent("playback://register", { surface: "fullscreen-view", key: `${medium}-${autoplay}`, medium });
+        expect(latestState()?.playing).toBe(autoplay);
+        fireEvent("playback://unregister", { surface: "fullscreen-view", key: `${medium}-${autoplay}`, medium });
+      }
+    }
+  });
+  it("does not roll a newer volume choice back when an earlier save finishes", async () => {
+    let finishFirst!: (value: unknown) => void;
+    let calls = 0;
+    mockCommands({ save_config: ({ changes }) => {
+      const saved = { ...useAppStore.getState().appData!.config, ...(changes as object) };
+      if (++calls === 1) return new Promise((resolve) => { finishFirst = () => resolve(saved); });
+      return saved;
+    } });
+    setPlaybackVolume(0.3);
+    const first = flushPlaybackConfigForShutdown();
+    await Promise.resolve();
+    setPlaybackVolume(0.8);
+    finishFirst(null);
+    await first;
+    expect(useAppStore.getState().appData?.config.playbackVolume).toBe(0.8);
+    await flushPlaybackConfigForShutdown();
+    expect(useAppStore.getState().appData?.config.playbackVolume).toBe(0.8);
+  });
+
+  it("updates the active player immediately and keeps its position through volume and mute", async () => {
+    mockCommands({ save_config: ({ changes }) => ({ ...useAppStore.getState().appData!.config, ...(changes as object) }) });
+    fireEvent("playback://register", { surface: "fullscreen-view", key: "volume-clip", medium: "video" });
+    fireEvent("playback://observe", { surface: "fullscreen-view", key: "volume-clip", position: 12, playing: true, volume: 0.7, muted: false });
+    setPlaybackVolume(0.2);
+    expect(latestState()).toMatchObject({ position: 12, playing: true, volume: 0.2, soundEnabled: true });
+    setPlaybackVolume(0);
+    expect(latestState()).toMatchObject({ position: 12, volume: 0.2, soundEnabled: false });
+    await setSoundEnabled(true);
+    expect(latestState()).toMatchObject({ volume: 0.2, soundEnabled: true });
+    await flushPlaybackConfigForShutdown();
+    fireEvent("playback://unregister", { surface: "fullscreen-view", key: "volume-clip", medium: "video" });
   });
 });
 

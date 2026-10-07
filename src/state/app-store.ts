@@ -186,11 +186,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   dismissQuarantines: () => set({ quarantines: [] }),
 
   saveConfig: async (changes, options) => {
+    const published = get().appData?.config;
     try {
       const effective = await saveConfigFile(changes, options?.reportFailure ?? true);
-      set((s) =>
-        s.appData === null ? s : { appData: { ...s.appData, config: effective } },
-      );
+      set((s) => {
+        if (s.appData === null) return s;
+        // A volume drag can publish another choice while this write waits.
+        // Keep those newer values until their own queued save settles.
+        const newer = Object.fromEntries(Object.entries(s.appData.config)
+          .filter(([key, value]) => value !== published?.[key]));
+        return { appData: { ...s.appData, config: { ...effective, ...newer } } };
+      });
     } catch (error) {
       log.error("config save failed", toErrorFields(error));
       throw error;

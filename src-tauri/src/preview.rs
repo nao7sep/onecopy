@@ -21,6 +21,9 @@
 //! default path). Without ffmpeg those files are left BLOCKED rather than
 //! failed, so installing it later derives them instead of stranding them.
 
+pub const PREVIEW_LONG_EDGE_PX: u32 = 1600;
+pub const THUMBNAIL_EDGE_PX: u32 = 320;
+
 use std::path::{Path, PathBuf};
 
 use image::DynamicImage;
@@ -360,8 +363,8 @@ fn copy_file_atomic(src: &Path, target: &Path) -> Result<(), String> {
 
 /// A 64-bit difference hash: grayscale 9×8, one bit per horizontal neighbor
 /// comparison. Hand-rolled (the img_hash crate pins an older image version);
-/// Hamming distance over these bits is the similarity comparator the config's
-/// `similarityPhashMaxDistance` names.
+/// Hamming distance over these bits is the similarity comparator used by
+/// the grouping presets.
 /// Luminance with alpha composited over MID-GRAY. `to_luma8` alone ignores
 /// alpha, so the RGB hidden UNDER transparent pixels — pixels the user cannot
 /// see — drove both the visual hash and the sharpness score: two

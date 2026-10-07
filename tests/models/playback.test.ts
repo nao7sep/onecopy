@@ -3,8 +3,7 @@ import { choosePlaybackSession, playbackFailureMessage, type PlaybackSession } f
 import { t } from "../helpers/i18n";
 
 const policy = {
-  videoAutoplay: true,
-  audioAutoplay: false,
+  autoplay: true,
   soundEnabled: true,
   volume: 0.6,
 };
@@ -55,7 +54,7 @@ describe("playback ownership", () => {
     expect(session).toMatchObject({ owner: "fullscreen-view", position: 12.5, playing: false });
   });
 
-  it("starts genuinely new audio from the beginning under audio policy", () => {
+  it("starts genuinely new audio from the beginning under the shared autoplay policy", () => {
     const session = choosePlaybackSession(
       [{ surface: "preview-split", key: "memo", medium: "audio" }],
       {
@@ -69,7 +68,7 @@ describe("playback ownership", () => {
       },
       policy,
     );
-    expect(session).toMatchObject({ key: "memo", position: 0, playing: false });
+    expect(session).toMatchObject({ key: "memo", position: 0, playing: true });
   });
 
   it("does not revive an old position after another logical item took over", () => {

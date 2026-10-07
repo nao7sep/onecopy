@@ -45,20 +45,11 @@ fn appearance_reads_only_preferences_from_the_settings_in_memory() {
 #[test]
 fn default_config_serializes_with_camel_case_and_expected_defaults() {
     let value = serde_json::to_value(DefaultConfig::default()).unwrap();
-    assert_eq!(value["goodRangeStartYear"], serde_json::json!(1995));
-    assert_eq!(value["similarity"]["maxGapSeconds"], serde_json::json!(90));
-    assert_eq!(value["previewLongEdgePx"], serde_json::json!(1600));
-    assert_eq!(value["videoAutoplay"], serde_json::json!(true));
-    assert_eq!(value["audioAutoplay"], serde_json::json!(true));
+    assert_eq!(value["autoplay"], serde_json::json!(true));
     assert_eq!(value["soundEnabled"], serde_json::json!(true));
     assert_eq!(value["playbackVolume"], serde_json::json!(1.0));
     assert_eq!(value["enlargeSmallImages"], serde_json::json!(true));
-    assert_eq!(
-        value["textPreviewMaxBytes"],
-        serde_json::json!(2 * 1024 * 1024)
-    );
     assert_eq!(value["textFallbackEncoding"], serde_json::json!("utf-8"));
-    assert_eq!(value["pairingEnabled"], serde_json::json!(true));
     assert_eq!(value["videoSnapshotsEnabled"], serde_json::json!(true));
     assert_eq!(
         value["similarPhotoAnalysisEnabled"],
@@ -80,18 +71,9 @@ fn default_config_serializes_with_camel_case_and_expected_defaults() {
     assert_eq!(value["checkGithubReleasesAtLaunch"], serde_json::json!(true));
     assert_eq!(value["uiFontFamily"], serde_json::json!(""));
     assert!(value.get("verifyAfterCopy").is_none());
-    assert_eq!(value["showFaceStars"], serde_json::json!(true));
     assert_eq!(value["maximumImagesInComparison"], serde_json::json!(16));
     assert_eq!(value["notificationDisplaySeconds"], serde_json::json!(6));
     assert_eq!(value["screenPriority"], serde_json::json!([]));
-    assert_eq!(
-        value["destinationConflictRenameStyle"],
-        if cfg!(target_os = "windows") {
-            serde_json::json!("parenthesized-number")
-        } else {
-            serde_json::json!("space-number")
-        }
-    );
     assert!(value["defaultTimezone"].as_str().is_some_and(|s| !s.is_empty()));
     assert!(value.get("cacheDir").is_none());
     // Spec, not configuration: extension lists (and the other dead keys)
@@ -143,12 +125,12 @@ fn cache_is_always_managed_under_the_app_root_and_legacy_external_data_is_untouc
 }
 
 #[test]
-fn scanner_projects_the_pairing_switch() {
+fn scanner_ignores_the_retired_pairing_switch() {
     let root = temp_dir("pairing-switch");
     let disabled = serde_json::json!({ "pairingEnabled": false });
     let enabled = serde_json::json!({ "pairingEnabled": true });
 
-    assert!(!onecopy_lib::scanner::settings_from_config(Some(&disabled), &root, 0).pairing_enabled);
+    assert!(onecopy_lib::scanner::settings_from_config(Some(&disabled), &root, 0).pairing_enabled);
     assert!(onecopy_lib::scanner::settings_from_config(Some(&enabled), &root, 0).pairing_enabled);
     assert!(onecopy_lib::scanner::settings_from_config(None, &root, 0).pairing_enabled);
 }
@@ -225,7 +207,7 @@ fn saving_over_a_corrupt_config_keeps_only_sets_that_differ() {
     let outcome = save_config(&dir, &serde_json::json!({ "theme": "dark" })).unwrap();
 
     assert_eq!(outcome.effective["theme"], "dark");
-    assert_eq!(outcome.effective["goodRangeStartYear"], 1995);
+    assert_eq!(outcome.effective["similarPhotoGrouping"], "normal");
     let stored: serde_json::Value = serde_json::from_slice(&std::fs::read(&target).unwrap()).unwrap();
     assert_eq!(stored, serde_json::json!({ "formatVersion": 1, "theme": "dark" }));
     // The outcome carries the record — a mid-session quarantine has no load
@@ -262,19 +244,19 @@ fn first_run_writes_nothing_and_a_save_writes_every_set_that_differs() {
     let loaded = load_from_root(&dir).unwrap();
     let path = dir.join(CONFIG_FILE_NAME);
     assert!(!path.exists());
-    assert_eq!(loaded.config["previewLongEdgePx"], 1600);
+    assert_eq!(loaded.config["notificationDisplaySeconds"], 6);
     let stored = |path: &std::path::Path| -> serde_json::Value {
         serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
     };
-    save_config(&dir, &serde_json::json!({ "previewLongEdgePx": 2000 })).unwrap();
-    assert_eq!(stored(&path), serde_json::json!({ "formatVersion": 1, "previewLongEdgePx": 2000 }));
+    save_config(&dir, &serde_json::json!({ "notificationDisplaySeconds": 10 })).unwrap();
+    assert_eq!(stored(&path), serde_json::json!({ "formatVersion": 1, "notificationDisplaySeconds": 10 }));
     assert_eq!(load_from_root(&dir).unwrap().config["theme"], "system");
     // Unknown keys are dropped, and a set saved equal to its built-in leaves.
-    std::fs::write(&path, br#"{"formatVersion":1,"version":1,"previewLongEdgePx":2000}"#).unwrap();
+    std::fs::write(&path, br#"{"formatVersion":1,"version":1,"notificationDisplaySeconds":10}"#).unwrap();
     load_from_root(&dir).unwrap();
     save_config(&dir, &serde_json::json!({ "theme": "dark", "playbackVolume": 1 })).unwrap();
-    assert_eq!(stored(&path), serde_json::json!({ "formatVersion": 1, "previewLongEdgePx": 2000, "theme": "dark" }));
-    save_config(&dir, &serde_json::json!({ "previewLongEdgePx": 1600, "theme": "system" })).unwrap();
+    assert_eq!(stored(&path), serde_json::json!({ "formatVersion": 1, "notificationDisplaySeconds": 10, "theme": "dark" }));
+    save_config(&dir, &serde_json::json!({ "notificationDisplaySeconds": 6, "theme": "system" })).unwrap();
     assert_eq!(stored(&path), serde_json::json!({ "formatVersion": 1 }), "the file stays, holding no set");
     assert!(save_config(&dir, &serde_json::json!({ "theme": "purple" })).is_err());
 }
@@ -284,13 +266,33 @@ fn first_run_writes_nothing_and_a_save_writes_every_set_that_differs() {
 fn resetting_similarity_removes_the_whole_set_from_the_file() {
     let dir = temp_dir("reset-set");
     let path = dir.join(CONFIG_FILE_NAME);
-    let similarity = serde_json::json!({ "maxGapSeconds": 12, "phashMaxDistance": 19, "phashMaxDistanceBurst": 27, "diameterMultiplier": 4 });
-    save_config(&dir, &serde_json::json!({ "similarity": similarity, "theme": "dark" })).unwrap();
-    assert_eq!(load_from_root(&dir).unwrap().config["similarity"], similarity);
-    let result = save_config(&dir, &serde_json::json!({ "similarity": effective_config(None)["similarity"] })).unwrap();
-    assert_eq!(result.effective["similarity"], effective_config(None)["similarity"]);
+    save_config(&dir, &serde_json::json!({ "similarPhotoGrouping": "looser", "theme": "dark" })).unwrap();
+    assert_eq!(load_from_root(&dir).unwrap().config["similarPhotoGrouping"], "looser");
+    let result = save_config(&dir, &serde_json::json!({ "similarPhotoGrouping": "normal" })).unwrap();
+    assert_eq!(result.effective["similarPhotoGrouping"], "normal");
     let stored: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(stored, serde_json::json!({ "formatVersion": 1, "theme": "dark" }));
+}
+
+#[test]
+fn retired_settings_cannot_change_runtime_behavior() {
+    let legacy = serde_json::json!({
+        "videoAutoplay": false, "audioAutoplay": false, "showFaceStars": false,
+        "previewLongEdgePx": 12, "thumbnailEdgePx": 1, "videoStripSecondsPerFrame": 1,
+        "videoStripMinFrames": 100, "videoStripMaxFrames": 100, "goodRangeStartYear": 2020,
+        "textPreviewMaxBytes": 1, "pairingEnabled": false, "destinationConflictRenameStyle": "other",
+        "similarity": { "maxGapSeconds": 1, "phashMaxDistance": 99, "phashMaxDistanceBurst": 99, "diameterMultiplier": 99 }
+    });
+    assert_eq!(effective_config(Some(&legacy)), effective_config(None));
+    let root = temp_dir("retired-config");
+    let derived = onecopy_lib::derived_work::settings_from_config(Some(&legacy), &root);
+    assert_eq!(derived.preview_long_edge, 1600);
+    assert_eq!(derived.thumb_edge, 320);
+    assert_eq!(derived.strip.seconds_per_frame, 20);
+    assert_eq!(derived.similarity.phash_max_distance, 3);
+    let scan = onecopy_lib::scanner::settings_from_config(Some(&legacy), &root, 0);
+    assert!(scan.pairing_enabled);
+    assert_eq!(scan.resolution.good_range_start_year, 1995);
 }
 
 #[test]
@@ -343,8 +345,8 @@ fn a_corrupt_config_is_set_aside_reported_and_not_reseeded() {
     assert!(!config.exists(), "quarantine leaves no replacement config");
     let started_with = loaded.config;
     assert_eq!(
-        started_with["goodRangeStartYear"],
-        serde_json::json!(1995),
+        started_with["similarPhotoGrouping"],
+        serde_json::json!("normal"),
         "and those defaults are the canonical ones"
     );
 
@@ -427,10 +429,10 @@ fn the_effective_config_is_the_stored_values_over_the_defaults() {
     assert_eq!(defaults, serde_json::to_value(DefaultConfig::default()).unwrap());
     // A config written before a key existed resolves that key to its default:
     // new installations confirm a direct single-item Delete (file-operations.md).
-    let older = serde_json::json!({ "sourceDirs": ["/photos"], "videoAutoplay": false });
+    let older = serde_json::json!({ "sourceDirs": ["/photos"], "autoplay": false });
     let effective = effective_config(Some(&older));
     assert_eq!(effective["confirmTrashDelete"], serde_json::json!(true));
-    assert_eq!(effective["videoAutoplay"], serde_json::json!(false));
+    assert_eq!(effective["autoplay"], serde_json::json!(false));
     assert_eq!(effective["sourceDirs"], serde_json::json!(["/photos"]));
     assert_eq!(effective_config(Some(&serde_json::json!([]))), defaults);
 }
@@ -445,7 +447,6 @@ fn the_frontend_config_fixture_matches_the_core_defaults() {
     let mut expected = effective_config(None);
     for (key, value) in [
         ("defaultTimezone", serde_json::json!("UTC")),
-        ("destinationConflictRenameStyle", serde_json::json!("space-number")),
         ("aiAcceleration", serde_json::json!({})),
     ] {
         expected[key] = value;

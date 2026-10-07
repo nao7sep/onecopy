@@ -242,13 +242,6 @@ pub fn settings_from_config(config: Option<&serde_json::Value>, data_root: &Path
     let config = Some(&effective);
     let defaults = crate::storage::DefaultConfig::default();
     let get = |key: &str| config.and_then(|c| c.get(key));
-    let u32_of = |key: &str, fallback: u32| -> u32 {
-        get(key)
-            .and_then(|v| v.as_u64())
-            .and_then(|v| u32::try_from(v).ok())
-            .unwrap_or(fallback)
-    };
-    let similarity = |key: &str, fallback: u32| get("similarity").and_then(|set| set.get(key)).and_then(serde_json::Value::as_u64).and_then(|v| u32::try_from(v).ok()).unwrap_or(fallback);
     let transcription_dependencies = crate::ai_dependencies::production_transcription(data_root);
     let score_faces = get("scoreFaces")
         .and_then(|v| v.as_bool())
@@ -262,34 +255,10 @@ pub fn settings_from_config(config: Option<&serde_json::Value>, data_root: &Path
     Settings {
         data_root: data_root.to_path_buf(),
         cache_root: data_root.join(crate::storage::CACHE_DIR_NAME),
-        similarity: crate::similarity::SimilarityConfig {
-            max_gap_seconds: similarity(
-                "maxGapSeconds",
-                defaults.similarity.max_gap_seconds,
-            ),
-            phash_max_distance: similarity(
-                "phashMaxDistance",
-                defaults.similarity.phash_max_distance,
-            ),
-            phash_max_distance_burst: similarity(
-                "phashMaxDistanceBurst",
-                defaults.similarity.phash_max_distance_burst,
-            ),
-            diameter_multiplier: similarity(
-                "diameterMultiplier",
-                defaults.similarity.diameter_multiplier,
-            ),
-        },
-        strip: crate::video::StripConfig {
-            seconds_per_frame: u32_of(
-                "videoStripSecondsPerFrame",
-                defaults.video_strip_seconds_per_frame,
-            ),
-            min_frames: u32_of("videoStripMinFrames", defaults.video_strip_min_frames),
-            max_frames: u32_of("videoStripMaxFrames", defaults.video_strip_max_frames),
-        },
-        thumb_edge: u32_of("thumbnailEdgePx", defaults.thumbnail_edge_px),
-        preview_long_edge: u32_of("previewLongEdgePx", defaults.preview_long_edge_px),
+        similarity: crate::similarity::SimilarityConfig::from_preset(get("similarPhotoGrouping").and_then(serde_json::Value::as_str)),
+        strip: crate::video::StripConfig::default(),
+        thumb_edge: crate::preview::THUMBNAIL_EDGE_PX,
+        preview_long_edge: crate::preview::PREVIEW_LONG_EDGE_PX,
         ffmpeg: transcription_dependencies.ffmpeg,
         video_snapshots_enabled: bool_of("videoSnapshotsEnabled", defaults.video_snapshots_enabled),
         similarity_enabled: bool_of(

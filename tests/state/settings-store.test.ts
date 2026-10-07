@@ -16,12 +16,10 @@ beforeEach(() => {
 describe("playback preferences", () => {
   it("reads the core's defaults and starts missing playback state on", () => {
     expect(useSettingsStore.getState().draft).toMatchObject({
-      videoAutoplay: true,
-      audioAutoplay: true,
+      autoplay: true,
       soundEnabled: true,
       playbackVolume: 1,
       enlargeSmallImages: true,
-      textPreviewMaxBytes: 2 * 1024 * 1024,
       textFallbackEncoding: "utf-8",
     });
   });
@@ -30,15 +28,13 @@ describe("playback preferences", () => {
     useSettingsStore.getState().beginEditing(
       {
         ...config,
-        videoAutoplay: false,
-        audioAutoplay: false,
+        autoplay: false,
         soundEnabled: false,
         playbackVolume: 0.4,
       },
     );
     expect(useSettingsStore.getState().draft).toMatchObject({
-      videoAutoplay: false,
-      audioAutoplay: false,
+      autoplay: false,
       soundEnabled: false,
       playbackVolume: 0.4,
     });
@@ -56,9 +52,9 @@ describe("defaults", () => {
   });
 
   it("supplies no default of its own for a missing member", () => {
-    const { goodRangeStartYear: _omitted, ...partial } = config;
+    const { maximumImagesInComparison: _omitted, ...partial } = config;
     expect(() => useSettingsStore.getState().beginEditing(partial)).toThrow(
-      "goodRangeStartYear must be a number.",
+      "maximumImagesInComparison must be a number.",
     );
   });
 });

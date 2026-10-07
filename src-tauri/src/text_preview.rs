@@ -8,9 +8,8 @@ use encoding_rs::Encoding;
 use serde::Serialize;
 
 pub const DEFAULT_MAX_BYTES: u64 = 2 * 1024 * 1024;
-/// The hard ceiling an unbounded `textPreviewMaxBytes` setting is clamped to
-/// (C-L2): without one, a large stored setting sends a whole file through
-/// blake3, decoding and IPC on every preview.
+/// Hard ceiling for explicit reader limits; ordinary previews use the fixed
+/// default so a saved legacy setting cannot admit an unbounded file.
 pub const MAX_ALLOWED_BYTES: u64 = 64 * 1024 * 1024;
 pub const DEFAULT_FALLBACK_ENCODING: &str = "utf-8";
 
@@ -119,11 +118,7 @@ impl Limits {
     pub fn from_config(config: Option<&serde_json::Value>) -> Self {
         let defaults = crate::storage::DefaultConfig::default();
         Self {
-            max_bytes: config
-                .and_then(|value| value.get("textPreviewMaxBytes"))
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(defaults.text_preview_max_bytes)
-                .clamp(1, MAX_ALLOWED_BYTES),
+            max_bytes: DEFAULT_MAX_BYTES,
             fallback_encoding: config
                 .and_then(|value| value.get("textFallbackEncoding"))
                 .and_then(serde_json::Value::as_str)

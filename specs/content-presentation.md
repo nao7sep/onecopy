@@ -17,11 +17,11 @@
 
 ## Shared playback ownership
 
-- Video and audio are separate presentation bodies with separate policy. They may share source loading, play/pause, seek, position, volume, app-wide Sound, handoff, error, and safe-release primitives without becoming modes of one universal player.
-- `Video autoplay`, `Audio autoplay`, and app-wide `Sound` are independent settings, all default on, and are directly available in Main as well as Settings.
+- Video and audio are separate presentation bodies with shared playback policy. They may share source loading, play/pause, seek, position, volume, app-wide Sound, handoff, error, and safe-release primitives without becoming modes of one universal player.
+- One `Autoplay` choice covers both video and audio and defaults on. Main’s status bar offers that toggle beside a speaker button and volume slider; Settings edits the same policy. The speaker shows muted, low, medium, or high volume. Zero volume mutes; the speaker button restores the previous audible level.
 - Autoplay applies only when a genuinely new media item is shown. Changing it does not alter current playback. Rapid navigation cancels automatic starts for abandoned items.
 - App-wide Sound applies immediately to every OneCopy-owned player without changing position or playing state. One remembered nonzero volume value is shared; Sound off silences playback without replacing it, and Sound on restores it.
-- Moving to another logical item ends the prior session. Returning later starts at the beginning and reapplies that medium's autoplay setting. OneCopy keeps no durable playback-position history per item.
+- Moving to another logical item ends the prior session. Returning later starts at the beginning and reapplies the shared autoplay setting. OneCopy keeps no durable playback-position history per item.
 - Natural completion stops at the end without looping, restarting, selecting another library item, or playlist-style advance.
 - Before a file operation or external delegation, OneCopy pauses and releases its own media readers. A failed file operation restores the same surviving item's prior live position and playing state when possible and reports restoration failure otherwise; a successful operation follows ordinary selection and sequence recovery.
 

@@ -69,16 +69,6 @@ pub struct DefaultConfig {
     /// IANA name applied when interpreting naive local timestamps (EXIF without
     /// an offset). The built-in follows the system timezone; the wizard saves the choice.
     pub default_timezone: String,
-    /// Timestamps resolving before this year are rejected as implausible.
-    pub good_range_start_year: i32,
-    pub similarity: SimilaritySettings,
-    /// Long edge of the screen-fit preview cache entries.
-    pub preview_long_edge_px: u32,
-    /// Edge of the grid thumbnail cache entries.
-    pub thumbnail_edge_px: u32,
-    pub video_strip_seconds_per_frame: u32,
-    pub video_strip_min_frames: u32,
-    pub video_strip_max_frames: u32,
     pub video_snapshots_enabled: bool,
     pub similar_photo_analysis_enabled: bool,
     pub video_transcription_enabled: bool,
@@ -86,14 +76,11 @@ pub struct DefaultConfig {
     /// Runtime-selected backend per AI engine. The acceleration owner
     /// validates known keys and platform availability before publication.
     pub ai_acceleration: JsonValue,
-    pub video_autoplay: bool,
-    pub audio_autoplay: bool,
+    pub autoplay: bool,
+    pub similar_photo_grouping: String,
     /// One choice for the preview and the fullscreen view.
     pub enlarge_small_images: bool,
-    pub text_preview_max_bytes: u64,
     pub text_fallback_encoding: String,
-    /// The one global companion-pairing toggle (all kinds together).
-    pub pairing_enabled: bool,
     /// UI theme: "system" (follow the OS), "light", or "dark".
     pub theme: String,
     /// Interface language: "system" (follow the computer at every launch) or a
@@ -120,9 +107,6 @@ pub struct DefaultConfig {
     /// Face scoring for comparison-group ordering. Off means the coordinator
     /// does not run the optional pass; ordering falls back to sharpness.
     pub score_faces: bool,
-    /// Show an existing face score as a subtle thumbnail/comparison hint.
-    /// This is presentation-only and never causes scoring or model downloads.
-    pub show_face_stars: bool,
     /// Upper bound for one visible Comparison page. Connected displays and
     /// the current images' orientation may reduce the actual page size.
     pub maximum_images_in_comparison: u32,
@@ -141,8 +125,6 @@ pub struct DefaultConfig {
     pub source_dirs: Vec<String>,
     /// Destination roots for the move/copy-out tree (absolute paths).
     pub destination_roots: Vec<String>,
-    /// Conflict renaming follows one familiar desktop style. The built-in follows the platform; users may choose the other.
-    pub destination_conflict_rename_style: String,
 }
 
 impl Default for DefaultConfig {
@@ -153,24 +135,15 @@ impl Default for DefaultConfig {
             hide_hidden_attributes: true,
             hide_system_attributes: true,
             default_timezone: iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".to_string()),
-            good_range_start_year: 1995,
-            similarity: SimilaritySettings::default(),
-            preview_long_edge_px: 1600,
-            thumbnail_edge_px: 320,
-            video_strip_seconds_per_frame: 20,
-            video_strip_min_frames: 5,
-            video_strip_max_frames: 40,
             video_snapshots_enabled: true,
             similar_photo_analysis_enabled: true,
             video_transcription_enabled: true,
             audio_transcription_enabled: true,
             ai_acceleration: crate::ai_acceleration::default_config(),
-            video_autoplay: true,
-            audio_autoplay: true,
+            autoplay: true,
+            similar_photo_grouping: "normal".to_string(),
             enlarge_small_images: true,
-            text_preview_max_bytes: crate::text_preview::DEFAULT_MAX_BYTES,
             text_fallback_encoding: crate::text_preview::DEFAULT_FALLBACK_ENCODING.to_string(),
-            pairing_enabled: true,
             theme: "system".to_string(),
             language: "system".to_string(),
             // Blank means the stylesheet's explicit system stack. Persist
@@ -183,34 +156,13 @@ impl Default for DefaultConfig {
             sound_enabled: true,
             playback_volume: 1.0,
             score_faces: true,
-            show_face_stars: true,
             maximum_images_in_comparison: 16,
             notification_display_seconds: 6,
             confirm_trash_delete: true,
             screen_priority: Vec::new(),
             source_dirs: Vec::new(),
             destination_roots: Vec::new(),
-            destination_conflict_rename_style: if cfg!(target_os = "windows") {
-                "parenthesized-number".to_string()
-            } else {
-                "space-number".to_string()
-            },
         }
-    }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SimilaritySettings {
-    pub max_gap_seconds: u32,
-    pub phash_max_distance: u32,
-    pub phash_max_distance_burst: u32,
-    pub diameter_multiplier: u32,
-}
-
-impl Default for SimilaritySettings {
-    fn default() -> Self {
-        Self { max_gap_seconds: 90, phash_max_distance: 3, phash_max_distance_burst: 10, diameter_multiplier: 2 }
     }
 }
 
@@ -245,7 +197,8 @@ fn valid_set(key: &str, value: &JsonValue, builtin: &JsonValue) -> bool {
     shape && match key {
         "theme" => matches!(value.as_str(), Some("system" | "light" | "dark")),
         "language" => value.as_str().is_some_and(|tag| tag == "system" || crate::i18n::LANGUAGES.contains(&tag)),
-        "destinationConflictRenameStyle" => matches!(value.as_str(), Some("space-number" | "parenthesized-number")),
+        "similarPhotoGrouping" => matches!(value.as_str(), Some("stricter" | "normal" | "looser")),
+        "playbackVolume" => value.as_f64().is_some_and(|value| value.is_finite() && (0.01..=1.0).contains(&value)),
         "transcription" | "face-scoring" => matches!(value.as_str(), Some("none" | "metal")),
         _ => true,
     }
