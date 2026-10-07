@@ -1,18 +1,15 @@
 // Tests exercising the crate's public API from outside shipped source
 // (tests-folder conventions, Rust form).
 
-use std::path::PathBuf;
 
 use onecopy_lib::storage::*;
 use serial_test::serial;
 
-fn temp_dir(label: &str) -> PathBuf {
-    let dir = tempfile::Builder::new()
+fn temp_dir(label: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
         .prefix(&format!("onecopy-storage-{label}-"))
         .tempdir()
         .unwrap()
-        .keep();
-    dir
 }
 
 #[test]
@@ -93,7 +90,8 @@ fn default_config_serializes_with_camel_case_and_expected_defaults() {
 #[test]
 #[serial(backup_store)]
 fn loading_config_removes_the_obsolete_copy_verification_preference() {
-    let root = temp_dir("obsolete-copy-verification");
+    let root_owner = temp_dir("obsolete-copy-verification");
+    let root = root_owner.path();
     let path = root.join(CONFIG_FILE_NAME);
     std::fs::write(
         &path,
@@ -112,8 +110,10 @@ fn loading_config_removes_the_obsolete_copy_verification_preference() {
 
 #[test]
 fn cache_is_always_managed_under_the_app_root_and_legacy_external_data_is_untouched() {
-    let root = temp_dir("fixed-cache");
-    let external = temp_dir("legacy-external-cache");
+    let root_owner = temp_dir("fixed-cache");
+    let root = root_owner.path();
+    let external_owner = temp_dir("legacy-external-cache");
+    let external = external_owner.path();
     let marker = external.join("keep-me.webp");
     std::fs::write(&marker, b"old cache bytes").unwrap();
     let config = serde_json::json!({ "cacheDir": external });
@@ -126,7 +126,8 @@ fn cache_is_always_managed_under_the_app_root_and_legacy_external_data_is_untouc
 
 #[test]
 fn scanner_ignores_the_retired_pairing_switch() {
-    let root = temp_dir("pairing-switch");
+    let root_owner = temp_dir("pairing-switch");
+    let root = root_owner.path();
     let disabled = serde_json::json!({ "pairingEnabled": false });
     let enabled = serde_json::json!({ "pairingEnabled": true });
 
@@ -138,7 +139,8 @@ fn scanner_ignores_the_retired_pairing_switch() {
 #[test]
 #[serial(backup_store)]
 fn patch_merges_shallow_and_survives_interleaved_writers() {
-    let dir = temp_dir("patch");
+    let dir_owner = temp_dir("patch");
+    let dir = dir_owner.path();
     let target = dir.join("registry.json");
     write_atomic(&target, b"{\"formatVersion\": 1, \"a\": 1, \"list\": [\"x\"]}").unwrap();
 
@@ -161,9 +163,8 @@ fn patch_merges_shallow_and_survives_interleaved_writers() {
                 })
             })
             .collect();
-        for handle in handles {
-            handle.join().unwrap();
-        }
+        let joined: Vec<_> = handles.into_iter().map(|handle| handle.join()).collect();
+        assert!(joined.into_iter().all(|result| result.is_ok()));
         // Read the FILE, not a return value: a lost update is a fact about
         // what landed on disk.
         let merged: serde_json::Value =
@@ -200,7 +201,8 @@ fn patch_merges_shallow_and_survives_interleaved_writers() {
 #[test]
 #[serial(backup_store)]
 fn saving_over_a_corrupt_config_keeps_only_sets_that_differ() {
-    let dir = temp_dir("save-corrupt-config");
+    let dir_owner = temp_dir("save-corrupt-config");
+    let dir = dir_owner.path();
     let target = dir.join(CONFIG_FILE_NAME);
     std::fs::write(&target, b"not json").unwrap();
 
@@ -220,7 +222,8 @@ fn saving_over_a_corrupt_config_keeps_only_sets_that_differ() {
 #[test]
 #[serial(backup_store)]
 fn saving_over_a_non_object_config_preserves_it_first() {
-    let dir = temp_dir("save-wrong-envelope-config");
+    let dir_owner = temp_dir("save-wrong-envelope-config");
+    let dir = dir_owner.path();
     let target = dir.join(CONFIG_FILE_NAME);
     std::fs::write(&target, b"[\"preserve\", 7]\n").unwrap();
 
@@ -240,7 +243,8 @@ fn saving_over_a_non_object_config_preserves_it_first() {
 #[test]
 #[serial(backup_store, quarantine_journal)]
 fn first_run_writes_nothing_and_a_save_writes_every_set_that_differs() {
-    let dir = temp_dir("sparse");
+    let dir_owner = temp_dir("sparse");
+    let dir = dir_owner.path();
     let loaded = load_from_root(&dir).unwrap();
     let path = dir.join(CONFIG_FILE_NAME);
     assert!(!path.exists());
@@ -264,7 +268,8 @@ fn first_run_writes_nothing_and_a_save_writes_every_set_that_differs() {
 #[test]
 #[serial(backup_store, quarantine_journal)]
 fn resetting_similarity_removes_the_whole_set_from_the_file() {
-    let dir = temp_dir("reset-set");
+    let dir_owner = temp_dir("reset-set");
+    let dir = dir_owner.path();
     let path = dir.join(CONFIG_FILE_NAME);
     save_config(&dir, &serde_json::json!({ "similarPhotoGrouping": "looser", "theme": "dark" })).unwrap();
     assert_eq!(load_from_root(&dir).unwrap().config["similarPhotoGrouping"], "looser");
@@ -284,7 +289,8 @@ fn retired_settings_cannot_change_runtime_behavior() {
         "similarity": { "maxGapSeconds": 1, "phashMaxDistance": 99, "phashMaxDistanceBurst": 99, "diameterMultiplier": 99 }
     });
     assert_eq!(effective_config(Some(&legacy)), effective_config(None));
-    let root = temp_dir("retired-config");
+    let root_owner = temp_dir("retired-config");
+    let root = root_owner.path();
     let derived = onecopy_lib::derived_work::settings_from_config(Some(&legacy), &root);
     assert_eq!(derived.preview_long_edge, 1600);
     assert_eq!(derived.thumb_edge, 320);
@@ -303,8 +309,93 @@ fn malformed_sets_fall_back_whole_without_reinterpreting_legacy_keys() {
 
 #[test]
 #[serial(backup_store)]
+fn identical_atomic_writes_leave_the_existing_file_and_times_untouched() {
+    for recorded in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("unchanged.txt");
+        std::fs::write(&path, b"same exact bytes").unwrap();
+        let past = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_500_000_000);
+        std::fs::File::options().write(true).open(&path).unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(past)).unwrap();
+        let before = std::fs::metadata(&path).unwrap();
+
+        if recorded {
+            write_atomic(&path, b"same exact bytes").unwrap();
+        } else {
+            write_atomic_unrecorded(&path, b"same exact bytes").unwrap();
+        }
+
+        let after = std::fs::metadata(&path).unwrap();
+        assert_eq!(after.modified().unwrap(), before.modified().unwrap());
+        #[cfg(unix)] {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(after.ino(), before.ino());
+        }
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn changed_atomic_writes_preserve_permissions_but_get_a_new_modified_time() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("restricted.txt");
+    std::fs::write(&path, b"old").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+    let past = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_500_000_000);
+    std::fs::File::options().write(true).open(&path).unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(past)).unwrap();
+
+    write_atomic_unrecorded(&path, b"changed").unwrap();
+
+    let metadata = std::fs::metadata(&path).unwrap();
+    assert_eq!(metadata.permissions().mode() & 0o7777, 0o640);
+    assert!(metadata.modified().unwrap() > past);
+    assert_eq!(std::fs::read(&path).unwrap(), b"changed");
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn atomic_replacement_keeps_supported_extended_attributes_tags_and_acl() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tagged.json");
+    std::fs::write(&path, b"old").unwrap();
+    let raw_path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+    let attributes = [("user.onecopy-replacement", b"attribute".as_slice()), ("com.apple.metadata:_kMDItemUserTags", b"tag bytes".as_slice())];
+    for (name, value) in attributes {
+        let name = std::ffi::CString::new(name).unwrap();
+        assert_eq!(unsafe { libc::setxattr(raw_path.as_ptr(), name.as_ptr(), value.as_ptr().cast(), value.len(), 0, 0) }, 0);
+    }
+    assert!(std::process::Command::new("/bin/chmod").args(["+a", "everyone deny execute"]).arg(&path).status().unwrap().success());
+    let acl = |path: &std::path::Path| {
+        let output = std::process::Command::new("/bin/ls").arg("-le").arg(path).output().unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap().lines().skip(1).map(str::to_owned).collect::<Vec<_>>()
+    };
+    let before_acl = acl(&path);
+    assert!(!before_acl.is_empty());
+
+    write_atomic_unrecorded(&path, b"changed").unwrap();
+
+    assert_eq!(acl(&path), before_acl);
+    for (name, expected) in attributes {
+        let name = std::ffi::CString::new(name).unwrap();
+        let mut actual = vec![0u8; 128];
+        let read = unsafe { libc::getxattr(raw_path.as_ptr(), name.as_ptr(), actual.as_mut_ptr().cast(), actual.len(), 0, 0) };
+        assert!(read >= 0);
+        actual.truncate(read as usize);
+        assert_eq!(actual, expected);
+    }
+}
+
+#[test]
+#[serial(backup_store)]
 fn write_atomic_replaces_and_leaves_no_temps() {
-    let dir = temp_dir("atomic");
+    let dir_owner = temp_dir("atomic");
+    let dir = dir_owner.path();
     let path = dir.join("f.json");
     write_atomic(&path, b"first").unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), b"first");
@@ -322,7 +413,8 @@ fn write_atomic_replaces_and_leaves_no_temps() {
 #[test]
 #[serial(quarantine_journal)]
 fn a_corrupt_config_is_set_aside_reported_and_not_reseeded() {
-    let root = temp_dir("quarantine-config");
+    let root_owner = temp_dir("quarantine-config");
+    let root = root_owner.path();
     let config = root.join("config.json");
     std::fs::write(&config, b"{ not json").unwrap();
 
@@ -358,7 +450,8 @@ fn a_corrupt_config_is_set_aside_reported_and_not_reseeded() {
 #[test]
 #[serial(quarantine_journal)]
 fn a_corrupt_state_is_reported_without_disturbing_a_good_config() {
-    let root = temp_dir("quarantine-state");
+    let root_owner = temp_dir("quarantine-state");
+    let root = root_owner.path();
     let config = root.join("config.json");
     std::fs::write(&config, br#"{"formatVersion": 1, "sourceDirs": ["/photos"]}"#).unwrap();
     std::fs::write(root.join("state.json"), b"not json at all").unwrap();
@@ -387,13 +480,15 @@ fn a_corrupt_state_is_reported_without_disturbing_a_good_config() {
 #[test]
 #[serial(quarantine_journal)]
 fn the_settings_held_before_the_window_shows_never_touch_the_file() {
-    let root = temp_dir("held-before-window");
+    let root_owner = temp_dir("held-before-window");
+    let root = root_owner.path();
     let config = root.join(CONFIG_FILE_NAME);
     std::fs::write(&config, br#"{"formatVersion":1,"theme":"light","language":"ko"}"#).unwrap();
     let held = held_config(&root);
     assert_eq!((held["theme"].as_str(), held["language"].as_str()), (Some("light"), Some("ko")));
 
-    let corrupt = temp_dir("held-before-window-corrupt");
+    let corrupt_owner = temp_dir("held-before-window-corrupt");
+    let corrupt = corrupt_owner.path();
     std::fs::write(corrupt.join(CONFIG_FILE_NAME), b"{corrupt").unwrap();
     assert_eq!(held_config(&corrupt), effective_config(None));
     assert_eq!(std::fs::read(corrupt.join(CONFIG_FILE_NAME)).unwrap(), b"{corrupt");
@@ -407,7 +502,8 @@ fn the_settings_held_before_the_window_shows_never_touch_the_file() {
 #[test]
 #[serial(quarantine_journal)]
 fn a_settings_read_that_loads_leaves_its_quarantine_pending_for_load_from_root() {
-    let root = temp_dir("quarantine-worker-read");
+    let root_owner = temp_dir("quarantine-worker-read");
+    let root = root_owner.path();
     let config_path = root.join("config.json");
     std::fs::write(&config_path, b"{ not json").unwrap();
 
@@ -462,7 +558,8 @@ fn the_frontend_config_fixture_matches_the_core_defaults() {
 #[test]
 #[serial(backup_store, quarantine_journal)]
 fn every_json_store_records_its_format_version_and_reads_without_it() {
-    let dir = temp_dir("format-version");
+    let dir_owner = temp_dir("format-version");
+    let dir = dir_owner.path();
     save_config(&dir, &serde_json::json!({ "theme": "dark" })).unwrap();
     patch_json_store(&dir.join(STATE_FILE_NAME), onecopy_lib::formats::STATE, &serde_json::json!({ "zoomLevel": 1.2 })).unwrap();
     save_window_state(&dir, &serde_json::json!({ "x": 1 })).unwrap();
@@ -479,7 +576,8 @@ fn every_json_store_records_its_format_version_and_reads_without_it() {
 #[test]
 #[serial(backup_store, quarantine_journal)]
 fn a_json_store_without_its_marker_is_unreadable_and_set_aside() {
-    let dir = temp_dir("unmarked");
+    let dir_owner = temp_dir("unmarked");
+    let dir = dir_owner.path();
     std::fs::write(dir.join(STATE_FILE_NAME), br#"{"zoomLevel":1.5}"#).unwrap();
     std::fs::write(dir.join(CONFIG_FILE_NAME), br#"{"theme":"dark"}"#).unwrap();
     assert_eq!(config_newer(&dir).unwrap(), None);
@@ -494,7 +592,8 @@ fn a_json_store_without_its_marker_is_unreadable_and_set_aside() {
 #[test]
 #[serial(backup_store, quarantine_journal)]
 fn settings_written_by_a_newer_onecopy_stop_the_load_by_name_and_are_left_as_they_are() {
-    let dir = temp_dir("newer-config");
+    let dir_owner = temp_dir("newer-config");
+    let dir = dir_owner.path();
     let path = dir.join(CONFIG_FILE_NAME);
     let bytes = br#"{"formatVersion":2,"theme":"dark"}"#;
     std::fs::write(&path, bytes).unwrap();
@@ -511,7 +610,8 @@ fn settings_written_by_a_newer_onecopy_stop_the_load_by_name_and_are_left_as_the
 #[test]
 #[serial(backup_store, quarantine_journal)]
 fn volatile_state_written_by_a_newer_onecopy_reads_as_absent_and_is_not_saved_over() {
-    let dir = temp_dir("newer-state");
+    let dir_owner = temp_dir("newer-state");
+    let dir = dir_owner.path();
     let state = br#"{"formatVersion":2,"zoomLevel":1.5}"#;
     let window = br#"{"formatVersion":2,"x":1}"#;
     std::fs::write(dir.join(STATE_FILE_NAME), state).unwrap();

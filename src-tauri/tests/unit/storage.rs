@@ -3,12 +3,24 @@ use super::*;
 
 use serial_test::serial;
 
-fn temp_dir(label: &str) -> PathBuf {
+fn temp_dir(label: &str) -> tempfile::TempDir {
     tempfile::Builder::new()
         .prefix(&format!("onecopy-storage-{label}-"))
         .tempdir()
         .unwrap()
-        .keep()
+}
+
+#[test]
+fn storage_fixture_is_removed_when_its_body_panics() {
+    let mut path = None;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let dir = temp_dir("failed-body");
+        path = Some(dir.path().to_path_buf());
+        std::fs::write(dir.path().join("owned"), b"fixture bytes").unwrap();
+        panic!("fixture body failed");
+    }));
+    assert!(result.is_err());
+    assert!(!path.unwrap().exists());
 }
 
 #[test]
@@ -26,7 +38,8 @@ fn quarantine_name_follows_the_derived_grammar() {
 #[test]
 #[serial(backup_store)]
 fn read_json_optional_missing_valid_and_corrupt() {
-    let dir = temp_dir("read-optional");
+    let dir_owner = temp_dir("read-optional");
+    let dir = dir_owner.path();
     let path = dir.join("config.json");
 
     // Missing → None.
@@ -61,6 +74,89 @@ fn read_json_optional_missing_valid_and_corrupt() {
         b"{ not json",
         "quarantine preserves the original bytes"
     );
+}
+
+#[test]
+fn a_json_target_that_becomes_newer_at_publication_is_preserved_and_staging_is_removed() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("config.json");
+    let current = b"{\"formatVersion\":1,\"theme\":\"light\"}";
+    std::fs::write(&target, current).unwrap();
+    refuse_newer(&target, formats::CONFIG).unwrap();
+    let future = b"{\"formatVersion\":2,\"futureSetting\":true}";
+
+    let error = write_atomic_inner(&target, b"{\"formatVersion\":1,\"theme\":\"dark\"}", false, || {
+        let staged = std::fs::read_dir(dir.path()).unwrap()
+            .map(|entry| entry.unwrap().path()).find(|path| path.extension().is_some_and(|ext| ext == "tmp")).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), current);
+        assert_eq!(std::fs::read(&staged).unwrap(), b"{\"formatVersion\":1,\"theme\":\"dark\"}");
+        std::fs::write(&target, future).unwrap();
+        refuse_newer(&target, formats::CONFIG)
+    }).unwrap_err();
+
+    assert!(error.contains("newer"), "{error}");
+    assert_eq!(std::fs::read(&target).unwrap(), future);
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn admission_failure_keeps_its_primary_error_and_cleans_the_owned_private_stage() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("state.json");
+    std::fs::write(&target, b"original").unwrap();
+    let error = write_atomic_inner(&target, b"replacement", false, || {
+        Err("primary admission failure".to_string())
+    }).unwrap_err();
+    assert_eq!(error, "primary admission failure");
+    assert_eq!(std::fs::read(&target).unwrap(), b"original");
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn publication_failure_preserves_the_obstruction_and_removes_the_owned_stage() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("state.json");
+    let error = write_atomic_inner(&target, b"replacement", false, || {
+        let stage = std::fs::read_dir(dir.path()).unwrap().next().unwrap().unwrap().path();
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&stage).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        assert_eq!(std::fs::read(stage).unwrap(), b"replacement");
+        std::fs::create_dir(&target).unwrap();
+        Ok(())
+    }).unwrap_err();
+    assert!(!error.is_empty());
+    assert!(target.is_dir());
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+#[test]
+#[cfg(windows)]
+fn readonly_replacement_stages_are_cleaned_on_admission_and_publication_failure() {
+    for refusal in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("state.json");
+        std::fs::write(&target, b"original").unwrap();
+        let mut permissions = std::fs::metadata(&target).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&target, permissions).unwrap();
+
+        let error = write_atomic_inner(&target, b"replacement", false, || {
+            let stage = std::fs::read_dir(dir.path()).unwrap().map(|entry| entry.unwrap().path())
+                .find(|path| path.extension().is_some_and(|ext| ext == "tmp")).unwrap();
+            assert!(std::fs::metadata(stage).unwrap().permissions().readonly());
+            if refusal { Err("primary admission failure".to_string()) } else { Ok(()) }
+        }).unwrap_err();
+
+        if refusal { assert_eq!(error, "primary admission failure"); }
+        assert_eq!(std::fs::read(&target).unwrap(), b"original");
+        assert!(std::fs::metadata(&target).unwrap().permissions().readonly());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        let mut permissions = std::fs::metadata(&target).unwrap().permissions();
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&target, permissions).unwrap();
+    }
 }
 
 #[test]
@@ -110,4 +206,24 @@ fn with_language_fields_reflects_the_current_value_after_it_changes() {
     // The computer's own language and locale never follow a saved choice.
     assert_eq!(second["systemLanguage"], "en");
     assert_eq!(second["systemLocale"], "en-US");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn an_app_local_new_stage_does_not_keep_inherited_read_grants() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(std::process::Command::new("/bin/chmod").args(["+a", "everyone allow read,file_inherit"]).arg(dir.path()).status().unwrap().success());
+    let target = dir.path().join("settings.json");
+    write_atomic_inner(&target, b"protected bytes", false, || {
+        let staged = std::fs::read_dir(dir.path()).unwrap().next().unwrap().unwrap().path();
+        let listing = std::process::Command::new("/bin/ls").arg("-le").arg(staged).output().unwrap();
+        assert!(listing.status.success());
+        assert_eq!(String::from_utf8(listing.stdout).unwrap().lines().count(), 1, "the empty inherited ACL was removed before writing");
+        Ok(())
+    }).unwrap();
+    assert_eq!(std::fs::read(&target).unwrap(), b"protected bytes");
+    let result = write_atomic_inner(&target, b"replacement bytes", false, || Err("publication refused".into()));
+    assert_eq!(result.unwrap_err(), "publication refused");
+    assert_eq!(std::fs::read(&target).unwrap(), b"protected bytes");
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
 }

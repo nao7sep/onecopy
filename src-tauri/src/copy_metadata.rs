@@ -17,6 +17,8 @@ pub(crate) struct SourceMetadata {
     permissions: Permissions,
     #[cfg(target_os = "macos")]
     extended_attributes: Vec<xattr::Attribute>,
+    #[cfg(target_os = "macos")]
+    acl: Option<Vec<u8>>,
 }
 
 impl SourceMetadata {
@@ -28,15 +30,19 @@ impl SourceMetadata {
             permissions: metadata.permissions(),
             #[cfg(target_os = "macos")]
             extended_attributes: xattr::read_all(file),
+            #[cfg(target_os = "macos")]
+            acl: acl::read(file),
         })
     }
 
     /// Fails only when the modified time cannot be set.
     pub(crate) fn apply(&self, file: &File) -> io::Result<()> {
-        // Times last, so nothing written after them can move them.
+        // Attributes first; access metadata last, so a retained ACL denying
+        // writeattr does not prevent the required modified time from landing.
         #[cfg(target_os = "macos")]
-        xattr::write_all(file, &self.extended_attributes);
-        apply_permissions(file, &self.permissions);
+        {
+            xattr::write_all(file, &self.extended_attributes);
+        }
         file.set_times(std::fs::FileTimes::new().set_modified(self.modified))?;
         // Separately, and after the modified time: a volume that refuses a
         // birth time still keeps the modified time, and macOS moves a birth
@@ -44,8 +50,36 @@ impl SourceMetadata {
         if let Some(created) = self.created {
             set_created(file, created);
         }
+        apply_permissions(file, &self.permissions);
+        #[cfg(target_os = "macos")]
+        acl::write(file, self.acl.as_deref());
         Ok(())
     }
+}
+
+/// Strip inherited native grants from an exclusively created empty stage
+/// before any protected bytes are written. Its final access metadata lands later.
+pub(crate) fn make_private(file: &File) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    return acl::clear(file);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = file;
+        Ok(())
+    }
+}
+
+pub(crate) fn apply_replacement(source: &File, replacement: &File) -> io::Result<()> {
+    apply_permissions(replacement, &source.metadata()?.permissions()); // data root
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::fd::AsRawFd;
+        xattr::write_all(replacement, &xattr::read_all(source));
+        unsafe {
+            libc::fcopyfile(source.as_raw_fd(), replacement.as_raw_fd(), std::ptr::null_mut(), libc::COPYFILE_ACL);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -188,5 +222,60 @@ mod xattr {
             & capabilities.valid[interfaces]
             & libc::VOL_CAP_INT_EXTENDED_ATTR
             != 0
+    }
+}
+
+/// The descriptor's native ACL, serialized so the two volume workers need not
+/// share a native allocation. Unsupported ACLs remain optional metadata.
+#[cfg(target_os = "macos")]
+mod acl {
+    use std::{fs::File, os::fd::AsRawFd};
+    type Acl = *mut libc::c_void;
+    unsafe extern "C" {
+        fn acl_init(count: libc::c_int) -> Acl;
+        fn acl_get_fd(fd: libc::c_int) -> Acl;
+        fn acl_size(acl: Acl) -> libc::ssize_t;
+        fn acl_copy_ext(buffer: *mut libc::c_void, acl: Acl, size: libc::ssize_t) -> libc::ssize_t;
+        fn acl_copy_int(buffer: *const libc::c_void) -> Acl;
+        fn acl_set_fd(fd: libc::c_int, acl: Acl) -> libc::c_int;
+        fn acl_free(acl: Acl) -> libc::c_int;
+    }
+    pub(super) fn clear(file: &File) -> std::io::Result<()> {
+        unsafe {
+            let acl = acl_init(0);
+            if acl.is_null() { return Err(std::io::Error::last_os_error()); }
+            let status = acl_set_fd(file.as_raw_fd(), acl);
+            let error = (status != 0).then(std::io::Error::last_os_error);
+            acl_free(acl);
+            match error {
+                // A volume without native ACLs cannot have inherited grants.
+                Some(error) if matches!(error.raw_os_error(), Some(libc::ENOTSUP) | Some(libc::EOPNOTSUPP)) => Ok(()),
+                Some(error) => Err(error),
+                None => Ok(()),
+            }
+        }
+    }
+    pub(super) fn read(file: &File) -> Option<Vec<u8>> {
+        unsafe {
+            let acl = acl_get_fd(file.as_raw_fd());
+            if acl.is_null() { return None; }
+            let size = acl_size(acl);
+            let result = if size > 0 {
+                let mut bytes = vec![0; size as usize];
+                (acl_copy_ext(bytes.as_mut_ptr().cast(), acl, size) >= 0).then_some(bytes)
+            } else { None };
+            acl_free(acl);
+            result
+        }
+    }
+    pub(super) fn write(file: &File, bytes: Option<&[u8]>) {
+        let Some(bytes) = bytes else { return; };
+        unsafe {
+            let acl = acl_copy_int(bytes.as_ptr().cast());
+            if !acl.is_null() {
+                acl_set_fd(file.as_raw_fd(), acl);
+                acl_free(acl);
+            }
+        }
     }
 }

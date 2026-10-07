@@ -765,11 +765,19 @@ pub fn open_read(path: &Path) -> io::Result<VolumeFile> {
 pub fn create_new(path: &Path) -> io::Result<VolumeFile> {
     let target = fs_path(path);
     let file = call(path, Op::Create, None, move || {
-        File::options()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(target)
+        let mut options = File::options();
+        options.read(true).write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(&target)?;
+        if let Err(error) = crate::copy_metadata::make_private(&file) {
+            crate::file_identity::remove_private_if_owned(&target, &file);
+            return Err(error);
+        }
+        Ok(file)
     })?;
     Ok(VolumeFile::new(file, path.to_path_buf()))
 }

@@ -664,7 +664,7 @@ pub fn write_json_file(target: &Path, document: &JsonValue, version: i64, record
     formats::stamp_json(&mut document, version)?;
     let mut text = serde_json::to_string_pretty(&document).map_err(|e| e.to_string())?;
     text.push('\n');
-    write_atomic_inner(target, text.as_bytes(), record)
+    write_atomic_inner(target, text.as_bytes(), record, || refuse_newer(target, version))
 }
 
 /// Refuses to replace or remove a JSON store a newer OneCopy wrote.
@@ -785,18 +785,35 @@ fn quarantine_name(path: &Path) -> PathBuf {
 /// store. Strictly AFTER the rename lands, the exact bytes are recorded into the
 /// write-through backup store (the one managed-text choke point).
 pub fn write_atomic(target: &Path, bytes: &[u8]) -> Result<(), String> {
-    write_atomic_inner(target, bytes, true)
+    write_atomic_inner(target, bytes, true, || Ok(()))
 }
 
 /// The same atomic write, WITHOUT the backup record. For text that is excluded
 /// from the history by a design-time, per-write-site decision (see the table
 /// above); the JSON stores choose through `write_json_file`.
 pub fn write_atomic_unrecorded(target: &Path, bytes: &[u8]) -> Result<(), String> {
-    write_atomic_inner(target, bytes, false)
+    write_atomic_inner(target, bytes, false, || Ok(()))
 }
 
-fn write_atomic_inner(target: &Path, bytes: &[u8], record: bool) -> Result<(), String> {
-    use std::io::Write;
+fn write_atomic_inner(
+    target: &Path,
+    bytes: &[u8],
+    record: bool,
+    admit: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    use std::io::{Read, Write};
+    let existing = match std::fs::File::open(target) {
+        Ok(mut file) => {
+            let mut current = Vec::new();
+            file.read_to_end(&mut current).map_err(|error| error.to_string())?;
+            if current == bytes {
+                return Ok(());
+            }
+            Some(file)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.to_string()),
+    };
     let parent = target
         .parent()
         .ok_or_else(|| "path has no parent directory".to_string())?;
@@ -806,20 +823,47 @@ fn write_atomic_inner(target: &Path, bytes: &[u8], record: bool) -> Result<(), S
         .ok_or_else(|| "path has no file name".to_string())?;
     let tmp = parent.join(atomic_temp_name(file_name)?);
 
-    let write_tmp = (|| -> std::io::Result<()> {
-        let mut file = std::fs::File::create(&tmp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        Ok(())
-    })();
-    if let Err(e) = write_tmp {
-        crate::fs_recovery::remove_file(&tmp, "atomic store write cleanup");
-        return Err(e.to_string());
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)] {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
     }
-
-    if let Err(e) = std::fs::rename(&tmp, target) {
+    let mut file = options.open(&tmp).map_err(|error| error.to_string())?;
+    if let Err(error) = crate::copy_metadata::make_private(&file) {
+        crate::file_identity::remove_private_if_owned(&tmp, &file);
+        return Err(error.to_string());
+    }
+    let publish = (|| -> Result<(), String> {
+        file.write_all(bytes).map_err(|error| error.to_string())?;
+        if let Some(source) = &existing {
+            crate::copy_metadata::apply_replacement(source, &file).map_err(|error| error.to_string())?;
+        }
+        file.sync_all().map_err(|error| error.to_string())?;
+        drop(file);
+        drop(existing);
+        admit()?;
+        std::fs::rename(&tmp, target).map_err(|error| error.to_string())
+    })();
+    if let Err(error) = publish {
+        #[cfg(windows)] {
+            let writable = (|| -> std::io::Result<()> {
+                let mut permissions = std::fs::metadata(&tmp)?.permissions();
+                if permissions.readonly() {
+                    permissions.set_readonly(false);
+                    std::fs::set_permissions(&tmp, permissions)?;
+                }
+                Ok(())
+            })();
+            if let Err(cleanup_error) = writable {
+                crate::logging::warn(
+                    "atomic store staging permissions cleanup failed",
+                    serde_json::json!({ "path": tmp, "error": { "message": cleanup_error.to_string() } }),
+                );
+            }
+        }
         crate::fs_recovery::remove_file(&tmp, "atomic store publication cleanup");
-        return Err(e.to_string());
+        return Err(error);
     }
 
     // Best-effort: persist the rename itself by fsyncing the directory. This

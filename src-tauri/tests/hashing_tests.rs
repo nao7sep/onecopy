@@ -340,3 +340,47 @@ fn a_copy_keeps_extended_attributes_and_finder_tags() {
     );
     drop(private);
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn copy_keeps_supported_source_acl() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    let output = dir.path().join("output");
+    std::fs::write(&source, b"ACL bytes").unwrap();
+    assert!(std::process::Command::new("/bin/chmod").args(["+a", "everyone deny execute"]).arg(&source).status().unwrap().success());
+    let entries = |path: &std::path::Path| {
+        let output = std::process::Command::new("/bin/ls").arg("-le").arg(path).output().unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap().lines().skip(1).map(str::to_owned).collect::<Vec<_>>()
+    };
+    let (_, _, private) = hash_while_copying(&source, &output).unwrap();
+    assert!(!entries(&source).is_empty());
+    assert_eq!(entries(&output), entries(&source));
+    drop(private);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn copy_sets_required_mtime_before_retaining_a_writeattr_denial_acl() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    let output = dir.path().join("output");
+    let mtime = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_500_000_000);
+    std::fs::write(&source, b"mtime bytes").unwrap();
+    std::fs::File::open(&source).unwrap().set_times(std::fs::FileTimes::new().set_modified(mtime)).unwrap();
+    assert!(std::process::Command::new("/bin/chmod").args(["+a", "everyone deny writeattr"]).arg(&source).status().unwrap().success());
+    let (_, _, private) = hash_while_copying(&source, &output).unwrap();
+    assert_eq!(std::fs::metadata(&output).unwrap().modified().unwrap(), mtime);
+    let denied = std::fs::File::open(&output).unwrap().set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()));
+    assert_eq!(denied.unwrap_err().raw_os_error(), Some(libc::EACCES));
+    let peer = dir.path().join("peer");
+    let peer_output = dir.path().join("peer-output");
+    std::fs::write(&peer, b"healthy peer").unwrap();
+    let (_, _, peer_private) = hash_while_copying(&peer, &peer_output).unwrap();
+    assert_eq!(std::fs::read(&peer_output).unwrap(), b"healthy peer");
+    drop(peer_private);
+    drop(private);
+    assert!(!output.exists());
+    assert!(!peer_output.exists());
+}
