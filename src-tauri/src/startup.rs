@@ -314,43 +314,43 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
             name: "managed-tool update check",
             issue_kind: "update-check-worker-failed",
             start: Box::new(move || {
-                let check_at_launch = crate::storage::config(&root)?
-                    .get("checkUpdatesAtLaunch")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(crate::storage::DefaultConfig::default().check_updates_at_launch);
-                if !check_at_launch {
-                    return Ok(());
-                }
-                let last_attempt = crate::binaries_manager::load_check_attempt(
-                    &root,
-                    crate::binaries_manager::MANAGED_TOOL_UPDATE_ATTEMPT_KEY,
-                );
-                let now = chrono::Utc::now();
-                if !managed_update_attempt_eligible(last_attempt.as_deref(), now) {
-                    return Ok(());
-                }
-                let stale_ids: Vec<String> = crate::binaries_manager::states(&root)
-                    .into_iter()
-                    .filter(|entry| {
-                        entry.checkable
-                            && entry.status != crate::binaries::BinaryStatus::NotInstalled
-                    })
-                    .map(|entry| entry.id)
-                    .collect();
-                if stale_ids.is_empty() {
-                    return Ok(());
-                }
-                crate::binaries_manager::save_check_attempt(
-                    &root,
-                    crate::binaries_manager::MANAGED_TOOL_UPDATE_ATTEMPT_KEY,
-                    &crate::logging::now_iso_millis(),
-                )?;
                 let report_handle = handle.clone();
                 spawn_launch_worker(
                     handle,
                     "onecopy-update-check",
                     "update-check-worker-failed",
                     move || {
+                        let check_at_launch = crate::storage::config(&root)?
+                            .get("checkUpdatesAtLaunch")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(crate::storage::DefaultConfig::default().check_updates_at_launch);
+                        if !check_at_launch {
+                            return Ok(());
+                        }
+                        let last_attempt = crate::binaries_manager::load_check_attempt(
+                            &root,
+                            crate::binaries_manager::MANAGED_TOOL_UPDATE_ATTEMPT_KEY,
+                        );
+                        let now = chrono::Utc::now();
+                        if !managed_update_attempt_eligible(last_attempt.as_deref(), now) {
+                            return Ok(());
+                        }
+                        let stale_ids: Vec<String> = crate::binaries_manager::states(&root)
+                            .into_iter()
+                            .filter(|entry| {
+                                entry.checkable
+                                    && entry.status != crate::binaries::BinaryStatus::NotInstalled
+                            })
+                            .map(|entry| entry.id)
+                            .collect();
+                        if stale_ids.is_empty() {
+                            return Ok(());
+                        }
+                        crate::binaries_manager::save_check_attempt(
+                            &root,
+                            crate::binaries_manager::MANAGED_TOOL_UPDATE_ATTEMPT_KEY,
+                            &crate::logging::now_iso_millis(),
+                        )?;
                         for id in stale_ids {
                             if crate::app_lifecycle::shutting_down() {
                                 return Ok(());

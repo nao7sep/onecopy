@@ -232,6 +232,7 @@ fn begin_release(
     loop {
         let live: HashSet<String> = app.webview_windows().into_keys().collect();
         let Some(release) = releases.get_mut(&token) else {
+            drop(releases);
             record_activity(
                 crate::activity::ActivityKind::Failed,
                 token,
@@ -244,6 +245,7 @@ fn begin_release(
         };
         release.pending.retain(|label| live.contains(label));
         if release.pending.is_empty() {
+            drop(releases);
             record_activity(
                 crate::activity::ActivityKind::Started,
                 token,
