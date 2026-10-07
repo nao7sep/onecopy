@@ -630,7 +630,6 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
             title={t("app.openBackgroundWork")}
             onClick={() => {
               openUtility("backgroundWork");
-              void useDerivedWorkStore.getState().load();
             }}
           >
             {derivedWorkLine}

@@ -10,6 +10,7 @@ it("reads totals only while open, coalesces invalidations, and rejects stale rea
   const row = { id: "previews", state: "up-to-date", queued: 0, failed: 0, done: null, total: null, reason: null };
   mockCommands({ background_work_runtime: () => ({ workerRunning: true, pausedClasses: [], active: null }), background_work_snapshot: () => ({ workerRunning: true, pausedClasses: [], classes: [row], activeItem: null }) });
   await installDerivedWorkEventWiring();
+  await useDerivedWorkStore.getState().load();
   for (let index = 0; index < 100; index++) fireEvent("file-information://progress", {});
   await vi.advanceTimersByTimeAsync(1000);
   expect(invokeCalls.filter((call) => call.command === "background_work_snapshot")).toHaveLength(0);

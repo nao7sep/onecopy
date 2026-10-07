@@ -123,7 +123,7 @@ export default function TranscriptBlock({
   const tools = useBinariesStore((state) => state.entries);
   const paused = useDerivedWorkStore((state) => {
     const active = state.activeItem;
-    return state.snapshot?.pausedClasses.includes(`${medium}-transcripts`) === true ||
+    return state.runtime?.pausedClasses.includes(`${medium}-transcripts`) === true ||
       (active?.id === `${medium}-transcripts` && active.stopping);
   });
   const configuredAutomatic = useAppStore((state) => {
@@ -393,7 +393,6 @@ export default function TranscriptBlock({
   if (!inDetails) {
     const openBackgroundWork = () => {
       useAppShellStore.getState().openUtility("backgroundWork");
-      void useDerivedWorkStore.getState().load();
     };
     const openIssues = () => useAppShellStore.getState().openUtility("issues");
     const failed = state.status === "failed" || work?.state === "failed";

@@ -106,6 +106,7 @@ export const useDerivedWorkStore = create<DerivedWorkState>((set, get) => ({
   activeItem: null,
 
   load: async () => {
+    if (!get().detailsOpen) return;
     const fresh = loadSequence.begin();
     const version = runtimeVersion;
     set({ loading: true });

@@ -7,6 +7,7 @@ import TranscriptBlock from "../../src/components/TranscriptBlock";
 import { EMPTY_ITEM_WORK, type ItemDetail, type ItemWorkState, type SectionItem } from "../../src/models/items";
 import { useContentSessionStore } from "../../src/state/content-session-store";
 import { useTranscriptStore } from "../../src/state/transcript-store";
+import { useDerivedWorkStore } from "../../src/state/derived-work-store";
 import { useAppShellStore } from "../../src/state/app-shell-store";
 import { emitCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 import { fullscreenViewOwnsKey } from "../../src/utils/viewerKeys";
@@ -26,6 +27,7 @@ beforeEach(() => {
     log_event: () => null,
   });
   useTranscriptStore.setState({ rows: {} });
+  useDerivedWorkStore.setState({ runtime: null, snapshot: null });
   useContentSessionStore.setState({
     transcriptOpen: { video: false, audio: false },
     transcriptViews: { interview: { scrollTop: 120, selection: null } },
@@ -136,6 +138,14 @@ describe("transcript presentation owners", () => {
     render(<TranscriptBlock hash="interview" medium="video" variant="details" work={work} />);
     expect(await screen.findByText("Final line")).toBeTruthy();
     expect(screen.getByText(state === "running" ? /Updating transcript/ : /The replacement failed/)).toBeTruthy();
+  });
+
+  it("shows runtime pause state even when the background window has never opened", async () => {
+    mockCommands({ transcript_get: () => ({ status: "pending", text: null, message: null }) });
+    useDerivedWorkStore.setState({ snapshot: null, runtime: { workerRunning: true, pausedClasses: ["video-transcripts"], active: null } });
+    useContentSessionStore.setState({ transcriptOpen: { video: true, audio: false } });
+    render(<TranscriptBlock hash="paused" medium="video" work={{ state: "pending", hasValue: false, reason: null, done: null, total: null }} />);
+    expect(await screen.findByText("Queued — transcription is paused.")).toBeTruthy();
   });
 
   it.each([
