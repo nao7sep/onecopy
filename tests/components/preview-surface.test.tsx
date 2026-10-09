@@ -796,14 +796,13 @@ describe("Install ffmpeg… on a picture only ffmpeg can prepare", () => {
     expect(screen.queryByRole("button", { name: "Install ffmpeg…" })).toBeNull();
   });
 
-  it("offers it beside a video that cannot play, whose poster only ffmpeg prepares", () => {
+  it("is not offered beside a video that cannot play, since ffmpeg does not make it play", () => {
     useBinariesStore.setState({ entries: FFMPEG_MISSING });
     const view = render(<PreviewSurface surface="preview-split" hash="video-hash" detail={DETAIL} />);
     const video = view.container.querySelector("video")!;
     Object.defineProperty(video, "error", { value: { code: 4, message: "unsupported" } });
     fireEvent.error(video);
 
-    fireEvent.click(screen.getByRole("button", { name: "Install ffmpeg…" }));
-    expect(useAppShellStore.getState().utilitySurface).toBe("backgroundWork");
+    expect(screen.queryByRole("button", { name: "Install ffmpeg…" })).toBeNull();
   });
 });

@@ -99,7 +99,6 @@ function VideoSurface({
   keyboardActive?: boolean;
 }) {
   const { t, text } = useI18n();
-  const offersFfmpegInstall = useOffersFfmpegInstall(surface);
   const [playbackFailure, setPlaybackFailure] = useState<MessageKey | null>(null);
   const playbackFailed = playbackFailure !== null;
   const [externalError, setExternalError] = useState<Message | null>(null);
@@ -346,13 +345,9 @@ function VideoSurface({
         ) : null}
       </div>
       {playbackFailed ? (
-        <OperationResult
-          level="error"
-          className="shrink-0 text-sm"
-          // Without ffmpeg the poster shown here is missing too; installing
-          // it prepares the poster and scene frames, not playback.
-          actions={offersFfmpegInstall ? <InstallFfmpegButton size="xs" /> : undefined}
-        >
+        // No Install ffmpeg here: ffmpeg prepares a video's poster and scene
+        // frames, not playback, so it would not fix what this says.
+        <OperationResult level="error" className="shrink-0 text-sm">
           {t(playbackFailure)}
         </OperationResult>
       ) : null}
