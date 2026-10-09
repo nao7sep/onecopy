@@ -78,12 +78,6 @@ path = "tests/suites/platform.rs"
 name = "heavy_test_suite"
 path = "tests/suites/heavy.rs"
 
-# The scale benchmark builds a large disposable library; it is ignored and run
-# on its own (see the file's header), never in a test gate.
-[[test]]
-name = "scale_benchmark"
-path = "tests/scale_benchmark.rs"
-
 [build-dependencies]
 tauri-build = { version = "2.6", features = [] }
 
