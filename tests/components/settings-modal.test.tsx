@@ -349,10 +349,10 @@ describe("Settings categories", () => {
     render(<SettingsModal open onClose={() => {}} />);
 
     fireEvent.click(screen.getByRole("button", { name: /Rebuild library index/ }));
-    expect(screen.getByText(/Your files, settings, managed tools, and choices/)).toBeTruthy();
+    expect(screen.getByText(/Your files, settings, and managed tools will not change/)).toBeTruthy();
     // Both discard options render unchecked, and the transcript one carries
     // its highlighted caution note (Phase 9 developer decision).
-    const previews = screen.getByLabelText("Previews and posters") as HTMLInputElement;
+    const previews = screen.getByLabelText("Previews, posters, and scene snapshots") as HTMLInputElement;
     const transcripts = screen.getByLabelText("Transcripts") as HTMLInputElement;
     const faces = screen.getByLabelText("Face scores") as HTMLInputElement;
     expect(previews.checked).toBe(false);
@@ -375,7 +375,7 @@ describe("Settings categories", () => {
     render(<SettingsModal open onClose={() => {}} />);
 
     fireEvent.click(screen.getByRole("button", { name: /Rebuild library index/ }));
-    fireEvent.click(screen.getByLabelText("Previews and posters"));
+    fireEvent.click(screen.getByLabelText("Previews, posters, and scene snapshots"));
     fireEvent.click(screen.getByLabelText("Transcripts"));
     fireEvent.click(screen.getByLabelText("Face scores"));
     fireEvent.click(screen.getByRole("button", { name: "Rebuild" }));
