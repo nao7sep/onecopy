@@ -53,6 +53,7 @@ mod nanoid;
 pub mod notifications;
 pub mod operations;
 pub mod path_identity;
+pub mod packages;
 pub mod paths;
 pub mod progress_throttle;
 pub mod preview;
@@ -976,6 +977,16 @@ fn place_preview_window(
 
 /// Closes the Preview window after sampling its placement. `destroy()` sends
 /// no close request, so this is the one place that close is observed.
+/// The picked folders OneCopy refuses as source folders: those inside or
+/// equal to a library or app package (`packages`).
+#[tauri::command]
+fn package_source_dirs(paths: Vec<String>) -> Vec<String> {
+    paths
+        .into_iter()
+        .filter(|path| packages::within_package(std::path::Path::new(path), true))
+        .collect()
+}
+
 #[tauri::command]
 fn close_preview_window(
     app: AppHandle,
@@ -1696,6 +1707,7 @@ pub fn run() {
             focus_window_while_active,
             place_preview_window,
             close_preview_window,
+            package_source_dirs,
             ensure_preview,
             apply_library_settings,
             visibility_capabilities,

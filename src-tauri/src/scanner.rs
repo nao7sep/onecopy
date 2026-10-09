@@ -1163,9 +1163,12 @@ pub fn walk_root(conn: &Connection, root: &Path, lists: &ScanLists) -> Result<Wa
 
 /// Excludes the app's own storage the way `trash::is_trash_path` excludes
 /// deleted-file storage: a source containing the data root must never index
-/// or churn the app's own index, logs, caches and models (R6-02).
-fn is_excluded_from_discovery(path: &Path, data_root: Option<&Path>) -> bool {
-    crate::trash::is_trash_path(path)
+/// or churn the app's own index, logs, caches and models (R6-02). Package
+/// directories (`packages`) are excluded whole, the walk's root included, so
+/// a source folder configured inside a library indexes nothing.
+fn is_excluded_from_discovery(path: &Path, is_dir: bool, data_root: Option<&Path>) -> bool {
+    crate::packages::within_package(path, is_dir)
+        || crate::trash::is_trash_path(path)
         || data_root.is_some_and(|root| crate::paths::is_within_data_root(path, root))
         || is_apple_double_sidecar(path)
         || crate::file_identity::is_private_tmp_name(path)
@@ -1289,7 +1292,7 @@ fn walk_root_with_progress(
                 // be deleted merely because a walk happened to visit it.
                 crate::fs_recovery::remove_file(path, "private staging leftover cleanup");
             }
-            !is_excluded_from_discovery(path, resolved_data_root.as_deref())
+            !is_excluded_from_discovery(path, file_type.is_dir(), resolved_data_root.as_deref())
         }) {
         Ok(walk) => Some(walk),
         Err(error) => {

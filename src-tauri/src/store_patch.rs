@@ -36,6 +36,17 @@ pub fn save_config(app: &AppHandle, mut changes: Value, report_failure: bool) ->
                     *value = Value::String(resolution::parse_timezone_name(name)?.to_string());
                 }
             }
+            if let Some(dirs) = changes.get("sourceDirs").and_then(Value::as_array) {
+                if let Some(dir) = dirs
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .find(|dir| crate::packages::within_package(std::path::Path::new(dir), true))
+                {
+                    return Err(format!(
+                        "{dir} is inside a library or app package, which OneCopy leaves alone"
+                    ));
+                }
+            }
             ai_acceleration::validate_patch(&changes)?;
             visibility::Policy::from_config(&changes)?;
             let outcome = storage::save_config(&data_root, &changes)?;

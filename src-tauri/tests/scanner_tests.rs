@@ -2586,3 +2586,34 @@ fn the_walk_does_not_follow_a_junction() {
         "only the real file is indexed, not its view through the junction"
     );
 }
+
+#[test]
+fn the_walk_leaves_libraries_and_apps_alone() {
+    // A Photos library's originals look like ordinary duplicates; deleting
+    // or moving one damages the library.
+    let f = fixture("walk-packages");
+    let library = f.root.join("Photos Library.photoslibrary").join("originals");
+    std::fs::create_dir_all(&library).unwrap();
+    std::fs::write(library.join("IMG_1.jpg"), b"inside the library").unwrap();
+    std::fs::write(f.root.join("IMG_1.jpg"), b"inside the library").unwrap();
+    let app = f.root.join("Viewer.app").join("Contents");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(app.join("icon.png"), b"part of the app").unwrap();
+
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths WHERE missing = 0"), 1);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths WHERE file_name = 'IMG_1.jpg' AND abs_path NOT LIKE '%.photoslibrary%'"), 1);
+}
+
+#[test]
+fn a_source_folder_inside_a_library_indexes_nothing() {
+    let f = fixture("walk-root-in-package");
+    let inside = f.root.join("Old.photoslibrary").join("Masters");
+    std::fs::create_dir_all(&inside).unwrap();
+    std::fs::write(inside.join("IMG_2.jpg"), b"library original").unwrap();
+
+    walk_root(&f.conn, &inside, &lists()).unwrap();
+
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths WHERE missing = 0"), 0);
+}

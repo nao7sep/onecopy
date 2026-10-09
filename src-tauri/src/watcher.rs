@@ -150,7 +150,8 @@ fn restat_dir_with(
             continue;
         }
         let abs = path.to_string_lossy().to_string();
-        if crate::trash::is_trash_path(&path)
+        if crate::packages::within_package(&path, false)
+            || crate::trash::is_trash_path(&path)
             || crate::paths::is_within_data_root(&path, data_root)
             || crate::scanner::is_apple_double_sidecar(&path)
             || crate::file_identity::is_private_tmp_name(&path)
@@ -675,7 +676,8 @@ fn collect(
                 return;
             }
             for path in event.paths {
-                if crate::trash::is_trash_path(&path)
+                if crate::packages::within_package(&path, false)
+                    || crate::trash::is_trash_path(&path)
                     || crate::paths::is_within_data_root(&path, data_root)
                     || crate::scanner::is_apple_double_sidecar(&path)
                     || crate::file_identity::is_private_tmp_name(&path)
