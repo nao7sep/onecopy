@@ -1,8 +1,7 @@
-//! Built-in default extension sets (lowercase, no dot). These seed the editable
-//! lists in `config.json` on first run; runtime classification reads the config's
-//! copies, so a user can extend support without a rebuild. Companion extensions
-//! are never primary items (the pairing design): RAW rides with its JPEG or
-//! stands alone as an other-file.
+//! The supported file types (lowercase, no dot). These sets are the only
+//! source: they are fixed in code, and a leftover list in `config.json` is
+//! ignored. Companion extensions are never primary items (the pairing
+//! design): RAW rides with its JPEG or stands alone as an other-file.
 
 pub const IMAGE_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "png", "heic", "heif", "hif", "webp", "gif", "bmp", "tif", "tiff", "avif",

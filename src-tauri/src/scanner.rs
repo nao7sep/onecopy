@@ -291,7 +291,7 @@ pub fn settings_from_config(
     let owned = |list: &[&str]| list.iter().map(|s| s.to_string()).collect();
     ScanSettings {
         source_dirs: string_list_preserving_case(config, "sourceDirs"),
-        // Supported file types are specs, not user choices: the lists live in
+        // Supported file types are not user choices: the lists live in
         // extensions.rs only, and a stray legacy key in config.json is ignored.
         lists: ScanLists {
             images: owned(extensions::IMAGE_EXTENSIONS),
