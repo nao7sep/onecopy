@@ -2,12 +2,16 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { PlaybackSession } from "../../src/models/playback";
 import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import type { ActiveViewerSession } from "../../src/models/viewerSession";
-import { useAppStore } from "../../src/state/app-store";
+import { flushConfigForShutdown, resetConfigWritesForTests, useAppStore } from "../../src/state/app-store";
 import { usePreviewStore } from "../../src/state/preview-store";
 import { useFullscreenViewStore } from "../../src/state/fullscreen-view-store";
 import { handleFullscreenViewKey } from "../../src/workflows/fullscreen-view";
-import { installPlaybackWorkflow, setSoundEnabled, setPlaybackVolume, setAutoplay, flushPlaybackConfigForShutdown } from "../../src/workflows/playback";
+import { installPlaybackWorkflow, setSoundEnabled, setPlaybackVolume, setAutoplay } from "../../src/workflows/playback";
 import { emitCalls, fireEvent, mockCommands, resetTauriMocks } from "../mocks/tauri";
+
+async function settle(): Promise<void> {
+  for (let index = 0; index < 20; index += 1) await Promise.resolve();
+}
 
 function latestState(): PlaybackSession | null {
   const call = [...emitCalls]
@@ -18,6 +22,7 @@ function latestState(): PlaybackSession | null {
 
 beforeEach(async () => {
   resetTauriMocks({ keepListeners: true });
+  resetConfigWritesForTests();
   useAppStore.setState({
     appData: {
       config: {
@@ -48,7 +53,7 @@ describe("sound setting", () => {
     expect(latestState()).toMatchObject({ soundEnabled: false });
     expect(useAppStore.getState().appData?.config).toMatchObject({ soundEnabled: false });
     mockCommands({ save_config: ({ changes }) => changes });
-    await flushPlaybackConfigForShutdown();
+    await flushConfigForShutdown();
     expect(latestState()).toMatchObject({ soundEnabled: false });
   });
 
@@ -76,7 +81,7 @@ describe("sound setting", () => {
     await failed;
     await later;
     expect(useAppStore.getState().appData?.config.soundEnabled).toBe(true);
-    await flushPlaybackConfigForShutdown();
+    await flushConfigForShutdown();
     expect(calls).toBe(2);
   });
 });
@@ -102,13 +107,13 @@ describe("unified playback policy", () => {
       return saved;
     } });
     setPlaybackVolume(0.3);
-    const first = flushPlaybackConfigForShutdown();
-    await Promise.resolve();
+    const first = flushConfigForShutdown();
+    await settle();
     setPlaybackVolume(0.8);
     finishFirst(null);
     await first;
     expect(useAppStore.getState().appData?.config.playbackVolume).toBe(0.8);
-    await flushPlaybackConfigForShutdown();
+    await flushConfigForShutdown();
     expect(useAppStore.getState().appData?.config.playbackVolume).toBe(0.8);
   });
 
@@ -121,16 +126,16 @@ describe("unified playback policy", () => {
       return { ...useAppStore.getState().appData!.config, ...(changes as object) };
     } });
     setPlaybackVolume(0.3);
-    const first = flushPlaybackConfigForShutdown();
+    const first = flushConfigForShutdown();
     const failed = expect(first).rejects.toThrow("disk full");
-    await Promise.resolve();
+    await settle();
     setPlaybackVolume(0.8);
-    const retry = flushPlaybackConfigForShutdown();
+    const retry = flushConfigForShutdown();
     failFirst(new Error("disk full"));
     await failed;
     await retry;
     expect(writes).toEqual([{ soundEnabled: true, playbackVolume: 0.3 }, { soundEnabled: true, playbackVolume: 0.8 }]);
-    await flushPlaybackConfigForShutdown();
+    await flushConfigForShutdown();
     expect(writes).toHaveLength(2);
     expect(useAppStore.getState().appData?.config.playbackVolume).toBe(0.8);
   });
@@ -145,7 +150,7 @@ describe("unified playback policy", () => {
     expect(latestState()).toMatchObject({ position: 12, volume: 0.2, soundEnabled: false });
     await setSoundEnabled(true);
     expect(latestState()).toMatchObject({ volume: 0.2, soundEnabled: true });
-    await flushPlaybackConfigForShutdown();
+    await flushConfigForShutdown();
     fireEvent("playback://unregister", { surface: "fullscreen-view", key: "volume-clip", medium: "video" });
   });
 });

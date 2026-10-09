@@ -3,8 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
-import { flushPlaybackConfigForShutdown } from "./playback";
-import { flushStatePatchesForShutdown, reportStatePatchFailure, resumeStatePatchesAfterFailedShutdown } from "../state/app-store";
+import { flushConfigForShutdown, flushStatePatchesForShutdown, reportStatePatchFailure, resumeStatePatchesAfterFailedShutdown } from "../state/app-store";
 import { reportWindowCall } from "../repositories";
 
 export type QuitChoice = "retry" | "cancel" | "quit" | "session";
@@ -21,9 +20,11 @@ function bounded<T>(work: Promise<T>, milliseconds: number): Promise<T> {
   });
 }
 
+// Every queued settings write settles first, a Settings save in flight
+// included, and pending sound and volume are written.
 function saveRequired(): Promise<void> {
   if (requiredSave === null) {
-    requiredSave = flushPlaybackConfigForShutdown().finally(() => { requiredSave = null; });
+    requiredSave = flushConfigForShutdown().finally(() => { requiredSave = null; });
   }
   return bounded(requiredSave, 1500);
 }

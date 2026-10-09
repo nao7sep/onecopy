@@ -31,14 +31,115 @@ interface AppState {
   quarantines: QuarantineRecord[];
   dismissQuarantines: () => void;
   initialize: () => Promise<LoadedAppData | null>;
+  /** Queues one config write. `changes` may be computed from the settings as
+   * published when the write starts; returning null skips the write. Resolves
+   * to the published settings after it, or null when skipped. */
   saveConfig: (
-    changes: Record<string, unknown>,
+    changes: ConfigChanges,
     options?: { reportFailure?: boolean },
-  ) => Promise<void>;
+  ) => Promise<Record<string, unknown> | null>;
   patchState: (
     patch: Record<string, unknown>,
     options?: { immediate?: boolean; reportFailure?: boolean },
   ) => Promise<void>;
+}
+
+export type ConfigChanges =
+  | Record<string, unknown>
+  | ((config: Record<string, unknown>) => Record<string, unknown> | null);
+
+// Config writes run one at a time, in the order they were queued: the core
+// handles each save_config call on its own worker, so overlapping calls could
+// otherwise reach config.json in either order while the interface shows the
+// later choice.
+let configWriteTail: Promise<unknown> = Promise.resolve();
+let configSequence = 0;
+// Values published before they are saved (sound and volume while the user
+// drags), each with the moment it was authored. A write confirms a key only
+// when it carried that very value, authored no later than the write began;
+// until then every publication shows the authored value, so neither an
+// unrelated save nor a failed one makes the interface jump back.
+const unsettledConfig = new Map<string, { value: unknown; sequence: number }>();
+
+function publishConfig(saved: Record<string, unknown> | null): Record<string, unknown> | null {
+  let published: Record<string, unknown> | null = null;
+  useAppStore.setState((s) => {
+    if (s.appData === null) return s;
+    const authored = Object.fromEntries(
+      [...unsettledConfig].map(([key, { value }]) => [key, value]),
+    );
+    published = { ...(saved ?? s.appData.config), ...authored };
+    return { appData: { ...s.appData, config: published } };
+  });
+  return published;
+}
+
+function enqueueConfigWrite(
+  changes: ConfigChanges,
+  reportFailure: boolean,
+): Promise<Record<string, unknown> | null> {
+  const write = configWriteTail.then(async () => {
+    const config = useAppStore.getState().appData?.config ?? {};
+    const patch = typeof changes === "function" ? changes(config) : changes;
+    if (patch === null) return null;
+    const sequence = ++configSequence;
+    let saved: Record<string, unknown>;
+    try {
+      saved = await saveConfigFile(patch, reportFailure);
+    } catch (error) {
+      log.error("config save failed", toErrorFields(error));
+      throw error;
+    }
+    for (const [key, value] of Object.entries(patch)) {
+      const authored = unsettledConfig.get(key);
+      if (authored !== undefined && authored.sequence < sequence && Object.is(authored.value, value)) {
+        unsettledConfig.delete(key);
+      }
+    }
+    return publishConfig(saved);
+  });
+  configWriteTail = write.catch(() => undefined);
+  return write;
+}
+
+/** Publishes settings at once and keeps them pending until a queued write
+ * carries them; `saveUnsettledConfig` writes them. */
+export function publishUnsettledConfig(patch: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(patch)) {
+    unsettledConfig.set(key, { value, sequence: ++configSequence });
+  }
+  publishConfig(null);
+}
+
+/** Queues a write of every published-but-unsaved setting. A failure keeps
+ * them published and pending, for the next write or quit to retry. */
+export function saveUnsettledConfig(): Promise<void> {
+  return enqueueConfigWrite(
+    () => unsettledConfig.size === 0
+      ? null
+      : Object.fromEntries([...unsettledConfig].map(([key, { value }]) => [key, value])),
+    false,
+  ).then(() => undefined);
+}
+
+/** Waits until every queued config write has settled and nothing published
+ * is left unsaved. Rejects with the first failure, for quit to decide on. */
+export async function flushConfigForShutdown(): Promise<void> {
+  while (true) {
+    const tail = configWriteTail;
+    await tail;
+    if (unsettledConfig.size > 0) {
+      await saveUnsettledConfig();
+      continue;
+    }
+    if (tail === configWriteTail) return;
+  }
+}
+
+/** Test-only: forgets pending authored settings between fixtures. */
+export function resetConfigWritesForTests(): void {
+  unsettledConfig.clear();
+  configWriteTail = Promise.resolve();
 }
 
 // State writes are debounced and coalesced: selection/zoom/pane state can
@@ -185,23 +286,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   dismissQuarantines: () => set({ quarantines: [] }),
 
-  saveConfig: async (changes, options) => {
-    const published = get().appData?.config;
-    try {
-      const effective = await saveConfigFile(changes, options?.reportFailure ?? true);
-      set((s) => {
-        if (s.appData === null) return s;
-        // A volume drag can publish another choice while this write waits.
-        // Keep those newer values until their own queued save settles.
-        const newer = Object.fromEntries(Object.entries(s.appData.config)
-          .filter(([key, value]) => value !== published?.[key]));
-        return { appData: { ...s.appData, config: { ...effective, ...newer } } };
-      });
-    } catch (error) {
-      log.error("config save failed", toErrorFields(error));
-      throw error;
-    }
-  },
+  saveConfig: (changes, options) => enqueueConfigWrite(changes, options?.reportFailure ?? true),
 
   patchState: async (patch, options) => {
     const published = get().appData?.state ?? {};

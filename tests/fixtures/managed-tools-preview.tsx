@@ -38,7 +38,7 @@ useBinariesStore.setState({
   install: async () => {}, installAll: async () => {}, checkAll: async () => {},
   cancel: async () => {}, cancelCheck: async () => {},
 });
-useAppStore.setState({ saveConfig: async () => {} });
+useAppStore.setState({ saveConfig: async () => null });
 const language = params.get("language") === "ja" ? "ja" : "en";
 await loadCatalogue(language);
 useDerivedWorkStore.setState({

@@ -7,7 +7,12 @@ import {
   type PlaybackSurface,
 } from "../models/playback";
 import { log, toErrorFields } from "../repositories";
-import { reportStatePatchFailure, useAppStore } from "../state/app-store";
+import {
+  publishUnsettledConfig,
+  reportStatePatchFailure,
+  saveUnsettledConfig,
+  useAppStore,
+} from "../state/app-store";
 import { usePreviewStore } from "../state/preview-store";
 import { useFullscreenViewStore } from "../state/fullscreen-view-store";
 import { createEventInstaller } from "../utils/eventInstallation";
@@ -126,49 +131,21 @@ function unregister(registration: PlaybackRegistration): void {
 }
 
 // Sound and volume are config settings. The player reports every volume tick
-// while the user drags, so writes coalesce on a short timer and run one at a
-// time, as app-store does for state; the new values are published
-// optimistically so the policy subscription never reads a stale pair back.
+// while the user drags, so the values are published at once (the policy
+// subscription never reads a stale pair back) and saved on a short timer
+// through app-store's config queue, which keeps them pending until a write
+// carries them and lets quit retry them.
 const CONFIG_FLUSH_MS = 400;
-let pendingConfigPatch: Record<string, unknown> | null = null;
 let configFlushTimer: ReturnType<typeof setTimeout> | null = null;
-let configWriteTail: Promise<void> = Promise.resolve();
 
 function flushConfigPatch(): Promise<void> {
   if (configFlushTimer !== null) clearTimeout(configFlushTimer);
   configFlushTimer = null;
-  // Keep authored changes until a write succeeds. Take the snapshot when
-  // this queued write starts, so a failed predecessor cannot replay an older
-  // value over edits made while it was in flight.
-  const write = configWriteTail.then(async () => {
-    const patch = pendingConfigPatch;
-    if (patch === null) return;
-    await useAppStore.getState().saveConfig(patch, { reportFailure: false });
-    const remaining = Object.fromEntries(
-      Object.entries(pendingConfigPatch ?? {}).filter(
-        ([key, value]) => !Object.is(patch[key], value),
-      ),
-    );
-    pendingConfigPatch = Object.keys(remaining).length === 0 ? null : remaining;
-  });
-  configWriteTail = write.catch(() => undefined);
-  return write;
-}
-
-/** Writes any coalesced sound/volume change before the app exits. */
-export async function flushPlaybackConfigForShutdown(): Promise<void> {
-  do {
-    await flushConfigPatch();
-  } while (pendingConfigPatch !== null);
+  return saveUnsettledConfig();
 }
 
 function queueConfigPatch(patch: Record<string, unknown>): void {
-  useAppStore.setState((s) =>
-    s.appData === null
-      ? s
-      : { appData: { ...s.appData, config: { ...s.appData.config, ...patch } } },
-  );
-  pendingConfigPatch = { ...(pendingConfigPatch ?? {}), ...patch };
+  publishUnsettledConfig(patch);
   if (configFlushTimer !== null) clearTimeout(configFlushTimer);
   configFlushTimer = setTimeout(() => {
     void flushConfigPatch().catch(reportStatePatchFailure);

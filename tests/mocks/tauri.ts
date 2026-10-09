@@ -47,7 +47,14 @@ export const invoke = vi.fn(
         `invoke("${command}") has no mock — register one with mockCommand()`,
       );
     }
-    return await handler(args);
+    // The real bridge returns freshly deserialized JSON, never the object a
+    // handler holds; replies that cannot be cloned (functions) pass through.
+    const reply = await handler(args);
+    try {
+      return structuredClone(reply);
+    } catch {
+      return reply;
+    }
   },
 );
 

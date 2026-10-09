@@ -7,6 +7,7 @@ import {
   removeDestinationRoot,
 } from "../../src/workflows/destinations";
 import { useDestinationsStore } from "../../src/state/destinations-store";
+import { resetConfigWritesForTests, useAppStore } from "../../src/state/app-store";
 import { useItemsStore } from "../../src/state/items-store";
 import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import {
@@ -38,9 +39,28 @@ function item(pathId: number): SectionItem {
   };
 }
 
+// The core replies with the whole effective config after each save.
+function savedConfig(changes: unknown): Record<string, unknown> {
+  return { ...useAppStore.getState().appData!.config, ...(changes as object) };
+}
+
+async function settle(): Promise<void> {
+  for (let index = 0; index < 20; index += 1) await Promise.resolve();
+}
+
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
-  mockCommands({ save_config: () => ({}) });
+  resetConfigWritesForTests();
+  mockCommands({ save_config: ({ changes }) => savedConfig(changes) });
+  useAppStore.setState({
+    appData: {
+      config: { destinationRoots: ["/existing"] },
+      state: {},
+      dataRoot: "/app",
+      debugEnabled: false,
+      quarantines: [],
+    },
+  });
   useDestinationsStore.setState({ roots: ["/existing"], message: null });
 });
 
@@ -74,22 +94,23 @@ describe("destination root failures", () => {
     let finishFirst: (() => void) | undefined;
     let saves = 0;
     mockCommands({
-      save_config: () => {
+      save_config: ({ changes }) => {
         saves += 1;
+        const saved = savedConfig(changes);
         if (saves === 1) {
-          return new Promise<Record<string, never>>((resolve) => {
-            finishFirst = () => resolve({});
+          return new Promise<Record<string, unknown>>((resolve) => {
+            finishFirst = () => resolve(saved);
           });
         }
-        return {};
+        return saved;
       },
     });
     openDialog.mockResolvedValueOnce("/added");
 
     const add = addDestinationRoot();
-    await Promise.resolve();
+    await settle();
     const remove = removeDestinationRoot("/existing");
-    await Promise.resolve();
+    await settle();
     expect(saves).toBe(1);
 
     finishFirst?.();

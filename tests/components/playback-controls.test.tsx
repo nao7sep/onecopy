@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import PlaybackControls from "../../src/components/PlaybackControls";
 import { useAppStore } from "../../src/state/app-store";
-import { flushPlaybackConfigForShutdown } from "../../src/workflows/playback";
+import { flushConfigForShutdown } from "../../src/state/app-store";
 import { mockCommands, resetTauriMocks, invokeCalls } from "../mocks/tauri";
 import { seedAppConfig } from "../helpers/config";
 
@@ -12,7 +12,7 @@ beforeEach(() => {
   seedAppConfig({ playbackVolume: 0.6 });
   mockCommands({ save_config: ({ changes }) => ({ ...useAppStore.getState().appData!.config, ...(changes as object) }), log_event: () => null });
 });
-afterEach(async () => { await flushPlaybackConfigForShutdown(); cleanup(); });
+afterEach(async () => { await flushConfigForShutdown(); cleanup(); });
 
 describe("shared playback controls", () => {
   it("has one autoplay toggle and saves one choice for both media types", async () => {

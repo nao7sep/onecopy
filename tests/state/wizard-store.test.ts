@@ -124,6 +124,8 @@ describe("finish", () => {
     const first = finishWizard();
     const duplicate = finishWizard();
     expect(first).toBe(duplicate);
+    // The write reaches the core through the config queue.
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
     expect(saveConfigPayloads()).toHaveLength(1);
     useWizardStore.setState({ timezone: "UTC" });
     finishSave?.();

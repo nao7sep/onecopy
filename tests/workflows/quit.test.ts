@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { useAppStore, retainStatePatch } from "../../src/state/app-store";
-import { setSoundEnabled, setPlaybackVolume, flushPlaybackConfigForShutdown } from "../../src/workflows/playback";
+import { flushConfigForShutdown, resetConfigWritesForTests, useAppStore, retainStatePatch } from "../../src/state/app-store";
+import { setSoundEnabled, setPlaybackVolume } from "../../src/workflows/playback";
 import { cancelQuitDecision, cancelSessionEnd, endSession, installQuitWorkflow, requestQuit, useQuitSaveStore } from "../../src/workflows/quit";
 import { fireEvent, invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
+  resetConfigWritesForTests();
   cancelSessionEnd();
   useAppStore.setState({ appData: { config: { soundEnabled: true, playbackVolume: 0.7 }, state: {}, dataRoot: "/app", debugEnabled: false, quarantines: [] } });
   mockCommands({
@@ -73,7 +74,7 @@ it("only explicit Quit Anyway authorizes exit after required save failure", asyn
   await quit;
   expect(exits()).toHaveLength(1);
   mockCommands({ save_config: ({ changes }) => changes });
-  await flushPlaybackConfigForShutdown();
+  await flushConfigForShutdown();
 });
 
 it("OS takeover settles a pending question and reports saving without ordinary quit consent", async () => {
@@ -88,7 +89,7 @@ it("OS takeover settles a pending question and reports saving without ordinary q
   expect(exits()).toHaveLength(0);
   expect(invokeCalls.filter((call) => call.command === "session_end_saved")).toHaveLength(1);
   mockCommands({ save_config: ({ changes }) => changes });
-  await flushPlaybackConfigForShutdown();
+  await flushConfigForShutdown();
 });
 
 it("a stalled required save times out to Cancel while its late write remains owned", async () => {
@@ -104,7 +105,7 @@ it("a stalled required save times out to Cancel while its late write remains own
   await quit;
   complete({ soundEnabled: true, playbackVolume: 0.4 });
   await settle();
-  await flushPlaybackConfigForShutdown();
+  await flushConfigForShutdown();
 });
 
 it("a cancelled OS takeover cannot resurrect the interrupted ordinary quit", async () => {
@@ -148,7 +149,7 @@ it("missing required question presentation cancels quit and retains the failed p
   expect(useQuitSaveStore.getState().choose).toBeNull();
   expect(exits()).toHaveLength(0);
   mockCommands({ save_config: ({ changes }) => changes });
-  await flushPlaybackConfigForShutdown();
+  await flushConfigForShutdown();
 });
 
 it("renderer failure cancels a question that was already presented", async () => {
@@ -165,5 +166,5 @@ it("renderer failure cancels a question that was already presented", async () =>
   expect(exits()).toHaveLength(0);
   expect(useQuitSaveStore.getState().choose).toBeNull();
   mockCommands({ save_config: ({ changes }) => changes });
-  await flushPlaybackConfigForShutdown();
+  await flushConfigForShutdown();
 });

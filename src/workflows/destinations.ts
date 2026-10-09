@@ -38,12 +38,24 @@ interface MoveBatchOutcome {
 export type MoveMode = "move-trash-rest" | "move-delete-rest" | "copy";
 export type DestinationConflictPolicy = "rename" | "overwrite";
 
-let destinationRootTail: Promise<void> = Promise.resolve();
-
-function enqueueDestinationRootChange(task: () => Promise<void>): Promise<void> {
-  const operation = destinationRootTail.then(task, task);
-  destinationRootTail = operation.catch(() => undefined);
-  return operation;
+/** Saves a destination-root change computed, inside the config queue, from
+ * the roots as last saved, then shows the saved roots. */
+async function changeDestinationRoots(
+  change: (roots: readonly string[]) => string[] | null,
+): Promise<void> {
+  const saved = await useAppStore.getState().saveConfig(
+    (config) => {
+      const roots = Array.isArray(config.destinationRoots)
+        ? config.destinationRoots.filter((root): root is string => typeof root === "string")
+        : [];
+      const next = change(roots);
+      return next === null ? null : { destinationRoots: next };
+    },
+    { reportFailure: false },
+  );
+  if (saved !== null && Array.isArray(saved.destinationRoots)) {
+    useDestinationsStore.setState({ roots: saved.destinationRoots as string[], message: null });
+  }
 }
 
 function receiverOperationKey(destDir: string, mode: MoveMode): string {
@@ -133,15 +145,7 @@ export async function addDestinationRoot(): Promise<void> {
   try {
     const picked = await openDialog({ directory: true, multiple: false });
     if (typeof picked !== "string") return;
-    await enqueueDestinationRootChange(async () => {
-      const roots = useDestinationsStore.getState().roots;
-      if (roots.includes(picked)) return;
-      const next = [...roots, picked];
-      await useAppStore
-        .getState()
-        .saveConfig({ destinationRoots: next }, { reportFailure: false });
-      useDestinationsStore.setState({ roots: next, message: null });
-    });
+    await changeDestinationRoots((roots) => (roots.includes(picked) ? null : [...roots, picked]));
   } catch (error) {
     log.error("destination root add failed", toErrorFields(error));
     const failure = message("destinations.addFailed");
@@ -152,15 +156,9 @@ export async function addDestinationRoot(): Promise<void> {
 
 export async function removeDestinationRoot(root: string): Promise<void> {
   try {
-    await enqueueDestinationRootChange(async () => {
-      const next = useDestinationsStore
-        .getState()
-        .roots.filter((candidate) => candidate !== root);
-      await useAppStore
-        .getState()
-        .saveConfig({ destinationRoots: next }, { reportFailure: false });
-      useDestinationsStore.setState({ roots: next, message: null });
-    });
+    await changeDestinationRoots((roots) =>
+      roots.includes(root) ? roots.filter((candidate) => candidate !== root) : null,
+    );
   } catch (error) {
     log.error("destination root remove failed", toErrorFields(error));
     const failure = message("destinations.removeFailed");
