@@ -44,10 +44,10 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("the issues modal", () => {
-  it("keeps an unavailable source actionable with Check again and Settings", async () => {
+  it("keeps an unavailable source actionable with Check source folders and Settings", async () => {
     mockCommands({ get_issues: () => ({ total: 1, rows: [row(1, { kind: "source-unavailable", path: "/source", messageKey: "source.unavailable", message: "" })] }) });
     render(<IssuesModal open onClose={() => {}} />);
-    expect(await screen.findByRole("button", { name: "Check again" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Check source folders" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Settings…" }));
     expect(useAppShellStore.getState().utilitySurface).toBe("settings");
     expect(invokeCalls.some((call) => call.command.includes("dismiss"))).toBe(false);

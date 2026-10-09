@@ -684,7 +684,7 @@ fn ensure_fullres_short_circuits_and_reports_missing_ffmpeg_honestly() {
 
     // No entry and no ffmpeg: the error names the remedy.
     let err = ensure_fullres(&conn, &cache, None, "def456").unwrap_err();
-    assert!(err.contains("Managed tools"), "{err}");
+    assert!(err.contains("Background work & tools"), "{err}");
 }
 
 #[test]

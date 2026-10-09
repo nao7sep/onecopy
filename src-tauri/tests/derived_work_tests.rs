@@ -226,7 +226,7 @@ fn transcription_attempt_owns_cached_publication_and_dependency_classification()
     assert!(matches!(
         unavailable,
         TranscriptionAttemptOutcome::Unavailable { ref message, .. }
-            if message.contains("ffmpeg") && message.contains("Managed tools")
+            if message.contains("ffmpeg") && message.contains("Background work & tools")
     ));
 
     let ffmpeg = onecopy_lib::binaries_manager::ffmpeg_path(dir.path());

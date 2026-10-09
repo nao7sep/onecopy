@@ -428,7 +428,7 @@ pub fn ensure_fullres(
         return Ok(());
     }
     let Some(ffmpeg) = ffmpeg else {
-        return Err("ffmpeg is not installed — install it from Managed tools".to_string());
+        return Err("ffmpeg is not installed — install it from Background work & tools".to_string());
     };
     let path = crate::indexed_file::live_path(conn, Some(hash), None)?;
     // not recorded: full-resolution conversion is a reconstructible binary
@@ -531,7 +531,7 @@ pub fn derive_one(
     let src = Path::new(&path);
     if ffmpeg.is_none() && needs_ffmpeg_decode(src) {
         return Err(
-            "this format needs the video & HEIC support — install it from Managed tools"
+            "this format needs the video & HEIC support — install it from Background work & tools"
                 .to_string(),
         );
     }

@@ -5,7 +5,7 @@
 // left the main window's command layer live behind them, which broke two
 // things at once: Backspace trashed the selected photo invisibly, and the
 // command layer's own preventDefault on the bubbled keydown cancelled Enter
-// activation on the overlays' buttons — Next, Finish and scan, and Check again
+// activation on the overlays' buttons — Next, Finish and scan, and Check source folders
 // were all dead to Enter. A merely missing source is a nonblocking notice.
 //
 // `hasOpenModal()` is the single predicate the command layer consults, so
@@ -88,7 +88,7 @@ describe("the presence gate", () => {
 
     expect(hasOpenModal()).toBe(false);
     expect(view.container.textContent).toContain("keeps indexed items and cached previews visible");
-    fireEvent.click(view.getByRole("button", { name: "Check again" }));
+    fireEvent.click(view.getByRole("button", { name: "Check source folders" }));
     fireEvent.click(view.getByRole("button", { name: "Settings…" }));
     expect(recheck).toHaveBeenCalledOnce();
     expect(reconfigure).toHaveBeenCalledOnce();

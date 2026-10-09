@@ -1976,14 +1976,14 @@ pub fn complete_transcription_attempt(
     let Some(model) = dependencies.model else {
         return Ok(TranscriptionAttemptOutcome::Unavailable {
             hash,
-            message: "the transcription model is not installed — install it from Managed tools"
+            message: "the transcription model is not installed — install it from Background work & tools"
                 .to_string(),
         });
     };
     let Some(ffmpeg) = dependencies.ffmpeg else {
         return Ok(TranscriptionAttemptOutcome::Unavailable {
             hash,
-            message: "ffmpeg is not installed — install it from Managed tools".to_string(),
+            message: "ffmpeg is not installed — install it from Background work & tools".to_string(),
         });
     };
     if attempt.cancel_when.as_ref().is_some_and(|stop| stop()) {

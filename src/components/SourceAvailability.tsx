@@ -41,7 +41,7 @@ export function MissingSourcesNotice({
             {t("app.settings")}
           </Button>
           <Button variant="primary" onClick={onRecheck}>
-            {t("source.checkAgain")}
+            {t("app.checkSources")}
           </Button>
         </div>
       </div>
@@ -92,7 +92,7 @@ export function SubstitutedSourceGate({
             {t("source.rerunSetup")}
           </Button>
           <Button variant="primary" size="md" onClick={onRecheck}>
-            {t("source.checkAgain")}
+            {t("app.checkSources")}
           </Button>
         </div>
       </div>

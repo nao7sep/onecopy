@@ -203,7 +203,7 @@ describe("registry state", () => {
 
     useBinariesStore.setState({ loading: false, loadError: message("binaries.unavailable") });
     const failed = render(<ManagedTools />);
-    expect(document.body.textContent).toContain("Managed tools are unavailable.");
+    expect(document.body.textContent).toContain("Tools are unavailable.");
     expect(document.body.textContent).not.toContain("No managed tools are configured.");
     failed.unmount();
 
