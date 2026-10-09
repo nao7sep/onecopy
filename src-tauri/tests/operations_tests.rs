@@ -518,6 +518,37 @@ fn unhashed_other_files_delete_by_path_id() {
 }
 
 #[test]
+fn deleting_an_item_keeps_an_identical_companion_of_another_item_indexed() {
+    let f = fixture("identical-companions");
+    std::fs::write(f.root.join("p.jpg"), b"first-photo").unwrap();
+    std::fs::write(f.root.join("q.jpg"), b"second-photo").unwrap();
+    std::fs::write(f.root.join("p.arw"), b"same-raw").unwrap();
+    std::fs::write(f.root.join("q.arw"), b"same-raw").unwrap();
+    scan(&f);
+    let hash: String = f
+        .conn
+        .query_row("SELECT content_hash FROM paths WHERE file_name = 'p.jpg'", [], |r| r.get(0))
+        .unwrap();
+
+    let outcome = delete_item(&f.conn, &f.app_root, &f.cache, ItemRef::Hash(&hash), DeleteMode::Permanent)
+        .unwrap();
+
+    assert_eq!(outcome.deleted_files, 2);
+    use rusqlite::OptionalExtension;
+    let q_raw_main: Option<String> = f
+        .conn
+        .query_row(
+            "SELECT main.file_name FROM paths raw JOIN paths main ON raw.companion_of = main.id \
+             WHERE raw.file_name = 'q.arw' AND raw.missing = 0",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .unwrap();
+    assert_eq!(q_raw_main.as_deref(), Some("q.jpg"), "the other item's RAW stays indexed and paired");
+}
+
+#[test]
 fn move_out_delivers_primary_and_companion_then_trashes_the_rest() {
     let f = fixture("moveout");
     for sub in ["a", "b"] {

@@ -377,16 +377,17 @@ fn delete_targets(
                     .map_err(|e| e.to_string())?;
                 outcome.removed_rows += 1;
 
-                // Only live main copies keep a logical content identity alive.
-                // Counting missing rows too meant one copy on an absent drive
-                // pinned the contents row and every cache entry for that hash
-                // forever.
+                // Only live files keep a content identity alive. Counting
+                // missing rows too meant one copy on an absent drive pinned the
+                // contents row and every cache entry for that hash forever. A
+                // live companion counts: identical companions beside other main
+                // copies (sidecars a Move left with their own main, a boilerplate
+                // sidecar shared by two photos) must keep their rows.
                 let mut orphaned = false;
                 if let Some(hash) = &current_hash {
                     let live: i64 = tx
                         .query_row(
-                            "SELECT COUNT(*) FROM paths WHERE content_hash = ?1 AND missing = 0 \
-                               AND companion_of IS NULL",
+                            "SELECT COUNT(*) FROM paths WHERE content_hash = ?1 AND missing = 0",
                             [hash],
                             |r| r.get(0),
                         )
