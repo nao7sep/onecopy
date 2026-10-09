@@ -771,6 +771,7 @@ pub fn run_source_check_scoped(
     let root_total = checked_roots.len() as u64;
     let visibility_roots = crate::visibility_index::source_root_spellings(conn, &settings.source_dirs)?;
     let mut walk_failures = 0u64;
+    let mut changed_roots = Vec::new();
     progress(ScanProgress::phase(ScanPhase::Walk, root_total, None));
     for (root_index, root) in checked_roots.iter().enumerate() {
         // The volume-substitution gate is per root, not per source pass
@@ -834,6 +835,9 @@ pub fn run_source_check_scoped(
         if stats.errors == 0 {
             crate::index_store::clear_issues(conn, configured_root, &["watcher-recovery-failed"])?;
         }
+        if stats.added + stats.updated + stats.marked_missing > 0 {
+            changed_roots.push(configured_root.to_string());
+        }
         summary.roots += 1;
         summary.seen += stats.seen;
         summary.added += stats.added;
@@ -841,9 +845,11 @@ pub fn run_source_check_scoped(
         summary.failures += stats.errors;
     }
 
-    // Force one later companion projection even when a walk changed only
-    // absence or relationships rather than creating ordinary pending rows.
-    begin_scoped_index_repair(conn, &checked_roots)?;
+    // Force one later companion projection for every root whose walk changed
+    // anything, even when it changed only absence rather than creating
+    // ordinary pending rows. A root whose walk found everything as it was
+    // keeps its relationships and is not projected again.
+    begin_scoped_index_repair(conn, &changed_roots)?;
     Ok(summary)
 }
 

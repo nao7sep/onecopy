@@ -2521,3 +2521,41 @@ fn a_walk_the_drive_stops_answering_ends_incomplete_within_its_bound() {
     assert_eq!(repaired.errors, 0);
     assert_eq!(count(&f.conn, "SELECT dirty FROM scan_dirs"), 0);
 }
+
+// A source check whose walk found every file as it was leaves companion
+// relationships alone; one that changed anything owes them again.
+#[test]
+fn an_unchanged_walk_owes_no_companion_pass_but_a_changed_one_does() {
+    let f = fixture("unchanged-walk-pairing");
+    std::fs::write(f.root.join("IMG.JPG"), b"jpeg").unwrap();
+    let settings = ScanSettings {
+        source_dirs: vec![f.root.to_string_lossy().to_string()],
+        lists: lists(),
+        resolution: resolution_config(),
+        pairing_enabled: true,
+        cache_root: f._dir.path().join("apphome").join("cache"),
+    };
+    run_source_check(&f.conn, &settings, &|_| {}).unwrap();
+    let mut summary = ScanSummary::default();
+    run_index_tail(&f.conn, &settings, &|_| {}, &mut summary).unwrap();
+    assert_eq!(count(&f.conn, "SELECT relationship_dirty FROM scan_dirs"), 0);
+
+    run_source_check(&f.conn, &settings, &|_| {}).unwrap();
+    assert_eq!(count(&f.conn, "SELECT relationship_dirty FROM scan_dirs"), 0, "nothing changed");
+
+    std::fs::write(f.root.join("IMG.XMP"), b"sidecar").unwrap();
+    run_source_check(&f.conn, &settings, &|_| {}).unwrap();
+    assert_eq!(count(&f.conn, "SELECT relationship_dirty FROM scan_dirs"), 1, "a file was added");
+}
+
+#[test]
+fn the_system_time_zone_follows_the_computer_and_a_chosen_one_stays() {
+    let home = tempfile::tempdir().unwrap();
+    let computer = iana_time_zone::get_timezone().ok().and_then(|zone| zone.parse::<chrono_tz::Tz>().ok()).unwrap_or(chrono_tz::UTC);
+    for config in [serde_json::json!({}), serde_json::json!({ "defaultTimezone": "system" })] {
+        let settings = settings_from_config(Some(&config), home.path(), 0);
+        assert_eq!(settings.resolution.default_timezone, computer, "{config}");
+    }
+    let chosen = settings_from_config(Some(&serde_json::json!({ "defaultTimezone": "Pacific/Auckland" })), home.path(), 0);
+    assert_eq!(chosen.resolution.default_timezone, chrono_tz::Pacific::Auckland);
+}
