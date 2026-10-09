@@ -74,6 +74,8 @@ async function applyResult(
   result: ComparisonCommitResult | null,
 ): Promise<void> {
   if (result === null) return;
+  // Unscoped: a decision is one user action whose targets came from Main,
+  // and Main's selection recovery below reads the refreshed order.
   await Promise.all([refreshLibrary(), useIssuesStore.getState().load()]);
   if (result.kind === "failed") {
     await reconcileComparisonMembership();

@@ -455,6 +455,32 @@ describe("explicit selection", () => {
       { hash: "h700", pathId: null },
     ]);
   });
+
+  it("re-reads Main after a delete only when the batch changed Main's section", async () => {
+    mockSection([item(1), item(2)]);
+    await useItemsStore.getState().select(SECTION);
+    const refresh = vi.spyOn(useItemsStore.getState(), "refresh").mockResolvedValue();
+    try {
+      mockCommand("delete_items", () => ({ error: null, failedFiles: 0, sections: [] }));
+      await deleteItems(["h1"], false);
+      expect(refresh).not.toHaveBeenCalled();
+
+      mockCommand("delete_items", () => ({
+        error: null,
+        failedFiles: 0,
+        sections: [{ kind: "video", month: "2026-01" }, SECTION],
+      }));
+      await deleteItems(["h1"], false);
+      expect(refresh).toHaveBeenCalledTimes(1);
+
+      // An outcome without a scope is unknown and always re-reads.
+      mockCommand("delete_items", () => ({ error: null, failedFiles: 0 }));
+      await deleteItems(["h1"], false);
+      expect(refresh).toHaveBeenCalledTimes(2);
+    } finally {
+      refresh.mockRestore();
+    }
+  });
 });
 
 describe("request ownership", () => {

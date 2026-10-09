@@ -204,6 +204,7 @@ struct TestRestoreHost {
     waiting_shown: std::sync::Arc<AtomicBool>,
     phases: Vec<Phase>,
     finished: Vec<(bool, Option<ResultSummary>)>,
+    sections: Vec<Option<Vec<crate::queries::SectionLocation>>>,
     media: Vec<Option<Vec<String>>>,
 }
 
@@ -237,11 +238,18 @@ impl RestoreHost for TestRestoreHost {
         self.phases.push(progress.phase);
     }
 
-    fn done(&mut self, _progress: &Progress, cancelled: bool, summary: Option<ResultSummary>) {
+    fn done(
+        &mut self,
+        _progress: &Progress,
+        cancelled: bool,
+        summary: Option<ResultSummary>,
+        sections: Option<Vec<crate::queries::SectionLocation>>,
+    ) {
         self.finished.push((cancelled, summary));
+        self.sections.push(sections);
     }
 
-    fn error(&mut self, _progress: &Progress, error: &str) {
+    fn error(&mut self, _progress: &Progress, error: &str, _sections: Option<Vec<crate::queries::SectionLocation>>) {
         panic!("the restore failed: {error}");
     }
 
@@ -331,6 +339,7 @@ fn test_host(data_root: &std::path::Path) -> TestRestoreHost {
         waiting_shown: Default::default(),
         phases: Vec::new(),
         finished: Vec::new(),
+        sections: Vec::new(),
         media: Vec::new(),
     }
 }
@@ -359,6 +368,7 @@ fn cancelling_a_restore_while_it_waits_for_background_work_changes_nothing() {
     let (cancelled, summary) = host.finished[0].clone();
     assert!(cancelled);
     assert_eq!(summary.map(|summary| summary.files_unstarted), Some(1));
+    assert_eq!(host.sections, [Some(Vec::new())], "no section changed");
     assert!(std::path::Path::new(&stored).exists(), "still in Deleted files");
     assert!(!root.join("trip").exists(), "no folder recreated");
     assert_eq!(std::fs::read(&manifest).unwrap(), manifest_before, "no restored line");

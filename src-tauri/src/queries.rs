@@ -97,7 +97,7 @@ pub fn section_for_identity(
     facts.map(|(kind, instant)| section_from_facts(kind, instant, display_tz)).transpose()
 }
 
-fn section_from_facts(kind: String, instant: Option<i64>, display_tz: Tz) -> Result<SectionLocation, String> {
+pub(crate) fn section_from_facts(kind: String, instant: Option<i64>, display_tz: Tz) -> Result<SectionLocation, String> {
     let month = match instant {
         None => "undated".to_string(),
         Some(value) => {

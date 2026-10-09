@@ -169,7 +169,8 @@ fn worker_entry(app: AppHandle) {
 }
 
 fn worker(app: AppHandle) {
-    let outcome = catch_unwind(AssertUnwindSafe(|| run_requested(&app)));
+    let sections = crate::section_changes::SectionLog::default();
+    let outcome = catch_unwind(AssertUnwindSafe(|| run_requested(&app, &sections)));
     if crate::app_lifecycle::shutting_down() {
         match outcome {
             Ok(Err(error)) if error != crate::scanner::CANCELLED => crate::logging::error(
@@ -190,7 +191,7 @@ fn worker(app: AppHandle) {
         PAUSED.store(true, Ordering::SeqCst);
         return;
     }
-    let terminal = match outcome {
+    let mut terminal = match outcome {
         Ok(Ok(summary)) => {
             if summary.is_some() {
                 crate::derived_work::wake();
@@ -219,6 +220,8 @@ fn worker(app: AppHandle) {
             json!({ "error": error })
         }
     };
+    // A paused, preempted, or failed pass still names what it committed.
+    terminal["sections"] = json!(sections.sections());
     RUNNING.store(false, Ordering::SeqCst);
     PREEMPTED.store(false, Ordering::SeqCst);
     emit_state(&app);
@@ -244,7 +247,10 @@ fn worker(app: AppHandle) {
     crate::derived_work::wake();
 }
 
-fn run_requested(app: &AppHandle) -> Result<Option<crate::scanner::ScanSummary>, String> {
+fn run_requested(
+    app: &AppHandle,
+    sections: &crate::section_changes::SectionLog,
+) -> Result<Option<crate::scanner::ScanSummary>, String> {
     // While paused, settings that could not be applied stay owed too: they are
     // applied by this owner's next turn after Resume or a restart.
     if PAUSED.load(Ordering::SeqCst) || crate::app_lifecycle::shutting_down() {
@@ -274,13 +280,14 @@ fn run_requested(app: &AppHandle) -> Result<Option<crate::scanner::ScanSummary>,
                 Ok(crate::library_settings::owed(conn, &settings, &visibility)?
                     || crate::scanner::pending_index_work_exists(conn)?)
             };
-            complete_pending(&conn, pending, |conn| {
+            sections.track(&conn);
+            let completed = complete_pending(&conn, pending, |conn| {
                 let mut summary = crate::scanner::ScanSummary::default();
                 let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::FileInformation, None, None);
                 let report = trace.progress_reporter();
                 let report_progress = |value: crate::scanner::ScanProgress| {
                     report(value.done, value.total);
-                    progress(value);
+                    progress(value, &|| sections.changed_since_last(conn));
                 };
                 // Saved library settings a busy Settings apply left owed.
                 let result = crate::library_settings::apply(conn, &settings, &visibility, &report_progress)
@@ -290,7 +297,9 @@ fn run_requested(app: &AppHandle) -> Result<Option<crate::scanner::ScanSummary>,
                 } else { trace.result(&result); }
                 result?;
                 Ok(summary)
-            })
+            });
+            sections.finish(&conn);
+            completed
         },
     )?;
     if crate::app_lifecycle::shutting_down() {

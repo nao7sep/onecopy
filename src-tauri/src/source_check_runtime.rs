@@ -133,7 +133,8 @@ fn worker_entry(app: AppHandle) {
 }
 
 fn worker(app: AppHandle) {
-    let outcome = catch_unwind(AssertUnwindSafe(|| run(&app)));
+    let sections = crate::section_changes::SectionLog::default();
+    let outcome = catch_unwind(AssertUnwindSafe(|| run(&app, &sections)));
     if crate::app_lifecycle::shutting_down() {
         match outcome {
             Ok(Err(error)) if error != crate::scanner::CANCELLED => crate::logging::error(
@@ -184,8 +185,11 @@ fn worker(app: AppHandle) {
         }
     };
     let notify_completion = finish(terminal.0);
+    let mut payload = terminal.1;
+    // A stopped or failed walk still names what it committed before it ended.
+    payload["sections"] = json!(sections.sections());
     emit_state(&app);
-    emit_done(&app, terminal.1);
+    emit_done(&app, payload);
     if notify_completion {
         let incomplete = matches!(terminal.0, ResultState::CompletedWithIssues);
         let request = crate::notifications::NotificationRequest {
@@ -227,7 +231,10 @@ fn worker(app: AppHandle) {
     crate::file_information_runtime::admit_background_completion(app);
 }
 
-fn run(app: &AppHandle) -> Result<crate::scanner::ScanSummary, String> {
+fn run(
+    app: &AppHandle,
+    sections: &crate::section_changes::SectionLog,
+) -> Result<crate::scanner::ScanSummary, String> {
     let data_root = crate::paths::data_root()?;
     let db_file = data_root.join(crate::storage::INDEX_DB_FILE_NAME);
     let progress = crate::scan_runtime::progress_emitter(
@@ -258,11 +265,15 @@ fn run(app: &AppHandle) -> Result<crate::scanner::ScanSummary, String> {
                 // substituted or unverifiable root is skipped with a
                 // recorded issue while every other configured root is still
                 // checked.
-                let result = crate::index_store::open(&db_file)
-                    .and_then(|conn| crate::scanner::run_source_check(&conn, &settings, &|value| {
+                let result = crate::index_store::open(&db_file).and_then(|conn| {
+                    sections.track(&conn);
+                    let result = crate::scanner::run_source_check(&conn, &settings, &|value| {
                         report(value.done, value.total);
-                        progress(value);
-                    }));
+                        progress(value, &|| sections.changed_since_last(&conn));
+                    });
+                    sections.finish(&conn);
+                    result
+                });
                 if result.as_ref().is_ok_and(|summary| summary.failures > 0) {
                     trace.finish(crate::activity::ActivityState::Failed, None);
                 } else { trace.result(&result); }

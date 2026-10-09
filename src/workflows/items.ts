@@ -3,7 +3,7 @@
 // anchor into Preview, and coordinates mutations with Issues and counts.
 
 import { invoke } from "@tauri-apps/api/core";
-import { identityFromKey, itemKey } from "../models/items";
+import { identityFromKey, itemKey, scopeIncludes, type SectionLocation } from "../models/items";
 import { log, toErrorFields } from "../repositories";
 import { retainStatePatch, useAppStore } from "../state/app-store";
 import { useIssuesStore } from "../state/issues-store";
@@ -17,6 +17,8 @@ import { recordActionFailure, reportActionFailure } from "../state/notifications
 interface DeleteBatchOutcome {
   error: string | null;
   failedFiles: number;
+  /** The Main sections the batch changed; absent when unknown. */
+  sections?: SectionLocation[] | null;
 }
 
 type RescanSectionOutcome =
@@ -150,7 +152,11 @@ export async function deleteItems(
     // The item store reconciles selection against the prior displayed order:
     // surviving selected members remain selected, then next/previous recovery
     // applies. A second hand-written recovery here used to erase that result.
-    await useItemsStore.getState().refresh();
+    // A batch that changed nothing Main shows (stopped before any file) leaves
+    // its items and selection as they are.
+    if (scopeIncludes(outcome.sections, useItemsStore.getState().selected)) {
+      await useItemsStore.getState().refresh();
+    }
     await useSectionsStore.getState().loadCounts();
   } catch (error) {
     log.error("delete failed", toErrorFields(error));

@@ -1400,10 +1400,20 @@ fn run_optional_class(
             match result {
                 Ok(Some(Some(stats))) => {
                     emit_progress(app, class, None);
+                    // One rebuilt cohort relabels only the image sections that
+                    // show it; a cohort that cannot be read as a month leaves
+                    // the event unscoped.
+                    let sections = stats.last_bucket.as_deref().and_then(|bucket| {
+                        crate::section_changes::image_sections_for_bucket(
+                            bucket,
+                            crate::queries::display_timezone(),
+                        )
+                        .ok()
+                    });
                     crate::failure_runtime::emit_or_record(
                         app,
                         "derived://similarity-updated",
-                        json!({}),
+                        json!({ "sections": sections }),
                     );
                     logging::info(
                         "similarity rebuilt",

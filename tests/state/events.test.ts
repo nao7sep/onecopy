@@ -267,6 +267,91 @@ describe("watcher events", () => {
   });
 });
 
+describe("scoped change events", () => {
+  const MAIN = { kind: "image" as const, month: "2026-01" };
+  const ELSEWHERE = [{ kind: "image" as const, month: "2026-02" }, { kind: "video" as const, month: "2026-01" }];
+  type Sections = typeof ELSEWHERE | (typeof MAIN)[] | undefined;
+  const completedCheck = (eventSequence: number) => ({
+    running: false, stopping: false, waiting: false, lastResult: "completed", eventSequence,
+  });
+
+  // Progress and similarity relabeling re-read only Main's window.
+  it.each([
+    ["source-check://progress", (sections: Sections, eventSequence: number) =>
+      ({ eventSequence, progress: scanProgress({ phase: "walk" }), sections })],
+    ["file-information://progress", (sections: Sections, eventSequence: number) =>
+      ({ eventSequence, progress: scanProgress(), sections })],
+    ["derived://similarity-updated", (sections: Sections) => ({ sections })],
+  ])("%s re-reads Main only when it names Main's section", async (name, payload) => {
+    const { useItemsStore } = await import("../../src/state/items-store");
+    await settle();
+    vi.useFakeTimers();
+    // A state object copied while an earlier spec spied on the store keeps
+    // that spy; clear its calls so only this spec's events count.
+    const refreshWindow = vi.spyOn(useItemsStore.getState(), "refreshWindow").mockResolvedValue();
+    refreshWindow.mockClear();
+    try {
+      useItemsStore.setState({ selected: MAIN });
+      fireEvent(name, payload(ELSEWHERE, 1));
+      await vi.advanceTimersByTimeAsync(250);
+      expect(refreshWindow).not.toHaveBeenCalled();
+      // Counts still follow every change.
+      expect(invokeCalls.some((call) => call.command === "get_section_counts")).toBe(true);
+      fireEvent(name, payload([MAIN], 2));
+      await vi.advanceTimersByTimeAsync(250);
+      expect(refreshWindow).toHaveBeenCalledTimes(1);
+      fireEvent(name, payload(undefined, 3)); // an unscoped event still refreshes
+      await vi.advanceTimersByTimeAsync(250);
+      expect(refreshWindow).toHaveBeenCalledTimes(2);
+    } finally { refreshWindow.mockRestore(); vi.useRealTimers(); }
+  });
+
+  // Completions reconcile Main's whole selection.
+  it.each([
+    ["source-check://done", (sections: Sections, eventSequence: number) =>
+      ({ eventSequence, sourceCheck: completedCheck(eventSequence), sections })],
+    ["file-information://done", (sections: Sections, eventSequence: number) =>
+      ({ eventSequence, sections })],
+    ["watch://recovered", (sections: Sections) => ({ rescanNeeded: false, sections })],
+    ["mutation://done", (sections: Sections) =>
+      ({ progress: { kind: "restore" }, cancelled: false, summary: null, sections })],
+  ])("%s reconciles Main only when it names Main's section", async (name, payload) => {
+    const { useItemsStore } = await import("../../src/state/items-store");
+    await settle();
+    vi.useFakeTimers();
+    const refresh = vi.spyOn(useItemsStore.getState(), "refresh").mockResolvedValue();
+    refresh.mockClear();
+    try {
+      useItemsStore.setState({ selected: MAIN });
+      fireEvent(name, payload(ELSEWHERE, 1));
+      await vi.advanceTimersByTimeAsync(250);
+      expect(refresh).not.toHaveBeenCalled();
+      fireEvent(name, payload([MAIN], 2));
+      await vi.advanceTimersByTimeAsync(250);
+      expect(refresh).toHaveBeenCalledTimes(1);
+    } finally { refresh.mockRestore(); vi.useRealTimers(); }
+  });
+
+  it("leaves delete and destination refreshes to the workflow that started them", async () => {
+    const { useItemsStore } = await import("../../src/state/items-store");
+    await settle();
+    vi.useFakeTimers();
+    const refresh = vi.spyOn(useItemsStore.getState(), "refresh").mockResolvedValue();
+    refresh.mockClear();
+    try {
+      useItemsStore.setState({ selected: MAIN });
+      for (const kind of ["delete", "destination-copy", "destination-move"]) {
+        fireEvent("mutation://done", { progress: { kind }, cancelled: false, summary: null, sections: [MAIN] });
+        fireEvent("mutation://error", { kind, error: "failed", summary: null });
+      }
+      // Emptying deleted files changes no section.
+      fireEvent("mutation://done", { progress: { kind: "trash-empty" }, cancelled: false, summary: null, sections: [] });
+      await vi.advanceTimersByTimeAsync(250);
+      expect(refresh).not.toHaveBeenCalled();
+    } finally { refresh.mockRestore(); vi.useRealTimers(); }
+  });
+});
+
 describe("derived media events", () => {
   it("patches one item without re-reading the open section or its counts", async () => {
     const { useItemsStore } = await import("../../src/state/items-store");

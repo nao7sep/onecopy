@@ -486,6 +486,7 @@ fn affected_roots(configured: &[String], dirs: &[PathBuf]) -> Vec<String> {
 fn recover_roots(app: &tauri::AppHandle, roots: &[String], generation: u64) {
     if roots.is_empty() || !owns_generation(generation) { return; }
     crate::failure_runtime::emit_or_record(app, "watch://rescan-needed", json!({ "roots": roots }));
+    let sections = crate::section_changes::SectionLog::default();
     for root in roots {
         if !crate::volume_io::is_dir(Path::new(root)).unwrap_or(false) { continue; }
         let result = crate::scan_runtime::with_watcher_claim(
@@ -497,7 +498,9 @@ fn recover_roots(app: &tauri::AppHandle, roots: &[String], generation: u64) {
                 let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
                 let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::Watcher, None, None);
                 let report = trace.progress_reporter();
+                sections.track(&conn);
                 let result = scanner::run_source_check_scoped(&conn, &settings, Some(std::slice::from_ref(root)), &|progress| report(progress.done, progress.total));
+                sections.finish(&conn);
                 if result.as_ref().is_ok_and(|summary| summary.failures > 0) {
                     trace.finish(crate::activity::ActivityState::Failed, None);
                 } else { trace.result(&result); }
@@ -531,7 +534,7 @@ fn recover_roots(app: &tauri::AppHandle, roots: &[String], generation: u64) {
         Ok(value) => value,
         Err(error) => { crate::scan_runtime::record_runtime_failure(app, "watcher-recovery-failed", &error); true }
     };
-    crate::failure_runtime::emit_or_record(app, "watch://recovered", json!({ "roots": roots, "rescanNeeded": rescan_needed }));
+    crate::failure_runtime::emit_or_record(app, "watch://recovered", json!({ "roots": roots, "rescanNeeded": rescan_needed, "sections": sections.sections() }));
 }
 
 fn report_failure(app: &tauri::AppHandle, error: &str) {

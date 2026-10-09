@@ -64,6 +64,7 @@ pub mod resolution;
 pub mod resource_limits;
 pub mod scan_runtime;
 pub mod scanner;
+pub mod section_changes;
 pub mod similarity;
 pub mod source_check_runtime;
 pub mod source_check_state;

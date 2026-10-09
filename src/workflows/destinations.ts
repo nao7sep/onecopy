@@ -11,7 +11,7 @@ import { useDestinationsStore } from "../state/destinations-store";
 import { useIssuesStore } from "../state/issues-store";
 import { useItemsStore } from "../state/items-store";
 import { useSectionsStore } from "../state/sections-store";
-import { identityFromKey } from "../models/items";
+import { identityFromKey, scopeIncludes, type SectionLocation } from "../models/items";
 import type {
   DestinationItemIdentity,
   DestinationSelection,
@@ -33,6 +33,8 @@ interface MoveBatchOutcome {
   planChanged: boolean;
   overwriteAllowed: boolean;
   reviewedConflicts: DestinationConflict[];
+  /** The Main sections the batch changed; absent when unknown. */
+  sections?: SectionLocation[] | null;
 }
 
 export type MoveMode = "move-trash-rest" | "move-delete-rest" | "copy";
@@ -254,6 +256,8 @@ async function executeMoveBatch(
   const operationKey = moveOperationKey(destDir, mode, selection.items);
   const receiverKey = receiverOperationKey(destDir, mode);
   let operationCompleted = false;
+  // Unknown until the batch answers: a failed command refreshes Main.
+  let changedSections: SectionLocation[] | null | undefined;
   try {
     const outcome = await invoke<MoveBatchOutcome>("move_items_out", {
       items: selection.items,
@@ -288,6 +292,7 @@ async function executeMoveBatch(
       return;
     }
     operationCompleted = true;
+    changedSections = outcome.sections;
     const facts: Message[] = [];
     const hasCommittedNonSuccess =
       outcome.skippedIdentical > 0 ||
@@ -404,7 +409,7 @@ async function executeMoveBatch(
   }
 
   try {
-    await refreshDestinationOwners();
+    await refreshDestinationOwners(changedSections);
   } catch (error) {
     log.error("destination projections refresh failed", toErrorFields(error));
     useDestinationsStore.setState({
@@ -448,9 +453,13 @@ export async function resolveDestinationConflicts(
   );
 }
 
-async function refreshDestinationOwners(): Promise<void> {
+/** `sections`: what the batch changed in the library. A copy out of the
+ * library changes no section, so Main keeps its items. */
+async function refreshDestinationOwners(sections?: SectionLocation[] | null): Promise<void> {
   await Promise.all([
-    useItemsStore.getState().refresh(),
+    scopeIncludes(sections, useItemsStore.getState().selected)
+      ? useItemsStore.getState().refresh()
+      : Promise.resolve(),
     useSectionsStore.getState().loadCounts(),
     useIssuesStore.getState().load(),
     useDestinationsStore.getState().refreshExpanded(),

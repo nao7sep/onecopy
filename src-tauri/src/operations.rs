@@ -125,6 +125,9 @@ pub struct DeleteBatchOutcome {
     pub files_total: u64,
     pub bytes_total: u64,
     pub items_started: u64,
+    /// The Main sections the batch's index writes changed, set by the
+    /// operation's runtime; `None` when unknown.
+    pub sections: Option<Vec<crate::queries::SectionLocation>>,
 }
 
 #[derive(Clone, Debug)]
@@ -858,6 +861,9 @@ pub struct MoveBatchOutcome {
     pub overwrite_allowed: bool,
     pub reviewed_conflicts: Vec<DestinationConflict>,
     pub items_started: u64,
+    /// The Main sections the batch's index writes changed, set by the
+    /// operation's runtime; `None` when unknown.
+    pub sections: Option<Vec<crate::queries::SectionLocation>>,
 }
 
 #[derive(Clone, Debug)]

@@ -16,7 +16,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use chrono::TimeZone;
 use chrono_tz::Tz;
-use onecopy_lib::{derived_state, index_store, operations, preview::CachePaths, queries, scanner};
+use onecopy_lib::{derived_state, index_store, operations, preview::CachePaths, queries, scanner, section_changes};
 use rusqlite::Connection;
 
 const SECTION_MONTH: &str = "2024-01";
@@ -118,10 +118,12 @@ fn full_scan(conn: &Connection, settings: &scanner::ScanSettings) -> (Duration, 
 }
 
 /// A full scan, with the time each phase started (from the progress events).
+/// It records the sections it changes, as the app's scan owners do.
 fn full_scan_phases(
     conn: &Connection,
     settings: &scanner::ScanSettings,
 ) -> ((Duration, Duration), Vec<(scanner::ScanPhase, Duration)>) {
+    section_changes::track(conn).unwrap();
     let started = Instant::now();
     let phases = std::cell::RefCell::new(Vec::<(scanner::ScanPhase, Duration)>::new());
     let note = |progress: scanner::ScanProgress| {
@@ -133,6 +135,7 @@ fn full_scan_phases(
     let mut summary = scanner::run_source_check(conn, settings, &note).unwrap();
     let walked = started.elapsed();
     scanner::run_index_tail(conn, settings, &note, &mut summary).unwrap();
+    section_changes::drain(conn, Tz::UTC).unwrap();
     let total = started.elapsed();
     let mut phases = phases.into_inner();
     phases.push((scanner::ScanPhase::Indexed, total));

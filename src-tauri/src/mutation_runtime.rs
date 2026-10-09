@@ -13,6 +13,9 @@ use serde::Serialize;
 use serde_json::json;
 use tauri::AppHandle;
 
+use crate::queries::SectionLocation;
+use crate::section_changes::SectionLog;
+
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 const STATE_UNAVAILABLE: &str =
     "File-operation state is unavailable. Restart OneCopy before changing files.";
@@ -355,7 +358,15 @@ impl Publisher {
         }
     }
 
-    fn done(&mut self, progress: &Progress, cancelled: bool, summary: Option<ResultSummary>) {
+    /// `sections`: the Main sections the operation's index writes changed,
+    /// `None` when they are unknown (Main then refreshes regardless).
+    fn done(
+        &mut self,
+        progress: &Progress,
+        cancelled: bool,
+        summary: Option<ResultSummary>,
+        sections: Option<Vec<SectionLocation>>,
+    ) {
         self.progress(progress);
         if let Some(trace) = &mut self.trace {
             use crate::activity::ActivityState;
@@ -368,11 +379,16 @@ impl Publisher {
         crate::failure_runtime::emit_or_record(
             &self.app,
             "mutation://done",
-            json!({ "progress": progress, "cancelled": cancelled, "summary": summary }),
+            json!({
+                "progress": progress,
+                "cancelled": cancelled,
+                "summary": summary,
+                "sections": sections,
+            }),
         );
     }
 
-    fn error(&mut self, progress: &Progress, error: &str) {
+    fn error(&mut self, progress: &Progress, error: &str, sections: Option<Vec<SectionLocation>>) {
         if let Some(trace) = &mut self.trace { trace.finish(crate::activity::ActivityState::Failed, None); }
         let started = progress.items_done.saturating_add(u64::from(
             progress.phase != Phase::Planning && progress.items_done < progress.items_total,
@@ -396,6 +412,7 @@ impl Publisher {
                 "kind": progress.kind,
                 "error": error,
                 "summary": summary,
+                "sections": sections,
             }),
         );
     }
@@ -521,6 +538,7 @@ pub(crate) fn delete_items(
     let mutation = begin_reported(app)?;
     let operation_id = mutation.id();
     let mut publisher = Publisher::new(app);
+    let sections = SectionLog::default();
     let mut last_progress = Progress {
         operation_id,
         kind: Kind::Delete,
@@ -575,7 +593,8 @@ pub(crate) fn delete_items(
             } else {
                 crate::operations::DeleteMode::Trash
             };
-            crate::operations::delete_accepted_batch(
+            sections.track(&conn);
+            let outcome = crate::operations::delete_accepted_batch(
                 &conn,
                 &data_root,
                 &cache,
@@ -631,7 +650,12 @@ pub(crate) fn delete_items(
                     };
                     publisher.progress(&last_progress);
                 },
-            )
+            );
+            sections.finish(&conn);
+            outcome.map(|outcome| crate::operations::DeleteBatchOutcome {
+                sections: sections.sections(),
+                ..outcome
+            })
         },
         |outcome| {
             json!({
@@ -682,9 +706,10 @@ pub(crate) fn delete_items(
                     !permanent && outcome.deleted_files > 0,
                     outcome.error.clone(),
                 )),
+                sections.sections(),
             );
         }
-        Err(error) => publisher.error(&last_progress, error),
+        Err(error) => publisher.error(&last_progress, error, sections.sections()),
     }
     result
 }
@@ -707,6 +732,7 @@ pub(crate) fn move_items_out(
     let mutation = begin_reported(app)?;
     let operation_id = mutation.id();
     let mut publisher = Publisher::new(app);
+    let sections = SectionLog::default();
     let mut last_progress = Progress {
         operation_id,
         kind,
@@ -764,7 +790,8 @@ pub(crate) fn move_items_out(
             let destination = std::path::Path::new(&dest_dir);
             let cache =
                 crate::preview::CachePaths::new(data_root.join(crate::storage::CACHE_DIR_NAME));
-            crate::operations::move_batch_reviewed(
+            sections.track(&conn);
+            let outcome = crate::operations::move_batch_reviewed(
                 &conn,
                 &data_root,
                 &cache,
@@ -828,7 +855,12 @@ pub(crate) fn move_items_out(
                     };
                     publisher.progress(&last_progress);
                 },
-            )
+            );
+            sections.finish(&conn);
+            outcome.map(|outcome| crate::operations::MoveBatchOutcome {
+                sections: sections.sections(),
+                ..outcome
+            })
         },
         |outcome| {
             json!({
@@ -882,9 +914,10 @@ pub(crate) fn move_items_out(
                         outcome.error.clone(),
                     )
                 }),
+                sections.sections(),
             );
         }
-        Err(error) => publisher.error(&last_progress, error),
+        Err(error) => publisher.error(&last_progress, error, sections.sections()),
     }
     result
 }
@@ -1011,9 +1044,12 @@ pub(crate) fn empty_trash(
                     false,
                     None,
                 )),
+                // Deleted files are never indexed: emptying them changes no
+                // section.
+                Some(Vec::new()),
             );
         }
-        Err(error) => publisher.borrow_mut().error(&progress.borrow(), error),
+        Err(error) => publisher.borrow_mut().error(&progress.borrow(), error, Some(Vec::new())),
     }
     result
 }
@@ -1074,8 +1110,14 @@ trait RestoreHost {
         waiting: &Progress,
     ) -> Result<Option<Self::Admitted>, String>;
     fn progress(&mut self, progress: &Progress);
-    fn done(&mut self, progress: &Progress, cancelled: bool, summary: Option<ResultSummary>);
-    fn error(&mut self, progress: &Progress, error: &str);
+    fn done(
+        &mut self,
+        progress: &Progress,
+        cancelled: bool,
+        summary: Option<ResultSummary>,
+        sections: Option<Vec<SectionLocation>>,
+    );
+    fn error(&mut self, progress: &Progress, error: &str, sections: Option<Vec<SectionLocation>>);
     fn information_owed(&mut self);
 }
 
@@ -1108,12 +1150,18 @@ impl RestoreHost for AppRestoreHost<'_> {
         self.publisher.progress(progress);
     }
 
-    fn done(&mut self, progress: &Progress, cancelled: bool, summary: Option<ResultSummary>) {
-        self.publisher.done(progress, cancelled, summary);
+    fn done(
+        &mut self,
+        progress: &Progress,
+        cancelled: bool,
+        summary: Option<ResultSummary>,
+        sections: Option<Vec<SectionLocation>>,
+    ) {
+        self.publisher.done(progress, cancelled, summary, sections);
     }
 
-    fn error(&mut self, progress: &Progress, error: &str) {
-        self.publisher.error(progress, error);
+    fn error(&mut self, progress: &Progress, error: &str, sections: Option<Vec<SectionLocation>>) {
+        self.publisher.error(progress, error, sections);
     }
 
     fn information_owed(&mut self) {
@@ -1131,6 +1179,7 @@ fn restore_claimed<H: RestoreHost>(
 ) -> Result<crate::restore::RestoreOutcome, String> {
     let operation_id = mutation.id();
     let files_total = ids.len() as u64;
+    let sections = SectionLog::default();
     let mut last_progress = Progress {
         operation_id,
         kind: Kind::Restore,
@@ -1223,7 +1272,8 @@ fn restore_claimed<H: RestoreHost>(
                     ..Default::default()
                 });
             }
-            let (mut outcome, reindexed) = crate::restore::execute(
+            sections.track(&conn);
+            let executed = crate::restore::execute(
                 &conn,
                 &root,
                 &plan,
@@ -1248,7 +1298,9 @@ fn restore_claimed<H: RestoreHost>(
                     };
                     host.progress(&last_progress);
                 },
-            )?;
+            );
+            sections.finish(&conn);
+            let (mut outcome, reindexed) = executed?;
             if reindexed > 0 {
                 host.information_owed();
             }
@@ -1277,9 +1329,10 @@ fn restore_claimed<H: RestoreHost>(
                 &terminal,
                 outcome.cancelled,
                 (!outcome.requires_review).then(|| restore_summary(outcome)),
+                sections.sections(),
             );
         }
-        Err(error) => host.error(&last_progress, error),
+        Err(error) => host.error(&last_progress, error, sections.sections()),
     }
     result
 }

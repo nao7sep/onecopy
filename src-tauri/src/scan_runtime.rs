@@ -718,15 +718,22 @@ pub(crate) fn serial_test() -> MutexGuard<'static, ()> {
 #[path = "../tests/unit/scan_runtime.rs"]
 mod admission_tests;
 
+/// Publishes throttled index-work progress. `sections` is asked only for an
+/// update that is published, and names the Main sections changed since the
+/// previous published update (`None`: unknown, so Main refreshes regardless).
 pub(crate) fn progress_emitter(
     handle: AppHandle,
     event: &'static str,
     next_sequence: fn() -> u64,
-) -> impl Fn(crate::scanner::ScanProgress) {
+) -> impl Fn(
+    crate::scanner::ScanProgress,
+    &dyn Fn() -> Option<Vec<crate::queries::SectionLocation>>,
+) {
     let throttle = std::cell::RefCell::new(
         crate::progress_throttle::ProgressThrottle::<crate::scanner::ScanPhase>::default(),
     );
-    move |progress: crate::scanner::ScanProgress| {
+    move |progress: crate::scanner::ScanProgress,
+          sections: &dyn Fn() -> Option<Vec<crate::queries::SectionLocation>>| {
         if throttle.borrow_mut().admit(
             progress.phase,
             progress.done == progress.total,
@@ -738,6 +745,7 @@ pub(crate) fn progress_emitter(
                 serde_json::json!({
                     "eventSequence": next_sequence(),
                     "progress": progress,
+                    "sections": sections(),
                 }),
             );
         }

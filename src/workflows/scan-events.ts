@@ -1,7 +1,8 @@
 // Application-edge reactions to source checking, file-information completion,
 // watcher updates, and derived-output events.
 
-import type { SectionItem, SectionLocation } from "../models/items";
+import { scopeIncludes, type SectionItem, type SectionLocation } from "../models/items";
+import type { MutationKind } from "../models/mutation";
 import type { ScanProgress } from "../models/scan";
 import { log, toErrorFields } from "../repositories";
 import { message } from "../i18n/translate";
@@ -45,7 +46,13 @@ function recordStaleWork(
   });
 }
 
-interface SequencedProgress {
+// Every library change event may name the Main sections it changed; an
+// absent `sections` is an unscoped change that refreshes whatever Main shows.
+interface ScopedChange {
+  sections?: SectionLocation[] | null;
+}
+
+interface SequencedProgress extends ScopedChange {
   eventSequence: number;
   progress: ScanProgress;
 }
@@ -84,9 +91,7 @@ function runLibraryRefreshRound(): void {
   libraryRefreshSections = new Map();
   const comparison = libraryRefreshComparison;
   libraryRefreshComparison = false;
-  const selected = useItemsStore.getState().selected;
-  const affected = scope === null || (selected !== null && [...scope.values()].some((section) =>
-    section.kind === selected.kind && section.month === selected.month));
+  const affected = scopeIncludes(scope === null ? null : [...scope.values()], useItemsStore.getState().selected);
   void Promise.allSettled([
     useSectionsStore.getState().loadCounts(),
     affected ? (full ? useItemsStore.getState().refresh() : useItemsStore.getState().refreshWindow()) : Promise.resolve(),
@@ -125,8 +130,8 @@ function driveLibraryRefresh(event: Parameters<typeof transitionCoalescer>[1]): 
 /** Debounced, single-flight, light refresh for high-frequency progress
  * signals (source-check/file-information progress, similarity relabeling):
  * coalesces bursts and never starts a round on top of one already in flight. */
-function refreshLibrarySoon(): void {
-  addRefreshScope();
+function refreshLibrarySoon(sections?: SectionLocation[] | null): void {
+  addRefreshScope(sections);
   driveLibraryRefresh({ kind: "trigger" });
 }
 
@@ -144,8 +149,8 @@ function refreshLibrarySoonFull(sections?: SectionLocation[] | null): void {
  * operation finished, a full source check ended). Still single-flight: if a
  * round is already running, this queues exactly one trailing rerun rather
  * than starting a second round concurrently. */
-function refreshLibraryNow(): void {
-  addRefreshScope();
+function refreshLibraryNow(sections?: SectionLocation[] | null): void {
+  addRefreshScope(sections);
   libraryRefreshFull = true;
   driveLibraryRefresh({ kind: "triggerImmediate" });
 }
@@ -205,10 +210,10 @@ const install = createEventInstaller(
           done: event.payload.progress.done,
           total: event.payload.progress.total,
         });
-        refreshLibrarySoon();
+        refreshLibrarySoon(event.payload.sections);
       }
     });
-    await listeners.listen<{ eventSequence: number; sourceCheck: Omit<SourceCheckState, "progress">; stopped?: boolean; error?: string }>(
+    await listeners.listen<ScopedChange & { eventSequence: number; sourceCheck: Omit<SourceCheckState, "progress">; stopped?: boolean; error?: string }>(
       "source-check://done",
       (event) => {
         let accepted = false;
@@ -263,7 +268,7 @@ const install = createEventInstaller(
             error: { message: event.payload.error },
           });
         }
-        refreshLibraryNow();
+        refreshLibraryNow(event.payload.sections);
         void reconcileComparisonMembership();
       },
     );
@@ -311,10 +316,10 @@ const install = createEventInstaller(
           done: event.payload.progress.done,
           total: event.payload.progress.total,
         });
-        refreshLibrarySoon();
+        refreshLibrarySoon(event.payload.sections);
       }
     });
-    await listeners.listen<{ eventSequence: number; error?: string }>("file-information://done", (event) => {
+    await listeners.listen<ScopedChange & { eventSequence: number; error?: string }>("file-information://done", (event) => {
       let accepted = false;
       useSectionsStore.setState((state) => {
         if (event.payload.eventSequence <= state.fileInformation.eventSequence) return state;
@@ -349,11 +354,11 @@ const install = createEventInstaller(
           error: { message: event.payload.error },
         });
       }
-      refreshLibraryNow();
+      refreshLibraryNow(event.payload.sections);
       void useSectionsStore.getState().loadIndexWork();
     });
 
-    await listeners.listen<{ sections?: SectionLocation[] | null }>("watch://updated", (event) => {
+    await listeners.listen<ScopedChange>("watch://updated", (event) => {
       // The watcher can remove section members (an external delete/move),
       // so it requests a full round.
       libraryRefreshComparison = true;
@@ -375,21 +380,36 @@ const install = createEventInstaller(
       // The backend already publishes the persistent worker failure notice.
       void useIssuesStore.getState().load();
     });
-    await listeners.listen("derived://similarity-updated", () => {
+    await listeners.listen<ScopedChange>("derived://similarity-updated", (event) => {
       // A similarity rebuild after a settings change fires once per rebuilt
       // month bucket -- hundreds of events in a burst -- so this goes through
       // the same single-flight coalescer as scan progress (C-H1) instead of
       // calling refresh() unthrottled per event.
-      refreshLibrarySoon();
+      refreshLibrarySoon(event.payload.sections);
     });
     await listeners.listen("watch://rescan-needed", () => {
       useSectionsStore.setState({ rescanNeeded: true });
     });
-    await listeners.listen<{ rescanNeeded: boolean }>("watch://recovered", (event) => {
+    await listeners.listen<ScopedChange & { rescanNeeded: boolean }>("watch://recovered", (event) => {
       useSectionsStore.setState({ rescanNeeded: event.payload.rescanNeeded });
       void refreshSourceAvailability();
-      refreshLibraryNow();
+      refreshLibraryNow(event.payload.sections);
       void reconcileComparisonMembership();
+    });
+    // Delete and destination batches are refreshed by the workflow that
+    // started them, which awaits that refresh before recovering Main's
+    // selection. Restoring and emptying deleted files start from the Deleted
+    // files surfaces, which do not refresh Main, so their completion does.
+    const refreshAfterMutation = (kind: MutationKind, sections: SectionLocation[] | null | undefined) => {
+      if (kind !== "restore" && kind !== "trash-empty") return;
+      if (sections != null && sections.length === 0) return;
+      refreshLibraryNow(sections);
+    };
+    await listeners.listen<ScopedChange & { progress: { kind: MutationKind } }>("mutation://done", (event) => {
+      refreshAfterMutation(event.payload.progress.kind, event.payload.sections);
+    });
+    await listeners.listen<ScopedChange & { kind: MutationKind }>("mutation://error", (event) => {
+      refreshAfterMutation(event.payload.kind, event.payload.sections);
     });
     await listeners.listen<{ reason: string }>("watch://failed", (event) => {
       useSectionsStore.setState({ rescanNeeded: true });

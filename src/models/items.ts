@@ -70,6 +70,17 @@ export interface SectionLocation {
   month: string;
 }
 
+/** Whether a change scoped to `sections` can change what `section` shows.
+ * An absent scope is unknown and always can; an empty one changed nothing. */
+export function scopeIncludes(
+  sections: readonly SectionLocation[] | null | undefined,
+  section: SectionLocation | null,
+): boolean {
+  if (sections == null) return true;
+  return section !== null && sections.some((changed) =>
+    changed.kind === section.kind && changed.month === section.month);
+}
+
 export interface LibraryTarget {
   identity: SectionIdentity;
   section: SectionLocation;

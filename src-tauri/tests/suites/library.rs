@@ -32,6 +32,8 @@ mod queries_tests;
 mod resolution_tests;
 #[path = "../scanner_tests.rs"]
 mod scanner_tests;
+#[path = "../section_changes_tests.rs"]
+mod section_changes_tests;
 #[path = "../similarity_tests.rs"]
 mod similarity_tests;
 #[path = "../timestamps_tests.rs"]
