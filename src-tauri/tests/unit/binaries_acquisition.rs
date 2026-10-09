@@ -305,3 +305,25 @@ fn macho_arm64_detection_covers_thin_fat_and_foreign() {
     assert!(!macho_has_arm64(b"#!/bin/sh\n"));
     assert!(!macho_has_arm64(&[]));
 }
+
+#[test]
+fn a_failed_download_names_no_url_or_signature() {
+    let dir = tempfile::tempdir().unwrap();
+    // Nothing listens on the discard port, so the request fails at once.
+    let url = "https://127.0.0.1:9/ffmpeg.zip?X-Amz-Signature=secret-signature";
+    let error = download_to(
+        url,
+        &dir.path().join("ffmpeg.partial"),
+        &AtomicBool::new(false),
+        &OperationDeadline::for_install(Some(1024)),
+        Some(1024),
+        |_, _| {},
+    )
+    .unwrap_err();
+    assert!(!error.contains("secret-signature"), "{error}");
+    assert!(!error.contains("127.0.0.1:9/"), "{error}");
+
+    let refused = assert_https("http://cdn.example.test/file?sig=secret-signature").unwrap_err();
+    assert!(refused.contains("cdn.example.test"), "{refused}");
+    assert!(!refused.contains("secret-signature"), "{refused}");
+}

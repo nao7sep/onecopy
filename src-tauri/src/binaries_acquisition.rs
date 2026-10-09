@@ -191,13 +191,24 @@ fn ensure_ffmpeg_extract_within_ceiling(extracted: u64) -> Result<(), String> {
     }
 }
 
+// The URL a server redirected to can carry a short-lived signature in its
+// query, and these errors end up in the records, so they name only the
+// scheme and host, and request errors drop the URL reqwest attaches.
 fn assert_https(url: &str) -> Result<(), String> {
-    let parsed = reqwest::Url::parse(url).map_err(|_| format!("invalid download url: {url}"))?;
+    let parsed = reqwest::Url::parse(url).map_err(|_| "invalid download url".to_string())?;
     if parsed.scheme() == "https" {
         Ok(())
     } else {
-        Err(format!("refusing non-https download url: {url}"))
+        Err(format!(
+            "refusing non-https download url: {}://{}",
+            parsed.scheme(),
+            parsed.host_str().unwrap_or_default()
+        ))
     }
+}
+
+fn network_error(error: reqwest::Error) -> String {
+    error.without_url().to_string()
 }
 
 fn require_online_acquisition() -> Result<(), String> {
@@ -322,7 +333,7 @@ pub(crate) fn download_to(
                 .send()
                 .await
                 .and_then(reqwest::Response::error_for_status)
-                .map_err(|e| e.to_string())?;
+                .map_err(network_error)?;
             assert_https(response.url().as_str())?;
             let announced_bytes = expected_bytes.or(response.content_length());
             if let Some(length) = response.content_length() {
@@ -350,7 +361,7 @@ pub(crate) fn download_to(
             let mut reported = 0u64;
             loop {
                 check_cancelled(cancelled)?;
-                let Some(bytes) = response.chunk().await.map_err(|e| e.to_string())? else {
+                let Some(bytes) = response.chunk().await.map_err(network_error)? else {
                     break;
                 };
                 total += bytes.len() as u64;
@@ -407,7 +418,7 @@ fn fetch_metadata(
                 .send()
                 .await
                 .and_then(reqwest::Response::error_for_status)
-                .map_err(|e| e.to_string())?;
+                .map_err(network_error)?;
             let final_url = response.url().clone();
             assert_https(final_url.as_str())?;
             if !read_body {
@@ -422,7 +433,7 @@ fn fetch_metadata(
                 ));
             }
             let mut body = Vec::new();
-            while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+            while let Some(chunk) = response.chunk().await.map_err(network_error)? {
                 if body.len().saturating_add(chunk.len()) > METADATA_MAX_BYTES as usize {
                     return Err(format!(
                         "metadata response exceeds {METADATA_MAX_BYTES} bytes"
