@@ -658,7 +658,10 @@ fn rebuild_bucket(conn: &Connection, config: &SimilarityConfig, bucket: &str, re
         Some(crate::activity::ActivitySubject::Similarity), None);
     let result = (|| {
         let candidates = candidates_for_bucket(conn, bucket)?;
-        let groups = groups_for_bucket(&candidates, config, stop)?;
+        // Grouping runs outside the index share; the bucket's revision check
+        // at publication discards it when index work changed the cohort.
+        let groups = crate::scan_runtime::outside_share(|| groups_for_bucket(&candidates, config, stop))
+            .ok_or_else(|| crate::scanner::CANCELLED.to_string())??;
         publish_bucket(conn, bucket, revision, &groups, stop)
     })();
     if matches!(result, Ok(None)) { trace.finish(crate::activity::ActivityState::Stale, None); }

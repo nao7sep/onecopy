@@ -958,7 +958,8 @@ fn run_urgent_previews(app: &AppHandle, pass: &Pass) -> Result<bool, String> {
 }
 
 /// One heavy-lane pass under an ordinary share: it yields to foreground work
-/// and to every waiting index owner at its next safe point.
+/// at its next safe point, and sets the share aside while each item computes
+/// so a waiting index owner runs then and the item publishes after it.
 fn run_heavy_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool, String> {
     if OPTIONAL_CLASSES.into_iter().all(class_paused) {
         return Ok(false);
@@ -1820,7 +1821,13 @@ pub fn ensure_exact_identity(
         return Ok(hash.to_string());
     }
     let _awake = crate::sleep_prevention::begin_work();
-    let real = crate::hashing::full_hash_with_cancel(path, &cancelled).map_err(|error| {
+    // Reading the whole file runs outside the index share; promotion lands
+    // only on the provisional row the hash was read for.
+    let real = crate::derived_state::compute_outside_share(conn, hash, || {
+        crate::hashing::full_hash_with_cancel(path, &cancelled)
+    })?
+    .ok_or_else(|| crate::scanner::CANCELLED.to_string())?
+    .map_err(|error| {
         if error.kind() == std::io::ErrorKind::Interrupted {
             crate::scanner::CANCELLED.to_string()
         } else {
@@ -2050,30 +2057,38 @@ pub fn complete_transcription_attempt(
     on_started(&hash);
     let progress_hash = hash.clone();
 
-    let result = crate::failure_runtime::contain_item(|| crate::transcription::generate_transcript_claimed(
-        &claim,
-        &attempt.temp_dir,
-        &model,
-        &ffmpeg,
-        Path::new(attempt.source_path),
-        attempt.acceleration,
-        move |percent| {
-            activity_progress(percent.clamp(0, 100) as u64, 100);
-            on_progress(&progress_hash, percent);
-        },
-    ));
+    // Extraction and inference run outside the index share; a transcript
+    // whose content changed meanwhile is discarded like a cancelled one.
+    let computed = crate::derived_state::compute_outside_share(attempt.conn, &hash, || {
+        crate::failure_runtime::contain_item(|| crate::transcription::generate_transcript_claimed(
+            &claim,
+            &attempt.temp_dir,
+            &model,
+            &ffmpeg,
+            Path::new(attempt.source_path),
+            attempt.acceleration,
+            move |percent| {
+                activity_progress(percent.clamp(0, 100) as u64, 100);
+                on_progress(&progress_hash, percent);
+            },
+        ))
+    });
     drop(finish_signal);
     if let Some(watch) = watch {
         watch
             .join()
             .map_err(crate::failure_runtime::panic_message)?;
     }
+    let computed = computed?;
     if memory_pressure.load(Ordering::SeqCst) {
         return Ok(TranscriptionAttemptOutcome::ResourceSafety {
             hash,
             message: "Transcription paused to leave memory available for other work. Resume it from Background Work when memory is available.".to_string(),
         });
     }
+    let Some(result) = computed else {
+        return Ok(TranscriptionAttemptOutcome::Cancelled { hash });
+    };
     let cancelled_hash = hash.clone();
     let outcome = crate::transcription::publish_if_active(&claim, || {
         finish_transcription_attempt(&attempt, hash, result)
@@ -2112,7 +2127,11 @@ pub fn complete_transcription_attempt_with_inference(
     on_started(&hash);
     let progress_hash = hash.clone();
     let mut progress = |percent| on_progress(&progress_hash, percent);
-    let result = inference(&mut progress);
+    let computed =
+        crate::derived_state::compute_outside_share(attempt.conn, &hash, || inference(&mut progress))?;
+    let Some(result) = computed else {
+        return Ok(TranscriptionAttemptOutcome::Cancelled { hash });
+    };
     if attempt.cancel_when.as_ref().is_some_and(|stop| stop()) {
         return Ok(TranscriptionAttemptOutcome::Cancelled { hash });
     }

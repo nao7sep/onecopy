@@ -17,8 +17,11 @@
 //! 2. An urgent share, for required preparation of the selected, visible and
 //!    nearby items, preempts background index owners the same way at their
 //!    safe points, so that preparation interleaves with long index upkeep.
-//! 3. A waiting background index owner preempts ordinary shares, the rest of
-//!    automatic derived work, at their safe points.
+//! 3. A waiting background index owner preempts the preview lane's ordinary
+//!    share at its safe points. Heavy work instead sets its ordinary share
+//!    aside while it computes (`outside_share`), so the owner takes the claim
+//!    then without stopping it, and the heavy job takes the share back at its
+//!    publish point after the owner.
 //! 4. Ordinary shares take whatever the index leaves free.
 //!
 //! Reading the library never takes the claim, so browsing stays usable while
@@ -37,6 +40,9 @@ static FOREGROUND_WAITERS: AtomicUsize = AtomicUsize::new(0);
 static BACKGROUND_WAITERS: AtomicUsize = AtomicUsize::new(0);
 static URGENT_WAITERS: AtomicUsize = AtomicUsize::new(0);
 static WALK_EPOCH: AtomicU64 = AtomicU64::new(0);
+/// Counts announced foreground admissions, so heavy work that computed with
+/// its share set aside can tell whether one overlapped it.
+static FOREGROUND_TURNS: AtomicU64 = AtomicU64::new(0);
 const CLOSING: &str = "OneCopy is closing; no new library work can start.";
 const WAIT_SLICE: Duration = Duration::from_millis(50);
 /// How long a foreground action that answers busy waits for background work
@@ -269,9 +275,10 @@ impl Drop for YielderScope {
 }
 
 /// Waits behind the current holder, every pending foreground admission and
-/// urgent share, a parked owner, and every share. While it waits, ordinary
-/// shares yield to it at their safe points. Returns `None` when the owner is
-/// retired or the app closes first.
+/// urgent share, a parked owner, and every share. While it waits, the preview
+/// lane's ordinary share yields to it at its safe points and heavy work lets
+/// it in when it next sets its share aside to compute; neither is cancelled.
+/// Returns `None` when the owner is retired or the app closes first.
 fn claim_background(cancelled: &dyn Fn() -> bool) -> Option<Claim> {
     let mut waiting = None;
     loop {
@@ -288,8 +295,6 @@ fn claim_background(cancelled: &dyn Fn() -> bool) -> Option<Claim> {
         if waiting.is_none() {
             drop(state);
             waiting = Some(Waiting::announce(&BACKGROUND_WAITERS));
-            // Interrupt a native engine at once instead of at its next poll.
-            crate::derived_runtime::preempt_automatic();
             continue;
         }
         wait_slice(state, None);
@@ -463,17 +468,28 @@ pub(crate) enum ShareRank {
     Ordinary,
 }
 
+/// The share the calling thread holds. `aside` while heavy work computes
+/// outside it: it is not counted in `IndexState::shares` then.
+#[derive(Clone, Copy)]
+struct HeldShare {
+    rank: ShareRank,
+    aside: bool,
+}
+
 thread_local! {
-    static SHARE: Cell<Option<ShareRank>> = const { Cell::new(None) };
+    static SHARE: Cell<Option<HeldShare>> = const { Cell::new(None) };
 }
 
 struct Share {
-    previous: Option<ShareRank>,
+    previous: Option<HeldShare>,
 }
 
 impl Drop for Share {
     fn drop(&mut self) {
-        SHARE.with(|share| share.set(self.previous));
+        let held = SHARE.with(|share| share.replace(self.previous));
+        if held.is_some_and(|held| held.aside) {
+            return;
+        }
         let mut state = index_state();
         state.shares -= 1;
         INDEX.1.notify_all();
@@ -483,7 +499,7 @@ impl Drop for Share {
 fn take_share(state: &mut IndexState, rank: ShareRank) -> Share {
     state.shares += 1;
     Share {
-        previous: SHARE.with(|share| share.replace(Some(rank))),
+        previous: SHARE.with(|share| share.replace(Some(HeldShare { rank, aside: false }))),
     }
 }
 
@@ -537,7 +553,66 @@ pub(crate) fn with_derived_share<T>(rank: ShareRank, work: impl FnOnce() -> T) -
 /// Whether automatic derived work admitted on this thread holds an urgent
 /// share.
 pub(crate) fn urgent_share() -> bool {
-    SHARE.with(Cell::get) == Some(ShareRank::Urgent)
+    SHARE
+        .with(Cell::get)
+        .is_some_and(|held| held.rank == ShareRank::Urgent)
+}
+
+/// Whether the calling thread holds an ordinary share it could set aside.
+pub(crate) fn ordinary_share_held() -> bool {
+    SHARE
+        .with(Cell::get)
+        .is_some_and(|held| held.rank == ShareRank::Ordinary && !held.aside)
+}
+
+/// Runs the compute half of heavy derived work (hashing, decoding, a model or
+/// ffmpeg run) with the calling thread's ordinary share set aside, so a
+/// waiting background index owner takes the claim meanwhile instead of
+/// stopping the job. The share is taken back at the publish point, after
+/// every background owner that waits or is parked, so repeated heavy items
+/// never starve index upkeep.
+///
+/// Returns `None`, and the caller discards the result, when the job is
+/// stopped, paused or the app exits meanwhile, or when a foreground admission
+/// overlapped the compute: that admission preempts automatic work as it does
+/// a held share, may have interrupted the compute's engine, and may have
+/// rebuilt the index, which reuses provisional content keys. The caller
+/// still checks that the content it computed for is the content the index
+/// names now. Without an ordinary share (requested work, urgent preparation)
+/// `compute` runs in place.
+pub(crate) fn outside_share<T>(compute: impl FnOnce() -> T) -> Option<T> {
+    if !ordinary_share_held() {
+        return Some(compute());
+    }
+    // Read before the check below: an admission announced after this read is
+    // caught at the publish point, one announced before it by the check.
+    let turns = FOREGROUND_TURNS.load(Ordering::SeqCst);
+    if !derived_work_admissible() || crate::derived_runtime::cancelled() {
+        return None;
+    }
+    let held = |aside| Some(HeldShare { rank: ShareRank::Ordinary, aside });
+    SHARE.with(|share| share.set(held(true)));
+    {
+        let mut state = index_state();
+        state.shares -= 1;
+        INDEX.1.notify_all();
+    }
+    let result = compute();
+    loop {
+        // The share stays aside on the way out; dropping it then counts
+        // nothing.
+        if !derived_work_admissible() || crate::derived_runtime::cancelled() {
+            return None;
+        }
+        let mut state = index_state();
+        if state.free_for_share(ShareRank::Ordinary) {
+            state.shares += 1;
+            break;
+        }
+        wait_slice(state, None);
+    }
+    SHARE.with(|share| share.set(held(false)));
+    (FOREGROUND_TURNS.load(Ordering::SeqCst) == turns).then_some(result)
 }
 
 #[derive(Debug)]
@@ -567,6 +642,7 @@ pub(crate) fn admit_foreground(
     on_wait: &mut dyn FnMut(),
 ) -> Result<ForegroundGuard, Refusal> {
     FOREGROUND_WAITERS.fetch_add(1, Ordering::SeqCst);
+    FOREGROUND_TURNS.fetch_add(1, Ordering::SeqCst);
     let waiting = ForegroundWait { app: app.cloned() };
     crate::file_information_runtime::preempt();
     crate::derived_runtime::preempt_automatic();

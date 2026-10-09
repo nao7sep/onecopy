@@ -11,9 +11,11 @@
 //!
 //! Each running job carries its own stop request. Automatic jobs run inside
 //! a `scan_runtime` share and also stop when that share is preempted: every
-//! share by a pending foreground admission, and an ordinary share by a
-//! waiting background index owner. Requested jobs hold no share, so neither
-//! ever stops them. `cancelled` answers for the job owned by the calling thread; a
+//! share by a pending foreground admission, and the preview lane's ordinary
+//! share by a waiting background index owner. A heavy job is not stopped by
+//! a background owner: it sets its share aside while it computes and lets
+//! the owner in then. Requested jobs hold no share, so neither ever stops
+//! them. `cancelled` answers for the job owned by the calling thread; a
 //! helper thread that polls for a job carries it with
 //! [`on_behalf_of_current_job`].
 
@@ -54,6 +56,13 @@ struct Job {
 
 fn lane_is_previews(class: WorkClass) -> bool {
     class == WorkClass::Previews
+}
+
+/// Whether a waiting background index owner stops automatic work of `class`:
+/// only the preview lane's ordinary share yields to it. Heavy work lets the
+/// owner in while it computes outside its share instead.
+fn yields_to_background(class: WorkClass, urgent: bool) -> bool {
+    lane_is_previews(class) && !urgent
 }
 
 /// Which jobs an exclusive claim stops, and which new admissions it blocks.
@@ -188,8 +197,8 @@ impl Preemption {
         }
     }
 
-    fn stops(self, manual: bool, urgent: bool) -> bool {
-        !manual && (self.foreground || (self.background && !urgent))
+    fn stops(self, manual: bool, yields_to_background: bool) -> bool {
+        !manual && (self.foreground || (self.background && yields_to_background))
     }
 }
 
@@ -202,7 +211,7 @@ fn job_cancelled(
     shutting_down
         || job.stop
         || runtime.paused(job.class)
-        || preemption.stops(job.manual, job.urgent)
+        || preemption.stops(job.manual, yields_to_background(job.class, job.urgent))
 }
 
 /// Whether a queued requested heavy job must keep waiting for its turn.
@@ -364,7 +373,7 @@ impl ActiveGuard {
             runtime.heavy.is_some() || runtime.manual_heavy_queued()
         };
         if shutting_down()
-            || Preemption::current().stops(false, urgent)
+            || Preemption::current().stops(false, yields_to_background(class, urgent))
             || runtime.claim.is_some()
             || runtime.paused(class)
             || lane_full
@@ -660,10 +669,10 @@ pub(crate) fn exclusive() -> bool {
         })
 }
 
-/// A foreground admission or background index owner is waiting: automatic
-/// jobs already observe it through `cancelled`; this also interrupts a native
-/// engine at once instead of at its next poll. The heavy lane never holds an
-/// urgent share, so both preempt its automatic job.
+/// A foreground admission is waiting: automatic jobs already observe it
+/// through `cancelled`; this also interrupts a native engine at once instead
+/// of at its next poll. Background index owners never call it: heavy work
+/// lets them in while it computes outside its share.
 pub(crate) fn preempt_automatic() {
     let class = RUNTIME.0.lock().ok().and_then(|runtime| {
         runtime

@@ -440,11 +440,19 @@ pub fn complete_face_scoring_attempt(
     let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::BackgroundWork,
         Some(crate::activity::ActivitySubject::Faces), Some(hash));
     let preview = cache.preview(hash);
-    let outcome = crate::failure_runtime::contain_item(|| {
-        let bytes = std::fs::read(&preview).map_err(|error| error.to_string())?;
-        let image = crate::resource_limits::decode_bytes(&bytes)?;
-        inference(&image)
-    });
+    // Decode and inference run outside the index share; a result whose
+    // content changed meanwhile is discarded like a cancelled one.
+    let computed = crate::derived_state::compute_outside_share(conn, hash, || {
+        crate::failure_runtime::contain_item(|| {
+            let bytes = std::fs::read(&preview).map_err(|error| error.to_string())?;
+            let image = crate::resource_limits::decode_bytes(&bytes)?;
+            inference(&image)
+        })
+    })?;
+    let Some(outcome) = computed else {
+        trace.finish(crate::activity::ActivityState::Cancelled, None);
+        return Ok(FaceScoringAttemptOutcome::Cancelled);
+    };
     match outcome {
         Ok(found) => {
             let issues_changed = crate::derived_state::record_face_success(
@@ -458,7 +466,7 @@ pub fn complete_face_scoring_attempt(
             on_change(hash);
             Ok(FaceScoringAttemptOutcome::Completed { faces: found.len(), issues_changed })
         }
-        Err(_) if cancel_when() || crate::scanner::cancelled() => {
+        Err(_) if cancel_when() => {
             trace.finish(crate::activity::ActivityState::Cancelled, None);
             Ok(FaceScoringAttemptOutcome::Cancelled)
         }
@@ -511,16 +519,17 @@ pub fn face_scores_pending(
     stats.candidates_found = true;
 
     let _awake = crate::sleep_prevention::begin_work();
-    let mut scorer = FaceScorer::load(runtime, detector_model, emotion_model)
-        .map_err(|error| {
-            if crate::resource_limits::is_safety_error(&error) { error }
-            else { crate::ai_dependencies::model_load_error(error) }
-        })?;
+    let Some(loaded) = crate::scan_runtime::outside_share(|| {
+        FaceScorer::load(runtime, detector_model, emotion_model)
+    }) else {
+        return Err(crate::scanner::CANCELLED.to_string());
+    };
+    let mut scorer = loaded.map_err(|error| {
+        if crate::resource_limits::is_safety_error(&error) { error }
+        else { crate::ai_dependencies::model_load_error(error) }
+    })?;
     let total = pending.len() as u64;
     for (hash, path) in pending {
-        if crate::scanner::cancelled() {
-            return Err(crate::scanner::CANCELLED.to_string());
-        }
         // Coordinator politeness: the user's return stops the pass
         // between images; what is scored stays scored.
         if stop() {

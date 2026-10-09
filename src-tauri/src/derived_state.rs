@@ -1285,6 +1285,74 @@ pub fn record_strip_failure(
     })
 }
 
+/// What a content key names in the index at one moment. A real key names its
+/// bytes for as long as its row exists. A provisional key `p<path_id>` names
+/// whatever its one path holds, and the same key comes back when that file is
+/// replaced in place, so it is pinned to the path's location and stat.
+#[derive(Debug, PartialEq, Eq)]
+enum ContentIdentity {
+    Exact,
+    Provisional {
+        abs_path: String,
+        size: Option<i64>,
+        mtime_ms: Option<i64>,
+    },
+}
+
+fn content_identity(conn: &Connection, hash: &str) -> Result<Option<ContentIdentity>, String> {
+    if !crate::scanner::is_provisional(hash) {
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM contents WHERE hash = ?1)",
+                [hash],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        return Ok(exists.then_some(ContentIdentity::Exact));
+    }
+    conn.query_row(
+        "SELECT p.abs_path, p.size, p.mtime_ms FROM contents c
+         JOIN paths p ON p.content_hash = c.hash
+         WHERE c.hash = ?1 ORDER BY p.id LIMIT 1",
+        [hash],
+        |row| {
+            Ok(ContentIdentity::Provisional {
+                abs_path: row.get(0)?,
+                size: row.get(1)?,
+                mtime_ms: row.get(2)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(|error| error.to_string())
+}
+
+/// Computes a result for `hash` outside the calling thread's index share
+/// (`scan_runtime::outside_share`) and answers it only when it may still be
+/// published: the job was not stopped or overlapped by a foreground action,
+/// and the index still names the same content under `hash`. A watcher or
+/// completion turn that ran meanwhile may have removed the file, replaced a
+/// provisional file in place, or promoted the key; the result is then
+/// discarded (`Ok(None)`) like a cancelled job's. Without a share to set
+/// aside, `compute` runs in place and its result is always answered.
+pub(crate) fn compute_outside_share<T>(
+    conn: &Connection,
+    hash: &str,
+    compute: impl FnOnce() -> T,
+) -> Result<Option<T>, String> {
+    if !crate::scan_runtime::ordinary_share_held() {
+        return Ok(Some(compute()));
+    }
+    let before = content_identity(conn, hash)?;
+    let Some(result) = crate::scan_runtime::outside_share(compute) else {
+        return Ok(None);
+    };
+    if before.is_none() || content_identity(conn, hash)? != before {
+        return Ok(None);
+    }
+    Ok(Some(result))
+}
+
 pub fn record_face_success(
     conn: &Connection,
     hash: &str,

@@ -349,8 +349,8 @@ fn derive_videos_pending_limit(
 
 /// The optional derived-work half: scene strips for videos the poster pass already
 /// postered, found through their NULL `strip_frames`. The coordinator supplies
-/// cancellation for pause and index-owner preemption. Returns one bounded
-/// page's work statistics.
+/// cancellation for pause and foreground preemption; index owners run while
+/// ffmpeg does. Returns one bounded page's work statistics.
 pub fn derive_strips_pending(
     conn: &Connection,
     cache: &CachePaths,
@@ -403,7 +403,9 @@ pub fn derive_strips_pending(
         let src = Path::new(&path);
         let duration_ms = duration_ms.max(0) as u64;
         let count = strip_frame_count(duration_ms, strip);
-        let result = (|| -> Result<(), String> {
+        // ffmpeg runs outside the index share. A strip whose content changed
+        // meanwhile is cleaned up and discarded like a cancelled one.
+        let computed = crate::derived_state::compute_outside_share(conn, &hash, || -> Result<(), String> {
             for (index, at_ms) in strip_timestamps_ms(duration_ms, count).iter().enumerate() {
                 let staged =
                     temp_dir.join(format!("strip-{}.jpg", crate::nanoid::generate()?));
@@ -417,7 +419,8 @@ pub fn derive_strips_pending(
                 trace.progress(index as u64 + 1, count as u64);
             }
             Ok(())
-        })();
+        })?;
+        let result = computed.unwrap_or_else(|| Err(crate::scanner::CANCELLED.to_string()));
         match result {
             Ok(()) => {
                 stats.issues_changed |=
