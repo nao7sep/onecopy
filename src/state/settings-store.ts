@@ -22,6 +22,7 @@ import { normalizeUiFontPreference } from "../utils/uiFont";
 import { message, type Message } from "../i18n/translate";
 import { recordActionFailure } from "./notifications-store";
 import type { AiAccelerationCapability } from "../repositories";
+import { packageSourceDirs } from "../repositories/source-folders";
 
 export interface SettingsDraft {
   ignoredFileNames: string[];
@@ -202,10 +203,14 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       const paths = (
         Array.isArray(picked) ? picked : picked ? [picked] : []
       ).filter((p): p is string => typeof p === "string");
+      const refused = await packageSourceDirs(paths);
+      if (refused.length > 0) {
+        set({ message: message("settings.packageFolderRefused", { path: refused[0] }), messageLevel: "error" });
+      }
       const draft = get().draft;
       if (!draft) return;
       const merged = [...draft.sourceDirs];
-      for (const path of paths) if (!merged.includes(path)) merged.push(path);
+      for (const path of paths) if (!merged.includes(path) && !refused.includes(path)) merged.push(path);
       get().update({ sourceDirs: merged });
     } catch (error) {
       log.error("settings source dir picker failed", toErrorFields(error));

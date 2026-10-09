@@ -34,7 +34,7 @@ export interface FullscreenViewBroadcast {
   detail: ItemDetail | null;
   index: number;
   length: number;
-  pendingDelete: Pick<FullscreenViewDeleteReview, "kind" | "fileName"> | null;
+  pendingDelete: Pick<FullscreenViewDeleteReview, "kind" | "key" | "fileName"> | null;
   sectionKind: "image" | "video" | "other" | null;
   /** A descriptor, not words: the fullscreen window renders it in its own
    * language, and follows a language change while it stays on screen. */
@@ -72,7 +72,7 @@ export function fullscreenViewBroadcast(): FullscreenViewBroadcast {
     length: session?.length ?? 0,
     pendingDelete: (() => {
       const pending = useFullscreenViewStore.getState().pendingDelete;
-      return pending === null ? null : { kind: pending.kind, fileName: pending.fileName };
+      return pending === null ? null : { kind: pending.kind, key: pending.key, fileName: pending.fileName };
     })(),
     sectionKind: session === null ? null
       : session.detail.kind === "image" ? "image"

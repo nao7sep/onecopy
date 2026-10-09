@@ -254,3 +254,17 @@ describe("loaded directory projection", () => {
     expect(useWizardStore.getState().presenceUnknown).toBe(false);
   });
 });
+
+describe("adding source folders", () => {
+  it("refuses a folder inside a library or app and keeps the others", async () => {
+    const { openDialog, mockCommand } = await import("../mocks/tauri");
+    openDialog.mockResolvedValueOnce(["/Pictures/Photos Library.photoslibrary/originals", "/Pictures/Trip"] as never);
+    mockCommand("package_source_dirs", () => ["/Pictures/Photos Library.photoslibrary/originals"]);
+    useWizardStore.setState({ dirs: [], error: null });
+
+    await useWizardStore.getState().addDirs();
+
+    expect(useWizardStore.getState().dirs.map((dir) => dir.path)).toEqual(["/Pictures/Trip"]);
+    expect(inEnglish(useWizardStore.getState().error!)).toContain("inside a library or app");
+  });
+});

@@ -173,6 +173,9 @@ export interface ItemDetail {
   resolvedSource: string | null;
   dateOnly: boolean;
   copyPaths: string[];
+  /** The physical files among `copyPaths`: hard links to one file are one
+   * copy. */
+  copyCount: number;
   companionPaths: string[];
   stripFrames: number | null;
 }

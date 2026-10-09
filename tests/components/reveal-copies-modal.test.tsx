@@ -23,7 +23,7 @@ beforeEach(() => {
       resolvedUtcMs: 1,
       resolvedSource: "filesystem",
       dateOnly: false,
-      copyPaths: ["/one/photo.jpg", "/two/photo.jpg"],
+      copyPaths: ["/one/photo.jpg", "/two/photo.jpg"], copyCount: 2,
       companionPaths: [],
       stripFrames: null,
     }),

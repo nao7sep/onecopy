@@ -28,7 +28,7 @@ const detail: ItemDetail = {
   fileName: "Travel notes.txt", kind: "other", byteSize: 1304,
   width: null, height: null, durationMs: null, stripFrames: null,
   dateState: "dated", resolvedUtcMs: Date.UTC(2026, 9, 6), resolvedSource: "filesystem", dateOnly: false,
-  copyPaths: [`${offline}/Travel notes.txt`, "/Users/example/Pictures/Travel notes.txt"], companionPaths: [],
+  copyPaths: [`${offline}/Travel notes.txt`, "/Users/example/Pictures/Travel notes.txt"], copyCount: 2, companionPaths: [],
 };
 document.body.className = "bg-background text-ink";
 createRoot(document.getElementById("root")!).render(<I18nProvider language={language} locale={language}>

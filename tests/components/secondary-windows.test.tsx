@@ -33,7 +33,7 @@ const DETAIL = {
   resolvedUtcMs: null,
   resolvedSource: null,
   dateOnly: false,
-  copyPaths: ["/vol/IMG_1.jpg"],
+  copyPaths: ["/vol/IMG_1.jpg"], copyCount: 1,
   companionPaths: [],
   stripFrames: null,
 };

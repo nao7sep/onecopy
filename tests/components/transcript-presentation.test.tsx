@@ -16,7 +16,7 @@ const detail: ItemDetail = {
   fileName: "interview.mp4", kind: "video", byteSize: 1000,
   width: 1920, height: 1080, durationMs: 10000,
   dateState: "dated", resolvedUtcMs: 0, resolvedSource: "metadata", dateOnly: false,
-  copyPaths: ["/fixture/interview.mp4"], companionPaths: ["/fixture/interview.xmp"],
+  copyPaths: ["/fixture/interview.mp4"], copyCount: 1, companionPaths: ["/fixture/interview.xmp"],
   stripFrames: null,
 };
 

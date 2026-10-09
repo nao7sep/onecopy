@@ -30,6 +30,9 @@ interface TrashRootInfo {
   /** Names exactly what these totals measured; Empty sends it back and
    * removes nothing when the location changed since. */
   planToken: string;
+  /** The location is in a synced folder, so emptying it also deletes the
+   * files from the cloud and other devices. */
+  synced: boolean;
 }
 
 interface TrashEmptyProgress {
@@ -186,11 +189,14 @@ export default function TrashModal({
       {confirm !== null ? (
         <ConfirmModal
           title={t("trash.confirmTitle")}
-          message={t("trash.confirmMessage", {
-            count: confirm.files,
-            size: formatBytes(confirm.bytes, number),
-            root: confirm.root,
-          })}
+          message={[
+            t("trash.confirmMessage", {
+              count: confirm.files,
+              size: formatBytes(confirm.bytes, number),
+              root: confirm.root,
+            }),
+            ...(confirm.synced ? [t("trash.syncedEmptyWarning")] : []),
+          ].join(" ")}
           confirmLabel={t("trash.confirmAction")}
           widthClass="w-[min(820px,calc(100vw-3rem))]"
           onConfirm={() => {

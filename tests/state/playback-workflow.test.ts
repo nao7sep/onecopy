@@ -399,7 +399,7 @@ describe("fullscreen view Enter toggle", () => {
       detail: {
         fileName: "clip.mov", kind: "video", byteSize: 1000, width: 100, height: 100,
         durationMs: 5000, dateState: "dated", resolvedUtcMs: 1, resolvedSource: "metadata",
-        dateOnly: false, copyPaths: ["/videos/clip.mov"], companionPaths: [], stripFrames: null,
+        dateOnly: false, copyPaths: ["/videos/clip.mov"], copyCount: 1, companionPaths: [], stripFrames: null,
       },
       index: 0,
       length: 1,

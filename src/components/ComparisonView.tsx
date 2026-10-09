@@ -20,6 +20,7 @@ import {
 } from "../workflows/comparison";
 import ComparisonSlot from "./ComparisonSlot";
 import ConfirmModal from "./ConfirmModal";
+import { useSyncedWarning } from "../hooks/useSyncedWarning";
 import RevealCopiesModal from "./RevealCopiesModal";
 import Button, { LinkButton } from "./ui/Button";
 import OperationResult from "./ui/OperationResult";
@@ -52,6 +53,7 @@ export default function ComparisonView({
     open, members, page, maximumImages, spreadCount,
     portraitDominant, pendingAction, failure, message, busy,
   } = state;
+  const permanentSynced = useSyncedWarning(pendingAction?.permanent === true ? pendingAction.targetHashes : null);
   const mutationProgress = useMutationStore((state) => state.progress);
   const mutationCancelling = useMutationStore((state) => state.cancelling);
   const mutationResult = useMutationStore((state) => state.result);
@@ -130,7 +132,7 @@ export default function ComparisonView({
       {pendingAction !== null ? (
         <ConfirmModal
           title={confirmTitle}
-          message={confirmMessage}
+          message={permanentSynced ? `${confirmMessage} ${t("common.syncedDeleteWarning")}` : confirmMessage}
           confirmLabel={t(
             pendingAction.permanent
               ? "common.deletePermanently"

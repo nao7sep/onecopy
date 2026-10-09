@@ -456,7 +456,7 @@ function AttributesBodyView({
           <dt className="break-words text-ink-muted">{t("textPreview.copies")}</dt>
           <dd>
             <p className="mb-1 text-ink">
-              {t("textPreview.exactCopies", { count: detail.copyPaths.length })}
+              {t("textPreview.exactCopies", { count: detail.copyCount })}
             </p>
             <ul className="space-y-1">
               {detail.copyPaths.map((path) => (

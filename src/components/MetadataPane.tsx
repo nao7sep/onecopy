@@ -318,7 +318,7 @@ export default function MetadataPane({
         {hash !== null && detail.kind === "image" ? <SimilarSection key={hash} hash={hash} /> : null}
         <div className="mb-1 mt-3">
           <dt className="text-xs text-ink-muted">
-            {t("metadata.copies", { count: detail.copyPaths.length })}
+            {t("metadata.copies", { count: detail.copyCount })}
           </dt>
           {detail.copyPaths.map((path) => (
             <PathRow key={path} path={path} />

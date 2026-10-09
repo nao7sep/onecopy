@@ -12,7 +12,7 @@ const AUDIO_DETAIL = {
   fileName: "interview.m4a", kind: "audio", byteSize: 1000,
   width: null, height: null, durationMs: 30000, stripFrames: null,
   dateState: "dated" as const, resolvedUtcMs: 0, resolvedSource: "metadata", dateOnly: false,
-  copyPaths: ["/fixture/interview.m4a"], companionPaths: [],
+  copyPaths: ["/fixture/interview.m4a"], copyCount: 1, companionPaths: [],
 };
 const OTHER_DETAIL = { ...AUDIO_DETAIL, fileName: "notes.txt", kind: "other", durationMs: null };
 

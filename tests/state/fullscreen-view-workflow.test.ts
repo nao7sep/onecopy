@@ -48,7 +48,7 @@ function sequenceSnapshot() {
       fileName: current.fileName, kind: "image", byteSize: current.byteSize,
       width: current.width, height: current.height, durationMs: null,
       dateState: "dated", resolvedUtcMs: current.resolvedUtcMs,
-      resolvedSource: "metadata", dateOnly: false, copyPaths: [],
+      resolvedSource: "metadata", dateOnly: false, copyPaths: [], copyCount: 0,
       companionPaths: [], stripFrames: null,
     },
     index: sequenceIndex,
@@ -486,7 +486,7 @@ describe("fullscreen view workflow", () => {
     sequenceIndex = 2;
     useFullscreenViewStore.getState().update(sequenceSnapshot() as ViewerSequenceSnapshot);
     expect(useFullscreenViewStore.getState().session?.item.hash).toBe("c");
-    expect(fullscreenViewBroadcast().pendingDelete).toEqual({ kind: "permanent", fileName: "b.jpg" });
+    expect(fullscreenViewBroadcast().pendingDelete).toEqual({ kind: "permanent", key: "b", fileName: "b.jpg" });
 
     await confirmFullscreenViewDelete();
 

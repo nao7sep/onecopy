@@ -5,6 +5,7 @@ import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { listenThenAnnounce } from "../utils/handshake";
 import type { FullscreenViewBroadcast } from "../workflows/fullscreen-view";
 import ConfirmModal from "../components/ConfirmModal";
+import { useSyncedWarning } from "../hooks/useSyncedWarning";
 import PreviewSurface from "../components/PreviewSurface";
 import { message, type Message } from "../i18n/translate";
 import { log, reportWindowCall, toErrorFields } from "../repositories";
@@ -27,6 +28,9 @@ export default function FullscreenViewWindow() {
   sectionKindRef.current = state?.sectionKind ?? null;
   itemRef.current = state?.item ?? null;
   const hasItem = state?.item != null;
+  const permanentSynced = useSyncedWarning(
+    state?.pendingDelete?.kind === "permanent" ? [state.pendingDelete.key] : null,
+  );
   useEffect(() => {
     if (hasItem && !hasOpenModal()) surface.current?.focus();
   }, [hasItem]);
@@ -162,7 +166,9 @@ export default function FullscreenViewWindow() {
           }
           message={
             state.pendingDelete.kind === "permanent"
-              ? t("fullscreenView.deletePermanentlyBody", { name: state.pendingDelete.fileName })
+              ? permanentSynced
+                ? `${t("fullscreenView.deletePermanentlyBody", { name: state.pendingDelete.fileName })} ${t("common.syncedDeleteWarning")}`
+                : t("fullscreenView.deletePermanentlyBody", { name: state.pendingDelete.fileName })
               : t("fullscreenView.deleteBody", { name: state.pendingDelete.fileName })
           }
           confirmLabel={

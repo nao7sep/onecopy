@@ -30,6 +30,7 @@ import { toggleMainPlayback } from "../workflows/playback";
 import { isComposingEvent } from "./useComposing";
 import { useFullscreenViewStore } from "../state/fullscreen-view-store";
 import { confirmsTrashDelete } from "../models/config";
+import { useSyncedWarning } from "./useSyncedWarning";
 
 /** The exact ordered logical items a Main deletion review shows. */
 interface DeleteReview {
@@ -39,6 +40,7 @@ interface DeleteReview {
 
 export function useGlobalCommands() {
   const [deleteReview, setDeleteReview] = useState<DeleteReview | null>(null);
+  const permanentSynced = useSyncedWarning(deleteReview?.permanent === true ? deleteReview.keys : null);
 
   const openSettings = useCallback(() => {
     const appData = useAppStore.getState().appData;
@@ -192,6 +194,7 @@ export function useGlobalCommands() {
     openSettings,
     confirmPermanent:
       deleteReview?.permanent === true ? deleteReview.keys.length : null,
+    confirmPermanentSynced: permanentSynced,
     confirmTrash:
       deleteReview?.permanent === false ? deleteReview.keys.length : null,
     cancelPermanentDelete: () => setDeleteReview(null),

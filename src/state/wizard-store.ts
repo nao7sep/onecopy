@@ -24,6 +24,7 @@ import {
   type OptionalFeatureId,
 } from "../models/optionalFeatures";
 import { configString } from "../models/config";
+import { packageSourceDirs } from "../repositories/source-folders";
 
 /** The pages, in order: language, folders, time zone, features. */
 export type WizardStep = 1 | 2 | 3 | 4;
@@ -154,7 +155,9 @@ export const useWizardStore = create<WizardState>((set, get) => ({
         (p): p is string => typeof p === "string",
       );
       const existing = new Set(get().dirs.map((d) => d.path));
-      const fresh = paths.filter((p) => !existing.has(p));
+      const refused = await packageSourceDirs(paths);
+      if (refused.length > 0) set({ error: message("settings.packageFolderRefused", { path: refused[0] }) });
+      const fresh = paths.filter((p) => !existing.has(p) && !refused.includes(p));
       if (fresh.length === 0) return;
       set({ dirs: [...get().dirs, ...fresh.map((path) => ({ path }))] });
     } catch (error) {

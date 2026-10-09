@@ -132,7 +132,7 @@ export default function IssuesModal({ open, onClose }: {
                   {t("app.openBackgroundWork")}
                 </Button>
               ) : null}
-              {["source-unavailable", "source-check-failed", "watcher-failed", "watcher-root-failed", "watcher-recovery-failed"].includes(row.kind) ? (
+              {["source-unavailable", "source-check-failed", "watcher-failed", "watcher-root-failed", "watcher-recovery-failed", "online-only-skipped"].includes(row.kind) ? (
                 <Button className="mt-2" disabled={checkingSources} onClick={() => void recheckSources()}>
                   {t("app.checkSources")}
                 </Button>

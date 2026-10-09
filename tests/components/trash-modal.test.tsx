@@ -11,8 +11,8 @@ import TrashModal from "../../src/components/TrashModal";
 import { fireEvent, invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
 const ROWS = [
-  { root: "/Users/nao7sep/Photos/.onecopy-trash", available: true, bytes: 5_242_880, files: 42, planToken: "measured-42" },
-  { root: "/Volumes/HDD-1/Photos/.onecopy-trash", available: true, bytes: 0, files: 0, planToken: "measured-0" },
+  { root: "/Users/nao7sep/Photos/.onecopy-trash", available: true, bytes: 5_242_880, files: 42, planToken: "measured-42", synced: false },
+  { root: "/Volumes/HDD-1/Photos/.onecopy-trash", available: true, bytes: 0, files: 0, planToken: "measured-0", synced: false },
 ];
 
 beforeEach(() => {
@@ -29,6 +29,21 @@ describe("the trash modal", () => {
     expect(document.body.textContent).toContain("/Volumes/HDD-1/Photos/.onecopy-trash");
     expect(document.body.textContent).toContain("42 files");
     expect(document.body.textContent).toContain("5 MB");
+  });
+
+  it("says that emptying a synced location deletes from the cloud too", async () => {
+    mockCommands({ trash_overview: () => [{ ...ROWS[0], synced: true }, ROWS[1]] });
+    const view = render(<TrashModal open onClose={() => {}} />);
+    await act(async () => {});
+    await act(async () => view.getAllByRole("button", { name: "Empty" })[0].click());
+    expect(document.body.textContent).toContain("also deletes these files from the cloud");
+  });
+
+  it("does not mention the cloud for a local location", async () => {
+    const view = render(<TrashModal open onClose={() => {}} />);
+    await act(async () => {});
+    await act(async () => view.getAllByRole("button", { name: "Empty" })[0].click());
+    expect(document.body.textContent).not.toContain("from the cloud");
   });
 
   it("distinguishes a failed measurement from no trash locations", async () => {

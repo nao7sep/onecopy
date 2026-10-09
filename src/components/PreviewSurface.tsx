@@ -581,7 +581,7 @@ function AudioSurface({
             ...(detail.durationMs === null
               ? []
               : [timestampLabel(detail.durationMs)]),
-            t("preview.copyCount", { count: detail.copyPaths.length }),
+            t("preview.copyCount", { count: detail.copyCount }),
           ].join(" · ")}
         </p>
         <Button

@@ -37,7 +37,7 @@ const DETAIL = {
   resolvedUtcMs: 0,
   resolvedSource: "metadata",
   dateOnly: false,
-  copyPaths: ["/videos/family.mov"],
+  copyPaths: ["/videos/family.mov"], copyCount: 1,
   companionPaths: [],
   stripFrames: 4,
 };

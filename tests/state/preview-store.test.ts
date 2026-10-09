@@ -35,7 +35,7 @@ function detailFor(name: string) {
     resolvedUtcMs: 0,
     resolvedSource: "metadata",
     dateOnly: false,
-    copyPaths: [],
+    copyPaths: [], copyCount: 0,
     companionPaths: [],
     stripFrames: null,
   };

@@ -155,6 +155,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
     openHelp,
     openSettings,
     confirmPermanent,
+    confirmPermanentSynced,
     confirmTrash,
     cancelPermanentDelete,
     cancelTrashDelete,
@@ -208,7 +209,9 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
       {confirmPermanent !== null ? (
         <ConfirmModal
           title={t("common.deletePermanentlyTitle")}
-          message={t("app.deletePermanentlyBody", { count: confirmPermanent })}
+          message={confirmPermanentSynced
+            ? `${t("app.deletePermanentlyBody", { count: confirmPermanent })} ${t("common.syncedDeleteWarning")}`
+            : t("app.deletePermanentlyBody", { count: confirmPermanent })}
           confirmLabel={t("common.deletePermanently")}
           onConfirm={confirmPermanentDelete}
           onCancel={cancelPermanentDelete}

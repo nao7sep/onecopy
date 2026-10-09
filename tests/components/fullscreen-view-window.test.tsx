@@ -15,7 +15,7 @@ const state: FullscreenViewBroadcast = {
     durationMs: null, dirPaths: [], derivedWork: EMPTY_ITEM_WORK },
   detail: { fileName: "photo.jpg", kind: "image", byteSize: 10, width: 10, height: 10,
     durationMs: null, dateState: "undated", resolvedUtcMs: null, resolvedSource: null,
-    dateOnly: false, copyPaths: [], companionPaths: [], stripFrames: null },
+    dateOnly: false, copyPaths: [], copyCount: 0, companionPaths: [], stripFrames: null },
   index: 1, length: 3, pendingDelete: null, sectionKind: "image", failure: null,
 };
 
@@ -58,7 +58,7 @@ it("keeps the chrome hover- and focus-revealed, not permanently shown (D9)", asy
 it("does not steal confirmation focus on reactivation or forward its decision keys", async () => {
   const user = userEvent.setup();
   render(<FullscreenViewWindow />);
-  await act(async () => deliver("fullscreen-view://state", { ...state, pendingDelete: { kind: "permanent", fileName: "photo.jpg" } }));
+  await act(async () => deliver("fullscreen-view://state", { ...state, pendingDelete: { kind: "permanent", key: "h1", fileName: "photo.jpg" } }));
   const cancel = screen.getByRole("button", { name: "Cancel" });
   expect(document.activeElement).toBe(cancel);
   fireEvent(window, new Event("focus"));
