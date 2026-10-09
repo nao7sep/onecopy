@@ -185,13 +185,20 @@ fn prepare(app: &tauri::App, debug_enabled: bool) -> Result<StartupState, Startu
     let records_path = data_root.join(crate::records::RECORDS_DB_FILE_NAME);
     // Before the log writer opens the records, so it opens the fresh store.
     let records_set_aside = crate::records::set_aside_if_unreadable(&records_path)?;
+    // The index is derived from the source folders: a damaged one is set
+    // aside and built again rather than stopping the launch. (One without its
+    // marker is already rebuilt in place by `index_store::open`.)
+    let index_path = data_root.join(crate::storage::INDEX_DB_FILE_NAME);
+    let index_set_aside = crate::sqlite::set_aside_if_unreadable(&index_path, false)?;
     crate::logging::init(&records_path, &data_root.join(crate::paths::LOGS_DIR_NAME), debug_enabled);
-    if let Some(record) = records_set_aside {
-        crate::logging::warn(
-            "unreadable records set aside; starting fresh records",
-            json!({ "file": records_path.to_string_lossy(), "quarantinedTo": record.quarantined_to }),
-        );
-        crate::storage::report_at_launch(record);
+    for (record, store) in [(records_set_aside, &records_path), (index_set_aside, &index_path)] {
+        if let Some(record) = record {
+            crate::logging::warn(
+                "unreadable store set aside; starting a fresh one",
+                json!({ "file": store.to_string_lossy(), "quarantinedTo": record.quarantined_to }),
+            );
+            crate::storage::report_at_launch(record);
+        }
     }
     let newer = newer_required_stores(&data_root)?;
     if !newer.is_empty() {

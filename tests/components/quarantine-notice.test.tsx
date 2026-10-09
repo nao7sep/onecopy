@@ -76,6 +76,17 @@ describe("when a store was set aside", () => {
     expect(text).toContain("kept as records-20260817-031500-utc.invalid");
   });
 
+  it("says a set-aside index is built again and never claims the index was untouched", () => {
+    useAppStore.setState({
+      quarantines: [{ file: "index.sqlite3", quarantinedTo: "/Users/x/.onecopy/index-20260817-031500-utc.invalid" }],
+    });
+    render(<QuarantineNotice />);
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("new library index");
+    expect(text).toContain("kept as index-20260817-031500-utc.invalid");
+    expect(text).not.toContain("scan index");
+  });
+
   it("reports every store on its own line when several failed", () => {
     useAppStore.setState({ quarantines: [CONFIG, STATE] });
     render(<QuarantineNotice />);

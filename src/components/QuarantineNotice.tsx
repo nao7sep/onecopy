@@ -5,7 +5,8 @@ import type { Translator } from "../i18n/translate";
 import ModalShell from "./ModalShell";
 import Button from "./ui/Button";
 
-// What the user is told when a settings file or the records would not read.
+// What the user is told when a settings file, the records or the index would
+// not read.
 //
 // The core sets the unreadable file aside rather than resetting over it, which
 // preserves whatever was in there — but a set-aside nobody mentions is just a
@@ -25,6 +26,8 @@ function startedWith(t: Translator["t"], file: string): string {
       return t("quarantine.startedWithState");
     case "records.sqlite3":
       return t("quarantine.startedWithRecords");
+    case "index.sqlite3":
+      return t("quarantine.startedWithIndex");
     default:
       return t("quarantine.startedWithDefaults");
   }

@@ -48,3 +48,19 @@ fn concurrent_setup_keeps_wal_and_leaves_readers_independent_of_writers() {
         2
     );
 }
+
+#[test]
+fn a_damaged_index_is_set_aside_but_an_unmarked_one_is_left_for_its_rebuild() {
+    let root = tempfile::tempdir().unwrap();
+    let index = root.path().join("index.sqlite3");
+    Connection::open(&index).unwrap().execute_batch("CREATE TABLE paths (id INTEGER)").unwrap();
+    assert!(set_aside_if_unreadable(&index, false).unwrap().is_none(), "unmarked: rebuilt in place");
+    assert!(index.exists());
+
+    std::fs::write(&index, b"not a database").unwrap();
+    let record = set_aside_if_unreadable(&index, false).unwrap().expect("set aside");
+    assert_eq!(record.file, "index.sqlite3");
+    assert!(record.quarantined_to.ends_with("-utc.invalid"));
+    assert!(!index.exists());
+    assert_eq!(std::fs::read(&record.quarantined_to).unwrap(), b"not a database");
+}
