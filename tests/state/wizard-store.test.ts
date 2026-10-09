@@ -152,6 +152,22 @@ describe("the staged timezone", () => {
   });
 });
 
+describe("the first-run timezone", () => {
+  it("opens on the computer's own zone, so finishing saves a concrete zone", async () => {
+    await useWizardStore.getState().init({ sourceDirs: [], defaultTimezone: "system" });
+
+    expect(useWizardStore.getState().timezone).toBe(
+      Intl.DateTimeFormat().resolvedOptions().timeZone,
+    );
+  });
+
+  it("keeps a saved System choice when setup is run again", () => {
+    useWizardStore.getState().reopen({ sourceDirs: ["/photos"], defaultTimezone: "system" });
+
+    expect(useWizardStore.getState().timezone).toBe("system");
+  });
+});
+
 describe("loaded directory projection", () => {
   it("wrong-shape source members cannot suppress first-run setup", async () => {
     await useWizardStore.getState().init({ sourceDirs: [123, null, { path: "/wrong" }] });

@@ -211,6 +211,7 @@
   "settings.addFileName": "Add file name",
   "settings.timestamps": "Timestamps",
   "settings.defaultTimezone": "Default timezone",
+  "settings.timezoneSystem": "System ({zone})",
   "settings.defaultTimezoneHint": "Used when metadata has no timezone",
   "settings.timezoneChecking": "Checking timezone…",
   "settings.timezoneInvalid": "Not a recognized timezone name",

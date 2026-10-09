@@ -211,6 +211,7 @@
   "settings.addFileName": "ファイル名を追加",
   "settings.timestamps": "日時",
   "settings.defaultTimezone": "既定のタイムゾーン",
+  "settings.timezoneSystem": "システム ({zone})",
   "settings.defaultTimezoneHint": "メタデータにタイムゾーンがないときに使います",
   "settings.timezoneChecking": "タイムゾーンを確認中…",
   "settings.timezoneInvalid": "タイムゾーン名として認識できません",

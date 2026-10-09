@@ -30,7 +30,11 @@ pub fn save_config(app: &AppHandle, mut changes: Value, report_failure: bool) ->
                 let name = value
                     .as_str()
                     .ok_or("Default timezone must be an IANA timezone name")?;
-                *value = Value::String(resolution::parse_timezone_name(name)?.to_string());
+                // `system` follows the computer's zone; any other value is a
+                // zone name, stored in its canonical spelling.
+                if name != "system" {
+                    *value = Value::String(resolution::parse_timezone_name(name)?.to_string());
+                }
             }
             ai_acceleration::validate_patch(&changes)?;
             visibility::Policy::from_config(&changes)?;

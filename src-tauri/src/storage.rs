@@ -132,7 +132,9 @@ impl Default for DefaultConfig {
             hide_dot_names: true,
             hide_hidden_attributes: true,
             hide_system_attributes: true,
-            default_timezone: iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".to_string()),
+            // The `system` token follows the computer's zone wherever it is
+            // used (config-sets conventions); a chosen zone is always saved.
+            default_timezone: "system".to_string(),
             video_snapshots_enabled: true,
             similar_photo_analysis_enabled: true,
             video_transcription_enabled: true,

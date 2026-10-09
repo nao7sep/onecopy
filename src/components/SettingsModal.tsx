@@ -28,7 +28,7 @@ import { Plus } from "lucide-react";
 import { message } from "../i18n/translate";
 import { recordActionFailure } from "../state/notifications-store";
 import OperationResult from "./ui/OperationResult";
-import { timeZoneOptions } from "../utils/timezones";
+import { computerTimeZone, SYSTEM_TIME_ZONE, timeZoneOptions } from "../utils/timezones";
 import { type MessageKey } from "../i18n/catalogues";
 import { useI18n } from "../i18n/I18nContext";
 import { LANGUAGES, LANGUAGE_NAMES, normalizeLanguagePreference } from "../i18n/languages";
@@ -558,6 +558,9 @@ export default function SettingsModal({
               value={draft.defaultTimezone}
               onChange={(e) => update({ defaultTimezone: e.target.value })}
             >
+              <option value={SYSTEM_TIME_ZONE}>
+                {t("settings.timezoneSystem", { zone: computerTimeZone() })}
+              </option>
               {timeZoneOptions(draft.defaultTimezone).map((zone) => (
                 <option key={zone} value={zone}>
                   {zone}

@@ -5,7 +5,7 @@
   "checkSourceFoldersAtLaunch": true,
   "checkUpdatesAtLaunch": false,
   "confirmTrashDelete": true,
-  "defaultTimezone": "UTC",
+  "defaultTimezone": "system",
   "destinationRoots": [],
   "enlargeSmallImages": true,
   "hideDotNames": true,

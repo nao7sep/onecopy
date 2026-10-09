@@ -3,9 +3,9 @@ import { finishWizard } from "../workflows/wizard";
 import { useBlockingSurface } from "../hooks/useBlockingSurface";
 import DirectoryRow from "./DirectoryRow";
 import Button from "./ui/Button";
-import { timeZoneOptions } from "../utils/timezones";
+import { computerTimeZone, SYSTEM_TIME_ZONE, timeZoneOptions } from "../utils/timezones";
 import { Plus } from "lucide-react";
-import { Row, Toggle } from "./ui/Field";
+import { Row, Select, Toggle } from "./ui/Field";
 import type { OptionalFeatureId } from "../models/optionalFeatures";
 import OperationResult from "./ui/OperationResult";
 import { I18nProvider, useI18n } from "../i18n/I18nContext";
@@ -165,17 +165,22 @@ function WizardContent() {
             <p className="mb-2 text-sm text-ink-muted">
               {t("wizard.timezoneHint")}
             </p>
-            <select
-              className="mb-6 h-9 w-full rounded-lg border border-input-border bg-background px-3 text-sm text-ink outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary-ring"
-              value={timezone}
-              onChange={(e) => setTimezone(e.target.value)}
-            >
-              {timeZoneOptions(timezone).map((zone) => (
-                <option key={zone} value={zone}>
-                  {zone}
+            <div className="mb-6">
+              <Select
+                className="w-full"
+                value={timezone}
+                onChange={(e) => setTimezone(e.target.value)}
+              >
+                <option value={SYSTEM_TIME_ZONE}>
+                  {t("settings.timezoneSystem", { zone: computerTimeZone() })}
                 </option>
-              ))}
-            </select>
+                {timeZoneOptions(timezone).map((zone) => (
+                  <option key={zone} value={zone}>
+                    {zone}
+                  </option>
+                ))}
+              </Select>
+            </div>
             <div className="flex items-center justify-between">
               {leading}
               <Button

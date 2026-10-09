@@ -506,12 +506,7 @@ fn the_frontend_config_fixture_matches_the_core_defaults() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../tests/fixtures/effective-config.json");
     let mut expected = effective_config(None);
-    for (key, value) in [
-        ("defaultTimezone", serde_json::json!("UTC")),
-        ("aiAcceleration", serde_json::json!({})),
-    ] {
-        expected[key] = value;
-    }
+    expected["aiAcceleration"] = serde_json::json!({});
     let fixture: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(

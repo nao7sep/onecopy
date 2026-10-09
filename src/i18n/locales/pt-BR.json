@@ -211,6 +211,7 @@
   "settings.addFileName": "Adicionar nome de arquivo",
   "settings.timestamps": "Datas e horas",
   "settings.defaultTimezone": "Fuso horário padrão",
+  "settings.timezoneSystem": "Sistema ({zone})",
   "settings.defaultTimezoneHint": "Usado quando os metadados não têm fuso horário",
   "settings.timezoneChecking": "Verificando o fuso horário…",
   "settings.timezoneInvalid": "Não é um nome de fuso horário reconhecido",

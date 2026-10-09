@@ -211,6 +211,7 @@
   "settings.addFileName": "添加文件名",
   "settings.timestamps": "日期与时间",
   "settings.defaultTimezone": "默认时区",
+  "settings.timezoneSystem": "跟随系统 ({zone})",
   "settings.defaultTimezoneHint": "当元数据不含时区时使用",
   "settings.timezoneChecking": "正在检查时区…",
   "settings.timezoneInvalid": "不是可识别的时区名称",

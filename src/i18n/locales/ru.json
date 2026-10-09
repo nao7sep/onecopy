@@ -211,6 +211,7 @@
   "settings.addFileName": "Добавить имя файла",
   "settings.timestamps": "Метки времени",
   "settings.defaultTimezone": "Часовой пояс по умолчанию",
+  "settings.timezoneSystem": "Как в системе ({zone})",
   "settings.defaultTimezoneHint": "Используется, когда в метаданных нет часового пояса",
   "settings.timezoneChecking": "Проверка часового пояса…",
   "settings.timezoneInvalid": "Нераспознанное название часового пояса",

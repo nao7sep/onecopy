@@ -211,6 +211,7 @@
   "settings.addFileName": "Ajouter un nom de fichier",
   "settings.timestamps": "Horodatages",
   "settings.defaultTimezone": "Fuseau horaire par défaut",
+  "settings.timezoneSystem": "Système ({zone})",
   "settings.defaultTimezoneHint": "Utilisé lorsque les métadonnées n’indiquent aucun fuseau horaire",
   "settings.timezoneChecking": "Vérification du fuseau horaire…",
   "settings.timezoneInvalid": "Nom de fuseau horaire non reconnu",
