@@ -106,6 +106,7 @@ export const useDerivedWorkStore = create<DerivedWorkState>((set, get) => ({
   activeItem: null,
 
   load: async () => {
+    // Detailed queue totals are read only while Background work is open.
     if (!get().detailsOpen) return;
     const fresh = loadSequence.begin();
     const version = runtimeVersion;

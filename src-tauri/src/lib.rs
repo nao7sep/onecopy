@@ -1013,6 +1013,9 @@ async fn background_work_snapshot() -> Result<background_work::BackgroundWorkSna
 // only flip in-memory state (see their own comments); derived_work::start and
 // ::wake only spawn/notify a worker thread, which is not itself blocking
 // work. No index or filesystem access, so this stays plain and immediate.
+// Pausing everything pauses file-information completion and automatic
+// preparation and enrichment only: source checking and watchers keep running,
+// and resuming never enables work turned off in Settings.
 #[tauri::command]
 fn background_work_set_paused(
     app: AppHandle,

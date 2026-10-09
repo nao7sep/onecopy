@@ -171,6 +171,9 @@ fn run<L>(
     }
 }
 
+/// While enabled work runs, the computer is kept from idle sleep only: the
+/// display may still dim and sleep, and an explicit sleep request (the lid,
+/// the menu) is never overridden.
 pub(crate) fn start(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     let mut worker = WORKER
         .lock()

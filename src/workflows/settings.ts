@@ -110,6 +110,8 @@ export async function saveSettings(): Promise<void> {
       error,
     );
   }
+  // Changed source folders are checked now, whatever the check-at-launch
+  // setting says.
   if (sourceDirsChanged) {
     try {
       await useSectionsStore.getState().startSourceCheck("automatic");

@@ -20,6 +20,9 @@
 //! 3. A waiting background index owner preempts ordinary shares, the rest of
 //!    automatic derived work, at their safe points.
 //! 4. Ordinary shares take whatever the index leaves free.
+//!
+//! Reading the library never takes the claim, so browsing stays usable while
+//! any of this runs.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;

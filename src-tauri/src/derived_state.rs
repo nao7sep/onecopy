@@ -239,7 +239,8 @@ fn failed_now_sql(alias: &str, class: &str, model: &crate::ai_dependencies::Mode
 }
 
 /// SQL over a contents alias: `ready` once a face check exists, `failed` per
-/// [`failed_now_sql`], else NULL (pending).
+/// [`failed_now_sql`], else NULL (pending). A completed result counts as
+/// ready whatever model produced it, so a newer model never redoes it.
 pub fn face_state_sql(alias: &str) -> String {
     format!(
         "(CASE WHEN EXISTS (SELECT 1 FROM face_checks k WHERE k.content_hash = {alias}.hash) THEN '{READY}' \

@@ -273,6 +273,10 @@ pub fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 #[path = "../tests/unit/failure_runtime.rs"]
 mod tests;
 
+/// Runs `work` on a named thread whose unexpected failure or panic is
+/// reported. Every long-lived worker started this way publishes a terminal
+/// failed state when it fails, and never stops while its visible state still
+/// says it is running.
 pub fn spawn_reported(
     app: AppHandle,
     thread_name: &'static str,

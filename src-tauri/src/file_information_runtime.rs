@@ -83,6 +83,8 @@ pub fn wake(app: AppHandle) {
         emit_state(&app);
         return;
     }
+    // Held back only while a source check runs; work the watcher found still
+    // completes once a check stops, even when the check was stopped early.
     if crate::source_check_runtime::running() {
         emit_state(&app);
         return;
@@ -243,6 +245,8 @@ fn worker(app: AppHandle) {
 }
 
 fn run_requested(app: &AppHandle) -> Result<Option<crate::scanner::ScanSummary>, String> {
+    // While paused, settings that could not be applied stay owed too: they are
+    // applied by this owner's next turn after Resume or a restart.
     if PAUSED.load(Ordering::SeqCst) || crate::app_lifecycle::shutting_down() {
         return Ok(None);
     }

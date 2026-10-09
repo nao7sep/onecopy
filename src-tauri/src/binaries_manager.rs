@@ -1013,6 +1013,8 @@ pub fn check_entry(root: &Path, id: &str) -> Result<BinaryFacts, String> {
     check_entry_with_operation(root, id, &operation_id)
 }
 
+/// Checks one managed tool's latest version. A check that fails returns before
+/// anything is saved, so the tool keeps its last successful facts.
 pub fn check_entry_with_operation(
     root: &Path,
     id: &str,

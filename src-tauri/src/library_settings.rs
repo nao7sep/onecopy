@@ -1,6 +1,9 @@
-//! Brings the index to the saved library settings: the visibility policy and
-//! the settings that dates and companion relationships are resolved with.
-//! `config.json` alone owns them.
+//! Brings the index to the library settings: the visibility policy and the
+//! policy dates and companion relationships are resolved with. Of these,
+//! `config.json` owns the visibility choices and the default time zone; the
+//! earliest believable year and companion pairing are fixed in code
+//! (`scanner::settings_from_config`), and are stamped with the rest so a change
+//! to them in a new build is applied like a settings change.
 //!
 //! The index stamps which settings it was projected with, so applying is
 //! idempotent and a difference is durable index debt. A Settings apply that

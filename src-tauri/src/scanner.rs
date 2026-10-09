@@ -299,6 +299,8 @@ pub fn settings_from_config(
             audio: owned(extensions::AUDIO_EXTENSIONS),
             companions: owned(extensions::COMPANION_EXTENSIONS),
         },
+        // The earliest believable photo year and companion pairing are
+        // internal policy, not settings (the redesign's settings inventory).
         resolution: ResolutionConfig {
             default_timezone: tz,
             good_range_start_year: 1995,
@@ -1063,6 +1065,10 @@ pub fn upsert_file(
         .map_err(|e| e.to_string())?;
 
     match existing {
+        // Same size and modification time: the file is taken as unchanged and
+        // not read again. A replacement that keeps both goes unnoticed until a
+        // rebuild; that is the accepted cost of not reading every file on
+        // every check.
         Some((old_size, old_mtime)) if old_size == size && old_mtime == mtime_ms => {
             let changed = conn.execute(
                 "UPDATE paths SET missing = 0, own_visibility_flags = ?2, visibility_flags = ?3, visibility_checked = 1
@@ -1205,9 +1211,11 @@ fn walk_root_with_progress(
     // Claim the root as walk-in-flight. `upsert_file` writes in autocommit, so
     // a cancelled walk leaves its prefix committed and the rest of the root
     // simply absent from `paths` — and nothing about a row can express "this
-    // directory was never read". Only the completion write below clears this,
-    // so an interrupted walk stays owed and the next launch re-walks instead
-    // of running the tail over a permanently half-indexed library.
+    // directory was never read". Only the completion write below clears this.
+    // Nothing reads the flag back yet: an interrupted root is walked again by
+    // the next source check (at launch when that setting is on, or when the
+    // user checks), and until then its unread part is simply not indexed;
+    // nothing is marked missing because of it.
     conn.execute(
         "INSERT INTO scan_dirs (root, dirty, configured_root) VALUES (?1, 1, ?2) \
          ON CONFLICT(root) DO UPDATE SET dirty = 1, configured_root = excluded.configured_root",

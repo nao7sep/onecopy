@@ -108,7 +108,8 @@ pub enum PreviewBody {
     },
 }
 
-/// The saved text-preview limits, clamped to what the reader allows.
+/// The text-preview limits: the largest file shown is fixed in code
+/// (`DEFAULT_MAX_BYTES`); the fallback encoding is the user's setting.
 pub struct Limits {
     pub max_bytes: u64,
     pub fallback_encoding: String,

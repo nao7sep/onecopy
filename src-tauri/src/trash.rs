@@ -16,6 +16,13 @@
 //! the hidden directory or moving the file. Different roots therefore never
 //! share a permission boundary.
 //!
+//! The configured root is the access boundary: stored files keep what the
+//! root grants, and OneCopy neither rebuilds permissions a nested folder had
+//! nor makes deleted files private to the current account. Storage belongs to
+//! the root, not to an app home: two OneCopy data folders configured with the
+//! same root share its `.onecopy-trash`, and no data folder holds deleted
+//! files.
+//!
 //! A stored-name collision (same file re-created and re-trashed the same day)
 //! is resolved by a suffix loop plus an atomic exclusive rename
 //! (`image1-2.jpg`, …); the manifest line records both the original path and

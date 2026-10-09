@@ -76,10 +76,11 @@ pub(crate) fn publish_if_running<T>(publish: impl FnOnce() -> T) -> Option<T> {
 const EXIT_JOIN_DEADLINE: Duration = Duration::from_secs(10);
 
 /// How long normal exit waits for the current file operation to reach its own
-/// safe point before giving up on it (`specs/file-operations.md`, "Normal exit
-/// and abnormal termination"). Giving up kills outstanding subprocesses and
-/// exits; the operation's unpublished private output is never at the file's
-/// final name, and it is removed at the next launch's discovery pass.
+/// safe point before giving up on it. Giving up kills outstanding
+/// subprocesses and exits; the operation's unpublished private output is never
+/// at the file's final name. It is removed once its process has ended, by the
+/// next scan of that source folder or the next Copy/Move into that destination
+/// folder (`file_identity::sweep_private_tmp_leftovers`).
 const MUTATION_QUIESCE_DEADLINE: Duration = Duration::from_secs(30);
 
 // The normal budget retains both existing waits and gives optional cleanup

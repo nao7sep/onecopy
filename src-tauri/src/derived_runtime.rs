@@ -756,6 +756,9 @@ pub(crate) fn shutting_down() -> bool {
     crate::app_lifecycle::shutting_down()
 }
 
+/// Pauses or resumes one class of automatic work, or all of it. A pause lasts
+/// until Resume or the next launch and is never saved: required work stays
+/// visibly incomplete and resumable, never a disabled feature.
 pub fn set_paused(app: &AppHandle, class: Option<&str>, paused: bool) -> Result<(), String> {
     if shutting_down() {
         return Err(crate::scanner::CANCELLED.to_string());

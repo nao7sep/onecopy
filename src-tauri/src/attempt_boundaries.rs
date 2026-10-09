@@ -17,6 +17,9 @@ pub fn begin_run(conn: &Connection) -> Result<(), String> {
     crate::records::commit(transaction).map_err(|error| error.to_string())
 }
 
+/// Rechecks a section: its recorded failures are reopened and its preview,
+/// face and transcript Issues close, since eligibility does not depend on
+/// Issues; whatever fails again raises its Issue again.
 pub fn recheck_section(
     conn: &Connection,
     kind: crate::queries::SectionKind,

@@ -517,6 +517,26 @@ fn unhashed_other_files_delete_by_path_id() {
     assert_eq!(std::fs::read(stored).unwrap(), vec![9u8; 77]);
 }
 
+// Deletion acts on the file the user chose at its recorded path; an edit
+// since indexing does not change that decision (unlike Move cleanup, which
+// proves bytes before removing a copy).
+#[test]
+fn delete_removes_the_file_at_the_recorded_path_even_after_it_was_edited() {
+    let f = fixture("delete-edited");
+    std::fs::write(f.root.join("e.jpg"), b"as indexed").unwrap();
+    scan(&f);
+    let hash: String = f
+        .conn
+        .query_row("SELECT content_hash FROM paths WHERE file_name = 'e.jpg'", [], |r| r.get(0))
+        .unwrap();
+    std::fs::write(f.root.join("e.jpg"), b"edited after indexing").unwrap();
+
+    let outcome = delete_item(&f.conn, &f.app_root, &f.cache, ItemRef::Hash(&hash), DeleteMode::Trash).unwrap();
+
+    assert_eq!(outcome.deleted_files, 1);
+    assert!(!f.root.join("e.jpg").exists());
+}
+
 #[test]
 fn deleting_an_item_keeps_an_identical_companion_of_another_item_indexed() {
     let f = fixture("identical-companions");

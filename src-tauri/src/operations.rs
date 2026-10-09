@@ -310,7 +310,11 @@ pub fn delete_item(
 }
 
 /// `trash` names the operation for the deleted-file records; each target
-/// supplies its own item and role.
+/// supplies its own item and role. Deletion acts on whatever file is now at
+/// the recorded path, without comparing its bytes with the indexed content:
+/// the user chose that file, and an edit since indexing does not change the
+/// decision. Move cleanup is different, since it removes a copy because
+/// another copy's bytes stand for it (`stage_delivery`).
 fn delete_targets(
     conn: &Connection,
     cache: &CachePaths,
@@ -751,6 +755,12 @@ impl MoveOutMode {
     }
 }
 
+/// The one reviewed answer for a whole Copy/Move set whose names collide at
+/// the destination: Rename every conflict, or Overwrite every conflict; Cancel
+/// is closing the review. There is deliberately no Skip and no partial set,
+/// so a set is never half applied by choice. Overwrite is offered only when
+/// every conflict is an existing regular file outside the selection whose
+/// family can be preserved in Deleted files first (`review_destination_conflicts`).
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum DestinationConflictPolicy {

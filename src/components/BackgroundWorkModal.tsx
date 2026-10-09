@@ -77,6 +77,8 @@ export default function BackgroundWorkModal({
     (state) => state.setFileInformationPaused,
   );
 
+  // Opening or closing this window only starts or stops reading details; it
+  // never starts or cancels work or a download.
   useEffect(() => {
     useDerivedWorkStore.getState().setDetailsOpen(open);
     return () => useDerivedWorkStore.getState().setDetailsOpen(false);

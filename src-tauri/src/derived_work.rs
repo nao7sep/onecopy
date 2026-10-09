@@ -105,6 +105,8 @@ const POLL_SECONDS: u64 = 15;
 const VISIBLE_PREVIEW_TURN: usize = 8;
 const SECTION_PREVIEW_TURN: usize = 1;
 const SECTION_HINT_LIMIT: usize = 256;
+/// Optional work in its visible order: this array's order is the order the
+/// priority turn serves them in.
 const OPTIONAL_CLASSES: [WorkClass; 5] = [
     WorkClass::Similarity,
     WorkClass::Snapshots,
@@ -1328,6 +1330,8 @@ fn run_priority_optional_turn(
     Ok(false)
 }
 
+/// One library-wide optional turn. It takes the classes in rotation, which is
+/// what keeps video and audio transcription from starving each other.
 fn run_global_optional_turn(
     app: &AppHandle,
     conn: &Connection,

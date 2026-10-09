@@ -367,6 +367,8 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
                         if stale_ids.is_empty() {
                             return Ok(());
                         }
+                        // Recorded before any request, so a failed or offline
+                        // check still holds the next launch's check off.
                         crate::binaries_manager::save_check_attempt(
                             &root,
                             crate::binaries_manager::MANAGED_TOOL_UPDATE_ATTEMPT_KEY,

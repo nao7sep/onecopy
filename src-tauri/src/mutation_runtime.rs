@@ -104,7 +104,8 @@ fn begin_reported(app: &AppHandle) -> Result<Claim, String> {
 /// operation's [`admit`], the index and media claims answer busy when
 /// background work does not stop within the foreground deadline, like other
 /// Settings actions, and no source file is touched, so the volume-substitution
-/// gate does not apply.
+/// gate does not apply. Whatever the rebuild discards comes back through the
+/// source check it restarts and ordinary background work.
 pub(crate) fn rebuild_index(
     app: &AppHandle,
     discard_previews: bool,

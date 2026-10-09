@@ -1,3 +1,9 @@
+//! OneCopy's own release check: the latest full release tag of the fixed
+//! GitHub repository, compared with this build's version. It never fetches
+//! release notes or assets, installs, or restarts, and it saves only the
+//! attempt marker that throttles automatic checks across launches: no result,
+//! tag, ETag, response body or rate-limit state.
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
