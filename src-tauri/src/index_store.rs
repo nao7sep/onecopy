@@ -799,6 +799,16 @@ pub fn clear_reconstructible(
                 tx.execute_batch("DELETE FROM faces; DELETE FROM face_checks;")
                     .map_err(|error| error.to_string())?;
             }
+            // A temporary identity (`p<path id>`) names a path, not content,
+            // and path ids start again once `paths` is emptied below: a kept
+            // result under one would attach to whichever file gets that id
+            // next. Results are kept only under real content hashes.
+            tx.execute_batch(
+                "DELETE FROM transcripts WHERE content_hash GLOB 'p*';
+                 DELETE FROM faces WHERE content_hash GLOB 'p*';
+                 DELETE FROM face_checks WHERE content_hash GLOB 'p*';",
+            )
+            .map_err(|error| error.to_string())?;
             crate::derived_state::reopen_session_analysis_failures(tx)?;
             close_issues(tx, "rebuilt", "1", &[])?;
             tx.execute_batch(

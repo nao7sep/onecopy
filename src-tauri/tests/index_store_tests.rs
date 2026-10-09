@@ -372,3 +372,34 @@ fn an_index_with_an_older_projection_gets_the_current_one_and_an_ordinary_open_w
     let reopened = index_store::open(&file).unwrap();
     assert_eq!(version(&reopened), before, "an ordinary open replays no DDL");
 }
+
+// A temporary identity names a path id, and path ids start again after a
+// rebuild empties `paths`: a result kept under one would belong to whichever
+// file gets that id next.
+#[test]
+fn a_rebuild_never_keeps_results_under_a_temporary_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let conn = index_store::open(&root.path().join("index.sqlite3")).unwrap();
+    conn.execute_batch(
+        "INSERT INTO transcripts (content_hash, model, model_version, text, segments, created_at_utc)
+         VALUES ('p17', 'm', 'v', 'someone else', '[]', 'now'), ('abc123', 'm', 'v', 'kept', '[]', 'now');
+         INSERT INTO face_checks (content_hash, model, model_version, face_count, checked_at_utc)
+         VALUES ('p17', 'm', 'v', 1, 'now'), ('abc123', 'm', 'v', 1, 'now');
+         INSERT INTO faces (content_hash, x1, y1, x2, y2, confidence, model, model_version)
+         VALUES ('p17', 0, 0, 1, 1, 0.9, 'm', 'v'), ('abc123', 0, 0, 1, 1, 0.9, 'm', 'v');",
+    )
+    .unwrap();
+
+    index_store::clear_reconstructible(&conn, false, false).unwrap();
+
+    for table in ["transcripts", "face_checks", "faces"] {
+        let keys: Vec<String> = conn
+            .prepare(&format!("SELECT content_hash FROM {table}"))
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(keys, vec!["abc123".to_string()], "{table}");
+    }
+}
