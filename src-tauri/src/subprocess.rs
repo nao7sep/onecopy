@@ -46,11 +46,55 @@ const POLL: Duration = Duration::from_millis(100);
 /// force-kills whatever managed-tool subprocess is still alive instead of
 /// leaving it to write into `temp/` or the cache after the app has exited
 /// (W-L1, generalized to the exit-join deadline).
-static RUNNING: Mutex<Vec<Arc<Mutex<std::process::Child>>>> = Mutex::new(Vec::new());
+static RUNNING: Mutex<Vec<Arc<Mutex<OwnedProcess>>>> = Mutex::new(Vec::new());
+
+/// A spawned managed tool and, on Windows, the job object that holds it and
+/// every process it starts, so ending it ends the whole tree as the unix
+/// process group does.
+pub(crate) struct OwnedProcess {
+    child: std::process::Child,
+    #[cfg(windows)]
+    tree: Option<process_tree::Job>,
+}
+
+impl OwnedProcess {
+    fn new(child: std::process::Child) -> Self {
+        #[cfg(windows)]
+        let tree = match process_tree::Job::holding(&child) {
+            Ok(job) => Some(job),
+            Err(error) => {
+                // Without the job only the direct child can be ended.
+                crate::logging::warn(
+                    "subprocess job object failed",
+                    serde_json::json!({ "error": { "message": error.to_string() } }),
+                );
+                None
+            }
+        };
+        Self {
+            child,
+            #[cfg(windows)]
+            tree,
+        }
+    }
+}
+
+impl std::ops::Deref for OwnedProcess {
+    type Target = std::process::Child;
+    fn deref(&self) -> &Self::Target {
+        &self.child
+    }
+}
+
+impl std::ops::DerefMut for OwnedProcess {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.child
+    }
+}
 
 /// Registers a spawned child for the exit watchdog; dropping the guard
 /// removes it again, whichever way `run_bounded_idle_output` returns.
-struct Registration(Arc<Mutex<std::process::Child>>);
+struct Registration(Arc<Mutex<OwnedProcess>>);
 
 impl Drop for Registration {
     fn drop(&mut self) {
@@ -60,7 +104,7 @@ impl Drop for Registration {
     }
 }
 
-fn register_running(child: Arc<Mutex<std::process::Child>>) -> Registration {
+fn register_running(child: Arc<Mutex<OwnedProcess>>) -> Registration {
     if let Ok(mut running) = RUNNING.lock() {
         running.push(Arc::clone(&child));
     }
@@ -68,8 +112,8 @@ fn register_running(child: Arc<Mutex<std::process::Child>>) -> Registration {
 }
 
 fn lock_child(
-    child: &Arc<Mutex<std::process::Child>>,
-) -> std::sync::MutexGuard<'_, std::process::Child> {
+    child: &Arc<Mutex<OwnedProcess>>,
+) -> std::sync::MutexGuard<'_, OwnedProcess> {
     child.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
@@ -112,7 +156,7 @@ pub(crate) fn signal_all_running_for_exit() {
         // exec. Only signal it; a wait after SIGKILL can still stall on I/O.
         unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL); }
         #[cfg(not(unix))]
-        { let _ = child.kill(); }
+        signal_tree(&mut child);
     }
 }
 
@@ -208,7 +252,7 @@ fn run_bounded_idle_output(
     // child from outside this function if this function's own thread never
     // reaches a poll iteration again (W-L2/exit joins) — the registration
     // guard removes it once this function returns by any path.
-    let child = Arc::new(Mutex::new(spawned));
+    let child = Arc::new(Mutex::new(OwnedProcess::new(spawned)));
     let _registration = register_running(Arc::clone(&child));
 
     // Both pipes are drained on their own threads. This is not just tidiness:
@@ -386,7 +430,7 @@ fn run_bounded_idle_output(
 }
 
 #[cfg(unix)]
-fn kill_owned(child: &mut std::process::Child) {
+fn kill_owned(child: &mut OwnedProcess) {
     // The child created its own process group before exec, so the negative PID
     // reaches ffmpeg and anything it spawned without touching unrelated app
     // or external-player processes.
@@ -410,8 +454,31 @@ fn kill_owned(child: &mut std::process::Child) {
 }
 
 #[cfg(not(unix))]
-fn kill_owned(child: &mut std::process::Child) {
-    if let Err(error) = child.kill() {
+fn kill_owned(child: &mut OwnedProcess) {
+    signal_tree(child);
+    if let Err(error) = child.wait() {
+        crate::logging::warn(
+            "subprocess reap failed",
+            serde_json::json!({ "error": { "message": error.to_string() } }),
+        );
+    }
+}
+
+/// Ends the child and everything it started: the whole job when one holds
+/// it, otherwise only the direct child.
+#[cfg(not(unix))]
+fn signal_tree(owned: &mut OwnedProcess) {
+    #[cfg(windows)]
+    if let Some(tree) = &owned.tree {
+        match tree.terminate() {
+            Ok(()) => return,
+            Err(error) => crate::logging::warn(
+                "subprocess tree termination failed",
+                serde_json::json!({ "error": { "message": error.to_string() } }),
+            ),
+        }
+    }
+    if let Err(error) = owned.child.kill() {
         if error.kind() != std::io::ErrorKind::InvalidInput {
             crate::logging::warn(
                 "subprocess termination failed",
@@ -419,11 +486,75 @@ fn kill_owned(child: &mut std::process::Child) {
             );
         }
     }
-    if let Err(error) = child.wait() {
-        crate::logging::warn(
-            "subprocess reap failed",
-            serde_json::json!({ "error": { "message": error.to_string() } }),
-        );
+}
+
+/// A job object holding one managed tool and every process it starts.
+/// Closing its last handle ends whatever is still in it, so nothing a tool
+/// started outlives its owner even when the owner never signals it. A process
+/// the tool starts in the instant between spawn and assignment escapes the
+/// job; the managed tools start none.
+#[cfg(windows)]
+mod process_tree {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    pub(super) struct Job(HANDLE);
+
+    // SAFETY: a job object handle is a kernel handle any thread may use.
+    unsafe impl Send for Job {}
+
+    impl Job {
+        pub(super) fn holding(child: &std::process::Child) -> std::io::Result<Job> {
+            // SAFETY: null attributes and name create an unnamed job owned by
+            // this process; the handle is closed by Drop.
+            let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+            if handle.is_null() {
+                return Err(std::io::Error::last_os_error());
+            }
+            let job = Job(handle);
+            // SAFETY: an all-zero JOBOBJECT_EXTENDED_LIMIT_INFORMATION is valid.
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            // SAFETY: the pointer and size describe `limits`, alive for the call.
+            let set = unsafe {
+                SetInformationJobObject(
+                    job.0,
+                    JobObjectExtendedLimitInformation,
+                    &limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION as *const core::ffi::c_void,
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                )
+            };
+            if set == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // SAFETY: the child's process handle stays open while `child` lives.
+            let assigned = unsafe { AssignProcessToJobObject(job.0, child.as_raw_handle() as HANDLE) };
+            if assigned == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(job)
+        }
+
+        pub(super) fn terminate(&self) -> std::io::Result<()> {
+            // SAFETY: the handle is this job's, open until Drop.
+            if unsafe { TerminateJobObject(self.0, 1) } == 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            // SAFETY: the handle is owned by this value and closed once.
+            unsafe { CloseHandle(self.0) };
+        }
     }
 }
 

@@ -410,9 +410,9 @@ fn process_is_running(pid: u32) -> bool {
 
 #[cfg(windows)]
 fn process_is_running(pid: u32) -> bool {
-    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
     use windows_sys::Win32::System::Threading::{
-        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, STILL_ACTIVE,
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
     };
     // SAFETY: `OpenProcess` is called with a plain process id and no handle
     // inheritance; a null result is checked before any other call is made,

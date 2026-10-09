@@ -156,6 +156,10 @@ windows-sys = { version = "0.61.2", features = [
     # OpenProcess/GetExitCodeProcess/CloseHandle back the leftover-staging
     # sweep's process-liveness check (file_identity::process_is_running).
     "Win32_System_Threading",
+    # Job objects end a cancelled managed tool's whole process tree
+    # (subprocess::process_tree); CreateJobObjectW takes SECURITY_ATTRIBUTES.
+    "Win32_System_JobObjects",
+    "Win32_Security",
     "Win32_Foundation",
     # GetForegroundWindow/GetWindowThreadProcessId tell whether OneCopy is the
     # active app (fullscreen::application_active).
