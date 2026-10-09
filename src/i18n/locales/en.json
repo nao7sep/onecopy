@@ -57,7 +57,7 @@
   "app.resizeSidebar": "Resize sidebar",
   "app.updatingLibrary": "Updating library…",
   "app.nothingToHandle": "Nothing to handle",
-  "app.selectMonth": "Select a month",
+  "app.chooseMonthHint": "Choose a month in the sidebar to start reviewing.",
   "app.resizePreview": "Resize preview",
   "app.closePreview": "Close preview",
   "app.resizeDetails": "Resize details pane",

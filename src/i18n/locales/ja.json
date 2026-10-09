@@ -57,7 +57,7 @@
   "app.resizeSidebar": "サイドバーのサイズを変更",
   "app.updatingLibrary": "ライブラリを更新中…",
   "app.nothingToHandle": "処理するものはありません",
-  "app.selectMonth": "月を選択",
+  "app.chooseMonthHint": "サイドバーで月を選ぶと、ここで整理を始められます。",
   "app.resizePreview": "プレビューのサイズを変更",
   "app.closePreview": "プレビューを閉じる",
   "app.resizeDetails": "詳細ペインのサイズを変更",

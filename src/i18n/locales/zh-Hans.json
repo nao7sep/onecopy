@@ -57,7 +57,7 @@
   "app.resizeSidebar": "调整侧边栏宽度",
   "app.updatingLibrary": "正在更新媒体库…",
   "app.nothingToHandle": "没有需要处理的内容",
-  "app.selectMonth": "选择一个月份",
+  "app.chooseMonthHint": "在侧边栏中选择一个月份，即可开始整理。",
   "app.resizePreview": "调整预览区大小",
   "app.closePreview": "关闭预览",
   "app.resizeDetails": "调整详细信息面板大小",

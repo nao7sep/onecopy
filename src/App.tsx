@@ -390,7 +390,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
               {scanning ? t("app.updatingLibrary") : t("app.nothingToHandle")}
             </p>
           ) : (
-            <p className="m-auto text-ink-muted">{t("app.selectMonth")}</p>
+            <p className="m-auto text-ink-muted">{t("app.chooseMonthHint")}</p>
           )}
         </main>
         {splitOpen ? (

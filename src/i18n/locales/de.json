@@ -57,7 +57,7 @@
   "app.resizeSidebar": "Größe der Seitenleiste ändern",
   "app.updatingLibrary": "Bibliothek wird aktualisiert…",
   "app.nothingToHandle": "Nichts zu bearbeiten",
-  "app.selectMonth": "Monat auswählen",
+  "app.chooseMonthHint": "Wähle in der Seitenleiste einen Monat, um mit der Durchsicht zu beginnen.",
   "app.resizePreview": "Größe der Vorschau ändern",
   "app.closePreview": "Vorschau schließen",
   "app.resizeDetails": "Größe des Detailbereichs ändern",

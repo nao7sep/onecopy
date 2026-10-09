@@ -57,7 +57,7 @@
   "app.resizeSidebar": "Ridimensiona la barra laterale",
   "app.updatingLibrary": "Aggiornamento della libreria…",
   "app.nothingToHandle": "Niente da gestire",
-  "app.selectMonth": "Seleziona un mese",
+  "app.chooseMonthHint": "Scegli un mese nella barra laterale per iniziare la revisione.",
   "app.resizePreview": "Ridimensiona l’anteprima",
   "app.closePreview": "Chiudi l’anteprima",
   "app.resizeDetails": "Ridimensiona il riquadro dei dettagli",

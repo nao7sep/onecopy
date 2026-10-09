@@ -57,7 +57,7 @@
   "app.resizeSidebar": "Cambiar el tamaño de la barra lateral",
   "app.updatingLibrary": "Actualizando la biblioteca…",
   "app.nothingToHandle": "No hay nada que procesar",
-  "app.selectMonth": "Selecciona un mes",
+  "app.chooseMonthHint": "Elige un mes en la barra lateral para empezar a revisar.",
   "app.resizePreview": "Cambiar el tamaño de la vista previa",
   "app.closePreview": "Cerrar la vista previa",
   "app.resizeDetails": "Cambiar el tamaño del panel de detalles",

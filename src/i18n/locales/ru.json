@@ -57,7 +57,7 @@
   "app.resizeSidebar": "Изменить ширину боковой панели",
   "app.updatingLibrary": "Обновление библиотеки…",
   "app.nothingToHandle": "Обрабатывать нечего",
-  "app.selectMonth": "Выберите месяц",
+  "app.chooseMonthHint": "Выберите месяц на боковой панели, чтобы начать разбор.",
   "app.resizePreview": "Изменить размер просмотра",
   "app.closePreview": "Закрыть просмотр",
   "app.resizeDetails": "Изменить размер панели сведений",
