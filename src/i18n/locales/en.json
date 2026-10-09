@@ -793,6 +793,8 @@
   "destinations.copiedToFolder": { "one": "Copied {count} file to {dest}.", "other": "Copied {count} files to {dest}." },
   "destinations.factAlreadyThere": { "one": "{count} file is already there", "other": "{count} files are already there" },
   "destinations.factCancelled": "Stopped; unstarted items are untouched",
+  "destinations.factCompanionsKept": "Left in place with the copy beside them because they differ from the file delivered under the same name: {names}",
+  "destinations.factCompanionsNotCopied": "Not copied because they differ from the file delivered under the same name: {names}",
   "destinations.factConflicts": { "one": "{count} destination file already exists with different content; originals kept: {names}", "other": "{count} destination files already exist with different content; originals kept: {names}" },
   "destinations.factDelivered": { "one": "{count} file delivered", "other": "{count} files delivered" },
   "destinations.factNothingChanged": "Nothing changed",

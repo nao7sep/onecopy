@@ -793,6 +793,8 @@
   "destinations.copiedToFolder": { "other": "{count} 件のファイルを {dest} にコピーしました。" },
   "destinations.factAlreadyThere": { "other": "{count} 件のファイルはすでにあります" },
   "destinations.factCancelled": "停止しました。開始していない項目はそのままです",
+  "destinations.factCompanionsKept": "同じ名前で受け渡したファイルと内容が異なるため、横のコピーと一緒に残しました: {names}",
+  "destinations.factCompanionsNotCopied": "同じ名前で受け渡したファイルと内容が異なるため、コピーしませんでした: {names}",
   "destinations.factConflicts": { "other": "保存先に内容の異なるファイルが {count} 件すでにあります。元のファイルは残しました: {names}" },
   "destinations.factDelivered": { "other": "{count} 件のファイルを受け渡しました" },
   "destinations.factNothingChanged": "変更はありません",

@@ -635,28 +635,32 @@ fn move_out_delivers_primary_and_companion_then_trashes_the_rest() {
     assert_eq!(rows, 0, "inbox-zero: nothing remains in the index");
 }
 
-#[test]
-fn companion_name_collisions_follow_the_destination_filesystem_and_representative_priority() {
-    let f = fixture("natural-companion-case");
-    for sub in ["a", "b"] {
-        std::fs::create_dir_all(f.root.join(sub)).unwrap();
-        std::fs::write(f.root.join(sub).join("x.jpg"), b"same-primary").unwrap();
-    }
-    std::fs::write(f.root.join("a").join("x.xmp"), b"representative-sidecar").unwrap();
-    std::fs::write(f.root.join("b").join("x.XMP"), b"later-sidecar").unwrap();
-    scan(&f);
+/// Ranks the main copy in `first` ahead of every other `x.jpg` copy, so its
+/// companions supply the outputs.
+fn rank_first(f: &Fixture, first: &str) {
     f.conn
         .execute(
             "UPDATE paths SET resolved_utc_ms = CASE dir_path WHEN ?1 THEN 1000 ELSE 2000 END \
              WHERE file_name = 'x.jpg'",
-            rusqlite::params![f.root.join("a").to_string_lossy()],
+            rusqlite::params![f.root.join(first).to_string_lossy()],
         )
         .unwrap();
+}
 
-    let dest = f._dir.path().join("dest");
-    std::fs::create_dir_all(&dest).unwrap();
-    let lower_probe = dest.join("case-probe");
-    let upper_probe = dest.join("CASE-PROBE");
+fn x_jpg_hash(f: &Fixture) -> String {
+    f.conn
+        .query_row(
+            "SELECT content_hash FROM paths WHERE file_name = 'x.jpg' LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+/// Whether `dir` distinguishes names by case, probed by creating both forms.
+fn case_sensitive_dir(dir: &std::path::Path) -> bool {
+    let lower_probe = dir.join("case-probe");
+    let upper_probe = dir.join("CASE-PROBE");
     std::fs::write(&lower_probe, b"probe").unwrap();
     let case_sensitive = std::fs::OpenOptions::new()
         .write(true)
@@ -667,15 +671,26 @@ fn companion_name_collisions_follow_the_destination_filesystem_and_representativ
     if case_sensitive {
         std::fs::remove_file(&upper_probe).unwrap();
     }
+    case_sensitive
+}
 
-    let hash: String = f
-        .conn
-        .query_row(
-            "SELECT content_hash FROM paths WHERE file_name = 'x.jpg' LIMIT 1",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
+#[test]
+fn companion_name_collisions_follow_the_destination_filesystem_and_representative_priority() {
+    let f = fixture("natural-companion-case");
+    for sub in ["a", "b"] {
+        std::fs::create_dir_all(f.root.join(sub)).unwrap();
+        std::fs::write(f.root.join(sub).join("x.jpg"), b"same-primary").unwrap();
+    }
+    std::fs::write(f.root.join("a").join("x.xmp"), b"representative-sidecar").unwrap();
+    std::fs::write(f.root.join("b").join("x.XMP"), b"later-sidecar").unwrap();
+    scan(&f);
+    rank_first(&f, "a");
+
+    let dest = f._dir.path().join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    let case_sensitive = case_sensitive_dir(&dest);
+
+    let hash = x_jpg_hash(&f);
     let outcome = move_out(
         &f.conn,
         &f.app_root,
@@ -686,7 +701,6 @@ fn companion_name_collisions_follow_the_destination_filesystem_and_representativ
     )
     .unwrap();
 
-    assert_eq!(outcome.post_action.deleted_files, 4);
     assert_eq!(
         std::fs::read(dest.join("x.xmp")).unwrap(),
         b"representative-sidecar"
@@ -694,12 +708,122 @@ fn companion_name_collisions_follow_the_destination_filesystem_and_representativ
     if case_sensitive {
         assert_eq!(std::fs::read(dest.join("x.XMP")).unwrap(), b"later-sidecar");
         assert_eq!(outcome.exported, 3);
+        assert_eq!(outcome.post_action.deleted_files, 4);
+        assert!(outcome.different_companions.is_empty());
     } else {
         assert_eq!(
             outcome.exported, 2,
             "the natural collision publishes one sidecar"
         );
+        // The later sidecar's content never reached the destination, so it
+        // stays, together with the main copy it belongs to.
+        assert_eq!(outcome.post_action.deleted_files, 2);
+        assert_eq!(std::fs::read(f.root.join("b").join("x.XMP")).unwrap(), b"later-sidecar");
+        assert!(f.root.join("b").join("x.jpg").exists());
+        assert!(!f.root.join("a").join("x.jpg").exists());
+        assert!(!f.root.join("a").join("x.xmp").exists());
+        assert_eq!(outcome.different_companions.len(), 1);
+        assert!(outcome.different_companions[0].ends_with("x.XMP"));
     }
+    assert!(private_leftovers(&dest).is_empty(), "{:?}", private_leftovers(&dest));
+}
+
+/// Two copies of one photo, each beside its own differently edited sidecar
+/// and an identical RAW companion.
+fn two_edits_fixture(label: &str) -> (Fixture, std::path::PathBuf, String) {
+    let f = fixture(label);
+    for (sub, edit) in [("a", b"edit-a".as_slice()), ("b", b"edit-b".as_slice())] {
+        std::fs::create_dir_all(f.root.join(sub)).unwrap();
+        std::fs::write(f.root.join(sub).join("x.jpg"), b"same-primary").unwrap();
+        std::fs::write(f.root.join(sub).join("x.xmp"), edit).unwrap();
+        std::fs::write(f.root.join(sub).join("x.arw"), b"same-raw").unwrap();
+    }
+    scan(&f);
+    rank_first(&f, "a");
+    let dest = f._dir.path().join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    let hash = x_jpg_hash(&f);
+    (f, dest, hash)
+}
+
+#[test]
+fn move_keeps_the_family_of_a_copy_whose_same_named_companion_differs() {
+    for mode in [MoveOutMode::MoveTrashRest, MoveOutMode::MoveDeleteRest] {
+        let (f, dest, hash) = two_edits_fixture("companion-two-edits");
+        let outcome = move_out(&f.conn, &f.app_root, &f.cache, ItemRef::Hash(&hash), &dest, mode)
+            .unwrap();
+
+        assert_eq!(outcome.exported, 3, "{mode:?}");
+        assert_eq!(std::fs::read(dest.join("x.jpg")).unwrap(), b"same-primary");
+        assert_eq!(std::fs::read(dest.join("x.xmp")).unwrap(), b"edit-a");
+        assert_eq!(std::fs::read(dest.join("x.arw")).unwrap(), b"same-raw");
+        // The delivered copy's family is handled; the other copy keeps its
+        // photo, its own edit and its identical RAW together.
+        assert_eq!(outcome.post_action.deleted_files, 3, "{mode:?}");
+        for gone in ["x.jpg", "x.xmp", "x.arw"] {
+            assert!(!f.root.join("a").join(gone).exists(), "a/{gone} {mode:?}");
+        }
+        assert_eq!(std::fs::read(f.root.join("b").join("x.xmp")).unwrap(), b"edit-b");
+        assert!(f.root.join("b").join("x.jpg").exists(), "{mode:?}");
+        assert!(f.root.join("b").join("x.arw").exists(), "{mode:?}");
+        assert_eq!(outcome.different_companions.len(), 1, "{mode:?}");
+        assert!(outcome.different_companions[0].ends_with("x.xmp"));
+        assert!(outcome.different_companions[0].contains("/b/") || outcome.different_companions[0].contains("\\b\\"));
+
+        let kept_rows: i64 = f
+            .conn
+            .query_row("SELECT COUNT(*) FROM paths", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kept_rows, 3, "the kept family stays indexed {mode:?}");
+        let paired: i64 = f
+            .conn
+            .query_row("SELECT COUNT(*) FROM paths WHERE companion_of IS NOT NULL", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(paired, 2, "the kept companions stay paired with their main {mode:?}");
+        if mode == MoveOutMode::MoveTrashRest {
+            let day_dir = std::fs::read_dir(f.root.join(onecopy_lib::trash::TRASH_DIR_NAME))
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .find(|p| p.is_dir())
+                .unwrap();
+            let manifest = std::fs::read_to_string(day_dir.join("manifest.jsonl")).unwrap();
+            assert_eq!(manifest.lines().count(), 3);
+            assert!(
+                !manifest.contains("edit-b") && manifest.lines().all(|line| {
+                    let line: serde_json::Value = serde_json::from_str(line).unwrap();
+                    let original = line["originalPath"].as_str().unwrap();
+                    std::path::Path::new(original).parent().unwrap().ends_with("a")
+                }),
+                "nothing from the kept copy is recorded as moved"
+            );
+        }
+        assert!(private_leftovers(&dest).is_empty(), "{:?}", private_leftovers(&dest));
+    }
+}
+
+#[test]
+fn copy_reports_a_same_named_companion_it_did_not_deliver() {
+    let (f, dest, hash) = two_edits_fixture("companion-two-edits-copy");
+    let outcome = move_out(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        ItemRef::Hash(&hash),
+        &dest,
+        MoveOutMode::CopyKeepAll,
+    )
+    .unwrap();
+
+    assert_eq!(outcome.exported, 3);
+    assert_eq!(std::fs::read(dest.join("x.xmp")).unwrap(), b"edit-a");
+    assert_eq!(outcome.post_action, DeleteOutcome::default());
+    for sub in ["a", "b"] {
+        for name in ["x.jpg", "x.xmp", "x.arw"] {
+            assert!(f.root.join(sub).join(name).exists(), "{sub}/{name}");
+        }
+    }
+    assert_eq!(outcome.different_companions.len(), 1);
+    assert!(outcome.different_companions[0].ends_with("x.xmp"));
     assert!(private_leftovers(&dest).is_empty(), "{:?}", private_leftovers(&dest));
 }
 

@@ -793,6 +793,8 @@
   "destinations.copiedToFolder": { "other": "{dest} 폴더로 파일 {count}개를 복사했습니다." },
   "destinations.factAlreadyThere": { "other": "파일 {count}개는 이미 있음" },
   "destinations.factCancelled": "중지됨. 시작하지 않은 항목은 그대로",
+  "destinations.factCompanionsKept": "같은 이름으로 전달한 파일과 내용이 달라 옆의 사본과 함께 유지: {names}",
+  "destinations.factCompanionsNotCopied": "같은 이름으로 전달한 파일과 내용이 달라 복사하지 않음: {names}",
   "destinations.factConflicts": { "other": "내용이 다른 대상 파일 {count}개가 이미 있음. 원본 유지: {names}" },
   "destinations.factDelivered": { "other": "파일 {count}개 전달" },
   "destinations.factNothingChanged": "변경 없음",

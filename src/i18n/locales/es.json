@@ -793,6 +793,8 @@
   "destinations.copiedToFolder": { "one": "Se copió {count} archivo a {dest}.", "many": "Se copiaron {count} de archivos a {dest}.", "other": "Se copiaron {count} archivos a {dest}." },
   "destinations.factAlreadyThere": { "one": "{count} archivo ya está ahí", "many": "{count} de archivos ya están ahí", "other": "{count} archivos ya están ahí" },
   "destinations.factCancelled": "Detenido; los elementos sin iniciar no se han tocado",
+  "destinations.factCompanionsKept": "Se conservaron junto a su copia porque difieren del archivo entregado con el mismo nombre: {names}",
+  "destinations.factCompanionsNotCopied": "No se copiaron porque difieren del archivo entregado con el mismo nombre: {names}",
   "destinations.factConflicts": { "one": "{count} archivo de destino ya existe con contenido distinto; se conservaron los originales: {names}", "many": "{count} de archivos de destino ya existen con contenido distinto; se conservaron los originales: {names}", "other": "{count} archivos de destino ya existen con contenido distinto; se conservaron los originales: {names}" },
   "destinations.factDelivered": { "one": "{count} archivo entregado", "many": "{count} de archivos entregados", "other": "{count} archivos entregados" },
   "destinations.factNothingChanged": "No cambió nada",

@@ -793,6 +793,8 @@
   "destinations.copiedToFolder": { "one": "{count} Datei nach {dest} kopiert.", "other": "{count} Dateien nach {dest} kopiert." },
   "destinations.factAlreadyThere": { "one": "{count} Datei ist bereits dort", "other": "{count} Dateien sind bereits dort" },
   "destinations.factCancelled": "Angehalten; nicht begonnene Elemente bleiben unberührt",
+  "destinations.factCompanionsKept": "Mit der Kopie daneben behalten, weil sie sich von der unter demselben Namen übertragenen Datei unterscheiden: {names}",
+  "destinations.factCompanionsNotCopied": "Nicht kopiert, weil sie sich von der unter demselben Namen übertragenen Datei unterscheiden: {names}",
   "destinations.factConflicts": { "one": "{count} Zieldatei existiert bereits mit anderem Inhalt; Originale behalten: {names}", "other": "{count} Zieldateien existieren bereits mit anderem Inhalt; Originale behalten: {names}" },
   "destinations.factDelivered": { "one": "{count} Datei übertragen", "other": "{count} Dateien übertragen" },
   "destinations.factNothingChanged": "Nichts geändert",

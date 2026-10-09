@@ -793,6 +793,8 @@
   "destinations.copiedToFolder": { "one": "Скопирован {count} файл в папку «{dest}».", "few": "Скопировано {count} файла в папку «{dest}».", "many": "Скопировано {count} файлов в папку «{dest}».", "other": "Скопировано {count} файла в папку «{dest}»." },
   "destinations.factAlreadyThere": { "one": "{count} файл уже там", "few": "{count} файла уже там", "many": "{count} файлов уже там", "other": "{count} файла уже там" },
   "destinations.factCancelled": "Остановлено; объекты, к которым не приступали, не затронуты",
+  "destinations.factCompanionsKept": "Оставлены на месте вместе с копией рядом, так как отличаются от файла, доставленного под тем же именем: {names}",
+  "destinations.factCompanionsNotCopied": "Не скопированы, так как отличаются от файла, доставленного под тем же именем: {names}",
   "destinations.factConflicts": { "one": "{count} файл в папке назначения уже существует с другим содержимым; исходные файлы сохранены: {names}", "few": "{count} файла в папке назначения уже существуют с другим содержимым; исходные файлы сохранены: {names}", "many": "{count} файлов в папке назначения уже существуют с другим содержимым; исходные файлы сохранены: {names}", "other": "{count} файла в папке назначения уже существуют с другим содержимым; исходные файлы сохранены: {names}" },
   "destinations.factDelivered": { "one": "{count} файл доставлен", "few": "{count} файла доставлено", "many": "{count} файлов доставлено", "other": "{count} файла доставлено" },
   "destinations.factNothingChanged": "Ничего не изменилось",

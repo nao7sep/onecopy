@@ -788,6 +788,11 @@ pub struct MoveOutOutcome {
     /// not responding: each is either a complete file at its target or
     /// nothing. Their sources stay in place either way.
     pub unknown: Vec<String>,
+    /// Companion sources whose content differs from the companion delivered
+    /// under the same destination name (two edits of one photo, say). Copy
+    /// does not deliver them; Move leaves each in place together with the
+    /// main copy it belongs to and that copy's other companions.
+    pub different_companions: Vec<String>,
     pub post_action: DeleteOutcome,
 }
 
@@ -833,6 +838,7 @@ pub struct MoveBatchOutcome {
     pub conflicts: Vec<String>,
     pub undelivered: Vec<String>,
     pub unknown: Vec<String>,
+    pub different_companions: Vec<String>,
     pub post_action: DeleteOutcome,
     pub files_total: u64,
     pub bytes_total: u64,
@@ -1249,6 +1255,9 @@ pub fn move_batch_reviewed(
             .undelivered
             .extend(outcome.undelivered.iter().cloned());
         batch.unknown.extend(outcome.unknown.iter().cloned());
+        batch
+            .different_companions
+            .extend(outcome.different_companions.iter().cloned());
         batch.post_action.unknown_files = batch
             .post_action
             .unknown_files
@@ -1270,6 +1279,7 @@ pub fn move_batch_reviewed(
             || !outcome.conflicts.is_empty()
             || !outcome.undelivered.is_empty()
             || !outcome.unknown.is_empty()
+            || !outcome.different_companions.is_empty()
             || outcome.post_action.deleted_files > 0
             || outcome.post_action.failed_files > 0;
         let stopped_by_conflict = !outcome.conflicts.is_empty();
@@ -1319,6 +1329,7 @@ pub fn move_batch_reviewed(
             "items": batch.items.len(),
             "exported": batch.exported,
             "conflicts": batch.conflicts.len(),
+            "differentCompanions": batch.different_companions.len(),
             "cancelled": batch.cancelled,
         }),
     );
@@ -1745,6 +1756,8 @@ fn collect_move_unit(
     // Companions that would land on the same destination entry are one
     // output: on a case-insensitive destination `x.xmp` and `x.XMP` are one
     // name, and the companion beside the highest-ranked main copy supplies it.
+    // Staging compares the others with it by content; one that differs is not
+    // covered by this output (`stage_delivery`).
     let mut companions = Vec::<(String, Vec<DeliverySource>)>::new();
     let (companion_rows, companion_mains): (Vec<_>, Vec<_>) = companion_rows.into_iter().unzip();
     let companion_sources = delivery_sources(companion_rows, roots)
@@ -1832,10 +1845,12 @@ enum MoveUnitProgress {
 }
 
 enum StageResult {
-    /// The staged output and the planned sources it does not cover: main
-    /// copies whose bytes no longer matched the item's recorded content, and
-    /// companions paired with such a copy.
-    Ready(StagedOutput, Vec<i64>),
+    /// The staged output, the planned sources it does not cover (main copies
+    /// whose bytes no longer matched the item's recorded content, companions
+    /// paired with such a copy, unreadable sources and companions whose
+    /// content differs from the output), and the paths of those differing
+    /// companions.
+    Ready(StagedOutput, Vec<i64>, Vec<String>),
     Cancelled,
     /// No output; the planned sources left uncovered as in `Ready`.
     Failed(Vec<i64>),
@@ -1872,6 +1887,12 @@ fn execute_move_unit(
     // companions paired with them: no output covers that copy's family. The
     // main delivery is planned, and so staged, before every companion.
     let mut changed_mains = Vec::<i64>::new();
+    // A main copy beside a companion whose content differs from the one
+    // delivered under its name stays in place with all of its companions:
+    // that companion belongs to it and is neither lost nor separated from it.
+    // Settled before any publication below. (A companion that merely failed
+    // to read stays in place on its own, as any uncovered source does.)
+    let mut kept_mains = Vec::<i64>::new();
     for delivery in &unit.deliveries {
         if cancelled() {
             return Ok(MoveUnitResult::Cancelled(outcome));
@@ -1892,14 +1913,23 @@ fn execute_move_unit(
             conn,
             delivery,
             recorded_hash,
+            mode,
             &changed_mains,
             cancelled,
             on_progress,
         )? {
-            StageResult::Ready(output, uncovered) => {
+            StageResult::Ready(output, uncovered, different) => {
                 if delivery.primary {
                     changed_mains.extend(&uncovered);
                 }
+                kept_mains.extend(
+                    delivery
+                        .sources
+                        .iter()
+                        .filter(|source| different.contains(&source.abs_path))
+                        .filter_map(|source| source.beside),
+                );
+                outcome.different_companions.extend(different);
                 staged.push((delivery, output, uncovered))
             }
             StageResult::Cancelled => return Ok(MoveUnitResult::Cancelled(outcome)),
@@ -2061,13 +2091,16 @@ fn execute_move_unit(
         });
 
         if delivered && mode != MoveOutMode::CopyKeepAll {
-            // A source whose bytes no longer matched was not delivered, so
-            // this output does not cover it; it stays in place.
+            // A source this output does not cover stays in place, and so does
+            // the whole family of a main copy kept above.
             let item_key = unit.item.key()?;
             let targets = delivery
                 .sources
                 .iter()
-                .filter(|source| !changed_sources.contains(&source.path_id))
+                .filter(|source| {
+                    !changed_sources.contains(&source.path_id)
+                        && !kept_mains.contains(&source.beside.unwrap_or(source.path_id))
+                })
                 .map(|source| DeleteTarget {
                     path_id: source.path_id,
                     abs_path: source.abs_path.clone(),
@@ -2255,6 +2288,7 @@ fn stage_delivery(
     conn: &Connection,
     delivery: &DeliveryPlan,
     recorded_hash: Option<&str>,
+    mode: MoveOutMode,
     changed_mains: &[i64],
     cancelled: &dyn Fn() -> bool,
     on_progress: &mut dyn FnMut(MoveUnitProgress),
@@ -2294,8 +2328,19 @@ fn stage_delivery(
                 changed_sources.push(source.path_id);
             }
             Ok((hash, bytes, private)) => {
-                if let Some(recorded) = recorded_hash {
+                let mut different = Vec::new();
+                // A main delivery proves the other copies against the item's
+                // recorded content. A companion delivery compares them with the
+                // output itself: same-named companions of different main copies
+                // need not be identical, and one that differs is not covered.
+                // Copy removes nothing, so an unreadable companion (an offline
+                // duplicate, typically) is simply not compared.
+                let expected = if delivery.primary { recorded_hash } else { Some(hash.as_str()) };
+                if let Some(recorded) = expected {
                     for remaining in &delivery.sources[index + 1..] {
+                        if changed_sources.contains(&remaining.path_id) {
+                            continue;
+                        }
                         let verified = crate::file_identity::open_regular_nofollow(
                             Path::new(&remaining.abs_path),
                         )
@@ -2309,10 +2354,20 @@ fn stage_delivery(
                         });
                         let (descriptor, detail) = match verified {
                             Ok(current) if current == recorded => continue,
+                            Ok(_) if !delivery.primary => {
+                                logging::info(
+                                    "a companion differs from the one delivered under its name",
+                                    json!({ "path": remaining.abs_path, "target": delivery.target.to_string_lossy() }),
+                                );
+                                different.push(remaining.abs_path.clone());
+                                changed_sources.push(remaining.path_id);
+                                continue;
+                            }
                             Ok(_) => ("notice.copySourceChanged", String::new()),
                             Err(error) if error.kind() == std::io::ErrorKind::Interrupted && cancelled() => {
                                 return Ok(StageResult::Cancelled);
                             }
+                            Err(_) if mode == MoveOutMode::CopyKeepAll => continue,
                             Err(error) => ("notice.copySourceReadFailed", error.to_string()),
                         };
                         logging::warn(
@@ -2339,6 +2394,7 @@ fn stage_delivery(
                         primary: delivery.primary,
                     },
                     changed_sources,
+                    different,
                 ));
             }
             Err(crate::hashing::CopyFailure::Cancelled) => return Ok(StageResult::Cancelled),

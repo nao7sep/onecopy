@@ -26,6 +26,7 @@ interface MoveBatchOutcome {
   skippedIdentical: number;
   conflicts: string[];
   undelivered: string[];
+  differentCompanions: string[];
   postAction: { deletedFiles: number; failedFiles: number };
   planToken: string | null;
   requiresConflictChoice: boolean;
@@ -295,6 +296,7 @@ async function executeMoveBatch(
       outcome.postAction.failedFiles > 0 ||
       outcome.conflicts.length > 0 ||
       outcome.undelivered.length > 0 ||
+      outcome.differentCompanions.length > 0 ||
       outcome.cancelled ||
       outcome.error !== null;
     // A partial/cancelled outcome accounts for successful work as well as
@@ -336,6 +338,16 @@ async function executeMoveBatch(
         }),
       );
     }
+    if (outcome.differentCompanions.length > 0) {
+      facts.push(
+        message(
+          mode === "copy"
+            ? "destinations.factCompanionsNotCopied"
+            : "destinations.factCompanionsKept",
+          { names: outcome.differentCompanions.join(", ") },
+        ),
+      );
+    }
     if (outcome.cancelled) facts.push(message("destinations.factCancelled"));
     if (outcome.error !== null) {
       facts.push(message("destinations.factStopped"));
@@ -352,7 +364,7 @@ async function executeMoveBatch(
       outcome.undelivered.length > 0 ||
       outcome.error !== null
         ? "error"
-        : outcome.conflicts.length > 0
+        : outcome.conflicts.length > 0 || outcome.differentCompanions.length > 0
           ? "warning"
           : "info";
     if (facts.length > 0) {

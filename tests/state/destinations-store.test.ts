@@ -84,6 +84,7 @@ const OUTCOME = {
   skippedIdentical: 0,
   conflicts: [],
   undelivered: [],
+  differentCompanions: [],
   postAction: { deletedFiles: 1, failedFiles: 0, removedRows: 1 },
   planToken: null,
   requiresConflictChoice: false,
@@ -419,6 +420,40 @@ describe("outcome reporting", () => {
     expect(useDestinationsStore.getState().result?.severity).toBe("error");
     expect(resultLine()).toMatch(/Could not write/);
     expect(resultLine()).toContain("IMG_1.arw");
+  });
+
+  it("says which differing companions a move left in place", async () => {
+    mockCommands({
+      move_items_out: () => ({
+        ...OUTCOME,
+        differentCompanions: ["/src/b/IMG_1.xmp"],
+      }),
+    });
+    selectAll(["h1"]);
+
+    await moveSelectionTo("/dest", "move-trash-rest");
+    await confirmDestinationMove();
+
+    expect(useDestinationsStore.getState().result?.severity).toBe("warning");
+    expect(resultLine()).toMatch(/Left in place with the copy beside them/);
+    expect(resultLine()).toContain("/src/b/IMG_1.xmp");
+  });
+
+  it("says which differing companions a copy did not deliver", async () => {
+    mockCommands({
+      move_items_out: () => ({
+        ...OUTCOME,
+        postAction: { deletedFiles: 0, failedFiles: 0, removedRows: 0 },
+        differentCompanions: ["/src/b/IMG_1.xmp"],
+      }),
+    });
+    selectAll(["h1"]);
+
+    await moveSelectionTo("/dest", "copy");
+
+    expect(useDestinationsStore.getState().result?.severity).toBe("warning");
+    expect(resultLine()).toMatch(/Not copied because they differ/);
+    expect(resultLine()).toContain("/src/b/IMG_1.xmp");
   });
 
   it("keeps source post-action failures visible after progress closes", async () => {
