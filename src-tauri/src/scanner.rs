@@ -694,10 +694,11 @@ pub fn forget_unconfigured_roots(
 ///    it does NOT correct casing (verified: `realpath` echoes the spelling it
 ///    was given on a case-insensitive volume), which is why step 2 exists.
 /// 2. Prefer a spelling already recorded in `scan_dirs` that differs only by
-///    case. First-seen wins, so re-typing a configured path with different
-///    capitalisation cannot fork the index. Matching case-insensitively is safe
-///    HERE specifically: this compares roots, never individual files, and two
-///    roots differing only by case cannot coexist on either target platform.
+///    case AND names the same directory. First-seen wins, so re-typing a
+///    configured path with different capitalisation cannot fork the index. A
+///    case-sensitive volume can hold `/V/Photos` and `/V/photos` as two
+///    directories; the identity check keeps them two roots. A recorded root
+///    that no longer exists is a different directory.
 pub fn settled_root(conn: &Connection, configured: &Path) -> Result<PathBuf, String> {
     let canonical = crate::volume_io::canonicalize(configured)
         .map_err(|e| format!("{}: {e}", configured.display()))?;
@@ -713,9 +714,21 @@ pub fn settled_root(conn: &Connection, configured: &Path) -> Result<PathBuf, Str
         .map_err(|e| e.to_string())?;
     drop(stmt);
 
+    let mut identity = None;
     for root in known {
         if root != canonical_str && root.to_lowercase() == canonical_str.to_lowercase() {
-            return Ok(PathBuf::from(root));
+            let canonical_identity = match &identity {
+                Some(identity) => identity,
+                None => identity.insert(
+                    crate::file_identity::FileIdentity::from_path(&canonical)
+                        .map_err(|e| format!("{}: {e}", canonical.display()))?,
+                ),
+            };
+            if crate::file_identity::FileIdentity::from_path(Path::new(&root))
+                .is_ok_and(|known| &known == canonical_identity)
+            {
+                return Ok(PathBuf::from(root));
+            }
         }
     }
     Ok(canonical)

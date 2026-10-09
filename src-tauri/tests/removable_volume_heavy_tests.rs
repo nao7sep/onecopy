@@ -232,3 +232,28 @@ fn copy_move_and_recoverable_deletion_work_on_exfat() {
 fn copy_move_and_recoverable_deletion_work_on_fat32() {
     copy_move_and_delete_on("MS-DOS FAT32");
 }
+
+// A case-sensitive volume can hold two folders whose names differ only by
+// capitalisation; they are two source roots, each scanned on its own.
+#[test]
+#[ignore = "heavy: creates and mounts disk images with hdiutil; run by npm run test:full"]
+fn folders_differing_only_by_case_on_a_case_sensitive_volume_are_two_roots() {
+    let image = MountedImage::create("Case-sensitive APFS");
+    let upper = image.volume.join("Photos");
+    let lower = image.volume.join("photos");
+    std::fs::create_dir_all(&upper).unwrap();
+    std::fs::create_dir_all(&lower).unwrap();
+    std::fs::write(upper.join("a.jpg"), b"upper bytes").unwrap();
+    std::fs::write(lower.join("b.jpg"), b"lower bytes").unwrap();
+    let index = tempfile::tempdir().unwrap();
+    let conn = index_store::open(&index.path().join("index.sqlite3")).unwrap();
+
+    let first = scanner::settled_root(&conn, &upper).unwrap();
+    scanner::walk_root(&conn, &first, &lists()).unwrap();
+    let second = scanner::settled_root(&conn, &lower).unwrap();
+    scanner::walk_root(&conn, &second, &lists()).unwrap();
+
+    assert_ne!(first, second);
+    let rows: i64 = conn.query_row("SELECT COUNT(*) FROM paths", [], |r| r.get(0)).unwrap();
+    assert_eq!(rows, 2, "each folder's file is indexed under its own root");
+}
