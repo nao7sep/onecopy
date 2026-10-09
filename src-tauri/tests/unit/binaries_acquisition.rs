@@ -1,6 +1,37 @@
 use super::*;
 use std::sync::Arc;
 
+#[cfg(target_os = "macos")]
+#[test]
+fn making_a_native_tool_runnable_removes_quarantine_and_preserves_its_bytes() {
+    use std::os::unix::{ffi::OsStrExt, fs::PermissionsExt};
+
+    let dir = tempfile::tempdir().unwrap();
+    let staged = dir.path().join("download.partial");
+    // The acquisition boundary checks the architecture, not executable contents.
+    // This fixture is never executed and needs no managed-tool download.
+    let bytes = [0xcf, 0xfa, 0xed, 0xfe, 0x0c, 0x00, 0x00, 0x01];
+    std::fs::write(&staged, bytes).unwrap();
+    std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let path = std::ffi::CString::new(staged.as_os_str().as_bytes()).unwrap();
+    let name = c"com.apple.quarantine";
+    let value = b"0081;00000000;OneCopyTest;";
+    let set = unsafe {
+        libc::setxattr(path.as_ptr(), name.as_ptr(), value.as_ptr().cast(), value.len(), 0, 0)
+    };
+    assert_eq!(set, 0, "{}", std::io::Error::last_os_error());
+
+    make_runnable(&staged, &AtomicBool::new(false), &OperationDeadline::for_check()).unwrap();
+
+    assert_eq!(std::fs::read(&staged).unwrap(), bytes);
+    assert_eq!(std::fs::metadata(&staged).unwrap().permissions().mode() & 0o777, 0o755);
+    let remaining = unsafe {
+        libc::getxattr(path.as_ptr(), name.as_ptr(), std::ptr::null_mut(), 0, 0, 0)
+    };
+    assert_eq!(remaining, -1, "the real quarantine attribute must be gone");
+    assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ENOATTR));
+}
+
 #[test]
 fn managed_networks_refuse_plain_http() {
     assert!(assert_https("https://example.test/artifact").is_ok());

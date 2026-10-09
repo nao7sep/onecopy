@@ -251,11 +251,11 @@ describe("the Records window", () => {
     expect(lastQuery().search).toBe("quota");
   });
 
-  it("offers Needs attention first among the levels, with every filter off", async () => {
+  it("offers Warnings and errors first among the levels, with every filter off", async () => {
     await mount();
     const level = document.querySelectorAll("select")[2]!;
     expect(Array.from(level.options).map((option) => option.textContent)).toEqual([
-      "All levels", "Needs attention", "Error", "Warning", "Info", "Debug",
+      "All levels", "Warnings and errors", "Error", "Warning", "Info", "Debug",
     ]);
     expect(Array.from(document.querySelectorAll("select")).map((select) => select.value)).toEqual(["", "", ""]);
   });
