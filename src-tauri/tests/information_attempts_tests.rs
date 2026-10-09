@@ -229,3 +229,34 @@ fn source_change_reopens_receipts_but_unchanged_stat_does_not() {
         0
     );
 }
+
+// A drive that went away is not a broken file: nothing is recorded, the file
+// stays pending, and it completes once its folder is back.
+#[test]
+fn a_file_whose_folder_is_unreachable_stays_pending_without_a_failure() {
+    let root = tempfile::tempdir().unwrap();
+    let conn = index_store::open(&root.path().join("index.sqlite3")).unwrap();
+    let cache = CachePaths::new(root.path().join("cache"));
+    let drive = root.path().join("Drive");
+    let path = drive.join("photo.jpg");
+    conn.execute(
+        "INSERT INTO paths (abs_path, dir_path, file_name, kind, size) VALUES (?1, ?2, 'photo.jpg', 'image', 4)",
+        rusqlite::params![path.to_string_lossy(), drive.to_string_lossy()],
+    )
+    .unwrap();
+
+    scanner::hash_pending(&conn, &cache).unwrap();
+    scanner::extract_pending(&conn).unwrap();
+    let failed: (i64, i64) = conn
+        .query_row("SELECT hash_attempt_failed, metadata_attempt_failed FROM paths", [], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap();
+    assert_eq!(failed, (0, 0));
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM active_issues", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    assert!(scanner::pending_index_work_exists(&conn).unwrap());
+
+    std::fs::create_dir_all(&drive).unwrap();
+    std::fs::write(&path, b"back").unwrap();
+    scanner::hash_pending(&conn, &cache).unwrap();
+    let hashed: Option<String> = conn.query_row("SELECT content_hash FROM paths", [], |row| row.get(0)).unwrap();
+    assert!(hashed.is_some());
+}

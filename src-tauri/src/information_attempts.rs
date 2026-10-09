@@ -34,6 +34,10 @@ impl Stage {
     }
 }
 
+/// Records that reading `path` failed at `stage`, so it is not retried this
+/// launch. A file whose folder is not reachable now (its drive went away or
+/// stopped answering) is left pending instead: the read says nothing about
+/// the file, and the source's recovery reads it again when the drive returns.
 pub fn failed(
     conn: &Connection,
     id: i64,
@@ -41,6 +45,16 @@ pub fn failed(
     stage: Stage,
     error: &str,
 ) -> Result<(), String> {
+    let folder_reachable = std::path::Path::new(path)
+        .parent()
+        .is_some_and(|folder| crate::volume_io::is_dir(folder).unwrap_or(false));
+    if !folder_reachable {
+        crate::logging::info(
+            "file information left pending: its folder is not reachable",
+            serde_json::json!({ "path": path, "kind": stage.issue_kind(), "error": { "message": error } }),
+        );
+        return Ok(());
+    }
     crate::logging::warn(
         "file information failed",
         serde_json::json!({
