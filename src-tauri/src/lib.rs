@@ -12,7 +12,6 @@ mod quit;
 mod sleep_prevention;
 pub mod background_work;
 pub mod backup_store;
-mod binary_archive;
 pub mod binaries;
 mod binaries_acquisition;
 pub mod binaries_manager;

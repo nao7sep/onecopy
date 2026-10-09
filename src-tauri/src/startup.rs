@@ -188,7 +188,6 @@ fn prepare(app: &tauri::App, debug_enabled: bool) -> Result<StartupState, Startu
     if !newer.is_empty() {
         return Err(StartupError::Newer(newer));
     }
-    crate::binary_archive::launch(&data_root);
     if let Some(session_id) = crate::logging::session_id() {
         crate::records::init(&records_path, session_id);
     }

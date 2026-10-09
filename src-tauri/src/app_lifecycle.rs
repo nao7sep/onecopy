@@ -84,7 +84,7 @@ const MUTATION_QUIESCE_DEADLINE: Duration = Duration::from_secs(30);
 
 // The normal budget retains both existing waits and gives optional cleanup
 // two seconds. The watchdog includes shutdown setup and the Tauri Exit tail;
-// no diagnostic or final archive can prevent it from exiting the process.
+// no diagnostic or cleanup can prevent it from exiting the process.
 const EXIT_TOTAL_DEADLINE: Duration = Duration::from_secs(42);
 pub(crate) const SESSION_EXIT_DEADLINE: Duration = Duration::from_secs(5);
 
@@ -185,7 +185,6 @@ pub(crate) fn quiesce(app: &AppHandle) {
                     if let Ok(cache_root) = crate::paths::cache_root() {
                         crate::preview::clear_session_renders(&crate::preview::CachePaths::new(cache_root));
                     }
-                    crate::binary_archive::clean_exit();
                 }
                 EXIT_READY.store(true, Ordering::SeqCst);
                 crate::quit::finish_session_end(&media);

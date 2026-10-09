@@ -9,11 +9,12 @@
 //! - `window.json`       — volatile Main placement state.       not recorded (volatile state; unrecorded atomic path)
 //! - `preview-window.json` — volatile Preview placement state.  not recorded (volatile state; unrecorded atomic path)
 //! - `records-window.json` — volatile Records placement state.  not recorded (volatile state; unrecorded atomic path)
-//! - `index.sqlite3`     — scan facts, caches, diagnostics.    archived (binary store)
-//! - `records.sqlite3`   — what happened, logs included.        not archived (records)
+//! - `index.sqlite3`     — scan facts, caches, diagnostics.    not recorded (derived; rebuilt from sources)
+//! - `records.sqlite3`   — what happened, logs included.        not recorded (records)
 //! - `source-volumes.json` — destructive-operation trust baselines. RECORDED (managed safety text)
 //! - `backups.sqlite3`   — the write-through backup store.      not recorded (the store itself)
 //! - `logs/`             — log lines the records could not take. not recorded (append-mode, by construction)
+//! - `backups/`          — index archives from earlier builds.  never read or written; left on disk for the user
 //! - `cache/`            — derived thumbnails/previews/strips.  not recorded (binary, reconstructible)
 //! - `dependencies.json` — managed-binaries facts, plus the two check-attempt timestamps. not recorded (re-derivable dependency/update facts)
 //! - `bin/`, `temp/`     — managed binaries + download staging. not recorded (binary; staging is wiped at launch; the version sidecar in `bin/` rides along, written via write_atomic_unrecorded)
@@ -54,9 +55,6 @@ pub const PREVIEW_WINDOW_FILE_NAME: &str = "preview-window.json";
 pub const RECORDS_WINDOW_FILE_NAME: &str = "records-window.json";
 pub const INDEX_DB_FILE_NAME: &str = "index.sqlite3";
 pub const CACHE_DIR_NAME: &str = "cache";
-
-/// SQLite stores protected by whole-file archives; temp scratch is excluded.
-pub const ARCHIVED_STORES: [(&str, &str); 1] = [(INDEX_DB_FILE_NAME, INDEX_DB_FILE_NAME)];
 
 /// Canonical built-in config sets. Built-ins are read in memory, never seeded.
 #[derive(Serialize)]

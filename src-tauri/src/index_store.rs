@@ -1,7 +1,8 @@
 //! The scan index: one SQLite file, `index.sqlite3`, under the storage root.
-//! Scan facts, derived caches, and expensive analysis results. Whole-file
-//! lifecycle archives preserve this store; its Issues and analysis failures
-//! are records in the attached `records.sqlite3`.
+//! Scan facts, derived caches, and expensive analysis results. It is derived
+//! data and is not backed up: a rebuild restores it from the sources, and
+//! Rebuild keeps its costly transcripts and faces. Its Issues and analysis
+//! failures are records in the attached `records.sqlite3`.
 //!
 //! The unit model: `contents` holds one row per unique content hash (the
 //! logical file every view shows); `paths` holds one row per physical path,

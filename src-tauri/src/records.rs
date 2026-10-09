@@ -44,10 +44,6 @@ pub fn init(path: &Path, session_id: &str) {
     }
 }
 
-pub(crate) fn close() {
-    STORE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
-}
-
 /// Writes one record. A record the database cannot take is kept as a log
 /// line instead (data-lifecycle conventions).
 fn write(

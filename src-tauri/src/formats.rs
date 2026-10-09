@@ -33,8 +33,6 @@ pub const DEPENDENCIES: i64 = 1;
 pub const FFMPEG_VERSION_SIDECAR: i64 = 1;
 /// The identity sidecar beside each managed model (`models/<file>.json`).
 pub const MODEL_IDENTITY: i64 = 1;
-/// `manifest.json` inside each archive under `backups/`.
-pub const ARCHIVE_MANIFEST: i64 = 1;
 /// Every line of a deleted-files day folder's `manifest.jsonl`.
 pub const DELETED_FILES_MANIFEST: i64 = 1;
 

@@ -256,13 +256,9 @@ fn lock() -> std::sync::MutexGuard<'static, StoreState> {
 
 /// Close the store and reset the singleton (best-effort). For tests that need to
 /// release the file handle between throwaway roots so the next `init` re-opens
-/// against the current root. Normal exit closes it before the archive.
+/// against the current root.
 #[cfg(test)]
 pub fn close_for_test() {
-    close();
-}
-
-pub(crate) fn close() {
     let mut state = lock();
     // Dropping the Connection closes it.
     state.conn = None;

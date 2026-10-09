@@ -629,12 +629,6 @@ pub fn record_app_admitted() {
     });
 }
 
-pub(crate) fn close() {
-    if let Some(recorder) = RECORDER.get() {
-        recorder.state.lock().unwrap_or_else(|p| p.into_inner()).take();
-    }
-}
-
 pub fn record_shutdown() {
     let _ = record(ActivityDraft {
         kind: ActivityKind::Shutdown,
