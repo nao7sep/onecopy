@@ -315,7 +315,7 @@ fn projection_plan(conn: &rusqlite::Connection) -> Vec<String> {
     rows
 }
 
-// Without planner statistics SQLite chose `idx_paths_media_repair_by_id` for
+// Without planner statistics SQLite chose a `(missing, id)` index for
 // the ranking subqueries and read every live path for each projected content,
 // on every path insert, update and delete.
 #[test]
@@ -402,4 +402,30 @@ fn a_rebuild_never_keeps_results_under_a_temporary_identity() {
             .collect();
         assert_eq!(keys, vec!["abc123".to_string()], "{table}");
     }
+}
+
+// The old `(missing, id)` index trapped the planner on every `missing = 0`
+// lookup; an existing index gets the partial live-row index in its place.
+#[test]
+fn an_index_with_the_old_live_row_index_gets_the_partial_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("index.sqlite3");
+    drop(index_store::open(&file).unwrap());
+    rusqlite::Connection::open(&file)
+        .unwrap()
+        .execute_batch(
+            "DROP INDEX idx_paths_live_by_id;
+             CREATE INDEX idx_paths_media_repair_by_id ON paths (missing, id);",
+        )
+        .unwrap();
+
+    let conn = index_store::open(&file).unwrap();
+    let names: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_paths_%by_id'")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(names, vec!["idx_paths_live_by_id".to_string()]);
 }

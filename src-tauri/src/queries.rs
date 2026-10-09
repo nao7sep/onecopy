@@ -1569,9 +1569,10 @@ fn hashed_section_select() -> String {
                AND members.group_id = (SELECT m.group_id FROM similar_group_members m \
                                        WHERE m.content_hash = c.hash LIMIT 1)), \
             c.sharpness, c.byte_size, \
-            EXISTS (SELECT 1 FROM paths comp JOIN paths pri ON comp.companion_of = pri.id \
-                    WHERE pri.content_hash = c.hash AND comp.missing = 0 \
-                      AND pri.missing = 0), \
+            EXISTS (SELECT 1 FROM paths pri INDEXED BY idx_paths_content_hash \
+                    CROSS JOIN paths comp INDEXED BY idx_paths_companion \
+                    WHERE pri.content_hash = c.hash AND pri.missing = 0 \
+                      AND comp.companion_of = pri.id AND comp.missing = 0), \
             c.duration_ms, c.kind, c.derived_at_utc, \
             c.derived_version, c.strip_frames, {face_state}, {face_score}, \
             {transcript_state}, \

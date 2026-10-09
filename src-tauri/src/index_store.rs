@@ -17,11 +17,16 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension};
 
 /// The projection's definition, also replaced in an existing index whose
-/// stored definition differs (`refresh_projection_view`). Its ranking
+/// stored definition differs (`refresh_definitions`). Its ranking
 /// subqueries name `idx_paths_content_hash`: without planner statistics SQLite
-/// otherwise picks `idx_paths_media_repair_by_id` and reads every live path for
-/// each projected content, which made each path update cost milliseconds at
-/// tens of thousands of paths and far more at library scale.
+/// picked a `(missing, id)` index and read every live path for each projected
+/// content, which made each path update cost milliseconds at tens of
+/// thousands of paths and far more at library scale.
+///
+/// The representative copy is the first by: shown before hidden, dated before
+/// undated, earliest date, path ignoring case, then exact path. The same order
+/// is repeated where a copy is chosen to read or move (`indexed_file.rs`,
+/// `operations.rs`, `queries.rs`); change them together.
 macro_rules! projection_view_sql {
     () => {
         "CREATE VIEW IF NOT EXISTS logical_content_projection AS
@@ -124,7 +129,11 @@ CREATE INDEX IF NOT EXISTS idx_paths_dir ON paths (dir_path);
 CREATE INDEX IF NOT EXISTS idx_paths_pairing ON paths (dir_path, stem);
 CREATE INDEX IF NOT EXISTS idx_paths_resolved ON paths (kind, resolved_utc_ms);
 CREATE INDEX IF NOT EXISTS idx_paths_companion ON paths (companion_of);
-CREATE INDEX IF NOT EXISTS idx_paths_media_repair_by_id ON paths (missing, id);
+-- Live rows in id order, for paging (`missing = 0 AND id > ? ORDER BY id`).
+-- A partial index on `id`, not one led by `missing`: without planner
+-- statistics SQLite took `missing = ?` as a selective lookup and chose a
+-- (missing, id) index over the content-hash one, reading every live path.
+CREATE INDEX IF NOT EXISTS idx_paths_live_by_id ON paths (id) WHERE missing = 0;
 CREATE INDEX IF NOT EXISTS idx_paths_visibility_pending ON paths (id)
   WHERE missing = 0 AND visibility_checked = 0;
 CREATE INDEX IF NOT EXISTS idx_paths_unhashed_other_section
@@ -536,7 +545,7 @@ fn open_before_setup(db_file: &Path, before_setup: impl FnOnce()) -> Result<Conn
             }
         }
     } else {
-        refresh_projection_view(&conn)?;
+        refresh_definitions(&conn)?;
     }
     crate::records::attach(
         &conn,
@@ -555,9 +564,26 @@ fn open_before_setup(db_file: &Path, before_setup: impl FnOnce()) -> Result<Conn
 #[path = "../tests/unit/index_store.rs"]
 mod setup_tests;
 
-/// Replaces an existing index's projection view when its stored definition
-/// differs from this build's. Ordinary opens find it equal and write nothing.
-fn refresh_projection_view(conn: &Connection) -> Result<(), String> {
+/// Brings an existing index's projection view and live-row index to this
+/// build's definitions. Ordinary opens find them current and write nothing.
+fn refresh_definitions(conn: &Connection) -> Result<(), String> {
+    let has_old_index = |conn: &Connection| -> Result<bool, String> {
+        conn.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_paths_media_repair_by_id'")
+            .and_then(|mut statement| statement.exists([]))
+            .map_err(|error| error.to_string())
+    };
+    if has_old_index(conn)? {
+        let transaction = crate::sqlite::write_transaction(conn).map_err(|error| error.to_string())?;
+        if has_old_index(&transaction)? {
+            transaction
+                .execute_batch(
+                    "DROP INDEX idx_paths_media_repair_by_id;
+                     CREATE INDEX IF NOT EXISTS idx_paths_live_by_id ON paths (id) WHERE missing = 0;",
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        transaction.commit().map_err(|error| error.to_string())?;
+    }
     let stored = |conn: &Connection| -> Result<Option<String>, String> {
         conn.query_row(
             "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'logical_content_projection'",
