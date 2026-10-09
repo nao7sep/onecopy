@@ -368,6 +368,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     }
   },
 
+  // Closing Preview leaves Main's selection and anchor as they are.
   close: () => {
     surfaceRequest += 1;
     cancelPublication();

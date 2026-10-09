@@ -202,6 +202,8 @@ export function visibleKeepMarks(
   return new Set([...selected].filter((hash) => visible.has(hash)));
 }
 
+/** A page's selection state when it is shown. A page not visited before
+ * opens with no active card unless one is carried in. */
 export function activatePage(
   selection: ComparisonDecisionDraft,
   members: ComparisonMember[],

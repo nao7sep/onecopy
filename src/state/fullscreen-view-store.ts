@@ -31,6 +31,8 @@ interface FullscreenViewState {
   close: () => void;
 }
 
+// The fullscreen view's session lives in memory only and is never restored
+// after a restart.
 export const useFullscreenViewStore = create<FullscreenViewState>((set, get) => ({
   session: null,
   pendingDelete: null,

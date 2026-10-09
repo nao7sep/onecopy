@@ -69,7 +69,9 @@ function reportFailure(error: unknown): void {
 // library/bootstrap data. The theme is not part of it: the Rust core sets each
 // window's theme natively and App.css follows through prefers-color-scheme.
 // A saved-config event invalidates pending reads so a late old response cannot
-// replace a newer font. Failed refreshes preserve the last good view.
+// replace a newer font. Failed refreshes preserve the last good view. The
+// invalidation is broadcast, so a hidden or reused window takes a new
+// language too.
 export const installWindowAppearance = createEventInstaller(async (listeners) => {
   applyUiFont(undefined);
   let request = 0;

@@ -195,6 +195,7 @@ function VideoSurface({
               setVolume(event.currentTarget.volume);
               playback.onVolumeChange();
             }}
+            // Natural completion stops: no loop, no advance to the next item.
             onEnded={() => {
               setPlaying(false);
               playback.onEnded();

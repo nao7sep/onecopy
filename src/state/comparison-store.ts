@@ -184,6 +184,8 @@ function viewPatch(
     capacities: [4],
   };
   let recoveredAnchor = preferredAnchor;
+  // The active card left: the next marked visible image takes over, then the
+  // previous marked one, then the next and previous visible ones, else none.
   if (
     recoveredAnchor === null &&
     state.anchor !== null &&
@@ -529,6 +531,8 @@ async function teardownComparison(spreadCount: number): Promise<void> {
 
 const groupLoad = requestSeq();
 
+// A Comparison session lives in memory only: nothing about it is restored
+// after a restart.
 export const useComparisonStore = create<ComparisonState>((set, get) => ({
   sessionId: 0,
   open: false,
@@ -785,6 +789,8 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
     return await executeAction(set, get, action);
   },
 
+  // Cancelling a review changes nothing: marks, members and the active card
+  // stay as they were.
   cancelPendingAction: () => set({ pendingAction: null }),
 
   retryFailure: async (configConfirms = false) => {
@@ -807,6 +813,8 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
     const members = state.members.filter((member) => live.has(member.hash));
     if (members.length === state.members.length) return true;
     if (members.length < 2) {
+      // Fewer than two images left to compare: close without applying any
+      // decision; the marks were a draft, never a request.
       const spreadCount = state.spreadCount;
       set(closedComparisonState());
       await queueComparisonLifecycle(() => teardownComparison(spreadCount));

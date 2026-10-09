@@ -68,6 +68,8 @@ async function focusComparison(): Promise<void> {
   document.getElementById("comparison-item-area")?.focus();
 }
 
+/** Main keeps its own selection while Comparison runs and after it closes or
+ * is cancelled; only a completed decision moves Main's anchor. */
 async function applyResult(
   result: ComparisonCommitResult | null,
 ): Promise<void> {

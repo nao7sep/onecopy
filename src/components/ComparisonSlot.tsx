@@ -142,6 +142,8 @@ export default function ComparisonSlot({
           event.stopPropagation();
           onSelect("activate");
           setExternalError(false);
+          // No path: the core opens the item's representative copy, or the
+          // next reachable one.
           void openInDefaultApp(member.hash, null).catch((error) => {
             log.warn("comparison external open failed", toErrorFields(error));
             setExternalError(true);

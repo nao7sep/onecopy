@@ -50,7 +50,9 @@ pub fn save_config(app: &AppHandle, mut changes: Value, report_failure: bool) ->
             }
             // A saved language reaches the native menu here; the windows follow
             // through the appearance invalidation below. The items macOS draws
-            // itself keep the language AppKit settled on at launch.
+            // itself keep the language AppKit settled on at launch. A language
+            // change never rewrites records, files or the library: recorded
+            // text stays as it was written.
             if changes.get("language").is_some() {
                 let state = app.state::<i18n::LanguageState>();
                 let resolved = i18n::normalize_preference(
