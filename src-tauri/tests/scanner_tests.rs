@@ -2559,3 +2559,30 @@ fn the_system_time_zone_follows_the_computer_and_a_chosen_one_stays() {
     let chosen = settings_from_config(Some(&serde_json::json!({ "defaultTimezone": "Pacific/Auckland" })), home.path(), 0);
     assert_eq!(chosen.resolution.default_timezone, chrono_tz::Pacific::Auckland);
 }
+
+#[cfg(windows)]
+#[test]
+fn the_walk_does_not_follow_a_junction() {
+    // A junction to a folder inside the same root would index every file
+    // under it twice, as two copies of itself.
+    let f = fixture("walk-junction");
+    let photos = f.root.join("photos");
+    std::fs::create_dir_all(&photos).unwrap();
+    std::fs::write(photos.join("a.jpg"), b"one photo").unwrap();
+    let junction = f.root.join("again");
+    let made = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&junction)
+        .arg(&photos)
+        .status()
+        .unwrap();
+    assert!(made.success(), "mklink /J failed");
+
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+
+    assert_eq!(
+        count(&f.conn, "SELECT COUNT(*) FROM paths WHERE missing = 0"),
+        1,
+        "only the real file is indexed, not its view through the junction"
+    );
+}
