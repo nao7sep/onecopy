@@ -309,19 +309,6 @@ pub fn with_language_fields(mut preferences: JsonValue, state: &crate::i18n::Lan
     preferences
 }
 
-/// Reads volatile state for a pre-frontend runtime decision while preserving
-/// the ordinary load path's duty to report any quarantine to Main.
-pub fn read_state_for_setup(root: &Path) -> Result<Option<JsonValue>, String> {
-    let read = read_json_optional(&root.join(STATE_FILE_NAME), formats::STATE)?;
-    if let Some(record) = read.quarantined {
-        PENDING_QUARANTINES
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .push(record);
-    }
-    Ok(read.value)
-}
-
 pub fn read_window_state_for_setup(root: &Path) -> Result<Option<JsonValue>, String> {
     let read = read_json_optional(&root.join(WINDOW_FILE_NAME), formats::WINDOW_PLACEMENT)?;
     if let Some(record) = read.quarantined {

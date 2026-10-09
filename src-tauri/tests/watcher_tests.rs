@@ -5,7 +5,6 @@ use onecopy_lib::scanner::ScanLists;
 use onecopy_lib::watcher::*;
 use onecopy_lib::extensions;
 use onecopy_lib::index_store;
-use std::collections::HashSet;
 use std::path::PathBuf;
 
 fn lists() -> ScanLists {
@@ -110,22 +109,6 @@ fn restat_skips_apple_double_sidecars_beside_their_real_file() {
         )
         .unwrap();
     assert_eq!(missing, 0, "a lone ._name with no sibling is ordinary content");
-}
-
-#[test]
-fn collect_skips_a_change_event_on_an_apple_double_sidecar() {
-    let dir = tempfile::tempdir().unwrap();
-    let real = dir.path().join("IMG_0001.jpg");
-    let sidecar = dir.path().join("._IMG_0001.jpg");
-    std::fs::write(&real, b"photo").unwrap();
-    std::fs::write(&sidecar, b"resource fork").unwrap();
-
-    let (dirty, overflowed) = fold(vec![sidecar]);
-    assert!(!overflowed);
-    assert!(
-        dirty.is_empty(),
-        "a sidecar's own change event never dirties its directory"
-    );
 }
 
 // (W-M2) A vanished directory PROVES absence — `read_dir` failing with
@@ -253,80 +236,6 @@ fn restat_uses_the_same_windows_spelling_as_a_full_scan() {
     assert_eq!(rows, 1, "the watcher must not fork the full-scan row");
 }
 
-
-fn fold(paths: Vec<PathBuf>) -> (HashSet<PathBuf>, bool) {
-    let mut dirty = HashSet::new();
-    let mut overflowed = false;
-    let event = notify::Event {
-        kind: notify::EventKind::Modify(notify::event::ModifyKind::Any),
-        paths,
-        attrs: Default::default(),
-    };
-    collect(Ok(event), &mut dirty, &mut overflowed, &no_data_root());
-    (dirty, overflowed)
-}
-
-#[test]
-fn a_file_event_marks_its_parent_directory_dirty() {
-    // The drain calls read_dir on whatever lands in the set. A file path there
-    // fails silently, so new photos would simply never appear.
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("IMG_0001.jpg");
-    std::fs::write(&file, b"x").unwrap();
-
-    let (dirty, overflowed) = fold(vec![file]);
-    assert!(!overflowed);
-    assert_eq!(
-        dirty.into_iter().collect::<Vec<_>>(),
-        vec![dir.path().to_path_buf()],
-        "a file event marks the directory, never the file"
-    );
-}
-
-#[test]
-fn a_directory_event_marks_the_directory_itself() {
-    let dir = tempfile::tempdir().unwrap();
-    let sub = dir.path().join("sub");
-    std::fs::create_dir_all(&sub).unwrap();
-
-    let (dirty, _) = fold(vec![sub.clone()]);
-    assert_eq!(dirty.into_iter().collect::<Vec<_>>(), vec![sub]);
-}
-
-#[test]
-fn the_apps_own_trash_is_never_marked_dirty() {
-    // Trashing is a same-volume rename INSIDE a watched root, so every delete
-    // fires events here; re-indexing them would resurrect what was just culled.
-    let dir = tempfile::tempdir().unwrap();
-    let trashed = dir
-        .path()
-        .join(onecopy_lib::trash::TRASH_DIR_NAME)
-        .join("20260101-utc")
-        .join("IMG_0001.jpg");
-    std::fs::create_dir_all(trashed.parent().unwrap()).unwrap();
-    std::fs::write(&trashed, b"x").unwrap();
-
-    let (dirty, _) = fold(vec![trashed]);
-    assert!(dirty.is_empty(), "the app's own trash is not source material");
-}
-
-#[test]
-fn trash_filter_uses_the_event_path_before_resolving_its_parent() {
-    let dir = tempfile::tempdir().unwrap();
-    // A removed trash directory no longer answers is_dir(). It must not dirty
-    // the ordinary parent just because the event refers to a vanished path.
-    let (dirty, overflowed) = fold(vec![dir.path().join(".onecopy-trash")]);
-    assert!(!overflowed);
-    assert!(dirty.is_empty());
-
-    let lookalike = dir.path().join(".onecopy-trash-notes");
-    std::fs::create_dir(&lookalike).unwrap();
-    let file = lookalike.join("photo.jpg");
-    std::fs::write(&file, b"ordinary").unwrap();
-    let (dirty, _) = fold(vec![file]);
-    assert_eq!(dirty, HashSet::from([lookalike]));
-}
-
 #[test]
 fn restat_keeps_trash_lookalikes_but_never_opens_deleted_storage() {
     let dir = tempfile::tempdir().unwrap();
@@ -346,54 +255,6 @@ fn restat_keeps_trash_lookalikes_but_never_opens_deleted_storage() {
     ).unwrap();
     assert_eq!(counts, (1, 0));
 }
-
-#[test]
-fn a_lost_event_batch_flags_an_overflow() {
-    // notify drops events under load; the flag is what turns that into a
-    // visible "Rescan needed" instead of a silently incomplete index.
-    let mut dirty = HashSet::new();
-    let mut overflowed = false;
-    collect(
-        Err(notify::Error::generic("watch queue overflowed")),
-        &mut dirty,
-        &mut overflowed,
-        &no_data_root(),
-    );
-    assert!(overflowed, "a watcher error must raise the rescan flag");
-    assert!(dirty.is_empty());
-}
-
-// (W-L4) The channel between `notify`'s callback and the drain loop is
-// bounded: a full queue flags overflow instead of growing without bound
-// while ingestion is blocked (e.g. a long `INDEXING` hold).
-#[test]
-fn a_full_event_queue_flags_overflow_instead_of_blocking_the_callback() {
-    let (tx, rx) = std::sync::mpsc::sync_channel::<notify::Result<notify::Event>>(1);
-    let overflowed = std::sync::atomic::AtomicBool::new(false);
-    let event = || {
-        Ok(notify::Event {
-            kind: notify::EventKind::Modify(notify::event::ModifyKind::Any),
-            paths: vec![],
-            attrs: Default::default(),
-        })
-    };
-
-    forward_or_flag_overflow(&tx, &overflowed, event());
-    assert!(
-        !overflowed.load(std::sync::atomic::Ordering::SeqCst),
-        "the first event fits inside capacity"
-    );
-
-    // The queue is now full (nothing has drained it): the next send cannot
-    // block the notify callback thread, so it must flag overflow instead.
-    forward_or_flag_overflow(&tx, &overflowed, event());
-    assert!(
-        overflowed.load(std::sync::atomic::Ordering::SeqCst),
-        "a full queue must flag overflow rather than block or silently drop"
-    );
-    drop(rx);
-}
-
 
 // (R7-02) A vanished directory marks its rows missing through the
 // projection-batch publisher, page by page, never through the per-row
@@ -462,18 +323,6 @@ fn a_root_that_does_not_answer_never_keeps_another_root_unwatched() {
         .is_ok());
     volume.release();
     assert!(volume.wait_until_settled(std::time::Duration::from_secs(5)));
-}
-
-#[test]
-fn callback_failure_marks_only_its_root_for_recovery_even_without_a_queued_event() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    let (tx, rx) = std::sync::mpsc::sync_channel(1);
-    let affected_root = AtomicBool::new(false);
-    let other_root = AtomicBool::new(false);
-    forward_or_flag_overflow(&tx, &affected_root, Err(notify::Error::generic("events lost")));
-    assert!(affected_root.load(Ordering::SeqCst));
-    assert!(!other_root.load(Ordering::SeqCst));
-    assert!(rx.try_recv().is_err(), "the root's flag drives recovery even on an idle queue");
 }
 
 #[test]

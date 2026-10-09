@@ -459,7 +459,6 @@ pub const PREVIEW_ERROR: &str = "decode-error";
 pub const TRANSCRIPT_ERROR: &str = "transcription-error";
 pub const VIDEO_POSTER_ERROR: &str = "video-poster-error";
 pub const VIDEO_STRIP_ERROR: &str = "video-strip-error";
-pub const RESOURCE_ISSUE_PREFIX: &str = "resource-limit-";
 
 pub const READY: &str = "ready";
 pub const READY_TEXT: &str = "ready-text";

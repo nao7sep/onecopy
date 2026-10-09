@@ -89,7 +89,7 @@ pub(crate) fn publish_if_active<T>(
 }
 
 /// 16 kHz mono f32 — the one input whisper accepts.
-pub const SAMPLE_RATE: u32 = 16_000;
+const SAMPLE_RATE: u32 = 16_000;
 const PCM_SILENCE_PEAK: f32 = 1.0 / i16::MAX as f32;
 
 struct RemoveFile(PathBuf);
@@ -133,7 +133,7 @@ pub fn extract_pcm(ffmpeg: &Path, media: &Path, temp_dir: &Path) -> Result<Vec<f
         "0:a:0",
         "-vn",
         "-ar",
-        "16000",
+        &SAMPLE_RATE.to_string(),
         "-ac",
         "1",
         "-fs",

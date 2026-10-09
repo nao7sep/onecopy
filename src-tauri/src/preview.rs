@@ -1026,7 +1026,7 @@ static CACHE_IDENTITY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// from an integration test in `tests/`, per tests-folder-conventions,
 /// instead of an inline unit-test exception widening the module for testing
 /// alone.
-pub fn lock_cache_identity() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn lock_cache_identity() -> std::sync::MutexGuard<'static, ()> {
     CACHE_IDENTITY_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)

@@ -478,11 +478,6 @@ fn worker_loop() {
     }
 }
 
-/// Pool threads alive now, abandoned ones included.
-pub fn live_workers() -> usize {
-    pool_state().live
-}
-
 // ---------------------------------------------------------------------------
 // Calls
 

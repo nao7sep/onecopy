@@ -626,10 +626,7 @@ fn record_root_condition(
 
 /// The `notify` callback: forwards into the bounded channel, or flags
 /// overflow instead of blocking the callback thread when it is full (W-L4).
-///
-/// `pub` for the tests: a real full-queue scenario needs `INDEXING` held for
-/// the channel's whole capacity, which a unit test has no reason to spin up.
-pub fn forward_or_flag_overflow(
+fn forward_or_flag_overflow(
     tx: &mpsc::SyncSender<notify::Result<notify::Event>>,
     overflowed: &AtomicBool,
     event: notify::Result<notify::Event>,
@@ -659,10 +656,10 @@ pub fn watch_root(
 
 /// Folds one watcher event into the dirty-directory set.
 ///
-/// `pub` for the tests: a file event must map to its PARENT directory, since
-/// the drain calls `read_dir` on whatever lands here — inserting the file path
-/// instead makes that call fail silently and new photos never appear.
-pub fn collect(
+/// A file event maps to its PARENT directory, since the drain calls
+/// `read_dir` on whatever lands here — inserting the file path instead makes
+/// that call fail silently and new photos never appear.
+fn collect(
     event: notify::Result<notify::Event>,
     dirty: &mut HashSet<PathBuf>,
     overflowed: &mut bool,
