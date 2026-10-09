@@ -1,6 +1,6 @@
 import { useWizardStore } from "../state/wizard-store";
 import { allCopiesUnavailable } from "../models/sourceAvailability";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "../i18n/I18nContext";
 import type { Message } from "../i18n/translate";
 import type { MessageKey } from "../i18n/catalogues";
@@ -36,6 +36,7 @@ import {
 import {
   mergeActiveItemWork,
   useDerivedWorkStore,
+  type ActiveItemWork,
 } from "../state/derived-work-store";
 import { useDestinationItemDrag } from "./DestinationDragProvider";
 import { requestComparisonFromMain } from "../workflows/comparison";
@@ -442,6 +443,90 @@ function ListRow({
 }
 
 
+/** One item of the grid or list. Memoised: scrolling, a selection change
+ * elsewhere or another item's progress re-renders only the cells whose own
+ * props changed. */
+const GridCell = memo(function GridCell({
+  item,
+  absoluteIndex,
+  layout,
+  isSelected,
+  isAnchor,
+  selectionOrdinal,
+  selectedCount,
+  similarCount,
+  showFaceStars,
+  unavailable,
+  activeWork,
+  widths,
+  measureRef,
+  onActivate,
+}: {
+  item: SectionItem;
+  absoluteIndex: number;
+  layout: "tiles" | "list";
+  isSelected: boolean;
+  isAnchor: boolean;
+  selectionOrdinal: number | null;
+  /** The selection's size, for a selected item; 0 otherwise. */
+  selectedCount: number;
+  similarCount: number;
+  showFaceStars: boolean;
+  unavailable: boolean;
+  /** The background work running on this item, if any. */
+  activeWork: ActiveItemWork | null;
+  widths: Record<SizedColumn, number>;
+  measureRef: ((node: HTMLDivElement | null) => void) | undefined;
+  onActivate: (event: React.MouseEvent, key: string, absoluteIndex: number) => void;
+}) {
+  const { t } = useI18n();
+  const key = itemKey(item);
+  const projectedItem = useMemo(
+    () => ({
+      ...item,
+      derivedWork: mergeActiveItemWork(item.derivedWork, item.hash, activeWork, t),
+    }),
+    [item, activeWork, t],
+  );
+  const presentation = itemPresentation(projectedItem, {
+    similarCount,
+    selectionOrdinal,
+    selectedCount,
+    showFaceStars,
+    unavailable,
+  }, t);
+  const onSelect = (event: React.MouseEvent) => onActivate(event, key, absoluteIndex);
+  return (
+    <div
+      ref={measureRef}
+      id={`grid-opt-${key}`}
+      data-item-key={key}
+      role="option"
+      aria-selected={isSelected}
+      className={layout === "list" ? "w-full" : undefined}
+    >
+      {layout === "list" ? (
+        <ListRow
+          item={item}
+          isSelected={isSelected}
+          isAnchor={isAnchor}
+          onSelect={onSelect}
+          widths={widths}
+          presentation={presentation}
+        />
+      ) : (
+        <Tile
+          item={projectedItem}
+          isSelected={isSelected}
+          isAnchor={isAnchor}
+          onSelect={onSelect}
+          presentation={presentation}
+        />
+      )}
+    </div>
+  );
+});
+
 export default function Grid({
   items,
   loading,
@@ -538,7 +623,10 @@ export default function Grid({
   // selection crawl even though the images themselves lazy-load. The row
   // height is MEASURED off the first rendered item (a constant would drift
   // with any styling change); the estimate carries the first paint.
-  const [scrollTop, setScrollTop] = useState(0);
+  // The scroll offset lives in a ref: a scroll event re-renders the grid only
+  // when it changes which rows are in view, not on every pixel.
+  const scrollTopRef = useRef(0);
+  const [, setScrolledRows] = useState("0:0");
   const [viewportHeight, setViewportHeight] = useState(600);
   const [measuredItemHeight, setMeasuredItemHeight] = useState<number | null>(null);
   useEffect(() => {
@@ -554,11 +642,12 @@ export default function Grid({
   const rowHeight =
     (measuredItemHeight ?? (layout === "list" ? LIST_ROW_ESTIMATE - gap : TILE_ROW_ESTIMATE - gap)) +
     gap;
-  const measureItem = (node: HTMLDivElement | null) => {
-    if (node !== null && node.offsetHeight > 0 && node.offsetHeight !== measuredItemHeight) {
-      setMeasuredItemHeight(node.offsetHeight);
+  const measureItem = useCallback((node: HTMLDivElement | null) => {
+    if (node !== null && node.offsetHeight > 0) {
+      const height = node.offsetHeight;
+      setMeasuredItemHeight((current) => (current === height ? current : height));
     }
-  };
+  }, []);
 
   // The anchor stays in view across deletes and refreshes — the recovery
   // selection lands off-screen otherwise ("nearest" makes it a no-op when
@@ -609,6 +698,17 @@ export default function Grid({
   columnsRef.current = columns;
   const rowHeightRef = useRef(rowHeight);
   rowHeightRef.current = rowHeight;
+  const viewportHeightRef = useRef(viewportHeight);
+  viewportHeightRef.current = viewportHeight;
+  const onScroll = (event: React.UIEvent<HTMLDivElement>) => {
+    const top = event.currentTarget.scrollTop;
+    scrollTopRef.current = top;
+    // The two numbers `visibleWindow` derives everything from.
+    const first = Math.floor(top / rowHeightRef.current);
+    const last = Math.ceil((top + viewportHeightRef.current) / rowHeightRef.current);
+    setScrolledRows(`${first}:${last}`);
+  };
+  const scrollTop = scrollTopRef.current;
 
   const totalRows = Math.ceil(effectiveTotalItems / Math.max(1, columns));
   const win = visibleWindow(scrollTop, viewportHeight, rowHeight, totalRows);
@@ -643,14 +743,40 @@ export default function Grid({
     windowStart,
   ]);
   const actualWindow = visibleWindow(scrollTop, viewportHeight, rowHeight, totalRows, 0);
-  const attention = viewportAttention(
-    sorted.map((item) => item.hash), windowStart,
-    actualWindow.startRow * columns, Math.min(effectiveTotalItems, actualWindow.endRow * columns),
-  );
-  const attentionSignature = JSON.stringify(attention);
+  const attentionStart = actualWindow.startRow * columns;
+  const attentionEnd = Math.min(effectiveTotalItems, actualWindow.endRow * columns);
+  // Computed only when the window or the rows in view change; the signature
+  // keeps a republished but identical window from being sent again.
+  const { attention, attentionSignature } = useMemo(() => {
+    const attention = viewportAttention(
+      sorted.map((item) => item.hash), windowStart, attentionStart, attentionEnd,
+    );
+    return {
+      attention,
+      attentionSignature: `${attention.anchor}|${attention.visibleHashes.join(",")}|${attention.nearbyHashes.join(",")}`,
+    };
+  }, [sorted, windowStart, attentionStart, attentionEnd]);
   useEffect(() => {
     setWorkViewport({ ...attention, sectionKey: `${selectedSection?.kind}:${selectedSection?.month}` });
+    // The signature stands for `attention`'s content.
   }, [selectedSection?.kind, selectedSection?.month, attentionSignature]);
+
+  // One stable handler for every cell, so a memoised cell re-renders only
+  // when its own props change.
+  const activateItem = useCallback((event: React.MouseEvent, key: string, absoluteIndex: number) => {
+    containerRef.current?.focus();
+    // Browser double-click dispatch is click, click, dblclick. Acting
+    // only on the first click avoids repeating the selection change
+    // before the double-click opens the fullscreen view.
+    if (event.detail > 1) return;
+    if (event.shiftKey) {
+      void rangeSelect(key, absoluteIndex);
+    } else if (event.metaKey || event.ctrlKey) {
+      toggleItem(key, absoluteIndex);
+    } else {
+      selectItem(key, "nearest", absoluteIndex);
+    }
+  }, [rangeSelect, toggleItem, selectItem]);
 
   const onGridKeyDown = (event: React.KeyboardEvent) => {
     if (event.defaultPrevented || isComposingEvent(event) || hasOpenModal()
@@ -778,7 +904,7 @@ export default function Grid({
             selectItem(null);
           }
         }}
-        onScroll={(event) => setScrollTop((event.target as HTMLDivElement).scrollTop)}
+        onScroll={onScroll}
       >
         {loadError !== null && items.length > 0 ? (
           <OperationResult
@@ -820,68 +946,31 @@ export default function Grid({
             ))
           : null}
         {visible.map((item, i) => {
-          const absoluteIndex = visibleStart + i;
           const key = itemKey(item);
-          const isSelected = selectedKeys.has(key);
-          const isAnchor = selectedItem === key;
-          const projectedItem = {
-            ...item,
-            derivedWork: mergeActiveItemWork(item.derivedWork, item.hash, activeWork, t),
-          };
-          const presentation = itemPresentation(projectedItem, {
-            similarCount:
-              item.similarCount ??
-              (item.similarGroupId === null
-                ? 0
-                : (loadedSimilarCounts.get(item.similarGroupId) ?? 0)),
-            selectionOrdinal: selectionOrdinals.get(key) ?? null,
-            selectedCount: selectedKeys.size,
-            showFaceStars,
-            unavailable: allCopiesUnavailable(item.dirPaths, unavailableRoots),
-          }, t);
-          const onSelect = (event: React.MouseEvent) => {
-            containerRef.current?.focus();
-            // Browser double-click dispatch is click, click, dblclick. Acting
-            // only on the first click avoids repeating the selection change
-            // before the double-click opens the fullscreen view.
-            if (event.detail > 1) return;
-            if (event.shiftKey) {
-              void rangeSelect(key, absoluteIndex);
-            } else if (event.metaKey || event.ctrlKey) {
-              toggleItem(key, absoluteIndex);
-            } else {
-              selectItem(key, "nearest", absoluteIndex);
-            }
-          };
+          const selectionOrdinal = selectionOrdinals.get(key) ?? null;
           return (
-            <div
+            <GridCell
               key={key}
-              ref={i === 0 ? measureItem : undefined}
-              id={`grid-opt-${key}`}
-              data-item-key={key}
-              role="option"
-              aria-selected={isSelected}
-              className={layout === "list" ? "w-full" : undefined}
-            >
-              {layout === "list" ? (
-                <ListRow
-                  item={item}
-                  isSelected={isSelected}
-                  isAnchor={isAnchor}
-                  onSelect={onSelect}
-                  widths={columnWidths}
-                  presentation={presentation}
-                />
-              ) : (
-                <Tile
-                  item={projectedItem}
-                  isSelected={isSelected}
-                  isAnchor={isAnchor}
-                  onSelect={onSelect}
-                  presentation={presentation}
-                />
-              )}
-            </div>
+              item={item}
+              absoluteIndex={visibleStart + i}
+              layout={layout}
+              isSelected={selectedKeys.has(key)}
+              isAnchor={selectedItem === key}
+              selectionOrdinal={selectionOrdinal}
+              selectedCount={selectionOrdinal === null ? 0 : selectedKeys.size}
+              similarCount={
+                item.similarCount ??
+                (item.similarGroupId === null
+                  ? 0
+                  : (loadedSimilarCounts.get(item.similarGroupId) ?? 0))
+              }
+              showFaceStars={showFaceStars}
+              unavailable={allCopiesUnavailable(item.dirPaths, unavailableRoots)}
+              activeWork={activeWork !== null && activeWork.hash === item.hash ? activeWork : null}
+              widths={columnWidths}
+              measureRef={i === 0 ? measureItem : undefined}
+              onActivate={activateItem}
+            />
           );
         })}
         {Math.max(0, totalRows - Math.ceil(visibleEnd / Math.max(1, columns))) * rowHeight > 0 ? (
