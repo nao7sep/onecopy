@@ -91,7 +91,7 @@ export function SubstitutedSourceGate({
           <Button size="md" onClick={onReconfigure}>
             {t("source.rerunSetup")}
           </Button>
-          <Button variant="primary" size="md" onClick={onRecheck}>
+          <Button autoFocus variant="primary" size="md" onClick={onRecheck}>
             {t("app.checkSources")}
           </Button>
         </div>

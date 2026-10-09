@@ -48,6 +48,25 @@ describe("the presence gate", () => {
     expect(hasOpenModal()).toBe(true);
   });
 
+  it("takes focus on its main action and gives it back when it closes", async () => {
+    const opener = document.createElement("button");
+    document.body.append(opener);
+    opener.focus();
+    const view = render(
+      <SubstitutedSourceGate
+        substituted={["/Volumes/Photos"]}
+        unknown={false}
+        onRecheck={() => {}}
+        onReconfigure={() => {}}
+      />,
+    );
+    expect(document.activeElement).toBe(view.getByRole("button", { name: "Check source folders" }));
+    view.unmount();
+    await Promise.resolve();
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+
   it("releases the command layer once it closes", () => {
     const view = render(
       <SubstitutedSourceGate

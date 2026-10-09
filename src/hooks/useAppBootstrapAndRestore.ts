@@ -10,6 +10,19 @@ import { useItemsStore } from "../state/items-store";
 import { retainStatePatch } from "../state/app-store";
 import { usePreviewStore } from "../state/preview-store";
 import { parseAnchorContext } from "../models/mainSelection";
+import { hasOpenModal } from "../utils/modalStack";
+
+/** Launch puts keyboard focus where work starts: the grid when a section was
+ * restored, otherwise the folder tree. A surface that already holds focus
+ * (setup, the source gate, a dialog) keeps it. */
+function focusLaunchTarget(id: "main-item-area" | "section-tree"): void {
+  requestAnimationFrame(() => {
+    if (hasOpenModal()) return;
+    const active = document.activeElement;
+    if (active !== null && active !== document.body) return;
+    document.getElementById(id)?.focus();
+  });
+}
 
 interface AppBootstrapAndRestoreOptions {
   appData: LoadedAppData | null;
@@ -73,16 +86,20 @@ export function useAppBootstrapAndRestore({
       (last.kind !== "image" && last.kind !== "video" && last.kind !== "other") ||
       typeof last.month !== "string"
     ) {
+      focusLaunchTarget("section-tree");
       return;
     }
     const lists =
       last.kind === "image" ? counts.images : last.kind === "video" ? counts.videos : counts.others;
-    if (!lists.some((section) => section.month === last.month)) return;
+    if (!lists.some((section) => section.month === last.month)) {
+      focusLaunchTarget("section-tree");
+      return;
+    }
     const anchor = typeof state.lastItem === "string" ? state.lastItem : null;
     void useItemsStore.getState().select(
       { kind: last.kind, month: last.month },
       { anchor, context: parseAnchorContext(state.lastItemContext) },
-    );
+    ).then(() => focusLaunchTarget("main-item-area"));
   }, [appData, counts, restorePaneIntents]);
 
   return { rightTab, setRightTab };

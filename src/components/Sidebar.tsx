@@ -224,6 +224,7 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
   return (
     <div
       ref={containerRef}
+      id="section-tree"
       tabIndex={0}
       role="tree"
       aria-label={t("sidebar.sections")}
