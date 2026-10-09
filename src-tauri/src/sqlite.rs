@@ -33,6 +33,10 @@ pub(crate) fn set_aside_if_unreadable(
         ) else {
             return Ok(None);
         };
+        // A store held busy is not damaged; waiting would only delay launch.
+        if connection.busy_timeout(Duration::from_millis(100)).is_err() {
+            return Ok(None);
+        }
         match connection.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0)) {
             Err(error) => malformed(&error),
             Ok(version) if version < 0 => unmarked_unreadable,

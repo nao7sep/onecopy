@@ -903,3 +903,24 @@ fn ten_thousand_files_plan_quickly() {
     assert_eq!(plan.steps.len(), 10_000);
     assert!(started.elapsed() < std::time::Duration::from_secs(3), "{:?}", started.elapsed());
 }
+
+// A process that stops after Restore's rename but before its "restored" line:
+// the entry no longer lists, a new plan skips it as missing, and the next scan
+// indexes the returned file.
+#[test]
+fn a_stop_after_the_restore_rename_lists_nothing_and_the_scan_finds_the_file() {
+    let f = fixture("stop-after-rename", false);
+    let id = f.deleted("a.jpg", b"returned", "i1", TrashRole::Main);
+    std::fs::rename(f.root.join(TRASH_DIR_NAME).join(&id), f.root.join("a.jpg")).unwrap();
+
+    assert!(list_root(&f.root, &f.data).unwrap().entries.is_empty());
+    let (_, review, _) = f.plan(std::slice::from_ref(&id));
+    assert_eq!(review.files[0].skip, Some(Skip::Missing));
+    assert_eq!(f.manifest_events(), 0);
+    onecopy_lib::scanner::walk_root(&f.conn, &f.root, &f.settings.lists).unwrap();
+    let indexed: i64 = f
+        .conn
+        .query_row("SELECT COUNT(*) FROM paths WHERE file_name = 'a.jpg' AND missing = 0", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(indexed, 1);
+}

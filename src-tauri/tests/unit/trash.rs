@@ -220,3 +220,30 @@ fn the_latest_record_names_a_stored_file_reused_after_a_failed_move() {
     assert_eq!(listing.unrecorded_files, 0);
     assert_eq!(listing.malformed_lines, 0);
 }
+
+// A process that stops after the manifest line is written but before the move
+// leaves a line naming no stored file: the day lists nothing, and the source
+// file is untouched, still indexed where it was.
+#[test]
+fn a_stop_between_the_manifest_line_and_the_move_lists_nothing_and_keeps_the_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("source");
+    std::fs::create_dir(&root).unwrap();
+    let source = root.join("photo.jpg");
+    std::fs::write(&source, b"keep").unwrap();
+    let mut day = PathBuf::new();
+
+    let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = trash_file_with_before_move(&source, &root, None, &ctx(), |target| {
+            day = target.parent().unwrap().to_path_buf();
+            panic!("the process stops here");
+        });
+    }));
+
+    assert!(stopped.is_err());
+    assert_eq!(std::fs::read(&source).unwrap(), b"keep");
+    assert!(day.join(MANIFEST_FILE_NAME).exists(), "the line was written first");
+    let listing = read_day(&day).unwrap();
+    assert!(listing.records.is_empty());
+    assert_eq!(listing.restored, 0);
+}

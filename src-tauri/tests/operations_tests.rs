@@ -3023,3 +3023,116 @@ fn copy_uses_an_available_duplicate_while_move_requires_every_copy() {
     assert!(refused.is_err());
     assert!(second.exists());
 }
+
+// The destination folder's flush after publish fails: the output may not be
+// durable, so the Move keeps its source, reports the file and records why.
+#[test]
+fn a_move_whose_destination_flush_fails_keeps_its_source() {
+    let f = fixture("dest-flush-fails");
+    std::fs::write(f.root.join("photo.jpg"), b"image-bytes").unwrap();
+    scan(&f);
+    let dest = f._dir.path().join("destination");
+    std::fs::create_dir(&dest).unwrap();
+    let volume = FakeStallingVolume::mount(&dest, STALL_BOUND);
+    // The staged file's own sync passes; the folder's sync after publish stalls.
+    volume.stall_after(&[Op::Sync], None, 1);
+
+    let outcome = move_batch(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        &[item_named(&f, "photo.jpg")],
+        &dest,
+        MoveOutMode::MoveDeleteRest,
+        &|| false,
+        |_| {},
+    )
+    .unwrap();
+
+    let target = dest.join("photo.jpg");
+    // Published under its name, then the folder flush failed.
+    assert_eq!(std::fs::read(&target).unwrap(), b"image-bytes");
+    assert_eq!(outcome.exported, 0);
+    assert_eq!(outcome.undelivered, vec![target.to_string_lossy().into_owned()]);
+    assert_eq!(outcome.post_action.deleted_files, 0);
+    assert_eq!(std::fs::read(f.root.join("photo.jpg")).unwrap(), b"image-bytes");
+    assert_eq!(row_state(&f, "photo.jpg"), Some(0));
+    assert_eq!(open_issue_kinds(&f, &target), vec!["copy-error".to_string()]);
+    volume.fail();
+    assert!(volume.wait_until_settled(SETTLE));
+    assert!(private_leftovers(&dest).is_empty(), "{:?}", private_leftovers(&dest));
+}
+
+// The destination fails partway through writing an output: nothing appears at
+// the final name, no private stage is left behind, the source stays, and the
+// unstarted item is not attempted.
+#[test]
+fn a_destination_failing_mid_write_leaves_nothing_behind() {
+    let f = fixture("dest-fails-mid-write");
+    let big: Vec<u8> = (0..6 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+    std::fs::write(f.root.join("a-big.jpg"), &big).unwrap();
+    std::fs::write(f.root.join("b-next.jpg"), b"next-bytes").unwrap();
+    scan(&f);
+    let dest = f._dir.path().join("destination");
+    std::fs::create_dir(&dest).unwrap();
+    let volume = FakeStallingVolume::mount(&dest, STALL_BOUND);
+    volume.stall_after(&[Op::Write], None, 1);
+
+    let outcome = move_batch(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        &[item_named(&f, "a-big.jpg"), item_named(&f, "b-next.jpg")],
+        &dest,
+        MoveOutMode::MoveTrashRest,
+        &|| false,
+        |_| {},
+    );
+    volume.fail();
+    assert!(volume.wait_until_settled(SETTLE));
+
+    let outcome = outcome.map(|batch| (batch.exported, batch.post_action.deleted_files, batch.error.is_some()));
+    assert!(matches!(outcome, Ok((0, 0, true)) | Err(_)), "{outcome:?}");
+    assert!(!dest.join("a-big.jpg").exists());
+    assert!(!dest.join("b-next.jpg").exists(), "nothing further goes to that destination");
+    assert_eq!(std::fs::read(f.root.join("a-big.jpg")).unwrap(), big);
+    assert!(f.root.join("b-next.jpg").exists());
+    assert!(private_leftovers(&dest).is_empty(), "{:?}", private_leftovers(&dest));
+}
+
+// The index is held busy by another writer after Delete has moved a file into
+// Deleted files: that file is stored with its manifest line, the batch stops
+// with an error, the rest stay in place, and a later check settles the row.
+#[test]
+fn a_busy_index_after_a_physical_trash_stops_the_batch_without_losing_the_file() {
+    let f = fixture("busy-index-after-trash");
+    for name in ["a.jpg", "b.jpg", "c.jpg"] {
+        std::fs::write(f.root.join(name), format!("{name}-bytes")).unwrap();
+    }
+    scan(&f);
+    let items = vec![item_named(&f, "a.jpg"), item_named(&f, "b.jpg"), item_named(&f, "c.jpg")];
+    f.conn.busy_timeout(std::time::Duration::ZERO).unwrap();
+    let blocker = rusqlite::Connection::open(f._dir.path().join("index.sqlite3")).unwrap();
+    let mut held = false;
+
+    let outcome = delete_batch(&f.conn, &f.app_root, &f.cache, &items, DeleteMode::Trash, &|| false, |progress| {
+        if !held && matches!(progress, DeleteBatchProgress::Deleting { .. }) {
+            blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+            held = true;
+        }
+    });
+    blocker.execute_batch("ROLLBACK").unwrap();
+
+    let present: Vec<bool> = ["a.jpg", "b.jpg", "c.jpg"].iter().map(|name| f.root.join(name).exists()).collect();
+    let gone = present.iter().filter(|present| !**present).count();
+    assert_eq!(gone, 1, "only the file in flight left: {present:?}");
+    assert!(outcome.as_ref().map_or(true, |batch| batch.error.is_some() || batch.failed_files > 0), "{outcome:?}");
+    if gone == 1 {
+        let listing = onecopy_lib::trash::list_root(&f.root, &f.app_root).unwrap();
+        assert_eq!(listing.entries.len(), 1, "stored with its line");
+        assert_eq!(listing.unrecorded_files, 0);
+    }
+    scan(&f);
+    let live: i64 = f.conn.query_row("SELECT COUNT(*) FROM paths WHERE missing = 0", [], |r| r.get(0)).unwrap();
+    assert_eq!(live as usize, 3 - gone);
+}

@@ -64,3 +64,18 @@ fn a_damaged_index_is_set_aside_but_an_unmarked_one_is_left_for_its_rebuild() {
     assert!(!index.exists());
     assert_eq!(std::fs::read(&record.quarantined_to).unwrap(), b"not a database");
 }
+
+// A store another connection holds locked is busy, not damaged.
+#[test]
+fn a_locked_store_is_never_set_aside() {
+    let root = tempfile::tempdir().unwrap();
+    let store = root.path().join("index.sqlite3");
+    let holder = Connection::open(&store).unwrap();
+    holder.execute_batch("CREATE TABLE t (v); PRAGMA user_version = 1; BEGIN EXCLUSIVE; INSERT INTO t VALUES (1);").unwrap();
+    let before = std::fs::read(&store).unwrap();
+
+    assert!(set_aside_if_unreadable(&store, true).unwrap().is_none());
+    assert!(store.exists());
+    assert_eq!(std::fs::read(&store).unwrap(), before);
+    holder.execute_batch("ROLLBACK").unwrap();
+}

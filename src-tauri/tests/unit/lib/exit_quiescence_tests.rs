@@ -51,8 +51,7 @@ fn sequence(steps: &Steps, join_workers: Box<dyn FnOnce() + Send>, mutation: Dur
 
 // A mutation that reaches its own safe point well inside its deadline is
 // never treated as timed out, even while a stuck derived join is abandoned at
-// its own, shorter deadline (`specs/file-operations.md`, "Normal exit and
-// abnormal termination").
+// its own, shorter deadline.
 #[test]
 fn a_mutation_that_reaches_its_safe_point_in_time_exits_normally() {
     let steps = Steps::default();
@@ -137,7 +136,7 @@ fn a_failed_exit_thread_start_still_quits_after_mutation_quiescence() {
 
 
 #[test]
-fn unsuccessful_worker_quiescence_cannot_authorize_a_clean_archive() {
+fn unsuccessful_worker_quiescence_does_not_count_as_a_clean_exit() {
     let (tx, rx) = std::sync::mpsc::channel();
     let (clean_tx, clean_rx) = std::sync::mpsc::channel();
     let sequence = ExitSequence {
