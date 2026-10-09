@@ -5,6 +5,7 @@ import { availableMonitors, type Monitor } from "@tauri-apps/api/window";
 import { identifyScreens } from "../workflows/identify-screens";
 import { useSettingsStore } from "../state/settings-store";
 import { saveSettings } from "../workflows/settings";
+import { useQuitDiscardStore } from "../workflows/quit";
 import { log, toErrorFields } from "../repositories";
 import { useAppStore } from "../state/app-store";
 import { useItemsStore } from "../state/items-store";
@@ -334,6 +335,8 @@ export default function SettingsModal({
     (s) => s.accelerationCapabilities,
   );
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const quitDiscard = useQuitDiscardStore((s) => s.choose);
+  const quitDiscardPresented = useQuitDiscardStore((s) => s.presented);
   const [confirmRebuild, setConfirmRebuild] = useState(false);
   const [rebuilding, setRebuilding] = useState(false);
   const [textOptions, setTextOptions] = useState<TextPreviewOptions | null>(null);
@@ -370,6 +373,11 @@ export default function SettingsModal({
       });
   }, [open, textOptions]);
 
+  // Quitting over unsaved edits asks here, where the edits are.
+  useEffect(() => {
+    if (open && draft !== null) quitDiscardPresented?.();
+  }, [open, draft, quitDiscardPresented]);
+
   if (!open || draft === null) return null;
 
   const dirty = JSON.stringify(draft) !== JSON.stringify(opened);
@@ -405,7 +413,19 @@ export default function SettingsModal({
         </Button>
       }
     >
-      {confirmDiscard ? (
+      {quitDiscard !== null ? (
+        <ConfirmModal
+          title={t("settings.discardTitle")}
+          message={t("settings.discardMessage")}
+          confirmLabel={t("settings.discard")}
+          cancelLabel={t("settings.keepEditing")}
+          onConfirm={() => {
+            setConfirmDiscard(false);
+            quitDiscard(true);
+          }}
+          onCancel={() => quitDiscard(false)}
+        />
+      ) : confirmDiscard ? (
         <ConfirmModal
           title={t("settings.discardTitle")}
           message={t("settings.discardMessage")}

@@ -4,10 +4,15 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { flushConfigForShutdown, flushStatePatchesForShutdown, reportStatePatchFailure, resumeStatePatchesAfterFailedShutdown } from "../state/app-store";
+import { settingsDraftIsDirty, useSettingsStore } from "../state/settings-store";
+import { useAppShellStore } from "../state/app-shell-store";
 import { reportWindowCall } from "../repositories";
 
 export type QuitChoice = "retry" | "cancel" | "quit" | "session";
 export const useQuitSaveStore = create<{ choose: ((choice: QuitChoice) => void) | null; presented: (() => void) | null }>(() => ({ choose: null, presented: null }));
+/** An ordinary quit over unsaved Settings edits asks first (developer
+ * decision): true discards them and quits, false keeps editing. */
+export const useQuitDiscardStore = create<{ choose: ((discard: boolean) => void) | null; presented: (() => void) | null }>(() => ({ choose: null, presented: null }));
 let attempt: Promise<void> | null = null;
 let requiredSave: Promise<void> | null = null;
 let sessionEnding = false;
@@ -27,6 +32,28 @@ function saveRequired(): Promise<void> {
     requiredSave = flushConfigForShutdown().finally(() => { requiredSave = null; });
   }
   return bounded(requiredSave, 1500);
+}
+
+/** Whether the quit may go on past the Settings draft: true when there are no
+ * unsaved edits or the user chose Discard. Checked after the required save, so
+ * a Settings save that was in flight has settled. */
+async function settingsMayBeDiscarded(): Promise<boolean> {
+  if (!settingsDraftIsDirty(useSettingsStore.getState())) return true;
+  let markPresented!: () => void;
+  const presented = new Promise<void>((resolve) => { markPresented = resolve; });
+  const decision = new Promise<boolean>((resolve) => {
+    useQuitDiscardStore.setState({ presented: markPresented, choose: (discard) => {
+      markPresented();
+      useQuitDiscardStore.setState({ choose: null, presented: null });
+      resolve(discard);
+    } });
+  });
+  // Like the save decision: a prompt that cannot be shown keeps editing.
+  await bounded(presented, 500).catch(() => useQuitDiscardStore.getState().choose?.(false));
+  if (!(await decision)) return false;
+  useSettingsStore.getState().discardDraft();
+  useAppShellStore.getState().closeUtility();
+  return true;
 }
 
 async function decide(): Promise<QuitChoice> {
@@ -66,6 +93,8 @@ export function requestQuit(): Promise<void> {
       }
     }
     if (sessionEnding || revision !== sessionRevision) return;
+    if (!(await settingsMayBeDiscarded())) return;
+    if (sessionEnding || revision !== sessionRevision) return;
     await bounded(flushStatePatchesForShutdown(), 500).catch(reportStatePatchFailure);
     if (!sessionEnding && revision === sessionRevision) await invoke("request_app_exit");
   })().catch((error) => {
@@ -79,6 +108,8 @@ export async function endSession(id = 0): Promise<void> {
   sessionRevision += 1;
   sessionEnding = true;
   useQuitSaveStore.getState().choose?.("session");
+  // The OS ending the session never asks; the draft is left as it is.
+  useQuitDiscardStore.getState().choose?.(false);
   try { await saveRequired(); } catch (error) { reportStatePatchFailure(error); }
   finally { await invoke("session_end_saved", { id }).catch(reportWindowCall("report session-end save")); }
 }

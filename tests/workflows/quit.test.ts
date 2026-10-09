@@ -1,13 +1,18 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { flushConfigForShutdown, resetConfigWritesForTests, useAppStore, retainStatePatch } from "../../src/state/app-store";
 import { setSoundEnabled, setPlaybackVolume } from "../../src/workflows/playback";
-import { cancelQuitDecision, cancelSessionEnd, endSession, installQuitWorkflow, requestQuit, useQuitSaveStore } from "../../src/workflows/quit";
+import { cancelQuitDecision, cancelSessionEnd, endSession, installQuitWorkflow, requestQuit, useQuitDiscardStore, useQuitSaveStore } from "../../src/workflows/quit";
+import { useSettingsStore } from "../../src/state/settings-store";
+import { useAppShellStore } from "../../src/state/app-shell-store";
+import { effectiveConfig } from "../helpers/config";
 import { fireEvent, invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
   resetConfigWritesForTests();
   cancelSessionEnd();
+  useSettingsStore.setState({ draft: null, opened: null, saving: false });
+  useAppShellStore.getState().closeUtility();
   useAppStore.setState({ appData: { config: { soundEnabled: true, playbackVolume: 0.7 }, state: {}, dataRoot: "/app", debugEnabled: false, quarantines: [] } });
   mockCommands({
     save_config: ({ changes }) => ({ ...useAppStore.getState().appData!.config, ...(changes as object) }),
@@ -167,4 +172,103 @@ it("renderer failure cancels a question that was already presented", async () =>
   expect(useQuitSaveStore.getState().choose).toBeNull();
   mockCommands({ save_config: ({ changes }) => changes });
   await flushConfigForShutdown();
+});
+
+// Unsaved Settings edits and an ordinary quit (developer decision): ask, and
+// never on the OS path.
+function editSettings(): void {
+  useSettingsStore.getState().beginEditing(effectiveConfig());
+  useAppShellStore.getState().openUtility("settings");
+  useSettingsStore.getState().update({ defaultTimezone: "Asia/Tokyo" });
+}
+
+async function presentedDiscardQuestion(): Promise<(discard: boolean) => void> {
+  await settle();
+  useQuitDiscardStore.getState().presented!();
+  const choose = useQuitDiscardStore.getState().choose;
+  expect(choose).not.toBeNull();
+  return choose!;
+}
+
+it("asks before quitting over unsaved Settings edits, and Keep editing stays", async () => {
+  editSettings();
+  const quit = requestQuit();
+  const choose = await presentedDiscardQuestion();
+  choose(false);
+  await quit;
+  expect(exits()).toHaveLength(0);
+  expect(useSettingsStore.getState().draft?.defaultTimezone).toBe("Asia/Tokyo");
+  expect(useAppShellStore.getState().utilitySurface).toBe("settings");
+  expect(useQuitDiscardStore.getState().choose).toBeNull();
+});
+
+it("Discard drops the unsaved Settings edits and quits without saving them", async () => {
+  editSettings();
+  const quit = requestQuit();
+  (await presentedDiscardQuestion())(true);
+  await quit;
+  expect(exits()).toHaveLength(1);
+  expect(useSettingsStore.getState().draft).toBeNull();
+  expect(useAppShellStore.getState().utilitySurface).toBeNull();
+  const written = invokeCalls.filter((call) => call.command === "save_config")
+    .map((call) => call.args.changes as Record<string, unknown>);
+  expect(written.some((changes) => "defaultTimezone" in changes)).toBe(false);
+});
+
+it("quits without asking when Settings is closed or has no edits", async () => {
+  useSettingsStore.getState().beginEditing(effectiveConfig());
+  useAppShellStore.getState().openUtility("settings");
+  await requestQuit();
+  expect(exits()).toHaveLength(1);
+  expect(useQuitDiscardStore.getState().choose).toBeNull();
+});
+
+it("a question that cannot be shown keeps editing", async () => {
+  vi.useFakeTimers();
+  editSettings();
+  const quit = requestQuit();
+  await settle();
+  await vi.advanceTimersByTimeAsync(500);
+  await quit;
+  expect(exits()).toHaveLength(0);
+  expect(useSettingsStore.getState().draft).not.toBeNull();
+});
+
+it("the OS ending the session never asks about unsaved Settings edits", async () => {
+  editSettings();
+  setPlaybackVolume(0.4);
+  await endSession(3);
+  expect(useQuitDiscardStore.getState().choose).toBeNull();
+  expect(invokeCalls.filter((call) => call.command === "save_config")
+    .map((call) => call.args.changes)).toEqual([{ soundEnabled: true, playbackVolume: 0.4 }]);
+  expect(invokeCalls.find((call) => call.command === "session_end_saved")?.args).toEqual({ id: 3 });
+});
+
+it("an OS takeover during the question ends the ordinary quit without discarding", async () => {
+  editSettings();
+  const quit = requestQuit();
+  await presentedDiscardQuestion();
+  await endSession();
+  await quit;
+  expect(exits()).toHaveLength(0);
+  expect(useSettingsStore.getState().draft).not.toBeNull();
+});
+
+it("quit waits for a Settings save in flight and does not ask about it", async () => {
+  let complete!: (value: unknown) => void;
+  mockCommands({ save_config: ({ changes }) => new Promise((resolve) => {
+    complete = () => resolve({ ...useAppStore.getState().appData!.config, ...(changes as object) });
+  }) });
+  editSettings();
+  useSettingsStore.setState({ saving: true });
+  const saving = useAppStore.getState().saveConfig({ defaultTimezone: "Asia/Tokyo" });
+  const quit = requestQuit();
+  await settle();
+  expect(exits()).toHaveLength(0);
+  expect(useQuitDiscardStore.getState().choose).toBeNull();
+  complete(null);
+  await saving;
+  await quit;
+  expect(exits()).toHaveLength(1);
+  expect(useAppStore.getState().appData?.config.defaultTimezone).toBe("Asia/Tokyo");
 });

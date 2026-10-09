@@ -154,6 +154,18 @@ interface SettingsState {
 }
 
 
+/** Unsaved edits in an open Settings draft. A save in progress is not
+ * unsaved: it settles or fails on its own. */
+export function settingsDraftIsDirty(
+  state: Pick<SettingsState, "draft" | "opened" | "saving">,
+): boolean {
+  return (
+    state.draft !== null &&
+    !state.saving &&
+    JSON.stringify(state.draft) !== JSON.stringify(state.opened)
+  );
+}
+
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   draft: null,
   accelerationCapabilities: [],

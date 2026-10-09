@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import SettingsModal from "../../src/components/SettingsModal";
 import { useSettingsStore } from "../../src/state/settings-store";
+import { useQuitDiscardStore } from "../../src/workflows/quit";
 import { DEFAULT_CONFIG, effectiveConfig } from "../helpers/config";
 import { createdWindows, invokeCalls, mockCommands, resetTauriMocks, setMonitors, setWindowCreatedHook, WebviewWindow } from "../mocks/tauri";
 
@@ -437,5 +438,24 @@ describe("settings save state", () => {
     useSettingsStore.setState({ saving: true });
     useSettingsStore.getState().discardDraft();
     expect(useSettingsStore.getState().draft).not.toBeNull();
+  });
+});
+
+describe("quitting over unsaved edits", () => {
+  it("asks in Settings, and Keep editing answers the quit without discarding", () => {
+    let answer: boolean | null = null;
+    let shown = false;
+    useQuitDiscardStore.setState({
+      choose: (discard) => { answer = discard; },
+      presented: () => { shown = true; },
+    });
+    render(<SettingsModal open onClose={() => {}} />);
+
+    expect(shown).toBe(true);
+    expect(screen.getByText("Discard changes?")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+    expect(answer).toBe(false);
+    expect(useSettingsStore.getState().draft).not.toBeNull();
+    useQuitDiscardStore.setState({ choose: null, presented: null });
   });
 });
