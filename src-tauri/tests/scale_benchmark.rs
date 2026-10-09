@@ -114,11 +114,35 @@ fn scan_settings(source: &Path, home: &Path) -> scanner::ScanSettings {
 }
 
 fn full_scan(conn: &Connection, settings: &scanner::ScanSettings) -> (Duration, Duration) {
+    full_scan_phases(conn, settings).0
+}
+
+/// A full scan, with the time each phase started (from the progress events).
+fn full_scan_phases(
+    conn: &Connection,
+    settings: &scanner::ScanSettings,
+) -> ((Duration, Duration), Vec<(scanner::ScanPhase, Duration)>) {
     let started = Instant::now();
-    let mut summary = scanner::run_source_check(conn, settings, &|_| {}).unwrap();
+    let phases = std::cell::RefCell::new(Vec::<(scanner::ScanPhase, Duration)>::new());
+    let note = |progress: scanner::ScanProgress| {
+        let mut phases = phases.borrow_mut();
+        if phases.last().map(|(phase, _)| *phase) != Some(progress.phase) {
+            phases.push((progress.phase, started.elapsed()));
+        }
+    };
+    let mut summary = scanner::run_source_check(conn, settings, &note).unwrap();
     let walked = started.elapsed();
-    scanner::run_index_tail(conn, settings, &|_| {}, &mut summary).unwrap();
-    (walked, started.elapsed())
+    scanner::run_index_tail(conn, settings, &note, &mut summary).unwrap();
+    let total = started.elapsed();
+    let mut phases = phases.into_inner();
+    phases.push((scanner::ScanPhase::Indexed, total));
+    ((walked, total), phases)
+}
+
+fn report_phases(label: &str, phases: &[(scanner::ScanPhase, Duration)]) {
+    for pair in phases.windows(2) {
+        report(&format!("  {label}: {:?}", pair[0].0), pair[1].1 - pair[0].1);
+    }
 }
 
 fn projection() -> queries::ItemProjectionContext {
@@ -178,12 +202,14 @@ fn scale_benchmark() {
     let cache = CachePaths::new(settings.cache_root.clone());
 
     let conn = index_store::open(&db).unwrap();
-    let (walked, scanned) = full_scan(&conn, &settings);
+    let ((walked, scanned), phases) = full_scan_phases(&conn, &settings);
     report("first scan: source check (walk)", walked);
     report("first scan: walk + file information", scanned);
-    let (walked, scanned) = full_scan(&conn, &settings);
+    report_phases("first scan", &phases);
+    let ((walked, scanned), phases) = full_scan_phases(&conn, &settings);
     report("repeat scan: source check (walk)", walked);
     report("repeat scan: walk + file information", scanned);
+    report_phases("repeat scan", &phases);
     drop(conn);
 
     let started = Instant::now();
