@@ -58,6 +58,11 @@ export function isSectionRecheckShortcut(event: KeyboardEvent): boolean {
   return hasMod(event) && event.key.toLowerCase() === "r" && !event.shiftKey;
 }
 
+/** Cmd/Ctrl+A — select every item of Main's open section. */
+export function isSelectAllShortcut(event: KeyboardEvent): boolean {
+  return hasMod(event) && event.key.toLowerCase() === "a" && !event.shiftKey;
+}
+
 /** INPUT types that consume printable keys. A checkbox, radio, range, button
  * or file picker does not, so a chord must NOT stand down over one (the
  * keyboard-shortcut-conventions name these explicitly). The empty string is

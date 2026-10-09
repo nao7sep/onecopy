@@ -3,6 +3,7 @@ import {
   hasMod,
   isHelpShortcut,
   isSectionRecheckShortcut,
+  isSelectAllShortcut,
   isSettingsShortcut,
 } from "../../src/utils/shortcuts";
 import { isZoomIn, isZoomOut, isZoomReset } from "../../src/utils/zoom";
@@ -119,5 +120,15 @@ describe("the section recheck chord", () => {
         shiftKey: true,
       }),
     ).toBe(false);
+  });
+});
+
+describe("the select-all chord", () => {
+  it("binds Cmd/Ctrl+A without stealing AltGr or Shift variants", () => {
+    expect(isSelectAllShortcut(key({ key: "a", metaKey: true }))).toBe(true);
+    expect(isSelectAllShortcut(key({ key: "A", ctrlKey: true }))).toBe(true);
+    expect(isSelectAllShortcut(key({ key: "a" }))).toBe(false);
+    expect(isSelectAllShortcut(key({ key: "a", ctrlKey: true, altKey: true }))).toBe(false);
+    expect(isSelectAllShortcut({ ...key({ key: "a", metaKey: true }), shiftKey: true })).toBe(false);
   });
 });

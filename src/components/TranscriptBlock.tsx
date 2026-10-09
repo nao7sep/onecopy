@@ -8,7 +8,7 @@ import { useWindowPreferencesStore } from "../state/window-preferences-store";
 import { useDerivedWorkStore } from "../state/derived-work-store";
 import { useTranscriptStore } from "../state/transcript-store";
 import { useAppStore } from "../state/app-store";
-import Button from "./ui/Button";
+import Button, { LinkButton } from "./ui/Button";
 import type { ItemWorkState } from "../models/items";
 import {
   installContentSessionClient,
@@ -335,13 +335,14 @@ export default function TranscriptBlock({
                 }`}
               >
                 {segment.timestamp !== "" ? (
-                  <button
-                    className="shrink-0 font-mono text-xs text-primary hover:underline"
+                  <LinkButton
+                    tone="primary"
+                    className="shrink-0 font-mono text-xs"
                     title={t("preview.playFrom", { time: segment.timestamp })}
                     onClick={() => requestPlaybackSeek(hash, segment.seconds)}
                   >
                     {segment.timestamp}
-                  </button>
+                  </LinkButton>
                 ) : null}
                 <span className="min-w-0 whitespace-pre-wrap break-words">{segment.text}</span>
               </li>
@@ -402,16 +403,16 @@ export default function TranscriptBlock({
       state.replacement.status !== "cancelled"
     ) {
       actions.push(
-        <Button key="cancel" variant="ghost" onClick={() => void cancel()}>
+        <Button size="toolbar" key="cancel" variant="ghost" onClick={() => void cancel()}>
           {t("transcript.cancelUpdate")}
         </Button>,
-        <Button key="work" variant="ghost" onClick={openBackgroundWork}>
+        <Button size="toolbar" key="work" variant="ghost" onClick={openBackgroundWork}>
           {t("work.title")}
         </Button>,
       );
     } else if (state.status === "ready") {
       actions.push(
-        <Button
+        <Button size="toolbar"
           key="replace"
           variant="ghost"
           onClick={() => void start(hash, true)}
@@ -421,7 +422,7 @@ export default function TranscriptBlock({
       );
       if (state.replacement?.status === "failed") {
         actions.push(
-          <Button key="issues" variant="ghost" onClick={openIssues}>
+          <Button size="toolbar" key="issues" variant="ghost" onClick={openIssues}>
             {t("issues.title")}
           </Button>,
         );
@@ -429,26 +430,26 @@ export default function TranscriptBlock({
     } else if (state.status === "running" || projectedRunning) {
       if (state.status === "running") {
         actions.push(
-          <Button key="cancel" variant="ghost" onClick={() => void cancel()}>
+          <Button size="toolbar" key="cancel" variant="ghost" onClick={() => void cancel()}>
             {t("common.cancel")}
           </Button>,
         );
       }
       actions.push(
-        <Button key="work" variant="ghost" onClick={openBackgroundWork}>
+        <Button size="toolbar" key="work" variant="ghost" onClick={openBackgroundWork}>
           {t("work.title")}
         </Button>,
       );
     } else if (waiting) {
       actions.push(
-        <Button key="work" onClick={openBackgroundWork}>
+        <Button size="toolbar" key="work" onClick={openBackgroundWork}>
           {t("work.title")}
         </Button>,
       );
     } else if (unavailable) {
       const remedy = reasonRemedy(work?.reason);
       actions.push(
-        <Button
+        <Button size="toolbar"
           key="tools"
           onClick={() => useAppShellStore.getState().openUtility(remedy)}
         >
@@ -457,17 +458,17 @@ export default function TranscriptBlock({
       );
       if (failed) {
         actions.push(
-          <Button key="issues" variant="ghost" onClick={openIssues}>
+          <Button size="toolbar" key="issues" variant="ghost" onClick={openIssues}>
             {t("issues.title")}
           </Button>,
         );
       }
     } else if (failed) {
       actions.push(
-        <Button key="retry" onClick={() => void start(hash)}>
+        <Button size="toolbar" key="retry" onClick={() => void start(hash)}>
           {t("common.retry")}
         </Button>,
-        <Button key="issues" variant="ghost" onClick={openIssues}>
+        <Button size="toolbar" key="issues" variant="ghost" onClick={openIssues}>
           {t("issues.title")}
         </Button>,
       );
@@ -476,7 +477,7 @@ export default function TranscriptBlock({
       (!automaticEnabled && work === null)
     ) {
       actions.push(
-        <Button key="transcribe" onClick={() => void start(hash)}>
+        <Button size="toolbar" key="transcribe" onClick={() => void start(hash)}>
           {t("transcript.transcribeThisFile")}
         </Button>,
       );
@@ -514,7 +515,7 @@ export default function TranscriptBlock({
         </h2>
         {!inDetails ? <span className="ml-auto flex flex-wrap items-baseline justify-end gap-2">
           {actions}
-          <Button
+          <Button size="toolbar"
             variant="ghost"
             onClick={() => {
               const request = ++visibilityRequest.current;

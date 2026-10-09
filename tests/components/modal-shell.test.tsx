@@ -58,7 +58,11 @@ describe("modal result growth", () => {
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   });
 
-  it("aligns footer metadata and action text by baseline and allows actions to wrap", () => {
+  // The metadata shares the first button's label baseline through the outer
+  // row; the buttons themselves are one height and centre on each other, so
+  // an icon in one (Background work's Pause all) cannot shift it against a
+  // label-only Close.
+  it("aligns footer metadata to the actions' baseline, centres the buttons, and lets them wrap", () => {
     render(<ModalShell title="Activity" onClose={() => undefined}
       footerStart={<span>100 events loaded</span>} primaryAction={<Button>Another action</Button>}>
       Content
@@ -67,7 +71,7 @@ describe("modal result growth", () => {
     const actions = screen.getByText("Close", { selector: "button" }).parentElement!;
     expect(metadata.parentElement).toBe(actions.parentElement);
     expect(actions.parentElement?.className).toContain("items-baseline");
-    expect(actions.className).toContain("items-baseline");
+    expect(actions.className).toContain("items-center");
     expect(actions.className).toContain("flex-wrap");
     expect(metadata.className).toContain("min-w-0");
   });

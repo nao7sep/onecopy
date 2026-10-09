@@ -564,7 +564,7 @@ export function RecordsWindow({ initialListWidth }: { initialListWidth: number }
                     data-record-key={key}
                     className={`cursor-default rounded-md px-2 py-1.5 transition-colors ${
                       isSelected
-                        ? "bg-primary-surface group-focus-visible/records:ring-2 group-focus-visible/records:ring-inset group-focus-visible/records:ring-primary-ring"
+                        ? "bg-primary-surface group-focus-visible/records:ring-2 group-focus-visible/records:ring-inset group-focus-visible/records:ring-focus-ring"
                         : "hover:bg-surface-muted"
                     }`}
                     onMouseDown={(event) => {
@@ -605,7 +605,7 @@ export function RecordsWindow({ initialListWidth }: { initialListWidth: number }
         aria-valuenow={shownListWidth}
         tabIndex={0}
         style={{ width: SPLITTER_WIDTH }}
-        className="group flex shrink-0 cursor-col-resize justify-center outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-ring"
+        className="group flex shrink-0 cursor-col-resize justify-center outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus-ring"
         onMouseDown={beginListDrag}
         onKeyDown={resizeByKey}
         onKeyUp={commitKeyedWidth}

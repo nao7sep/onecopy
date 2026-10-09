@@ -11,6 +11,7 @@
 
 import { X } from "lucide-react";
 import { useI18n } from "../i18n/I18nContext";
+import { IconButton } from "./ui/Button";
 
 export default function DirectoryRow({
   path,
@@ -21,16 +22,20 @@ export default function DirectoryRow({
 }) {
   const { t } = useI18n();
   return (
-    <div className="group flex items-start gap-2 rounded-lg border border-border bg-surface-muted/40 px-3 py-2 transition-colors hover:border-border-strong">
-      <p className="min-w-0 flex-1 break-all text-sm leading-relaxed text-ink">{path}</p>
-      <button
+    // The row carries the text's size and line height, so the X measures its
+    // first line from the same line box the path is set in.
+    <div className="group flex items-start gap-2 rounded-lg border border-border bg-surface-muted/40 px-3 py-2 text-sm leading-relaxed transition-colors hover:border-border-strong">
+      <p className="min-w-0 flex-1 break-all text-ink">{path}</p>
+      <IconButton
+        size="sm"
+        tone="danger"
         aria-label={t("destinations.removeDirectory", { path })}
         title={t("common.remove")}
-        className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-danger-surface hover:text-danger"
+        className="oc-first-line-dismiss"
         onClick={onRemove}
       >
         <X size={14} />
-      </button>
+      </IconButton>
     </div>
   );
 }

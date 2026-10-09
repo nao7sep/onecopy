@@ -17,7 +17,7 @@ const PALETTE =
   /^(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d{2,3}$/;
 // Utilities that share a prefix with the colour ones but carry no colour.
 const NOT_A_COLOUR =
-  /^(?:xs|sm|base|lg|xl|\dxl|left|right|center|justify|start|end|wrap|nowrap|balance|pretty|ellipsis|clip|none|solid|dashed|dotted|hidden|current|transparent|inherit|black|white|inset|b-0|\d+|[a-z])$/;
+  /^(?:xs|sm|base|lg|xl|\dxl|left|right|center|justify|start|end|wrap|nowrap|balance|pretty|ellipsis|clip|none|solid|dashed|dotted|hidden|current|transparent|inherit|black|white|inset|b-0|offset-\d+|\d+|[a-z])$/;
 const COLOUR_UTILITY =
   /^(?:[a-z-]+:)*(?:text|bg|border|outline|ring|decoration|fill|stroke)-([a-z][a-z0-9-]*?)(?:\/\d+)?$/;
 

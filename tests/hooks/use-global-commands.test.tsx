@@ -340,3 +340,108 @@ describe("Enter playback toggle (R5.1 D3)", () => {
     expect(currentMainFeedback(useMainFeedbackStore.getState())).toBeNull();
   });
 });
+
+describe("Select All (Cmd/Ctrl+A)", () => {
+  // A section larger than one bounded window, with only its first 512 rows
+  // loaded and the anchor inside them.
+  const ROWS: SectionItem[] = Array.from({ length: 1200 }, (_, index) => ({
+    ...ITEM,
+    hash: `h${index}`,
+    pathId: index + 1,
+    fileName: `IMG_${index}.jpg`,
+    resolvedUtcMs: index + 1,
+  }));
+
+  beforeEach(() => {
+    mockSectionItems(() => ROWS);
+    useItemsStore.setState({
+      items: ROWS.slice(0, 512),
+      totalItems: ROWS.length,
+      windowStart: 0,
+      itemPositions: new Map(ROWS.slice(0, 512).map((row, index) => [row.hash!, index])),
+      selectedItem: "h4",
+      selectedKeys: new Set(["h4"]),
+      selectedPositions: new Map([["h4", 4]]),
+      rangeOriginPosition: 4,
+    });
+  });
+
+  async function settle(): Promise<void> {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  it("selects every item of the open section, including rows the window has not loaded", async () => {
+    const view = render(<Harness />);
+    const area = view.container.querySelector("#main-item-area")!;
+    fireEvent.keyDown(area, { key: "a", metaKey: true });
+    await settle();
+
+    const state = useItemsStore.getState();
+    expect(state.selectedKeys.size).toBe(ROWS.length);
+    expect(state.selectedPositions.get("h1199")).toBe(1199);
+    // The anchor stays where the user left it.
+    expect(state.selectedItem).toBe("h4");
+    expect(
+      invokeCalls.some((call) =>
+        call.command === "get_section_range" && call.args.start === 0 && call.args.end === ROWS.length,
+      ),
+    ).toBe(true);
+  });
+
+  it("answers Ctrl+A the same way, from anywhere in Main but the preview pane", async () => {
+    const view = render(<Harness />);
+    fireEvent.keyDown(view.getByRole("tree"), { key: "A", ctrlKey: true });
+    await settle();
+    expect(useItemsStore.getState().selectedKeys.size).toBe(ROWS.length);
+
+    useItemsStore.getState().selectItem("h4", "nearest", 4);
+    fireEvent.keyDown(view.getByLabelText("Preview pane"), { key: "a", metaKey: true });
+    await settle();
+    expect([...useItemsStore.getState().selectedKeys]).toEqual(["h4"]);
+  });
+
+  it("leaves the selection alone while typing in a field", async () => {
+    const view = render(
+      <>
+        <Harness />
+        <input aria-label="Folder name" />
+      </>,
+    );
+    const field = view.getByLabelText("Folder name");
+    field.focus();
+    const event = fireEvent.keyDown(field, { key: "a", metaKey: true });
+    await settle();
+
+    // The field keeps the chord for selecting its own text.
+    expect(event).toBe(true);
+    expect([...useItemsStore.getState().selectedKeys]).toEqual(["h4"]);
+    expect(invokeCalls.some((call) => call.command === "get_section_range")).toBe(false);
+  });
+
+  it("leaves the selection alone under a modal, Comparison or the fullscreen view", async () => {
+    const view = render(<Harness />);
+    const area = view.container.querySelector("#main-item-area")!;
+
+    pushModal({});
+    fireEvent.keyDown(area, { key: "a", metaKey: true });
+    await settle();
+    resetModalStack();
+
+    useComparisonStore.setState({ open: true });
+    fireEvent.keyDown(area, { key: "a", metaKey: true });
+    await settle();
+    useComparisonStore.setState({ open: false });
+
+    useFullscreenViewStore.setState({
+      session: {} as ReturnType<typeof useFullscreenViewStore.getState>["session"],
+    });
+    fireEvent.keyDown(area, { key: "a", metaKey: true });
+    await settle();
+    useFullscreenViewStore.setState({ session: null });
+
+    expect([...useItemsStore.getState().selectedKeys]).toEqual(["h4"]);
+    expect(invokeCalls.some((call) => call.command === "get_section_range")).toBe(false);
+  });
+});

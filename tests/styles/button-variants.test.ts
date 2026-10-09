@@ -95,3 +95,26 @@ describe("Button roles stay in the primitive", () => {
     expect(result).not.toMatch(/\[&>button\]/);
   });
 });
+
+// One disabled fade for the whole app (interface-styling-conventions: a
+// disabled control keeps its anatomy and only recedes, by one answer): every
+// fade a surface spells out is the primitives' value, so no control recedes
+// further or less than its neighbour.
+describe("the one disabled fade", () => {
+  const roots = ["components", "windows"].map((dir) => join(__dirname, "../../src", dir));
+  const files = roots.flatMap((root) =>
+    (readdirSync(root, { recursive: true }) as string[])
+      .filter((file) => file.endsWith(".tsx"))
+      .map((file) => join(root, file)),
+  );
+
+  it("is the primitives' value everywhere", () => {
+    expect(source).toMatch(/DISABLED_FADE = "disabled:opacity-50"/);
+    const others = files.flatMap((file) =>
+      [...readFileSync(file, "utf8").matchAll(/disabled:opacity-(\d+)/g)]
+        .filter(([, value]) => value !== "50")
+        .map(([utility]) => `${file}: ${utility}`),
+    );
+    expect(others).toEqual([]);
+  });
+});

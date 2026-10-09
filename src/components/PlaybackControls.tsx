@@ -50,7 +50,7 @@ export default function PlaybackControls() {
       </Button>
       <input type="range" min={0} max={100} step={1} value={volumePercent}
         disabled={busy} aria-label={t("settings.playbackVolume")} aria-valuetext={`${number(volumePercent)}%`}
-        className="h-6 w-20 cursor-pointer accent-primary outline-none focus-visible:ring-2 focus-visible:ring-primary-ring disabled:opacity-40"
+        className="h-6 w-20 cursor-pointer accent-primary disabled:opacity-50"
         onChange={(event) => setPlaybackVolume(Number(event.target.value) / 100)} />
     </span>
   </span>;

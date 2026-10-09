@@ -43,7 +43,8 @@ import { requestComparisonFromMain } from "../workflows/comparison";
 import FaceRating from "./FaceRating";
 import { usePreviewStore } from "../state/preview-store";
 import { setPreviewPlacement } from "../workflows/preview";
-import Button from "./ui/Button";
+import Button, { IconButton } from "./ui/Button";
+import { Select } from "./ui/Field";
 import OperationResult from "./ui/OperationResult";
 import { isComposingEvent } from "../hooks/useComposing";
 import { useComparisonStore } from "../state/comparison-store";
@@ -120,7 +121,7 @@ function Tile({
     <figure
       ref={drag.ref}
       data-item-anchor={isAnchor}
-      className={`w-40 select-none transition-[opacity,transform] ${
+      className={`group/tile w-40 select-none transition-[opacity,transform] ${
         drag.isDragging
           ? "scale-[0.97] cursor-grabbing opacity-55"
           : "cursor-pointer"
@@ -131,10 +132,15 @@ function Tile({
         openFullscreenView();
       }}
     >
+      {/* The list-row states on a bordered item: the pointer strengthens the
+          edge and fills the letterbox, selection takes the primary edge and
+          fill, and the keyboard cursor is App.css's inset outline. */}
       <div
-        className={`item-selection-surface relative flex h-32 w-40 items-center justify-center overflow-hidden rounded-lg border transition-colors ${
-          isSelected ? "border-primary-ring ring-2 ring-inset ring-primary-ring" : "border-border"
-        } bg-surface`}
+        className={`item-selection-surface relative flex h-32 w-40 items-center justify-center overflow-hidden rounded-lg border transition-colors motion-reduce:transition-none ${
+          isSelected
+            ? "border-primary-ring bg-primary-surface ring-2 ring-inset ring-primary-ring"
+            : "border-border bg-surface group-hover/tile:border-border-strong group-hover/tile:bg-surface-muted"
+        }`}
       >
         <Thumb item={item} />
         {presentation.selection !== null ? (
@@ -322,10 +328,13 @@ function ListHeader({
           style={columnStyle(column.key, widths)}
         >
           {column.order !== null ? (
+            // The heading button fits its words (the column, not the button,
+            // takes the width), so its hover and focus hug the label; a right-
+            // aligned column pushes it to the right edge.
             <button
-              className={`min-w-0 flex-1 truncate text-left transition-colors hover:text-ink ${
+              className={`min-w-0 max-w-full truncate rounded-sm text-left uppercase transition-colors motion-reduce:transition-none hover:text-ink active:text-ink-strong ${
                 sort.order === column.order ? "text-ink" : ""
-              } ${column.key === "size" ? "text-right" : ""}`}
+              } ${column.key === "size" ? "ml-auto" : ""}`}
               onClick={() => onSort(column.order!)}
               title={column.sortHintKey !== null ? t(column.sortHintKey) : undefined}
             >
@@ -375,7 +384,7 @@ function ListRow({
     <div
       ref={drag.ref}
       data-item-anchor={isAnchor}
-      className={`item-selection-surface flex w-full select-none items-center border px-3 py-1.5 text-sm transition-[background-color,border-color,opacity] ${
+      className={`item-selection-surface flex w-full select-none items-center rounded-md border px-3 py-1.5 text-sm transition-[background-color,border-color,opacity] ${
         drag.isDragging ? "cursor-grabbing opacity-55" : "cursor-pointer"
       } ${
         isSelected
@@ -809,35 +818,31 @@ export default function Grid({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
+      {/* The pane's toolbar: every text action and the sort field take the
+          toolbar height, so the row lines up. */}
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border px-2 py-1 text-xs text-ink-muted">
         <div className="flex items-center gap-2">
           <PreviewControl />
           {selectedSection?.kind === "image" ? (
-            <button
-              className="h-7 rounded-md px-2 text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
-              onClick={() => void requestComparisonFromMain()}
-            >
+            <Button size="toolbar" variant="ghost" onClick={() => void requestComparisonFromMain()}>
               {t("grid.compare")}
-            </button>
+            </Button>
           ) : null}
         </div>
         <div className="flex items-center gap-2 whitespace-nowrap">
-          <button
-            // A disabled button still matches :hover, so an unqualified hover
-            // utility lights a dead control up under the pointer — and this one
-            // had no disabled treatment at all, so it was the live button's twin
-            // either way.
-            className="h-7 rounded-md px-2 text-ink-muted transition-colors enabled:hover:bg-surface-muted enabled:hover:text-ink disabled:opacity-40"
+          <Button
+            size="toolbar"
+            variant="ghost"
             title={t("grid.recheckHint")}
             disabled={sourceChecking}
             onClick={() => void rescanCurrentSection()}
           >
             {sourceChecking ? t("grid.recheckUnavailable") : t("grid.recheck")}
-          </button>
+          </Button>
           <label htmlFor="grid-sort">{t("grid.sort")}</label>
-          <select
+          <Select
             id="grid-sort"
-            className="h-7 rounded-md border border-input-border bg-surface px-2 text-ink"
+            size="toolbar"
             value={sortChoice.order}
             onChange={(e) => setSortOrder(e.target.value as SortOrder)}
           >
@@ -848,15 +853,16 @@ export default function Grid({
                 </option>
               ),
             )}
-          </select>
-          <button
-            className="h-7 rounded-md px-1.5 text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
+          </Select>
+          <IconButton
+            size="sm"
+            aria-label={sortChoice.desc ? t("grid.sortDescending") : t("grid.sortAscending")}
             title={sortChoice.desc ? t("grid.sortDescending") : t("grid.sortAscending")}
             // Re-picking the active order toggles direction (the store's rule).
             onClick={() => setSortOrder(sortChoice.order)}
           >
             {sortChoice.desc ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
-          </button>
+          </IconButton>
         </div>
       </div>
       {previewError !== null ? (

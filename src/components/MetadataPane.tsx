@@ -19,7 +19,7 @@ import { fileManagerWord } from "../utils/shortcuts";
 import { useI18n } from "../i18n/I18nContext";
 import { message, type Message } from "../i18n/translate";
 import { log, toErrorFields } from "../repositories";
-import Button from "./ui/Button";
+import Button, { IconButton } from "./ui/Button";
 import TranscriptBlock from "./TranscriptBlock";
 import { openPreview } from "../workflows/preview";
 import { requestComparisonFromMain } from "../workflows/comparison";
@@ -51,19 +51,22 @@ function PathRow({ path }: { path: string }) {
   const word = fileManagerWord();
   const [error, setError] = useState(false);
   return (
-    <dd className="group flex items-start gap-1.5 py-0.5">
+    // The row carries the path's size and line height, so the reveal button
+    // centres on the path's first line.
+    <dd className="group flex items-start gap-1.5 py-0.5 text-xs leading-relaxed">
       {/* A leading glyph plus a hanging indent: paths WRAP, and without a
           marker the wrapped lines read as separate entries — the developer
           could not see where one copy ended and the next began. */}
       <span aria-hidden className="mt-1 h-1 w-1 shrink-0 rounded-full bg-ink-muted" />
-      <span className="min-w-0 flex-1 select-text break-all text-xs leading-relaxed text-ink" title={path}>
+      <span className="min-w-0 flex-1 select-text break-all text-ink" title={path}>
         {path}
         {unavailable ? <span className="ml-2 text-warning">{t("item.workUnavailable")}</span> : null}
       </span>
-      <button
+      <IconButton
+        size="sm"
         aria-label={t("reveal.showIn", { manager: word })}
         title={t("reveal.showIn", { manager: word })}
-        className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-muted opacity-0 transition-opacity hover:bg-surface-muted hover:text-ink focus-visible:opacity-100 group-hover:opacity-100"
+        className="oc-first-line-dismiss opacity-0 focus-visible:opacity-100 group-hover:opacity-100"
         onClick={() => {
           setError(false);
           void revealInFileManager(path).catch((error) => {
@@ -75,7 +78,7 @@ function PathRow({ path }: { path: string }) {
         }}
       >
         <FolderOpen size={13} />
-      </button>
+      </IconButton>
       {error ? (
         <OperationResult level="error" className="max-w-44 py-1">
           {t("metadata.revealFailed")}
@@ -120,11 +123,13 @@ function SimilarSection({ hash }: { hash: string }) {
   }
   return (
     <div className="mb-1 mt-3">
-      <div className="flex items-center justify-between gap-2">
-        <dt className="text-xs text-ink-muted">
+      {/* A narrow pane moves Compare under its label rather than pushing it
+          past the pane's edge. */}
+      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+        <dt className="min-w-0 break-words text-xs text-ink-muted">
           {t("metadata.similar", { count: members.length })}
         </dt>
-        <Button onClick={() => void requestComparisonFromMain()}>
+        <Button size="toolbar" onClick={() => void requestComparisonFromMain()}>
           {t("metadata.compare")}
         </Button>
       </div>
@@ -133,10 +138,11 @@ function SimilarSection({ hash }: { hash: string }) {
           <span key={member.hash} className="group/similar relative shrink-0">
             <button
               title={member.fileName}
-              className={`h-20 w-20 shrink-0 overflow-hidden rounded-md border bg-background transition-colors ${
+              // A thumbnail takes the list-row states, as Main's tiles do.
+              className={`h-20 w-20 shrink-0 overflow-hidden rounded-md border transition-colors motion-reduce:transition-none ${
                 member.hash === hash
-                  ? "border-primary-ring ring-1 ring-primary-ring"
-                  : "border-border hover:border-border-strong"
+                  ? "border-primary-ring bg-primary-surface ring-1 ring-inset ring-primary-ring"
+                  : "border-border bg-background hover:border-border-strong hover:bg-surface-muted active:bg-surface-pressed"
               }`}
               onClick={() => {
                 // Select that member in the grid; the preview follows through
@@ -267,7 +273,7 @@ export default function MetadataPane({
                 return (
                   <button
                     key={i}
-                    className="relative h-20 w-20 shrink-0 overflow-hidden rounded border border-border bg-background hover:border-border-strong"
+                    className="relative h-20 w-20 shrink-0 overflow-hidden rounded-md border border-border bg-background transition-colors motion-reduce:transition-none hover:border-border-strong hover:bg-surface-muted active:bg-surface-pressed"
                     title={t("metadata.showVideoAt", {
                       time: timestampLabel(atMs),
                     })}

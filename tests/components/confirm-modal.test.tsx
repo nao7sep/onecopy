@@ -21,7 +21,7 @@ describe("confirmation command boundary", () => {
     const { onConfirm, onCancel } = confirm();
     const cancel = screen.getByRole("button", { name: "Cancel" });
     expect(document.activeElement).toBe(cancel);
-    expect(cancel.className).toContain("focus:ring-2");
+    expect(cancel.className).toContain("focus:outline-2");
     await user.keyboard(step);
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "Delete" }));
     expect(onConfirm).not.toHaveBeenCalled();

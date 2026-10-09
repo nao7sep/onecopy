@@ -172,7 +172,7 @@ function ScreensSection() {
               row it would read as one of those rather than as a move. The
               words are also the accessible name, so nothing has to be kept in
               step with a label nobody can see. */}
-          <span className="flex gap-1">
+          <span className="flex gap-2">
             <Button disabled={index === 0} onClick={() => move(index, -1)}>
               {t("settings.moveUp")}
             </Button>
@@ -300,23 +300,20 @@ function SettingsTabList({
       className="sticky top-0 z-10 mb-3 flex gap-1 border-b border-border bg-surface pb-2"
     >
       {SETTINGS_TABS.map((tab) => (
-        <button
+        <Button
           key={tab.id}
           id={`settings-tab-${tab.id}`}
           role="tab"
+          variant="ghost"
+          selected={active === tab.id}
           aria-selected={active === tab.id}
           aria-controls={`settings-panel-${tab.id}`}
           tabIndex={active === tab.id ? 0 : -1}
-          className={`rounded-lg px-3 py-1.5 text-sm font-medium ${
-            active === tab.id
-              ? "bg-primary-surface text-primary"
-              : "text-ink-muted hover:bg-surface-muted hover:text-ink"
-          }`}
           onClick={() => onChange(tab.id)}
           onKeyDown={moveFocus}
         >
           {t(tab.label)}
-        </button>
+        </Button>
       ))}
     </div>
   );

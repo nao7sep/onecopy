@@ -96,6 +96,7 @@ export const onCloseRequested = vi.fn(async (_handler: unknown) => () => {});
 export const isMaximized = vi.fn(async () => false);
 export const setTheme = vi.fn(async (_theme: "light" | "dark" | null) => {});
 export const setTitle = vi.fn(async (_title: string) => {});
+export const onFocusChanged = vi.fn(async (_handler: unknown) => () => {});
 
 export const getCurrentWindow = vi.fn(() => ({
   label: currentWindowLabel,
@@ -113,6 +114,7 @@ export const getCurrentWindow = vi.fn(() => ({
   isMaximized,
   setTheme,
   setTitle,
+  onFocusChanged,
 }));
 
 export const getCurrentWebview = vi.fn(() => ({ setZoom }));
@@ -538,6 +540,7 @@ export function resetTauriMocks(
     isMaximized,
     onResized,
     onCloseRequested,
+    onFocusChanged,
     getCurrentWindow,
     currentMonitor,
     getCurrentWebview,

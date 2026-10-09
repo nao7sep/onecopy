@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ExternalLink, FolderOpen } from "lucide-react";
 import type { MessageKey } from "../i18n/catalogues";
@@ -17,7 +17,8 @@ import {
   setTranscriptView,
   useContentSessionStore,
 } from "../state/content-session-store";
-import Button from "./ui/Button";
+import Button, { IconButton } from "./ui/Button";
+import { Select } from "./ui/Field";
 import { openInDefaultApp, revealInFileManager } from "../workflows/external-open";
 import OperationResult from "./ui/OperationResult";
 import { recordActionFailure } from "../state/notifications-store";
@@ -134,11 +135,15 @@ export default function TextOrAttributesSurface({
   pathId,
   detail,
   specializedFailure = null,
+  specializedAction = null,
 }: {
   hash: string | null;
   pathId: number | null;
   detail: ItemDetail;
   specializedFailure?: string | null;
+  /** The remedy the owning surface offers for its failure, drawn at the size
+   * of the place it is shown: beside the file's actions, or in a result. */
+  specializedAction?: ((size: "xs" | "sm") => ReactNode) | null;
 }) {
   const { t, text } = useI18n();
   const identityKey = textEncodingKey(hash, pathId);
@@ -254,6 +259,7 @@ export default function TextOrAttributesSurface({
           .join(" ")}
         byteSize={body?.byteSize ?? detail.byteSize}
         onOpen={openExternal}
+        action={specializedAction?.("sm") ?? null}
       />
     );
   }
@@ -268,10 +274,10 @@ export default function TextOrAttributesSurface({
           {detail.fileName}
         </span>
         <span className="flex items-center gap-2">
-          <label className="flex items-center gap-1 text-xs text-ink-muted">
+          <label className="flex items-center gap-2 text-xs text-ink-muted">
             {t("textPreview.encoding")}
-            <select
-              className="h-7 rounded border border-input-border bg-background px-1.5 text-xs text-ink"
+            <Select
+              size="toolbar"
               value={selectedEncoding}
               onChange={(event) => {
                 const attempt = ++sessionAttempts.current.encoding;
@@ -304,9 +310,10 @@ export default function TextOrAttributesSurface({
                   {encodingLabel(encoding)}
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
           <Button
+            size="toolbar"
             variant="ghost"
             onClick={() => {
               const attempt = ++sessionAttempts.current.wrap;
@@ -332,13 +339,17 @@ export default function TextOrAttributesSurface({
           >
             {wrap ? t("textPreview.wrapOn") : t("textPreview.wrapOff")}
           </Button>
-          <Button variant="ghost" onClick={openExternal}>
+          <Button size="toolbar" variant="ghost" onClick={openExternal}>
             <ExternalLink size={13} /> {t("preview.openInDefaultApp")}
           </Button>
         </span>
       </div>
       {specializedFailure !== null ? (
-        <OperationResult level="error" className="shrink-0">
+        <OperationResult
+          level="error"
+          className="shrink-0"
+          actions={specializedAction?.("xs") ?? undefined}
+        >
           {/* Still written by the owning preview surface. */}
           {specializedFailure}
         </OperationResult>
@@ -366,7 +377,7 @@ export default function TextOrAttributesSurface({
           ref={textRef}
           tabIndex={0}
           data-transcript-scroll
-          className={`min-h-0 flex-1 select-text overflow-auto rounded border border-border bg-background p-3 font-mono text-sm leading-relaxed text-ink outline-none focus-visible:border-primary-ring ${
+          className={`min-h-0 flex-1 select-text overflow-auto rounded-md border border-border bg-background p-3 font-mono text-sm leading-relaxed text-ink outline-none focus-visible:border-focus-ring ${
             wrap ? "whitespace-pre-wrap break-words" : "whitespace-pre"
           }`}
           onScroll={(event) => {
@@ -397,11 +408,13 @@ function AttributesBodyView({
   reason,
   byteSize,
   onOpen,
+  action,
 }: {
   detail: ItemDetail;
   reason: string;
   byteSize: number | null;
   onOpen: () => void;
+  action: ReactNode;
 }) {
   const { t, text, dateTime, number } = useI18n();
   useDisplayZone();
@@ -416,9 +429,14 @@ function AttributesBodyView({
             </h2>
             <p className="mt-1 text-sm text-ink-muted">{reason}</p>
           </div>
-          <Button onClick={onOpen}>
-            <ExternalLink size={14} /> {t("preview.openInDefaultApp")}
-          </Button>
+          {/* A narrow pane moves the actions under the name rather than
+              squeezing either. */}
+          <div className="flex shrink-0 flex-wrap justify-end gap-2">
+            {action}
+            <Button onClick={onOpen}>
+              <ExternalLink size={14} /> {t("preview.openInDefaultApp")}
+            </Button>
+          </div>
         </div>
         {revealError !== null ? (
           <OperationResult level="error" className="mt-2">
@@ -446,8 +464,9 @@ function AttributesBodyView({
                   <span className="min-w-0 flex-1 select-text break-all text-ink">
                     {path}
                   </span>
-                  <button
-                    className="shrink-0 rounded p-1 text-ink-muted hover:bg-surface-muted hover:text-ink"
+                  <IconButton
+                    size="sm"
+                    className="oc-first-line-dismiss"
                     aria-label={t("textPreview.revealPath", { path })}
                     title={t("textPreview.revealFile")}
                     onClick={() => {
@@ -462,7 +481,7 @@ function AttributesBodyView({
                     }}
                   >
                     <FolderOpen size={14} />
-                  </button>
+                  </IconButton>
                 </li>
               ))}
             </ul>

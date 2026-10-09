@@ -13,6 +13,7 @@ import { hasOpenModal } from "../utils/modalStack";
 import NotificationHost from "../components/NotificationHost";
 import { recordActionFailure } from "../state/notifications-store";
 import OperationResult from "../components/ui/OperationResult";
+import { IconButton } from "../components/ui/Button";
 
 export default function FullscreenViewWindow() {
   const { t, text } = useI18n();
@@ -102,15 +103,15 @@ export default function FullscreenViewWindow() {
         <span className="text-xs tabular-nums text-white/70">
           {state.index + 1} / {state.length}
         </span>
-        <button aria-label={t("fullscreenView.previous")} disabled={state.index === 0} className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-white/15 disabled:opacity-30" onClick={() => sendKey("ArrowLeft")}>
+        <IconButton tone="overlay" aria-label={t("fullscreenView.previous")} disabled={state.index === 0} onClick={() => sendKey("ArrowLeft")}>
           <ChevronLeft size={16} />
-        </button>
-        <button aria-label={t("fullscreenView.next")} disabled={state.index === state.length - 1} className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-white/15 disabled:opacity-30" onClick={() => sendKey("ArrowRight")}>
+        </IconButton>
+        <IconButton tone="overlay" aria-label={t("fullscreenView.next")} disabled={state.index === state.length - 1} onClick={() => sendKey("ArrowRight")}>
           <ChevronRight size={16} />
-        </button>
-        <button aria-label={t("fullscreenView.close")} className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-white/15" onClick={() => sendKey("Escape")}>
+        </IconButton>
+        <IconButton tone="overlay" aria-label={t("fullscreenView.close")} onClick={() => sendKey("Escape")}>
           <X size={16} />
-        </button>
+        </IconButton>
       </header>
       <div className="min-h-0 flex-1">
         {state.detail === null ? (

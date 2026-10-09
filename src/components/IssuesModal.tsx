@@ -9,7 +9,7 @@ import { noticeSentence } from "../state/notifications-store";
 import { formatLocalMinute } from "../utils/displayTime";
 import { useDisplayZone } from "../hooks/useDisplayZone";
 import ModalShell from "./ModalShell";
-import Button from "./ui/Button";
+import Button, { IconButton, LinkButton } from "./ui/Button";
 import OperationResult from "./ui/OperationResult";
 import { revealInMain } from "../workflows/reveal-in-main";
 import { useI18n } from "../i18n/I18nContext";
@@ -107,15 +107,18 @@ export default function IssuesModal({ open, onClose }: {
                     ? <span>{t("issues.occurrences", { count: row.occurrenceCount })}</span>
                     : null}
                 </span>
-                <button
+                <IconButton
+                  size="sm"
+                  tone="danger"
                   aria-label={t("issues.dismiss")}
                   title={t("issues.dismiss")}
-                  className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-muted transition-colors hover:bg-danger-surface hover:text-danger"
+                  className="oc-first-line-dismiss"
                   onClick={() => void dismiss(row.id)}
-                ><X size={12} /></button>
+                ><X size={14} /></IconButton>
               </div>
-              {row.path ? <button className="mt-2 w-full select-text break-all text-left text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-ring"
-                title={t("issues.revealInMain")} onClick={() => void reveal(row.path!)}>{row.path}</button> : null}
+              {/* A path reads as a link in its sentence, always underlined. */}
+              {row.path ? <LinkButton tone="primary" wrap className="mt-2 block select-text break-all underline decoration-primary/40 enabled:hover:decoration-primary"
+                title={t("issues.revealInMain")} onClick={() => void reveal(row.path!)}>{row.path}</LinkButton> : null}
               {modelIssueLabel(row.kind) !== null ? (
                 <h3 className="mt-2 font-semibold text-ink-strong">{t(modelIssueLabel(row.kind)!)}</h3>
               ) : null}

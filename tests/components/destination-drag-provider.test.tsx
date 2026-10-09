@@ -267,7 +267,7 @@ describe("destination drag transport", () => {
       "bg-primary",
     );
     expect(view.getByRole("button", { name: "Copy 1" }).className).toContain(
-      "border-border",
+      "border-control-edge",
     );
   });
 });

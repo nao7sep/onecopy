@@ -64,6 +64,7 @@ import StartupFailureScreen from "./components/StartupFailureScreen";
 import { reportActionFailure } from "./state/notifications-store";
 import { bootstrapApplication } from "./workflows/app-lifecycle";
 import { useAppShellStore } from "./state/app-shell-store";
+import Button, { IconButton, LinkButton } from "./components/ui/Button";
 
 function ZoomOutIcon() {
   return <Minus aria-hidden="true" className="inline-block h-[1em] w-[1em]" />;
@@ -255,13 +256,9 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
             <Menu
               ariaLabel={t("app.menu")}
               trigger={(props) => (
-                <button
-                  {...props}
-                  aria-label={t("app.openMenu")}
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
-                >
+                <IconButton {...props} aria-label={t("app.openMenu")}>
                   <MenuIcon size={18} />
-                </button>
+                </IconButton>
               )}
             >
               <MenuItem
@@ -297,26 +294,18 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
               <MenuSeparator />
               {/* A contained widget, not menu items — arrow navigation skips it
                   because only [role="menuitem"] participates. */}
-              <div className="flex items-center justify-between gap-2 px-3 py-1 text-sm text-ink">
+              <div className="flex items-center justify-between gap-2 px-2.5 py-0.5 text-sm text-ink">
                 <span>{t("app.zoom")}</span>
                 <span className="flex items-center gap-1">
-                  <button
-                    className="flex h-5 w-5 items-center justify-center rounded border border-border text-xs hover:bg-surface-muted"
-                    aria-label={t("app.zoomOut")}
-                    onClick={zoomOut}
-                  >
+                  <IconButton size="sm" aria-label={t("app.zoomOut")} onClick={zoomOut}>
                     <ZoomOutIcon />
-                  </button>
+                  </IconButton>
                   <span className="w-10 text-center font-mono text-xs text-ink-muted">
                     {Math.round(zoomLevel * 100)}%
                   </span>
-                  <button
-                    className="flex h-5 w-5 items-center justify-center rounded border border-border text-xs hover:bg-surface-muted"
-                    aria-label={t("app.zoomIn")}
-                    onClick={zoomIn}
-                  >
+                  <IconButton size="sm" aria-label={t("app.zoomIn")} onClick={zoomIn}>
                     <ZoomInIcon />
-                  </button>
+                  </IconButton>
                 </span>
               </div>
               <MenuSeparator />
@@ -394,14 +383,17 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
                   {t("preview.selectedCount", { count: previewCurrent?.selectedCount ?? 0 })}
                 </span>
               ) : null}
-              <button
+              {/* Opaque rather than see-through: it sits over moving video and
+                  photos, where a translucent fill leaves the X unreadable. */}
+              <IconButton
+                size="sm"
                 aria-label={t("app.closePreview")}
                 title={t("app.closePreview")}
-                className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-md bg-surface/80 text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink"
+                className="absolute right-2 top-2 bg-surface shadow-sm"
                 onClick={closePreview}
               >
                 <X size={14} />
-              </button>
+              </IconButton>
             </div>
           </>
         ) : null}
@@ -422,24 +414,23 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
           {/* One composite tablist: a single tab stop, arrows move and
               activate (panel swaps are cheap), per the composite-control
               conventions. */}
+          {/* The tabs are list rows: content-sized, rounded, with the
+              selection fill on the chosen one, the same as Settings' tabs. */}
           <div
             role="tablist"
             aria-label={t("app.rightPane")}
-            className="flex shrink-0 border-b border-border"
+            className="flex shrink-0 gap-1 border-b border-border p-1.5"
           >
             {(["details", "destinations"] as const).map((tab, index, tabs) => (
-              <button
+              <Button
                 key={tab}
                 id={`right-tab-${tab}`}
                 role="tab"
+                variant="ghost"
+                selected={rightTab === tab}
                 aria-selected={rightTab === tab}
                 aria-controls="right-tabpanel"
                 tabIndex={rightTab === tab ? 0 : -1}
-                className={`flex-1 px-2 py-2.5 text-sm ${
-                  rightTab === tab
-                    ? "border-b-2 border-primary font-semibold text-primary"
-                    : "text-ink-muted hover:text-ink"
-                }`}
                 onClick={() => setRightTab(tab)}
                 onKeyDown={(event) => {
                   // Home/End jump to the ends; arrows STOP at them (the
@@ -463,7 +454,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
                 }}
               >
                 {tab === "details" ? t("app.detailsTab") : t("app.destinationsTab")}
-              </button>
+              </Button>
             ))}
           </div>
           {/* Focusable so PageUp/PageDown/arrows scroll a long copy-path list
@@ -489,7 +480,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
           order and the "never blank" rule live. */}
       <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-border bg-surface px-3 py-1 text-xs">
         <MainStatusLine />
-        <span className="flex min-w-0 shrink items-center gap-3 [&>button]:min-w-0 [&>button]:truncate">
+        <span className="flex min-w-0 shrink items-center gap-3">
           <PlaybackControls />
           {!mutationRunning && mutationResult !== null && !exitQuiescing ? (
             <MutationResultActions
@@ -499,37 +490,35 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
             />
           ) : null}
           {mutationRunning && !exitQuiescing ? (
-            <button
-              className="text-ink-muted enabled:hover:text-ink enabled:hover:underline disabled:opacity-40"
+            <LinkButton
               disabled={mutationCancelling}
               title={t("app.cancelOperationHint")}
               onClick={() => void cancelMutation()}
             >
               {mutationCancelling ? t("common.cancelling") : t("app.cancelOperation")}
-            </button>
+            </LinkButton>
           ) : null}
           {sourceCheckRunning ? (
-            <button
-              className="text-ink-muted enabled:hover:text-ink enabled:hover:underline disabled:opacity-40"
+            <LinkButton
               disabled={sourceCheckStopping}
               title={t("app.stopCheckHint")}
               onClick={() => void stopSourceCheck()}
             >
               {sourceCheckStopping ? t("app.stopping") : t("app.stopCheck")}
-            </button>
+            </LinkButton>
           ) : null}
           {/* Why the fans spin while work runs in the background. */}
           <BackgroundWorkLine onOpen={() => openUtility("backgroundWork")} />
           {/* Active conditions keep a durable status-bar count even after
               their nonblocking notification has been dismissed. */}
           {issuesTotal > 0 ? (
-            <button
-              className="text-danger hover:underline"
+            <LinkButton
+              tone="danger"
               title={t("app.openIssues")}
               onClick={() => openUtility("issues")}
             >
               {t("app.issueCount", { count: issuesTotal })}
-            </button>
+            </LinkButton>
           ) : null}
           {/* The managed-tools chip (toolsChip owns the words and the
               loudness — see its rules); clicking always opens the modal. */}
@@ -541,17 +530,13 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
               binariesEntries,
             );
             return chip !== null ? (
-              <button
-                className={
-                  chip.role === "warning"
-                    ? "text-warning hover:underline"
-                    : "text-ink-muted hover:text-ink"
-                }
+              <LinkButton
+                tone={chip.role === "warning" ? "warning" : "muted"}
                 title={t("app.openBackgroundWork")}
                 onClick={() => openUtility("backgroundWork")}
               >
                 {text(chip.text)}
-              </button>
+              </LinkButton>
             ) : null;
           })()}
         </span>
@@ -641,12 +626,8 @@ function BackgroundWorkLine({ onOpen }: { onOpen: () => void }) {
   const { t } = useI18n();
   const runtime = useDerivedWorkStore((s) => s.runtime);
   return (
-    <button
-      className="text-ink-muted hover:text-ink hover:underline"
-      title={t("app.openBackgroundWork")}
-      onClick={onOpen}
-    >
+    <LinkButton title={t("app.openBackgroundWork")} onClick={onOpen}>
       {backgroundRuntimeLine(runtime, t)}
-    </button>
+    </LinkButton>
   );
 }

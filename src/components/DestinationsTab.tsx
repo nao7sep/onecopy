@@ -16,7 +16,8 @@ import {
 } from "../workflows/destinations";
 import type { PendingDestinationDrop } from "../models/destinationTransfer";
 import { useDestinationReceiver } from "./DestinationDragProvider";
-import Button from "./ui/Button";
+import Button, { IconButton } from "./ui/Button";
+import { TextInput } from "./ui/Field";
 import DestinationConflictModal from "./DestinationConflictModal";
 import { useItemsStore } from "../state/items-store";
 import { useI18n } from "../i18n/I18nContext";
@@ -92,7 +93,7 @@ function DirNode({
       <div
         ref={receiver.ref}
         data-tree-path={entry.path}
-        className={`flex items-center px-1.5 py-1 text-sm transition-colors ${
+        className={`flex items-center rounded-md px-1.5 py-1 text-sm transition-colors ${
           receiver.isDropTarget
             ? "bg-primary-surface ring-2 ring-inset ring-primary"
             : isActive
@@ -183,7 +184,7 @@ function RootRow({ root, isOpen }: { root: string; isOpen: boolean }) {
       <div
         ref={receiver.ref}
         data-tree-path={root}
-        className={`flex items-start px-1.5 py-1 text-sm transition-colors ${
+        className={`flex items-start rounded-md px-1.5 py-1 text-sm transition-colors ${
           receiver.isDropTarget
             ? "bg-primary-surface ring-2 ring-inset ring-primary"
             : isActive
@@ -289,8 +290,6 @@ function ActionBar() {
         Math.max(activePath.lastIndexOf("/"), activePath.lastIndexOf("\\")),
       );
 
-  const button =
-    "h-7 px-2 text-xs";
   const counted = selectedCount > 0;
 
   return (
@@ -310,10 +309,10 @@ function ActionBar() {
       <p className="mb-2 truncate text-[11px] text-ink-muted" title={activePath}>
         {activePath}
       </p>
-      <div className="flex flex-wrap items-center gap-1">
+      <div className="flex flex-wrap items-center gap-2">
         <Button
           variant="primary"
-          className={button}
+          size="toolbar"
           title={t("destinations.moveHereHint")}
           onClick={() => void moveSelectionTo(activePath, "move-trash-rest")}
         >
@@ -322,7 +321,7 @@ function ActionBar() {
             : t("destinations.moveHere")}
         </Button>
         <Button
-          className={button}
+          size="toolbar"
           title={t("destinations.copyHereHint")}
           onClick={() => void moveSelectionTo(activePath, "copy")}
         >
@@ -332,7 +331,7 @@ function ActionBar() {
         </Button>
         <Button
           variant="danger"
-          className={button}
+          size="toolbar"
           title={t("destinations.movePermanentlyHint")}
           onClick={() => void moveSelectionTo(activePath, "move-delete-rest")}
         >
@@ -341,9 +340,10 @@ function ActionBar() {
             : t("destinations.movePermanently")}
         </Button>
         {creating ? (
-          <input
+          <TextInput
             autoFocus
-            className="h-7 w-32 rounded-md border border-input-border bg-background px-2 text-xs text-ink outline-none focus-visible:ring-2 focus-visible:ring-primary-ring"
+            size="toolbar"
+            className="w-32"
             value={name}
             placeholder={t("destinations.folderNamePlaceholder")}
             onChange={(e) => setName(e.target.value)}
@@ -369,7 +369,7 @@ function ActionBar() {
           />
         ) : (
           <Button
-            className={button}
+            size="toolbar"
             title={t("destinations.newSubfolderHint")}
             onClick={() => setCreating(true)}
           >
@@ -379,7 +379,7 @@ function ActionBar() {
         {!isRoot && emptiness[activePath] === true && parent !== null ? (
           <Button
             variant="danger-solid"
-            className={button}
+            size="toolbar"
             title={t("destinations.deleteEmptyHint")}
             onClick={() => void deleteFolder(activePath, parent)}
           >
@@ -389,7 +389,7 @@ function ActionBar() {
         {isRoot ? (
           <Button
             variant="ghost"
-            className={button}
+            size="toolbar"
             title={t("destinations.removeRootHint")}
             onClick={() => void removeDestinationRoot(activePath)}
           >
@@ -526,12 +526,9 @@ export default function DestinationsTab() {
       ) : null}
       <div className="mb-2 flex items-center justify-between">
         <h2 className="text-sm font-semibold text-ink-strong">{t("destinations.title")}</h2>
-        <button
-          className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-xs font-medium text-ink transition-colors hover:border-border-strong hover:bg-surface-muted"
-          onClick={() => void addDestinationRoot()}
-        >
+        <Button size="toolbar" onClick={() => void addDestinationRoot()}>
           {t("destinations.addRoot")}
-        </button>
+        </Button>
       </div>
       {/* The container renders (and stays Tab-reachable) even with no
           roots — an empty composite is still a landing place. */}
@@ -560,18 +557,21 @@ export default function DestinationsTab() {
       {confirmation !== null ? (
         <div
           role="status"
-          className="mt-2 flex shrink-0 items-start gap-2 rounded-md border border-border-strong bg-surface-muted px-2.5 py-2 text-xs text-ink"
+          className="mt-2 flex shrink-0 items-start gap-2 rounded-md border border-border bg-surface-muted px-2.5 py-2 text-xs text-ink"
         >
           <span className="min-w-0 flex-1 break-words">
             {text(confirmation)}
           </span>
-          <button
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-current opacity-70 hover:bg-ink/10 hover:opacity-100 focus-visible:bg-ink/10 focus-visible:opacity-100"
+          <IconButton
+            size="sm"
+            tone="current"
+            className="oc-first-line-dismiss"
             onClick={dismissConfirmation}
             aria-label={t("destinations.dismissConfirmation")}
+            title={t("common.dismiss")}
           >
             <X aria-hidden="true" size={14} />
-          </button>
+          </IconButton>
         </div>
       ) : null}
       {result !== null ? (
@@ -582,7 +582,7 @@ export default function DestinationsTab() {
               ? "border-danger bg-danger-surface text-danger"
               : result.severity === "warning"
                 ? "border-warning bg-warning-surface text-warning"
-                : "border-border-strong bg-surface-muted text-ink"
+                : "border-border bg-surface-muted text-ink"
           }`}
         >
           <span className="min-w-0 flex-1 break-words">
@@ -590,13 +590,16 @@ export default function DestinationsTab() {
               facts: result.facts.map(text).join(" · "),
             })}
           </span>
-          <button
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-current opacity-70 hover:bg-ink/10 hover:opacity-100 focus-visible:bg-ink/10 focus-visible:opacity-100"
+          <IconButton
+            size="sm"
+            tone="current"
+            className="oc-first-line-dismiss"
             onClick={dismissResult}
             aria-label={t("destinations.dismissResult")}
+            title={t("common.dismiss")}
           >
             <X aria-hidden="true" size={14} />
-          </button>
+          </IconButton>
         </div>
       ) : null}
       {message !== null ? (

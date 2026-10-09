@@ -12,6 +12,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import PreviewSurface from "../../src/components/PreviewSurface";
 import { useAppStore } from "../../src/state/app-store";
 import { useBinariesStore } from "../../src/state/binaries-store";
+import { useAppShellStore } from "../../src/state/app-shell-store";
+import { managedToolsFixture } from "../fixtures/managed-tools";
 import { useTranscriptStore } from "../../src/state/transcript-store";
 import { useContentSessionStore } from "../../src/state/content-session-store";
 import { useWindowPreferencesStore } from "../../src/state/window-preferences-store";
@@ -735,5 +737,73 @@ describe("shared video presentation", () => {
     ).toBeTruthy();
     expect(screen.getByText(/first line/)).toBeTruthy();
     expect(await screen.findByText("hello")).toBeTruthy();
+  });
+});
+
+describe("Install ffmpeg… on a picture only ffmpeg can prepare", () => {
+  const HEIC_DETAIL = { ...IMAGE_DETAIL, fileName: "family.heic" };
+  const FFMPEG_MISSING = managedToolsFixture("macos").map((entry) =>
+    entry.id === "ffmpeg" ? { ...entry, status: "not-installed" as const } : entry,
+  );
+
+  beforeEach(() => {
+    mockCommands({
+      ensure_preview: () => Promise.reject(new Error("ffmpeg is not installed")),
+      text_preview: () => ({
+        body: "attributes",
+        reason: "binary",
+        reasonCode: "preview-binary",
+        reasonBytes: null,
+        byteSize: 1_000,
+      }),
+    });
+    useAppShellStore.setState({ utilitySurface: null });
+  });
+
+  async function failHeic(surface: "preview-split" | "preview-window" | "fullscreen-view", detail = HEIC_DETAIL) {
+    const view = render(<PreviewSurface surface={surface} hash="image-hash" detail={detail} />);
+    fireEvent.error(screen.getByAltText(detail.fileName));
+    await screen.findByText(/Built-in image preview failed/);
+    return view;
+  }
+
+  it("opens Background work & tools from Main's preview pane when ffmpeg is missing for a HEIC", async () => {
+    useBinariesStore.setState({ entries: FFMPEG_MISSING });
+    await failHeic("preview-split");
+
+    fireEvent.click(screen.getByRole("button", { name: "Install ffmpeg…" }));
+    expect(useAppShellStore.getState().utilitySurface).toBe("backgroundWork");
+  });
+
+  it("offers nothing once ffmpeg is installed, or for a format ffmpeg would not make showable", async () => {
+    useBinariesStore.setState({ entries: managedToolsFixture("macos") });
+    await failHeic("preview-split");
+    expect(screen.queryByRole("button", { name: "Install ffmpeg…" })).toBeNull();
+    cleanup();
+
+    useBinariesStore.setState({ entries: FFMPEG_MISSING });
+    await failHeic("preview-split", { ...IMAGE_DETAIL, fileName: "broken.jpg" });
+    expect(screen.queryByRole("button", { name: "Install ffmpeg…" })).toBeNull();
+  });
+
+  it("keeps the words alone in windows that cannot open Main's Background work & tools", async () => {
+    useBinariesStore.setState({ entries: FFMPEG_MISSING });
+    await failHeic("preview-window");
+    expect(screen.queryByRole("button", { name: "Install ffmpeg…" })).toBeNull();
+    cleanup();
+
+    await failHeic("fullscreen-view");
+    expect(screen.queryByRole("button", { name: "Install ffmpeg…" })).toBeNull();
+  });
+
+  it("offers it beside a video that cannot play, whose poster only ffmpeg prepares", () => {
+    useBinariesStore.setState({ entries: FFMPEG_MISSING });
+    const view = render(<PreviewSurface surface="preview-split" hash="video-hash" detail={DETAIL} />);
+    const video = view.container.querySelector("video")!;
+    Object.defineProperty(video, "error", { value: { code: 4, message: "unsupported" } });
+    fireEvent.error(video);
+
+    fireEvent.click(screen.getByRole("button", { name: "Install ffmpeg…" }));
+    expect(useAppShellStore.getState().utilitySurface).toBe("backgroundWork");
   });
 });

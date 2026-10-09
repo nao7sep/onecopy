@@ -18,7 +18,7 @@ import { useId, useRef } from "react";
 import { useI18n } from "../i18n/I18nContext";
 import { useModalLayer } from "../hooks/useModalLayer";
 import { X } from "lucide-react";
-import Button from "./ui/Button";
+import Button, { IconButton } from "./ui/Button";
 
 export default function ModalShell({
   title,
@@ -75,9 +75,11 @@ export default function ModalShell({
         data-modal-initial-focus={initialFocus === "surface" ? true : undefined}
         className={`flex max-h-[90vh] ${widthClass} max-w-[90vw] flex-col rounded-2xl border border-border bg-surface shadow-xl`}
       >
+        {/* Equal room above and below, so the title and the close X sit on
+            the band's centre line. */}
         <div
-          className={`flex shrink-0 items-center gap-4 px-5 pb-3 pt-4 ${
-            hideTitle ? "justify-end" : "justify-between border-b border-input-border"
+          className={`flex shrink-0 items-center gap-4 px-5 py-3 ${
+            hideTitle ? "justify-end" : "justify-between border-b border-control-edge"
           }`}
         >
           <h1
@@ -86,26 +88,31 @@ export default function ModalShell({
           >
             {title}
           </h1>
-          <button
+          <IconButton
             data-modal-close
             aria-label={t("common.close")}
             disabled={closeDisabled}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink disabled:cursor-default disabled:opacity-40"
             onClick={onClose}
           >
-            <X size={15} />
-          </button>
+            <X size={16} />
+          </IconButton>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
-        <div className="shrink-0 space-y-3 border-t border-input-border px-5 pt-4 pb-4">
+        <div className="shrink-0 space-y-3 border-t border-control-edge px-5 py-3">
           {footerResult === undefined ? null : <div className="min-w-0 break-words">{footerResult}</div>}
           <div className="flex flex-wrap items-baseline gap-x-4 gap-y-3">
             {footerStart === undefined ? null : (
               <div className="min-w-0 flex-1 basis-48 break-words">{footerStart}</div>
             )}
-            <div data-modal-actions className="ml-auto flex max-w-full flex-wrap items-baseline justify-end gap-2">
+            {/* The buttons are one height and centre on each other, so an
+                icon in one never shifts it against a label-only neighbour;
+                the row's own baseline is the first button's label, which the
+                metadata beside it shares. */}
+            <div data-modal-actions className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-2">
+              {/* Arrow keys move focus between these programmatically, so the
+                  ring follows any focus here rather than only focus-visible. */}
               <Button data-modal-close data-modal-initial-focus={initialFocus === "close" ? true : undefined}
-                className={footerArrowNavigation ? "focus:ring-2 focus:ring-primary-ring" : ""}
+                className={footerArrowNavigation ? "focus:outline-2 focus:outline-offset-1 focus:outline-focus-ring" : ""}
                 disabled={closeDisabled} onClick={onClose}>
                 {closeLabel ?? t("common.close")}
               </Button>

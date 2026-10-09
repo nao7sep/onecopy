@@ -10,6 +10,7 @@ import { openInDefaultApp } from "../workflows/external-open";
 import { log, toErrorFields } from "../repositories";
 import FaceRating from "./FaceRating";
 import OperationResult from "./ui/OperationResult";
+import Button, { IconButton } from "./ui/Button";
 import { configFlag } from "../models/config";
 
 // One comparison card, shared by the main and secondary display surfaces.
@@ -132,8 +133,7 @@ export default function ComparisonSlot({
       >
         {marked ? t("comparison.keeping") : t("comparison.keep")}
       </button>
-      <button
-        className="rounded-md bg-surface-muted p-2 text-ink-muted hover:text-ink"
+      <IconButton
         aria-label={t("comparison.openInDefaultAppLabel", {
           name: member.fileName,
         })}
@@ -152,9 +152,12 @@ export default function ComparisonSlot({
         onDoubleClick={(event) => event.stopPropagation()}
       >
         <ExternalLink size={14} />
-      </button>
-      <button
-        className="rounded-md bg-surface-muted p-2 text-ink-muted hover:text-ink"
+      </IconButton>
+      {/* A standalone control with room says what it does; the folder glyph
+          alone is kept for compact list items. */}
+      <Button
+        size="toolbar"
+        variant="ghost"
         aria-label={t("comparison.revealCopyLabel", { name: member.fileName })}
         title={t("comparison.revealCopy")}
         onClick={(event) => {
@@ -164,8 +167,9 @@ export default function ComparisonSlot({
         }}
         onDoubleClick={(event) => event.stopPropagation()}
       >
-        <FolderOpen size={14} />
-      </button>
+        <FolderOpen size={13} />
+        {t("comparison.reveal")}
+      </Button>
       </div>
       <figcaption className="mt-1 shrink-0 text-xs text-ink-muted">
         <span className="flex justify-between gap-2">

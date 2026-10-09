@@ -88,11 +88,22 @@ body.row-resizing * {
   --background: var(--color-slate-50);
   --surface: var(--color-white);
   --surface-muted: var(--color-slate-100);
-  --border: var(--color-slate-200);
-  --border-strong: var(--color-slate-300);
-  /* A form field's outline is its only boundary, so it holds 3:1 against the
-     surfaces it sits on; the other borders are decorative dividers. */
-  --input-border: #838da0;
+  /* The pressed step of a neutral control, one past its hover
+     (surface → surface-muted → surface-pressed). */
+  --surface-pressed: var(--color-slate-200);
+  /* Line kinds (interface-styling-conventions, "One strength per kind of
+     line"), each measured against the surfaces it is painted on: background,
+     surface and surface-muted. Row separators 1.15–1.30; section dividers,
+     band edges and card edges 1.35–1.70; control edges 2.0–2.5 around what the
+     user operates (fields, bordered buttons) and on a modal's band lines,
+     which modal-dialog-conventions draw in the control-edge colour. The
+     control edge sits between two slate steps, so it is spelled in slate's
+     own hue. tests/styles/palette.test.ts records the ranges. */
+  --border-subtle: var(--color-slate-200);
+  --border: var(--color-slate-300);
+  --control-edge: oklch(75% 0.034 255.5);
+  /* A line's hover step: a splitter or bordered card under the pointer. */
+  --border-strong: var(--control-edge);
 
   /* Neutral chrome — text ("ink") scale, strongest → faintest */
   --ink-strong: var(--color-slate-900);
@@ -100,16 +111,22 @@ body.row-resizing * {
   --ink-muted: var(--color-slate-600);
   --ink-inverted: var(--color-white);
 
-  /* Primary — actions, focus, selection */
+  /* Primary — actions, focus, selection. A filled primary steps one way
+     under the pointer: hover deepens, press deepens further. */
   --primary: var(--color-sky-700);
   --primary-hover: var(--color-sky-800);
+  --primary-pressed: var(--color-sky-900);
   --primary-ring: var(--color-sky-600);
   --primary-surface: var(--color-sky-100);
+  /* The one focus treatment's colour. Kept apart from --primary-ring, which
+     also marks selection, so only focus quiets in an inactive window. */
+  --focus-ring: var(--primary-ring);
 
   /* Danger — this is a destructive app; the delete surfaces lean on these */
   --danger: var(--color-red-700);
   --danger-solid: var(--color-red-600);
   --danger-solid-hover: var(--color-red-700);
+  --danger-solid-pressed: var(--color-red-800);
   --danger-surface: var(--color-red-50);
 
   /* Warning — attention without alarm (an available update, a stale check) */
@@ -128,23 +145,33 @@ body.row-resizing * {
     --background: var(--color-slate-950);
     --surface: var(--color-slate-900);
     --surface-muted: var(--color-slate-800);
-    --border: var(--color-slate-700);
-    --border-strong: var(--color-slate-600);
-    --input-border: var(--color-slate-500);
+    --surface-pressed: var(--color-slate-700);
+    /* The dark surfaces sit closer together, so two lines fall between
+       slate steps and are spelled in slate's hue: slate-700 reads 1.95 on the
+       background, above the band-edge range, and slate-600 2.67, above the
+       control-edge range. */
+    --border-subtle: var(--color-slate-800);
+    --border: oklch(32.5% 0.043 258.6);
+    --control-edge: oklch(42.5% 0.044 257.3);
+    --border-strong: var(--control-edge);
 
     --ink-strong: var(--color-white);
     --ink: var(--color-slate-100);
     --ink-muted: var(--color-slate-300);
     --ink-inverted: var(--color-slate-950);
 
+    /* The dark fills carry dark ink, so their steps lift: hover lightens and
+       press lightens further. */
     --primary: var(--color-sky-300);
-    --primary-hover: var(--color-sky-300);
+    --primary-hover: var(--color-sky-200);
+    --primary-pressed: var(--color-sky-100);
     --primary-ring: var(--color-sky-500);
     --primary-surface: var(--color-sky-950);
 
     --danger: var(--color-red-300);
     --danger-solid: var(--color-red-500);
     --danger-solid-hover: var(--color-red-400);
+    --danger-solid-pressed: var(--color-red-300);
     --danger-surface: var(--color-red-900);
 
     --warning: var(--color-amber-400);
@@ -155,26 +182,39 @@ body.row-resizing * {
   }
 }
 
+/* An inactive window keeps its focus visible but quiet: the ring takes the
+   control-edge colour. The native window's focus decides
+   (repositories/window-activity.ts), not the page's. Outranks both theme
+   blocks. */
+:root[data-window-inactive] {
+  --focus-ring: var(--control-edge);
+}
+
 @theme inline {
   /* The fixed-width face behind `font-mono` (app-chrome-conventions), instead of Tailwind's own stack. */
   --font-mono: ui-monospace, "Menlo", "Consolas", monospace;
   --color-background: var(--background);
   --color-surface: var(--surface);
   --color-surface-muted: var(--surface-muted);
+  --color-surface-pressed: var(--surface-pressed);
+  --color-border-subtle: var(--border-subtle);
   --color-border: var(--border);
   --color-border-strong: var(--border-strong);
-  --color-input-border: var(--input-border);
+  --color-control-edge: var(--control-edge);
   --color-ink-strong: var(--ink-strong);
   --color-ink: var(--ink);
   --color-ink-muted: var(--ink-muted);
   --color-ink-inverted: var(--ink-inverted);
   --color-primary: var(--primary);
   --color-primary-hover: var(--primary-hover);
+  --color-primary-pressed: var(--primary-pressed);
   --color-primary-ring: var(--primary-ring);
   --color-primary-surface: var(--primary-surface);
+  --color-focus-ring: var(--focus-ring);
   --color-danger: var(--danger);
   --color-danger-solid: var(--danger-solid);
   --color-danger-solid-hover: var(--danger-solid-hover);
+  --color-danger-solid-pressed: var(--danger-solid-pressed);
   --color-danger-surface: var(--danger-surface);
   --color-warning: var(--warning);
   --color-warning-surface: var(--warning-surface);
@@ -249,6 +289,27 @@ body.row-resizing * {
    anchor's keyboard focus inside its own bounds so virtualization, adjacent
    rows, and overflow clipping cannot hide it. */
 #main-item-area:focus-visible [data-item-anchor="true"] .item-selection-surface {
-  outline: 2px solid var(--color-primary-ring);
+  outline: 2px solid var(--focus-ring);
   outline-offset: -3px;
+}
+
+/* One focus treatment for every control (interface-styling-conventions): a
+   ring 1px clear of the edge that follows the control's corners, so a focused
+   control keeps the footprint of the one beside it. It replaces the
+   browser's own outline. In the base layer, so an item inside a composite —
+   a menu item, a tab, a tree row — answers with its own affordance through an
+   ordinary utility; a field recolours its own frame instead (Field.tsx). */
+@layer base {
+  :is(
+    button,
+    a[href],
+    summary,
+    [role="button"],
+    input[type="checkbox"],
+    input[type="radio"],
+    input[type="range"]
+  ):focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 1px;
+  }
 }

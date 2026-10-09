@@ -12,6 +12,7 @@ import { presentEscapedFailure, recordInterfaceFailure } from "./utils/failureSu
 import QuitSaveModal from "./components/QuitSaveModal";
 import { cancelQuitDecision, installQuitWorkflow } from "./workflows/quit";
 import { closeComparisonAfterMainRendererFailure } from "./state/comparison-store";
+import { installWindowActivity } from "./repositories/window-activity";
 
 const App = lazy(() => import("./App"));
 const PreviewWindow = lazy(() => import("./windows/PreviewWindow"));
@@ -41,6 +42,9 @@ window.addEventListener("contextmenu", (event) => {
     event.preventDefault();
   }
 });
+
+// Every window's focus ring quiets while that window is inactive.
+installWindowActivity();
 
 // Global last-resort handlers — catch anything that slips past React's error
 // handling and record it before the page can tear down.

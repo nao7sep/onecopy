@@ -21,7 +21,7 @@ import {
 import ComparisonSlot from "./ComparisonSlot";
 import ConfirmModal from "./ConfirmModal";
 import RevealCopiesModal from "./RevealCopiesModal";
-import Button from "./ui/Button";
+import Button, { LinkButton } from "./ui/Button";
 import OperationResult from "./ui/OperationResult";
 import MutationResultActions from "./MutationResultActions";
 
@@ -171,34 +171,35 @@ export default function ComparisonView({
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2 text-xs">
-          <button
-            className="rounded border border-border px-2 py-1 text-ink hover:bg-surface-muted disabled:opacity-50"
+          <Button
+            size="toolbar"
             disabled={busy || page <= 0}
             onClick={() => useComparisonStore.getState().prevPage()}
           >
             {t("comparison.previousPage")}
-          </button>
-          <button
-            className="rounded border border-border px-2 py-1 text-ink hover:bg-surface-muted disabled:opacity-50"
+          </Button>
+          <Button
+            size="toolbar"
             disabled={busy || page >= pages.length - 1}
             onClick={() => useComparisonStore.getState().nextPage()}
           >
             {t("comparison.nextPage")}
-          </button>
-          <button
-            className="rounded border border-danger/50 px-2 py-1 text-danger hover:bg-danger/10 disabled:opacity-50"
+          </Button>
+          <Button
+            size="toolbar"
+            variant="danger"
             disabled={busy || localChunk.length === 0}
             onClick={() => void decideComparisonPage(false, true)}
           >
             {t("comparison.deleteVisible")}
-          </button>
-          <button
-            className="rounded border border-border px-2 py-1 text-ink hover:bg-surface-muted disabled:opacity-50"
+          </Button>
+          <Button
+            size="toolbar"
             disabled={busy}
             onClick={() => void closeComparison()}
           >
             {t("common.close")}
-          </button>
+          </Button>
         </div>
       </header>
 
@@ -255,15 +256,14 @@ export default function ComparisonView({
                   : t("comparison.preparingOperation")}
           </span>
           {mutationProgress !== null && !exitQuiescing ? (
-            <button
-              className="rounded border border-border px-2 py-0.5 text-ink hover:bg-surface-muted disabled:opacity-50"
+            <LinkButton
               disabled={mutationCancelling}
               onClick={() => void cancelMutation()}
             >
               {mutationCancelling
                 ? t("common.cancelling")
                 : t("app.cancelOperation")}
-            </button>
+            </LinkButton>
           ) : mutationResult !== null && !exitQuiescing ? (
             <MutationResultActions
               result={mutationResult}

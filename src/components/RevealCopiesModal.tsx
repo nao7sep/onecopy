@@ -68,7 +68,7 @@ export default function RevealCopiesModal({
           {paths?.map((path) => (
             <li key={path}>
               <button
-                className="w-full rounded-lg border border-border px-3 py-2 text-left text-sm text-ink hover:bg-surface-muted"
+                className="w-full rounded-lg border border-border px-3 py-2 text-left text-sm text-ink transition-colors motion-reduce:transition-none hover:bg-surface-muted active:bg-surface-pressed"
                 title={t("reveal.showIn", { manager })}
                 onClick={() => {
                   setError(null);

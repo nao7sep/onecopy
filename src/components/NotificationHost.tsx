@@ -15,7 +15,7 @@ import {
 } from "../utils/failureSurface";
 import { log, toErrorFields } from "../repositories";
 import { useReleaseCheckStore } from "../state/release-check-store";
-import Button from "./ui/Button";
+import Button, { IconButton } from "./ui/Button";
 import OperationResult from "./ui/OperationResult";
 import { configNumber } from "../models/config";
 
@@ -41,14 +41,16 @@ function ReleaseNotice() {
             {t("about.viewRelease")}
           </Button>
         </div>
-        <button
+        <IconButton
+          size="sm"
+          tone="current"
           aria-label={t("notice.dismissRelease")}
           title={t("common.dismiss")}
-          className="oc-first-line-dismiss flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-current opacity-70 hover:bg-ink/10 hover:opacity-100 focus-visible:bg-ink/10 focus-visible:opacity-100"
+          className="oc-first-line-dismiss"
           onClick={dismiss}
         >
           <X size={14} />
-        </button>
+        </IconButton>
       </div>
       {linkError !== null ? (
         <OperationResult level="error" className="mt-2">
@@ -153,15 +155,17 @@ function Toast({
             <p className="mt-1 select-text break-all text-xs opacity-70">{record.path}</p>
           ) : null}
         </div>
-        <button
+        <IconButton
+          size="sm"
+          tone="current"
           aria-label={t("notice.dismissNotification")}
           title={t("common.dismiss")}
           disabled={dismissing}
-          className="oc-first-line-dismiss flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-current opacity-70 hover:bg-ink/10 hover:opacity-100 focus-visible:bg-ink/10 focus-visible:opacity-100 disabled:opacity-30"
+          className="oc-first-line-dismiss"
           onClick={() => void dismiss(record.id)}
         >
           <X size={14} />
-        </button>
+        </IconButton>
       </div>
       {record.occurrenceCount > 1 ? (
         <p className="mt-1 text-xs opacity-70">

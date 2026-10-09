@@ -15,6 +15,7 @@ import { Columns2, Eye, EyeOff, Monitor } from "lucide-react";
 import { useI18n } from "../i18n/I18nContext";
 import { resolvePlacement, usePreviewStore } from "../state/preview-store";
 import { setPreviewPlacement, togglePreview } from "../workflows/preview";
+import Button, { IconButton } from "./ui/Button";
 
 export default function PreviewControl() {
   const { t } = useI18n();
@@ -24,45 +25,41 @@ export default function PreviewControl() {
   const effective = resolvePlacement(preference);
 
   return (
-    <span className="flex items-center gap-1">
-      <button
+    <span className="flex items-center gap-2">
+      <Button
+        size="toolbar"
+        variant="ghost"
+        selected={follow}
         aria-pressed={follow}
         title={follow ? t("preview.hide") : t("preview.show")}
-        className={`flex h-7 items-center gap-1.5 rounded-md px-2 text-xs transition-colors ${
-          follow
-            ? "bg-primary-surface text-primary"
-            : "text-ink-muted hover:bg-surface-muted hover:text-ink"
-        }`}
         onClick={() => void togglePreview()}
       >
         {follow ? <Eye size={14} /> : <EyeOff size={14} />}
         {t("preview.label")}
-      </button>
-      <span className="flex items-center rounded-md border border-border p-0.5">
-          <button
-            aria-pressed={effective === "split"}
-            title={t("preview.placeInWindow")}
-            className={`flex h-6 w-6 items-center justify-center rounded transition-colors ${
-              effective === "split"
-                ? "bg-primary-surface text-primary"
-                : "text-ink-muted hover:text-ink"
-            }`}
-            onClick={() => void setPreviewPlacement("split")}
-          >
-            <Columns2 size={13} />
-          </button>
-          <button
-            aria-pressed={effective === "window"}
-            title={t("preview.placeSeparateWindow")}
-            className={`flex h-6 w-6 items-center justify-center rounded transition-colors ${
-              effective === "window"
-                ? "bg-primary-surface text-primary"
-                : "text-ink-muted hover:text-ink"
-            }`}
-            onClick={() => void setPreviewPlacement("window")}
-          >
-            <Monitor size={13} />
-          </button>
+      </Button>
+      {/* One segmented control: a bordered track whose chosen segment takes
+          the selection fill. */}
+      <span className="flex h-7 items-center gap-0.5 rounded-md border border-control-edge p-px">
+        <IconButton
+          size="sm"
+          selected={effective === "split"}
+          aria-pressed={effective === "split"}
+          title={t("preview.placeInWindow")}
+          className="rounded-[5px]"
+          onClick={() => void setPreviewPlacement("split")}
+        >
+          <Columns2 size={13} />
+        </IconButton>
+        <IconButton
+          size="sm"
+          selected={effective === "window"}
+          aria-pressed={effective === "window"}
+          title={t("preview.placeSeparateWindow")}
+          className="rounded-[5px]"
+          onClick={() => void setPreviewPlacement("window")}
+        >
+          <Monitor size={13} />
+        </IconButton>
       </span>
     </span>
   );

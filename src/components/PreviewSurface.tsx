@@ -10,6 +10,7 @@ import { ensureRequestedPreview } from "../repositories/requested-previews";
 import { log, toErrorFields } from "../repositories";
 import {
   isAudioFile,
+  needsConvertedFullres,
   originalUrl,
   originalUrlByPath,
   previewUrl,
@@ -37,10 +38,38 @@ import { useAppStore } from "../state/app-store";
 import { useWindowPreferencesStore } from "../state/window-preferences-store";
 import TextOrAttributesSurface from "./TextOrAttributesSurface";
 import { openInDefaultApp } from "../workflows/external-open";
-import Button from "./ui/Button";
+import Button, { IconButton } from "./ui/Button";
 import OperationResult from "./ui/OperationResult";
 import { recordActionFailure } from "../state/notifications-store";
 import { configFlag } from "../models/config";
+import { ffmpegEntry, useBinariesStore } from "../state/binaries-store";
+import { useAppShellStore } from "../state/app-shell-store";
+
+/** Whether this surface offers to install ffmpeg: only while ffmpeg is
+ * missing, and only in Main's own preview pane, which opens Background work &
+ * tools in place. The preview window and the fullscreen view are separate
+ * webviews with no route to Main's utility surfaces, so they keep the words
+ * alone. */
+function useOffersFfmpegInstall(surface: PlaybackSurface): boolean {
+  const missing = useBinariesStore(
+    (state) => ffmpegEntry(state.entries)?.status === "not-installed",
+  );
+  return surface === "preview-split" && missing;
+}
+
+/** The remedy for a picture only ffmpeg can prepare: a HEIC, HEIF or AVIF
+ * still, or the poster and scene frames of a video the webview cannot play. */
+function InstallFfmpegButton({ size }: { size: "xs" | "sm" }) {
+  const { t } = useI18n();
+  return (
+    <Button
+      size={size}
+      onClick={() => useAppShellStore.getState().openUtility("backgroundWork")}
+    >
+      {t("preview.installFfmpeg")}
+    </Button>
+  );
+}
 
 function capturePlaybackFailure(
   element: HTMLMediaElement,
@@ -70,6 +99,7 @@ function VideoSurface({
   keyboardActive?: boolean;
 }) {
   const { t, text } = useI18n();
+  const offersFfmpegInstall = useOffersFfmpegInstall(surface);
   const [playbackFailure, setPlaybackFailure] = useState<MessageKey | null>(null);
   const playbackFailed = playbackFailure !== null;
   const [externalError, setExternalError] = useState<Message | null>(null);
@@ -203,8 +233,11 @@ function VideoSurface({
           />
         )}
         {!hold.inspecting && !playbackFailed ? (
-          <button
-            className="absolute left-2 top-2 inline-flex h-8 items-center gap-1 rounded-lg bg-background/85 px-2.5 text-xs font-medium text-ink shadow-sm hover:bg-background"
+          // Opaque over moving video, where a see-through fill leaves the
+          // label unreadable.
+          <Button
+            size="toolbar"
+            className="absolute left-2 top-2 shadow-sm"
             onPointerDown={(event) => event.stopPropagation()}
             onClick={() => {
               setExternalError(null);
@@ -215,11 +248,11 @@ function VideoSurface({
             }}
           >
             <ExternalLink size={13} /> {t("preview.openInPlayer")}
-          </button>
+          </Button>
         ) : null}
         {!hold.inspecting && sceneCount > 0 ? (
           <div
-            className="absolute inset-x-2 bottom-12 flex gap-1 overflow-x-auto rounded-lg bg-background/75 p-1.5 backdrop-blur-sm"
+            className="absolute inset-x-2 bottom-14 flex gap-1 overflow-x-auto rounded-lg bg-background/75 p-1.5 backdrop-blur-sm"
             onPointerDown={(event) => event.stopPropagation()}
           >
             {Array.from({ length: sceneCount }, (_, index) => {
@@ -231,7 +264,7 @@ function VideoSurface({
               return (
                 <button
                   key={index}
-                  className="relative h-16 w-24 shrink-0 overflow-hidden rounded border border-border hover:border-primary-ring"
+                  className="relative h-16 w-24 shrink-0 overflow-hidden rounded-md border border-border bg-surface transition-colors motion-reduce:transition-none hover:border-border-strong hover:bg-surface-muted active:bg-surface-pressed"
                   title={t("preview.playFrom", { time: timestampLabel(atMs) })}
                   aria-label={t("preview.playFrom", {
                     time: timestampLabel(atMs),
@@ -255,17 +288,18 @@ function VideoSurface({
           </div>
         ) : null}
         {!hold.inspecting && !playbackFailed ? (
+          // The player's own bar is opaque: its controls and times stay
+          // readable whatever frame plays behind them.
           <div
-            className="absolute inset-x-2 bottom-2 flex h-9 items-center gap-2 rounded-lg bg-background/85 px-2 backdrop-blur-sm"
+            className="absolute inset-x-2 bottom-2 flex h-10 items-center gap-2 rounded-lg border border-border bg-surface px-1 shadow-sm"
             onPointerDown={(event) => event.stopPropagation()}
           >
-            <button
-              className="rounded p-1 text-ink hover:bg-surface-muted"
+            <IconButton
               aria-label={playing ? t("preview.pause") : t("preview.play")}
               onClick={() => playback.toggle()}
             >
               {playing ? <Pause size={16} /> : <Play size={16} />}
-            </button>
+            </IconButton>
             <span className="w-10 text-right font-mono text-[11px] text-ink-muted">
               {timestampLabel(position * 1000)}
             </span>
@@ -282,8 +316,7 @@ function VideoSurface({
             <span className="w-10 font-mono text-[11px] text-ink-muted">
               {timestampLabel(duration * 1000)}
             </span>
-            <button
-              className="rounded p-1 text-ink hover:bg-surface-muted"
+            <IconButton
               aria-label={
                 muted ? t("preview.turnSoundOn") : t("preview.turnSoundOff")
               }
@@ -293,7 +326,7 @@ function VideoSurface({
               }}
             >
               {muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
-            </button>
+            </IconButton>
             <input
               aria-label={t("preview.playbackVolume")}
               type="range"
@@ -313,7 +346,13 @@ function VideoSurface({
         ) : null}
       </div>
       {playbackFailed ? (
-        <OperationResult level="error" className="shrink-0 text-sm">
+        <OperationResult
+          level="error"
+          className="shrink-0 text-sm"
+          // Without ffmpeg the poster shown here is missing too; installing
+          // it prepares the poster and scene frames, not playback.
+          actions={offersFfmpegInstall ? <InstallFfmpegButton size="xs" /> : undefined}
+        >
           {t(playbackFailure)}
         </OperationResult>
       ) : null}
@@ -375,12 +414,15 @@ function ImageSurface({
   hash,
   detail,
   enlargeSmall,
+  surface,
 }: {
   hash: string;
   detail: ItemDetail;
   enlargeSmall: boolean;
+  surface: PlaybackSurface;
 }) {
   const { t, text } = useI18n();
+  const offersFfmpegInstall = useOffersFfmpegInstall(surface);
   const [externalError, setExternalError] = useState<Message | null>(null);
   // A missing cache entry is USUALLY just a photo the scan's bulk pass has
   // not reached (it runs walk-order; on a slow machine the tail is hours
@@ -404,6 +446,12 @@ function ImageSurface({
         specializedFailure={t("preview.imagePreviewFailed", {
           reason: phase.reason,
         })}
+        // Only a format ffmpeg decodes is made showable by installing it.
+        specializedAction={
+          offersFfmpegInstall && needsConvertedFullres(detail.fileName)
+            ? (size) => <InstallFfmpegButton size={size} />
+            : null
+        }
       />
     );
   }
@@ -438,8 +486,9 @@ function ImageSurface({
             });
         }}
       />
-      <button
-        className="absolute right-2 top-2 inline-flex h-8 items-center gap-1 rounded-lg bg-background/85 px-2.5 text-xs font-medium text-ink shadow-sm hover:bg-background"
+      <Button
+        size="toolbar"
+        className="absolute right-2 top-2 shadow-sm"
         onClick={() => {
           setExternalError(null);
           void openInDefaultApp(hash, null).catch((error) => {
@@ -449,7 +498,7 @@ function ImageSurface({
         }}
       >
         <ExternalLink size={13} /> {t("preview.openInDefaultApp")}
-      </button>
+      </Button>
       {externalError !== null ? (
         <OperationResult
           level="error"
@@ -662,6 +711,7 @@ export default function PreviewSurface({
           hash={hash}
           detail={detail}
           enlargeSmall={enlargeSmall}
+          surface={surface}
         />
       )}
     </div>

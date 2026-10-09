@@ -261,7 +261,11 @@ export function Menu({
                   ...position,
                   visibility: position === undefined ? "hidden" : "visible",
                 }}
-                className="fixed z-40 max-w-[calc(100vw-1rem)] min-w-[min(14rem,calc(100vw-1rem))] overflow-auto rounded-lg border border-border bg-surface py-1 shadow-xl"
+                // The panel's padding insets every item from its edge, so a
+                // highlighted item reads as a rounded row inside the popover
+                // rather than a bar across it; the items' corners sit inside
+                // the panel's larger one.
+                className="fixed z-40 max-w-[calc(100vw-1rem)] min-w-[min(14rem,calc(100vw-1rem))] overflow-auto rounded-xl border border-border bg-surface p-1 shadow-xl"
                 onKeyDown={onPanelKeyDown}
               >
                 {children}
@@ -289,9 +293,11 @@ export function MenuItem({
       role="menuitem"
       tabIndex={-1}
       disabled={disabled}
-      // Keyboard focus shows as a background fill, not a ring — clip-safe
-      // inside the rounded panel (composite-control conventions).
-      className="flex w-full items-center whitespace-nowrap px-3 py-1.5 text-left text-sm text-ink outline-none transition-colors hover:bg-surface-muted focus:bg-surface-muted disabled:text-ink-muted"
+      // A flat item: keyboard focus shows as its background fill, not a ring
+      // — clip-safe inside the rounded panel (composite-control conventions)
+      // — and a press steps that fill once more. The item fills the panel's
+      // inner width, which is what a menu row is.
+      className="flex w-full items-center whitespace-nowrap rounded-md px-2.5 py-1.5 text-left text-sm text-ink outline-none transition-colors motion-reduce:transition-none enabled:hover:bg-surface-muted focus:bg-surface-muted enabled:active:bg-surface-pressed disabled:opacity-50"
       onClick={() => {
         // Close first (focus back on the trigger), then act — an action that
         // opens a modal then owns focus from a stable base.
@@ -305,5 +311,5 @@ export function MenuItem({
 }
 
 export function MenuSeparator() {
-  return <div role="separator" className="my-1 border-t border-border" />;
+  return <div role="separator" className="mx-1.5 my-1 border-t border-border" />;
 }

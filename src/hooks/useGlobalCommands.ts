@@ -14,6 +14,7 @@ import {
   isEditableTarget,
   isHelpShortcut,
   isSectionRecheckShortcut,
+  isSelectAllShortcut,
   isSettingsShortcut,
   shadowsMacTextEditing,
 } from "../utils/shortcuts";
@@ -97,6 +98,21 @@ export function useGlobalCommands() {
         if (!useSectionsStore.getState().sourceCheck.running) {
           void rescanCurrentSection();
         }
+      } else if (isSelectAllShortcut(event)) {
+        // The preview pane's read-only text keeps the chord for selecting its
+        // own words, as the preview window's does, and an open menu owns
+        // input; everywhere else in Main it selects the whole section, loaded
+        // or not.
+        if (
+          event.target instanceof Element &&
+          (event.target.closest("[data-preview-pane]") !== null ||
+            event.target.closest("[role='menu']") !== null)
+        ) {
+          return;
+        }
+        event.preventDefault();
+        if (event.repeat) return;
+        void useItemsStore.getState().selectAll();
       } else if (event.key === "Delete" || event.key === "Backspace") {
         // The preview pane is not a navigation context, but it is the same
         // preview as the preview window, shown in another place: its

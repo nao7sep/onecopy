@@ -50,5 +50,9 @@ describe("shortcut catalogue", () => {
     expect(row("Preview window", "F")).toBeUndefined();
     expect(row("Preview window", "Escape")).toBe("Close the preview window");
     expect(row("Destinations", "Enter")).toContain("Expand/collapse only");
+    // Select All acts anywhere in Main, so it is an App row, not one scoped to
+    // the focused item area.
+    expect(row("App", `${primaryModWord()}+A`)).toContain("every item in the section");
+    expect(row("Main items", `${primaryModWord()}+A`)).toBeUndefined();
   });
 });

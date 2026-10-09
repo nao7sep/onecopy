@@ -93,6 +93,7 @@ interface ItemsState {
   setAnchor: (key: string | null, position?: number) => void;
   toggleItem: (key: string, position?: number) => void;
   rangeSelect: (key: string, position?: number) => Promise<void>;
+  selectAll: () => Promise<void>;
   refresh: () => Promise<void>;
   refreshWindow: () => Promise<void>;
   applyDerivedItem: (previousHash: string, item: SectionItem) => void;
@@ -544,6 +545,64 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       const failure = message("section.extendSelectionFailed");
       feedback.finish({ tone: "danger", text: failure });
       recordActionFailure("section-range-load-failed", failure, error);
+    }
+  },
+
+  // Every item of the open section, not only the loaded window: the core
+  // resolves the whole order's identities, as it resolves a range over
+  // positions the window has not loaded. The anchor stays where it is, or
+  // takes the first item when nothing was anchored, and the result becomes the
+  // base a later Shift-extension adds to, as a Cmd/Ctrl toggle's does.
+  selectAll: async () => {
+    invalidateMainFeedback("selection");
+    const feedback = beginMainFeedback("selection");
+    const state = get();
+    const section = state.selected;
+    const total = state.totalItems > 0 ? state.totalItems : state.windowStart + state.items.length;
+    if (section === null || total === 0) return;
+    const sort = state.currentSort();
+    const fresh = rangeLoad.begin();
+    try {
+      const members = await invoke<PositionedSectionIdentity[]>("get_section_range", {
+        kind: section.kind,
+        month: section.month,
+        sort,
+        start: 0,
+        end: total,
+      });
+      const current = get();
+      if (
+        !fresh() ||
+        current.selected?.kind !== section.kind ||
+        current.selected.month !== section.month ||
+        !sameSort(current.currentSort(), sort) ||
+        members.length === 0
+      ) return;
+      const selectedPositions = membersMap(members);
+      const previous = current.selectedItem;
+      const anchor = previous !== null && selectedPositions.has(previous)
+        ? previous
+        : identityKey(members[0]!);
+      const anchorIndex = selectedPositions.get(anchor)!;
+      set({
+        selectedItem: anchor,
+        selectedKeys: new Set(selectedPositions.keys()),
+        selectedPositions,
+        rangeOrigin: anchor,
+        rangeOriginPosition: anchorIndex,
+        rangeBase: new Set(selectedPositions.keys()),
+        rangeBasePositions: new Map(selectedPositions),
+        currentContext: contextFromWindow(get(), anchorIndex),
+        scrollRequest: requestScroll(anchor, anchorIndex, "nearest"),
+        ...(anchor === previous ? {} : { detail: null }),
+      });
+      if (anchor !== previous) loadAnchorDetail(anchor);
+    } catch (error) {
+      if (!fresh()) return;
+      log.error("section select-all failed", toErrorFields(error));
+      const failure = message("section.selectAllFailed");
+      feedback.finish({ tone: "danger", text: failure });
+      recordActionFailure("section-select-all-failed", failure, error);
     }
   },
 

@@ -95,6 +95,7 @@ export function shortcutColumns(): ShortcutGroup[][] {
         ["Escape", "shortcuts.comparisonLeaveWithoutApplying"],
       ]),
       group("shortcuts.groupApp", "shortcuts.contextApp", [
+        [mod + "+A", "shortcuts.appSelectAll"],
         [mod + "+R", "shortcuts.appRecheckSection"],
         [mod + "+Comma", "settings.title"],
         [mod + "+Slash / Question", "shortcuts.appShortcuts"],
