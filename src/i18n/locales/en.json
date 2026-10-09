@@ -853,6 +853,8 @@
   "mutation.factOutcomeUnknown": { "one": "{count} outcome unknown", "other": "{count} outcome unknown" },
   "mutation.factFileStepsUnstarted": { "one": "{count} file step unstarted", "other": "{count} file steps unstarted" },
   "mutation.factStopped": "the operation stopped before it could finish",
+  "mutation.factRecoverable": "recoverable from Deleted files",
+  "mutation.factDeletedPermanently": "permanently deleted",
   "mutation.factItems": { "one": "{done}/{total} item", "other": "{done}/{total} items" },
   "mutation.factFiles": { "one": "{done}/{total} file", "other": "{done}/{total} files" },
   "mutation.factCurrent": "current {percent}%",

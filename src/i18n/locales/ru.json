@@ -853,6 +853,8 @@
   "mutation.factOutcomeUnknown": { "one": "{count} с неизвестным результатом", "few": "{count} с неизвестным результатом", "many": "{count} с неизвестным результатом", "other": "{count} с неизвестным результатом" },
   "mutation.factFileStepsUnstarted": { "one": "{count} файловый шаг не начат", "few": "{count} файловых шага не начато", "many": "{count} файловых шагов не начато", "other": "{count} файловых шага не начато" },
   "mutation.factStopped": "операция остановилась, не успев завершиться",
+  "mutation.factRecoverable": "можно восстановить в «Удалённых файлах»",
+  "mutation.factDeletedPermanently": "удалено безвозвратно",
   "mutation.factItems": { "one": "{done}/{total} объект", "few": "{done}/{total} объекта", "many": "{done}/{total} объектов", "other": "{done}/{total} объекта" },
   "mutation.factFiles": { "one": "{done}/{total} файл", "few": "{done}/{total} файла", "many": "{done}/{total} файлов", "other": "{done}/{total} файла" },
   "mutation.factCurrent": "текущий файл: {percent}%",

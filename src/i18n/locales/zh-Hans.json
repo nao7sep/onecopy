@@ -853,6 +853,8 @@
   "mutation.factOutcomeUnknown": { "other": "{count} 项结果未知" },
   "mutation.factFileStepsUnstarted": { "other": "{count} 个文件步骤未开始" },
   "mutation.factStopped": "操作在完成之前就已停止",
+  "mutation.factRecoverable": "可从“已删除的文件”中恢复",
+  "mutation.factDeletedPermanently": "已永久删除",
   "mutation.factItems": { "other": "{done}/{total} 个项目" },
   "mutation.factFiles": { "other": "{done}/{total} 个文件" },
   "mutation.factCurrent": "当前 {percent}%",

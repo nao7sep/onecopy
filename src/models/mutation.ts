@@ -189,6 +189,12 @@ export function mutationResultLine(
   if (summary.error !== null) {
     facts.push(t("mutation.factStopped"));
   }
+  // Where deleted files went. The core reports Deleted files available only
+  // for a recoverable delete that moved files there, so a delete that
+  // removed files without it was permanent.
+  if (result.kind === "delete" && summary.filesCompleted > 0) {
+    facts.push(t(summary.trashAvailable ? "mutation.factRecoverable" : "mutation.factDeletedPermanently"));
+  }
   return t("mutation.line", {
     headline: t(OUTCOME_HEADLINES[result.kind][outcome(result)]),
     facts: facts.join(" · "),

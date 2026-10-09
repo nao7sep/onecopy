@@ -853,6 +853,8 @@
   "mutation.factOutcomeUnknown": { "other": "결과를 알 수 없음 {count}개" },
   "mutation.factFileStepsUnstarted": { "other": "파일 단계 {count}개 시작되지 않음" },
   "mutation.factStopped": "작업이 완료되기 전에 중지됨",
+  "mutation.factRecoverable": "삭제된 파일에서 복구할 수 있음",
+  "mutation.factDeletedPermanently": "영구적으로 삭제됨",
   "mutation.factItems": { "other": "항목 {done}/{total}" },
   "mutation.factFiles": { "other": "파일 {done}/{total}" },
   "mutation.factCurrent": "현재 {percent}%",

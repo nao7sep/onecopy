@@ -853,6 +853,8 @@
   "mutation.factOutcomeUnknown": { "other": "結果不明 {count} 件" },
   "mutation.factFileStepsUnstarted": { "other": "未開始のファイル処理 {count} 件" },
   "mutation.factStopped": "処理は完了する前に停止しました",
+  "mutation.factRecoverable": "「削除済みファイル」から復元できます",
+  "mutation.factDeletedPermanently": "完全に削除しました",
   "mutation.factItems": { "other": "項目 {done}/{total}" },
   "mutation.factFiles": { "other": "ファイル {done}/{total}" },
   "mutation.factCurrent": "現在 {percent}%",
