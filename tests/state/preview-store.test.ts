@@ -62,7 +62,6 @@ beforeEach(() => {
     get_item_detail: () => null,
     log_event: () => null,
     record_recent_notification: () => ({}),
-    capture_preview_window_placement: () => null,
     place_preview_window: () => null,
   });
   usePreviewStore.setState({

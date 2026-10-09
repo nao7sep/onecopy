@@ -973,16 +973,18 @@ fn place_preview_window(
     )
 }
 
+/// Closes the Preview window after sampling its placement. `destroy()` sends
+/// no close request, so this is the one place that close is observed.
 #[tauri::command]
-fn capture_preview_window_placement(
+fn close_preview_window(
     app: AppHandle,
     state: tauri::State<'_, window_placement::PreviewPlacementState>,
 ) -> Result<(), String> {
-    let window = app
-        .get_webview_window("preview")
-        .ok_or("Preview window is unavailable")?;
+    let Some(window) = app.get_webview_window("preview") else {
+        return Ok(());
+    };
     window_placement::capture_preview(&window.as_ref().window(), &state.0);
-    Ok(())
+    window.destroy().map_err(|error| error.to_string())
 }
 
 
@@ -1692,7 +1694,7 @@ pub fn run() {
             set_spread_fullscreen,
             focus_window_while_active,
             place_preview_window,
-            capture_preview_window_placement,
+            close_preview_window,
             ensure_preview,
             apply_library_settings,
             visibility_capabilities,

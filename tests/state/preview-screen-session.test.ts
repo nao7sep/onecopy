@@ -21,7 +21,6 @@ it.each([1, 3])("places Preview before showing with %i available screens", async
   resetTauriMocks();
   let nativePlacementApplied = false;
   mockCommands({
-    capture_preview_window_placement: () => null,
     place_preview_window: () => { nativePlacementApplied = true; },
     log_event: () => null,
     record_recent_notification: () => null,
@@ -84,7 +83,7 @@ it.each([1, 3])("places Preview before showing with %i available screens", async
   usePreviewStore.getState().close();
   await settle(open());
   const commands = invokeCalls.map(({ command }) => command);
-  expect(commands.indexOf("capture_preview_window_placement"))
+  expect(commands.indexOf("close_preview_window"))
     .toBeLessThan(commands.lastIndexOf("place_preview_window"));
   await settle(usePreviewStore.getState().setPlacementPreference("split"));
 });

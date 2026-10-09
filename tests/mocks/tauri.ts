@@ -160,6 +160,10 @@ let nextWindowListenerFailure: unknown | null = null;
  * is active (the suite's case) focuses that window as Rust would. */
 function installDefaultHandlers(): void {
   handlers.set("activity_record", () => null);
+  // Rust samples Preview's placement, then destroys the window.
+  handlers.set("close_preview_window", async () => {
+    await liveWindows.get("preview")?.destroy();
+  });
   handlers.set("focus_window_while_active", async ({ label }) => {
     if (label === "main") await setFocus();
     else await liveWindows.get(label as string)?.setFocus();

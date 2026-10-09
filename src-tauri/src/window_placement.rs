@@ -371,31 +371,13 @@ fn capture_with_mode(
     }
 }
 
-/// Keeps the remembered NORMAL rectangle current as the window moves or
-/// resizes, instead of only sampling it at close. Without this, un-
-/// maximizing, resizing, moving, then re-maximizing before close silently
-/// discards the resize: only `Maximized` was observed at close, and that
-/// closing state keeps whatever normal rectangle happened to be recorded
-/// before. Fullscreen, minimized, maximized, and OneCopy's own fullscreen
-/// frames are never normal bounds and are left alone.
-fn capture_normal_bounds_live(window: &Window<Wry>, state: &PlacementState) {
-    let sample = (|| -> tauri::Result<Option<NormalRectangle>> {
-        if window.is_minimized()?
-            || window.is_fullscreen()?
-            || fullscreen::is_fullscreen(window.label())
-            || is_maximized(window)?
-        {
-            return Ok(None);
-        }
-        Ok(Some(current_rectangle(window)?))
-    })();
-    match sample {
-        Ok(Some(normal)) => set_state(state, Some(Placement { normal, maximized: false })),
-        Ok(None) => {}
-        Err(error) => warn("window placement could not be sampled", error),
-    }
-}
-
+/// Placement is sampled only when a window closes and when the app exits,
+/// never from move or resize events (window-conventions, "Placement
+/// implementation"): all native facts are read together at that moment. A
+/// window closed by `destroy()` sends no close request, so Preview closes
+/// through `close_preview_window`, which samples first. Accepted under the
+/// convention: on Windows, restoring, resizing, maximizing and closing loses
+/// that resize, since only the maximized state is observed at close.
 pub(crate) fn on_window_event(
     window: &Window<Wry>,
     event: &WindowEvent,
@@ -403,24 +385,13 @@ pub(crate) fn on_window_event(
     preview_state: &PlacementState,
     records_state: &PlacementState,
 ) {
-    let state = match window.label() {
-        "main" => Some(main_state),
-        "preview" => Some(preview_state),
-        _ => None,
-    };
-    match event {
-        WindowEvent::CloseRequested { .. } => match window.label() {
+    if let WindowEvent::CloseRequested { .. } = event {
+        match window.label() {
             "main" => capture(window, main_state),
             "preview" => capture_preview(window, preview_state),
             crate::records_window::LABEL => capture(window, records_state),
             _ => {}
-        },
-        WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
-            if let Some(state) = state {
-                capture_normal_bounds_live(window, state);
-            }
         }
-        _ => {}
     }
 }
 

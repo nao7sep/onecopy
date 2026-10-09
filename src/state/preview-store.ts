@@ -241,11 +241,10 @@ async function frontPreviewWindow(): Promise<void> {
   await raisePulse(existing);
 }
 
+/** Rust samples the window's placement and then destroys it, since a
+ * destroyed window sends no close request to sample at. */
 async function closePreviewWindow(): Promise<void> {
-  const existing = await WebviewWindow.getByLabel("preview");
-  if (existing === null) return;
-  await invoke("capture_preview_window_placement");
-  await existing.destroy();
+  await invoke("close_preview_window");
 }
 
 function publishPreviewFailure(
