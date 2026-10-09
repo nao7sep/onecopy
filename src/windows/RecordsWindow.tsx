@@ -60,6 +60,9 @@ import {
   computeRecordsMinWidth,
 } from "../utils/windowSizing";
 
+/** How far one arrow press moves the Records list's splitter. */
+const KEY_RESIZE_STEP = 16;
+
 // The list pane opens at its saved width, so its first frame already has it.
 export default function RecordsWindowRoute() {
   const [listWidth, setListWidth] = useState<number | null>(null);
@@ -449,6 +452,35 @@ export function RecordsWindow({ initialListWidth }: { initialListWidth: number }
     document.addEventListener("mouseup", onUp);
   };
 
+  // Keyboard resizing (BigMouth's splitter): arrows move the width by
+  // KEY_RESIZE_STEP, Home and End go to the bounds, and the width is saved
+  // once, when the key is released or the splitter loses focus.
+  const keyedWidth = useRef<number | null>(null);
+  const resizeByKey = (event: KeyboardEvent<HTMLDivElement>): void => {
+    // A held key moves on from where the last press left it, rendered or not.
+    const from = keyedWidth.current ?? shownListWidth;
+    const target =
+      event.key === "ArrowLeft" ? from - KEY_RESIZE_STEP
+      : event.key === "ArrowRight" ? from + KEY_RESIZE_STEP
+      : event.key === "Home" ? RECORDS_LIST_WIDTH.min
+      : event.key === "End" ? RECORDS_LIST_WIDTH.max
+      : null;
+    if (target === null) return;
+    event.preventDefault();
+    keyedWidth.current = shellWidth === null
+      ? Math.max(RECORDS_LIST_WIDTH.min, Math.min(RECORDS_LIST_WIDTH.max, target))
+      : clampRecordsListWidth(target, shellWidth);
+    setListWidth(keyedWidth.current);
+  };
+  const commitKeyedWidth = (): void => {
+    if (keyedWidth.current === null) return;
+    const width = keyedWidth.current;
+    keyedWidth.current = null;
+    void saveRecordsListWidth(width).catch((error: unknown) =>
+      log.warn("records list width save failed", toErrorFields(error)),
+    );
+  };
+
   const launchLabel = (session: string): string => {
     const time = formatTime(rowTime, session);
     return session === sources?.currentSession ? t("records.thisLaunch", { time }) : time;
@@ -457,6 +489,7 @@ export function RecordsWindow({ initialListWidth }: { initialListWidth: number }
   return (
     <div ref={shellRef} className="flex h-screen overflow-hidden bg-background text-ink">
       <section
+        id="records-list-pane"
         data-records-list-pane
         style={{ width: shownListWidth }}
         className="flex shrink-0 flex-col overflow-hidden bg-surface"
@@ -566,9 +599,17 @@ export function RecordsWindow({ initialListWidth }: { initialListWidth: number }
         role="separator"
         aria-orientation="vertical"
         aria-label={t("records.resizeList")}
+        aria-controls="records-list-pane"
+        aria-valuemin={RECORDS_LIST_WIDTH.min}
+        aria-valuemax={RECORDS_LIST_WIDTH.max}
+        aria-valuenow={shownListWidth}
+        tabIndex={0}
         style={{ width: SPLITTER_WIDTH }}
-        className="group flex shrink-0 cursor-col-resize justify-center"
+        className="group flex shrink-0 cursor-col-resize justify-center outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-ring"
         onMouseDown={beginListDrag}
+        onKeyDown={resizeByKey}
+        onKeyUp={commitKeyedWidth}
+        onBlur={commitKeyedWidth}
       >
         <div className="w-px bg-border transition-colors group-hover:bg-border-strong" />
       </div>

@@ -454,6 +454,31 @@ describe("the Records window", () => {
     expect(shownListWidth()).toBe(`${RECORDS_LIST_WIDTH.max}px`);
   });
 
+  it("resizes the list by keyboard and saves the width once when the key is released", async () => {
+    await mount();
+    const splitter = document.querySelector<HTMLElement>('[role="separator"]')!;
+    expect(splitter.tabIndex).toBe(0);
+
+    fireEvent.keyDown(splitter, { key: "ArrowRight" });
+    fireEvent.keyDown(splitter, { key: "ArrowRight" });
+    await settle();
+    expect(shownListWidth()).toBe(`${RECORDS_LIST_WIDTH.default + 32}px`);
+    expect(invokeCalls.some((call) => call.command === "patch_state")).toBe(false);
+
+    fireEvent.keyUp(splitter, { key: "ArrowRight" });
+    await settle();
+    fireEvent.keyDown(splitter, { key: "Home" });
+    fireEvent.blur(splitter);
+    await settle();
+
+    const saves = invokeCalls.filter((call) => call.command === "patch_state");
+    expect(saves.map((call) => call.args)).toEqual([
+      { patch: { recordsListWidth: RECORDS_LIST_WIDTH.default + 32 } },
+      { patch: { recordsListWidth: RECORDS_LIST_WIDTH.min } },
+    ]);
+    expect(splitter.getAttribute("aria-valuenow")).toBe(String(RECORDS_LIST_WIDTH.min));
+  });
+
   it("narrows the list when the window narrows, saving nothing", async () => {
     await mount();
     expect(shownListWidth()).toBe(`${RECORDS_LIST_WIDTH.default}px`);
