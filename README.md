@@ -31,14 +31,15 @@ OneCopy never empties or prunes this storage on its own. The *Deleted files…* 
 
 OneCopy is built for local and removable drives. Before it changes files on a source drive, it checks that the drive is the one it recorded. Publishing a copy, deleting into Deleted files and restoring never replace an existing file; on exFAT, which has no exclusive rename, OneCopy reserves the name first.
 
-Limits worth knowing:
+What it does with storage that needs care:
 
+- Libraries and apps (a Photos, Lightroom, Final Cut or iMovie library, an app) are left alone: OneCopy never looks inside one, and a source folder inside one is refused, because deleting or moving a "duplicate" there would damage the library.
+- Online-only files in iCloud Drive, OneDrive, Dropbox and other synced folders are not read, since reading one downloads it; the source folder's Issue says how many were skipped. Make them available offline to include them. Deleting permanently or emptying Deleted files in a synced folder also deletes the files from the cloud and your other devices, and OneCopy says so before it does.
+- A source folder whose drive OneCopy cannot identify (some network shares) keeps an Issue saying so: a different drive mounted in its place would not be noticed. A folder other computers write at the same time is not covered.
+- Two hard links to one file count as one copy on the Mac. Windows reports links only through an open file, so there each name counts.
 - Symbolic links and junctions are never followed, and nothing is deleted, moved or restored through one.
-- Copy and Move keep each file's content, modified time and permissions. Finder tags, other extended attributes and resource forks are not copied, so a moved alias or tagged file loses them; after a Move the originals stay recoverable from Deleted files.
-- A sparse file is written at full size at the destination, and deleting an APFS clone frees little or no space, because clones share their data. Two hard links to one file count as two copies.
-- Folders inside packages, such as a Photos or Lightroom library or an app, are indexed like any other folder. Do not add a source folder that contains such a library: deleting or moving its "duplicates" would damage it.
-- Network shares are not recognised as such. OneCopy cannot record a share's identity, so a different share mounted in its place is not noticed, and a folder that other computers write at the same time is not covered.
-- In iCloud Drive, OneDrive, Dropbox and other synced folders, OneCopy reads files as ordinary files, which downloads any that are online-only, and a deletion there is an ordinary deletion, which the sync service handles as it handles any other.
+- Copy and Move keep each file's content, modified time and permissions. Finder tags, other extended attributes and resource forks are not copied. A copy onto a FAT32 or exFAT drive of a file dated before 1980 or after 2107 gets the nearest date those drives hold.
+- A sparse file is written at full size at the destination, and deleting an APFS clone frees little or no space, because clones share their data.
 - Destination drives are not checked for a swap. Publication never replaces a file, so a different drive mounted in the same place cannot be overwritten.
 
 ## Download
