@@ -1069,13 +1069,15 @@ pub fn upsert_file(
         .unwrap_or(&file_name)
         .to_lowercase();
 
+    // The per-file statements go through the statement cache
+    // (`execute_cached`).
     let existing: Option<(i64, Option<i64>)> = conn
-        .query_row(
-            "SELECT size, mtime_ms FROM paths WHERE abs_path = ?1",
-            [&abs],
-            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?)),
-        )
-        .optional()
+        .prepare_cached("SELECT size, mtime_ms FROM paths WHERE abs_path = ?1")
+        .and_then(|mut statement| {
+            statement
+                .query_row([&abs], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?)))
+                .optional()
+        })
         .map_err(|e| e.to_string())?;
 
     match existing {
@@ -1084,12 +1086,12 @@ pub fn upsert_file(
         // rebuild; that is the accepted cost of not reading every file on
         // every check.
         Some((old_size, old_mtime)) if old_size == size && old_mtime == mtime_ms => {
-            let changed = conn.execute(
+            let changed = execute_cached(
+                conn,
                 "UPDATE paths SET missing = 0, own_visibility_flags = ?2, visibility_flags = ?3, visibility_checked = 1
                  WHERE abs_path = ?1 AND (missing = 1 OR own_visibility_flags != ?2 OR visibility_flags != ?3 OR visibility_checked != 1)",
                 params![abs, own_visibility_flags, visibility_flags],
-            )
-            .map_err(|e| e.to_string())?;
+            )?;
             Ok(if changed == 0 { Upsert::Unchanged } else { Upsert::Updated })
         }
         Some(_) => {
@@ -1139,13 +1141,13 @@ pub fn upsert_file(
                 .parent()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default();
-            conn.execute(
+            execute_cached(
+                conn,
                 "INSERT INTO paths (abs_path, dir_path, file_name, stem, ext, kind, size, \
                  mtime_ms, birthtime_ms, missing, own_visibility_flags, visibility_flags, visibility_checked)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11, 1)",
                 params![abs, dir_path, file_name, stem, ext, kind, size, mtime_ms, birthtime_ms, own_visibility_flags, visibility_flags],
-            )
-            .map_err(|e| e.to_string())?;
+            )?;
             Ok(Upsert::Added)
         }
     }
@@ -1769,17 +1771,17 @@ fn hash_pending_with_progress(
         }
         if needs_content_identity(&row.kind) {
             let key = provisional_key(row.id);
-            conn.execute(
+            execute_cached(
+                conn,
                 "INSERT INTO contents (hash, byte_size, kind) VALUES (?1, ?2, ?3) \
                  ON CONFLICT(hash) DO NOTHING",
                 params![key, row.size, row.kind],
-            )
-            .map_err(|e| e.to_string())?;
-            conn.execute(
+            )?;
+            execute_cached(
+                conn,
                 "UPDATE paths SET content_hash = ?2 WHERE id = ?1",
                 params![row.id, key],
-            )
-            .map_err(|e| e.to_string())?;
+            )?;
             stats.provisional_created += 1;
         } else {
             stats.skipped_unique += 1;
@@ -1887,11 +1889,11 @@ fn hash_pending_with_progress(
                         if issues_present {
                             crate::index_store::clear_issues(conn, &row.abs, &["read-error"])?;
                         }
-                        conn.execute(
+                        execute_cached(
+                            conn,
                             "UPDATE paths SET prehash = ?2 WHERE id = ?1",
                             params![row.id, pre],
-                        )
-                        .map_err(|e| e.to_string())?;
+                        )?;
                         Some(pre)
                     }
                     Err(err) => {
@@ -2027,14 +2029,14 @@ fn extract_pending_with_progress(
         };
 
         // Re-extraction replaces this path's evidence wholesale.
-        conn.execute("DELETE FROM evidence WHERE path_id = ?1", [id])
-            .map_err(|e| e.to_string())?;
+        execute_cached(conn, "DELETE FROM evidence WHERE path_id = ?1", [id])?;
 
         if let Some(meta) = &meta {
             store_media_facts(conn, id, meta)?;
             if let Some(taken) = meta.taken {
                 let raw = serde_json::to_string(&taken).map_err(|e| e.to_string())?;
-                conn.execute(
+                execute_cached(
+                    conn,
                     "INSERT INTO evidence (path_id, source, raw, offset_known) \
                      VALUES (?1, 'metadata', ?2, ?3)",
                     params![
@@ -2042,22 +2044,22 @@ fn extract_pending_with_progress(
                         raw,
                         matches!(taken, metadata::MetadataTimestamp::Absolute { .. }) as i64
                     ],
-                )
-                .map_err(|e| e.to_string())?;
+                )?;
             }
             if kind == "image" || kind == "video" {
-                conn.execute(
+                execute_cached(
+                    conn,
                     "INSERT INTO evidence (path_id, source, raw, offset_known) \
                      VALUES (?1, 'live-photo-identifier', ?2, 0)",
                     params![id, meta.live_photo_identifier.as_deref()],
-                )
-                .map_err(|e| e.to_string())?;
+                )?;
             }
         }
 
         if let Some(token) = timestamps::from_filename(&file_name) {
             let raw = serde_json::to_string(&token).map_err(|e| e.to_string())?;
-            conn.execute(
+            execute_cached(
+                conn,
                 "INSERT INTO evidence (path_id, source, raw, offset_known) \
                  VALUES (?1, 'filename', ?2, ?3)",
                 params![
@@ -2065,15 +2067,14 @@ fn extract_pending_with_progress(
                     raw,
                     matches!(token, timestamps::FilenameTimestamp::EpochMillis(_)) as i64
                 ],
-            )
-            .map_err(|e| e.to_string())?;
+            )?;
         }
 
-        conn.execute(
+        execute_cached(
+            conn,
             "UPDATE paths SET indexed_at_utc = ?2 WHERE id = ?1",
             params![id, logging::now_iso_millis()],
-        )
-        .map_err(|e| e.to_string())?;
+        )?;
         crate::index_store::clear_issues(
             conn,
             &abs,
@@ -2704,6 +2705,14 @@ fn pair_companions_with_progress(
 #[path = "../tests/unit/scanner.rs"]
 mod pairing_plan_tests;
 
+/// `Connection::execute` through the statement cache, for a statement run
+/// once per file: preparing it compiles every trigger on its table with it.
+fn execute_cached<P: rusqlite::Params>(conn: &Connection, sql: &str, params: P) -> Result<usize, String> {
+    conn.prepare_cached(sql)
+        .and_then(|mut statement| statement.execute(params))
+        .map_err(|error| error.to_string())
+}
+
 fn store_content_hash(
     conn: &Connection,
     path_id: i64,
@@ -2711,17 +2720,17 @@ fn store_content_hash(
     size: i64,
     kind: &str,
 ) -> Result<(), String> {
-    conn.execute(
+    execute_cached(
+        conn,
         "INSERT INTO contents (hash, byte_size, kind) VALUES (?1, ?2, ?3) \
          ON CONFLICT(hash) DO NOTHING",
         params![hash, size, kind],
-    )
-    .map_err(|e| e.to_string())?;
-    conn.execute(
+    )?;
+    execute_cached(
+        conn,
         "UPDATE paths SET content_hash = ?2 WHERE id = ?1",
         params![path_id, hash],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     Ok(())
 }
 
@@ -2730,7 +2739,8 @@ fn store_media_facts(
     path_id: i64,
     meta: &metadata::MediaMetadata,
 ) -> Result<(), String> {
-    conn.execute(
+    execute_cached(
+        conn,
         "UPDATE contents SET width = COALESCE(?2, width), height = COALESCE(?3, height), \
          duration_ms = COALESCE(?4, duration_ms), \
          camera_make = COALESCE(?5, camera_make), camera_model = COALESCE(?6, camera_model) \
@@ -2743,8 +2753,7 @@ fn store_media_facts(
             meta.make,
             meta.model
         ],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     Ok(())
 }
 
