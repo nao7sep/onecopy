@@ -35,7 +35,7 @@ describe("global escaped-failure wiring", () => {
     );
     expect(
       invokeCalls.filter((call) => call.command === "record_interface_failure")
-        .some((call) => (call.args.message as string).includes("stopped unexpectedly")),
+        .some((call) => call.args.messageKey === "crash.windowStopped" && call.args.detail === "boom"),
     ).toBe(true);
 
     const rejectionEvent = new Event("unhandledrejection") as PromiseRejectionEvent & Event;
@@ -46,7 +46,7 @@ describe("global escaped-failure wiring", () => {
     );
     expect(
       invokeCalls.filter((call) => call.command === "record_interface_failure")
-        .some((call) => (call.args.message as string).includes("could not finish an action")),
+        .some((call) => call.args.messageKey === "crash.actionUnfinished" && call.args.detail === "rejected"),
     ).toBe(true);
   });
 });

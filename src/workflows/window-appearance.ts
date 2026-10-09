@@ -62,7 +62,7 @@ async function readPreferences(): Promise<AppearancePreferences> {
 
 function reportFailure(error: unknown): void {
   log.warn("window appearance update failed", toErrorFields(error));
-  recordInterfaceFailure(message("app.appearanceUpdateFailed"));
+  recordInterfaceFailure(message("app.appearanceUpdateFailed"), error);
 }
 
 // All routes share this small auxiliary-window read model, never Main's
@@ -75,6 +75,7 @@ function reportFailure(error: unknown): void {
 export const installWindowAppearance = createEventInstaller(async (listeners) => {
   applyUiFont(undefined);
   let request = 0;
+  let succeeded = false;
   const refresh = async () => {
     const current = ++request;
     try {
@@ -85,8 +86,19 @@ export const installWindowAppearance = createEventInstaller(async (listeners) =>
       applyUiFont(preferences.uiFontFamily);
       applyWindowTitle(useLanguageStore.getState().language);
       useWindowPreferencesStore.getState().apply(preferences);
+      succeeded = true;
     } catch (error) {
-      if (current === request) reportFailure(error);
+      if (current !== request) return;
+      reportFailure(error);
+      // Catalogues load only through `apply`, so a window whose first read
+      // failed would otherwise paint in English whatever the computer's
+      // language. It installs the fallback language instead; a later failed
+      // refresh keeps the last good language.
+      if (!succeeded) {
+        await useLanguageStore.getState().apply({}).catch((fallbackError) => {
+          log.warn("fallback language failed to load", toErrorFields(fallbackError));
+        });
+      }
     }
   };
   await listeners.listen("appearance://changed", () => { void refresh(); });

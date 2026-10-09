@@ -409,7 +409,7 @@ const install = createEventInstaller(
   },
   (error) => {
     log.warn("library event wiring failed", toErrorFields(error));
-    recordInterfaceFailure(message("scan.liveUpdatesUnavailable"));
+    recordInterfaceFailure(message("scan.liveUpdatesUnavailable"), error);
     presentEscapedFailure(message("scan.liveUpdatesUnavailableReload"));
   },
 );

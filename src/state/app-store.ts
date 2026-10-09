@@ -371,6 +371,6 @@ void (async () => {
     });
   } catch (error) {
     log.warn("quarantine event wiring failed", toErrorFields(error));
-    recordInterfaceFailure(message("app.recoveryMonitorFailed"));
+    recordInterfaceFailure(message("app.recoveryMonitorFailed"), error);
   }
 })();

@@ -173,11 +173,24 @@ async fn load_app_data(
 #[tauri::command]
 async fn record_interface_failure(
     window: tauri::WebviewWindow,
-    message: String,
+    message_key: String,
+    message_values: Option<serde_json::Map<String, Value>>,
+    detail: Option<String>,
 ) -> Result<(), String> {
     let app = window.app_handle().clone();
     let label = window.label().to_string();
-    dispatch(move || failure_runtime::report(&app, "interface-failed", Some(&label), &message)).await
+    dispatch(move || {
+        failure_runtime::report_interface(
+            &app,
+            &label,
+            failure_runtime::InterfaceFailure {
+                message_key,
+                message_values,
+                detail: detail.unwrap_or_default(),
+            },
+        )
+    })
+    .await
 }
 
 #[tauri::command]

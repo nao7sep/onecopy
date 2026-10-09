@@ -44,7 +44,7 @@ export function listenThenAnnounce<T>(
         ...toErrorFields(error),
       });
       const presentation = message("crash.windowNotConnected");
-      recordInterfaceFailure(presentation);
+      recordInterfaceFailure(presentation, error);
       presentEscapedFailure(presentation);
     }
   })();

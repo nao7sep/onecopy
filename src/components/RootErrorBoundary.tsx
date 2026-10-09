@@ -29,7 +29,7 @@ export default class RootErrorBoundary extends Component<Props, State> {
       ...toErrorFields(error),
       componentStack: info.componentStack,
     });
-    recordInterfaceFailure(message("crash.drawingUnfinished"));
+    recordInterfaceFailure(message("crash.drawingUnfinished"), error);
     this.props.onFailure?.();
   }
 

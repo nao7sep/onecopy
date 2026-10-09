@@ -27,7 +27,7 @@ export function installIssuesEventWiring(): Promise<void> {
   installation ??= install().catch((error) => {
     installation = null;
     log.error("issues event wiring failed", toErrorFields(error));
-    recordInterfaceFailure(message("issues.liveUpdatesUnavailable"));
+    recordInterfaceFailure(message("issues.liveUpdatesUnavailable"), error);
   });
   return installation;
 }

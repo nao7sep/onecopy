@@ -193,7 +193,7 @@ export default function NotificationHost({
       log.error("notification interface wiring failed", toErrorFields(error));
       const direct = message("notice.unavailable");
       presentEscapedFailure(direct);
-      recordInterfaceFailure(direct);
+      recordInterfaceFailure(direct, error);
     });
   }, []);
 

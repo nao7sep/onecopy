@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, type ReactNode } from "react";
-import { isLanguage, type Language } from "./languages";
+import { type Language } from "./languages";
+import { useLanguageStore } from "../state/language-store";
 import { createTranslator, type Translator } from "./translate";
 
 // English until a provider says otherwise, so a component rendered on its own
@@ -12,9 +13,9 @@ export function I18nProvider({
   children,
   // False for a preview nested inside the window's own provider (the setup
   // wizard previewing a choice before Finish, R5.5 D-L3): only its own
-  // subtree should speak the previewed language, so <html lang> and every
-  // surface outside that subtree (the last-resort error boundary, escaped
-  // failures, this window's title) stay on the language actually in effect.
+  // subtree should speak the previewed language, so <html lang> stays on the
+  // language actually in effect, as do the surfaces outside that subtree
+  // (`documentTranslator` reads the language store).
   manageDocumentLanguage = true,
 }: {
   language: Language;
@@ -24,9 +25,7 @@ export function I18nProvider({
 }) {
   const translator = useMemo(() => createTranslator(language, locale), [language, locale]);
 
-  // <html lang> picks the right glyphs for Chinese, Japanese and Korean text and
-  // tells the last-resort error boundary, which sits outside this provider,
-  // which language to speak.
+  // <html lang> picks the right glyphs for Chinese, Japanese and Korean text.
   useEffect(() => {
     if (manageDocumentLanguage) document.documentElement.lang = language;
   }, [language, manageDocumentLanguage]);
@@ -38,10 +37,10 @@ export function useI18n(): Translator {
   return useContext(I18nContext);
 }
 
-// For surfaces outside the provider: the language the document last declared.
-// Without a document — a store under test, or a worker — English, so reporting
-// a failure never depends on having one.
+// For surfaces outside the provider: the language actually in effect in this
+// window, which the language store holds from the first appearance read on
+// (before any provider has declared <html lang>). The wizard's preview
+// provider never changes it.
 export function documentTranslator(): Translator {
-  const declared = typeof document === "undefined" ? "" : document.documentElement.lang;
-  return createTranslator(isLanguage(declared) ? declared : "en");
+  return createTranslator(useLanguageStore.getState().language);
 }

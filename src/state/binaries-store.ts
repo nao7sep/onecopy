@@ -620,7 +620,7 @@ const installEvents = createEventInstaller(
   },
   (error) => {
     log.warn("binaries event wiring failed", toErrorFields(error));
-    recordInterfaceFailure(message("binaries.liveStatusUnavailable"));
+    recordInterfaceFailure(message("binaries.liveStatusUnavailable"), error);
     useBinariesStore.setState({
       loadError: message("binaries.liveStatusUnavailable"),
     });

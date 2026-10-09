@@ -67,7 +67,7 @@ function publish(): void {
   }).catch((error) => {
     if (last === signature) last = "";
     log.warn("work attention update failed", toErrorFields(error));
-    recordInterfaceFailure(message("work.attentionFailed"));
+    recordInterfaceFailure(message("work.attentionFailed"), error);
   });
 }
 

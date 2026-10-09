@@ -175,3 +175,18 @@ it("bounds a stalled preference read so appearance cannot indefinitely hold wind
   await installing;
   expect(invokeCalls.some((call) => call.command === "record_interface_failure")).toBe(true);
 });
+
+it("paints in the computer's language when the first read fails, and failures outside React follow it", async () => {
+  vi.spyOn(navigator, "languages", "get").mockReturnValue(["ja-JP"]);
+  document.documentElement.lang = "en";
+  mockCommands({ appearance_preferences: () => { throw new Error("unreadable config"); } });
+  const { installWindowAppearance } = await import("../../src/workflows/window-appearance");
+  const { useLanguageStore } = await import("../../src/state/language-store");
+  const { documentTranslator } = await import("../../src/i18n/I18nContext");
+
+  await installWindowAppearance();
+
+  expect(useLanguageStore.getState().language).toBe("ja");
+  expect(document.documentElement.lang).toBe("en");
+  expect(documentTranslator().t("wizard.language")).toBe("言語");
+});

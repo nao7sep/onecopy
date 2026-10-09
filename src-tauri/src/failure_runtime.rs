@@ -115,6 +115,50 @@ pub fn report(
     Ok(())
 }
 
+/// A failure an interface reported: its own sentence, as a catalogue key and
+/// values, and the real error as detail.
+pub struct InterfaceFailure {
+    pub message_key: String,
+    pub message_values: Option<serde_json::Map<String, serde_json::Value>>,
+    pub detail: String,
+}
+
+/// The notice for an interface failure: the window's own sentence in the
+/// language in effect when it is read, then the real error. The window is
+/// named only in the log, so the same failure in two windows is one Issue.
+pub fn report_interface(
+    app: &AppHandle,
+    window_label: &str,
+    failure: InterfaceFailure,
+) -> Result<(), String> {
+    let kind = "interface-failed";
+    crate::logging::error(
+        "application failure",
+        json!({
+            "kind": kind,
+            "window": window_label,
+            "messageKey": failure.message_key,
+            "error": { "message": failure.detail },
+        }),
+    );
+    let detail = failure.detail.clone();
+    crate::notifications::publish(app, interface_notice(failure))
+        .map_err(|error| present_unrecorded(app, kind, None, &detail, "Issues", &error))?;
+    Ok(())
+}
+
+pub(crate) fn interface_notice(failure: InterfaceFailure) -> crate::notifications::NotificationRequest {
+    crate::notifications::NotificationRequest {
+        kind: "interface-failed".to_string(),
+        path: None,
+        level: crate::notifications::NotificationLevel::Error,
+        presentation: crate::notifications::NotificationPresentation::Persistent,
+        message: failure.detail,
+        message_key: Some(failure.message_key),
+        message_values: failure.message_values,
+    }
+}
+
 /// Records one unresolved condition without creating a per-input notification.
 /// Large operations use this for detailed Issue rows and publish one summary
 /// through their owning result surface.

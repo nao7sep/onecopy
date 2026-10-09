@@ -123,7 +123,7 @@ export async function openComparison(
       } catch (error) {
         log.error("comparison return position failed", toErrorFields(error));
         await useComparisonStore.getState().close();
-        recordInterfaceFailure(message("comparison.prepareFailed"));
+        recordInterfaceFailure(message("comparison.prepareFailed"), error);
         return "failed";
       }
     }
@@ -298,7 +298,7 @@ export async function reconcileComparisonMembership(): Promise<void> {
     }
   } catch (error) {
     log.warn("comparison membership refresh failed", toErrorFields(error));
-    recordInterfaceFailure(message("comparison.membershipRefreshFailed"));
+    recordInterfaceFailure(message("comparison.membershipRefreshFailed"), error);
     useComparisonStore.setState({
       message: message("comparison.membershipRefreshFailed"),
     });
@@ -474,7 +474,7 @@ const installEvents = createEventInstaller(
   },
   (error) => {
     log.warn("comparison display wiring failed", toErrorFields(error));
-    recordInterfaceFailure(message("comparison.displayControlsUnavailable"));
+    recordInterfaceFailure(message("comparison.displayControlsUnavailable"), error);
     presentEscapedFailure(message("comparison.displayControlsUnavailableReload"));
   },
 );

@@ -28,12 +28,21 @@ describe("escaped interface failures", () => {
     expect(document.body.textContent).not.toContain("stopped unexpectedly");
   });
 
-  it("asks the core to persist the current webview failure", () => {
+  it("asks the core to persist the current webview failure as its sentence's key", () => {
     recordInterfaceFailure(message("crash.drawingUnfinished"));
 
     expect(invokeCalls).toContainEqual({
       command: "record_interface_failure",
-      args: { message: "This window could not finish drawing. Reload it before continuing." },
+      args: { messageKey: "crash.drawingUnfinished", messageValues: null, detail: null },
+    });
+  });
+
+  it("sends the real error as detail after the sentence", () => {
+    recordInterfaceFailure(message("app.appearanceUpdateFailed"), new Error("x"));
+
+    expect(invokeCalls).toContainEqual({
+      command: "record_interface_failure",
+      args: { messageKey: "app.appearanceUpdateFailed", messageValues: null, detail: "x" },
     });
   });
 

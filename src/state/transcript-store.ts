@@ -347,7 +347,7 @@ const installEvents = createEventInstaller(
   },
   (error) => {
     log.warn("transcript event wiring failed", toErrorFields(error));
-    recordInterfaceFailure(message("transcript.liveUpdatesUnavailable"));
+    recordInterfaceFailure(message("transcript.liveUpdatesUnavailable"), error);
     const interrupted = active as { hash: string; percent: number } | null;
     if (interrupted !== null) {
       publishIfLoaded(interrupted.hash, {

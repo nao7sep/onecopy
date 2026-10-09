@@ -310,7 +310,7 @@ async function resolveMonitors(
       "monitor query failed; staying on the main display",
       toErrorFields(error),
     );
-    recordInterfaceFailure(message("comparison.displaysReadFailed"));
+    recordInterfaceFailure(message("comparison.displaysReadFailed"), error);
     return { hostAspect: 16 / 9, others: [] };
   }
 }
@@ -386,7 +386,7 @@ async function showSpread(monitors: MonitorList): Promise<void> {
               label,
               ...toErrorFields(error),
             });
-            recordInterfaceFailure(message("comparison.displayUnavailable"));
+            recordInterfaceFailure(message("comparison.displayUnavailable"), error);
             void recoverDisplays(index + 1);
             return;
           }
@@ -398,7 +398,7 @@ async function showSpread(monitors: MonitorList): Promise<void> {
           label,
           error: { message: String(event.payload) },
         });
-        recordInterfaceFailure(message("comparison.displayOpenFailed"));
+        recordInterfaceFailure(message("comparison.displayOpenFailed"), event.payload);
         recoverDisplays(index + 1);
       });
     } catch (error) {
@@ -406,7 +406,7 @@ async function showSpread(monitors: MonitorList): Promise<void> {
         label,
         ...toErrorFields(error),
       });
-      recordInterfaceFailure(message("comparison.displayUnavailable"));
+      recordInterfaceFailure(message("comparison.displayUnavailable"), error);
       recoverDisplays(index + 1);
       return;
     }
@@ -638,7 +638,7 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
         await queueComparisonLifecycle(() => teardownComparison(spreadCount));
       }
       log.error("comparison open failed", toErrorFields(error));
-      recordInterfaceFailure(message("comparison.openFailed"));
+      recordInterfaceFailure(message("comparison.openFailed"), error);
       return "failed";
     }
   },
@@ -910,7 +910,7 @@ async function executeAction(
     });
   } catch (error) {
     log.error("comparison delete failed", toErrorFields(error));
-    recordInterfaceFailure(message("comparison.deleteStartFailed"));
+    recordInterfaceFailure(message("comparison.deleteStartFailed"), error);
     const failure: ComparisonFailure = {
       ...action,
       keepHashes: [],

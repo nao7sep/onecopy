@@ -50,7 +50,8 @@ describe("notification failure containment", () => {
     const direct = invokeCalls.find(
       (call) => call.command === "record_interface_failure",
     );
-    expect(direct?.args.message).toContain("OneCopy could not save this notice");
+    expect(direct?.args.messageKey).toBe("notice.notSaved");
+    expect(direct?.args.detail).toBe("database unavailable");
     expect(document.body.textContent).toContain("OneCopy needs to reload");
   });
 

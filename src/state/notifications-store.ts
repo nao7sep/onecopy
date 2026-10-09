@@ -1,8 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
-import { documentTranslator } from "../i18n/I18nContext";
-import { message, type Message, type MessageValues } from "../i18n/translate";
+import { message, type Message } from "../i18n/translate";
+import { storedValues, type StoredMessageValues } from "../i18n/storedValues";
 import type { MessageKey } from "../i18n/catalogues";
 import { log, toErrorFields } from "../repositories";
 import {
@@ -12,22 +12,7 @@ import {
 
 export type NotificationLevel = "info" | "warning" | "error";
 export type NotificationPresentation = "timed" | "persistent";
-
-/** JSON-safe interpolation values: what actually crosses IPC and gets stored
- * beside a message key. A nested Message value (rare — only OneCopy's own
- * local last-resort path uses one) is flattened to text at record time, since
- * there is nowhere durable to keep ITS OWN key once serialized; everything
- * else round-trips exactly. */
-export type StoredMessageValues = Record<string, string | number>;
-
-function storedValues(values: MessageValues | undefined): StoredMessageValues | undefined {
-  if (values === undefined) return undefined;
-  const flattened: StoredMessageValues = {};
-  for (const [name, value] of Object.entries(values)) {
-    flattened[name] = typeof value === "object" ? documentTranslator().text(value) : value;
-  }
-  return flattened;
-}
+export type { StoredMessageValues };
 
 export interface NotificationRecord {
   id: number;
@@ -256,5 +241,5 @@ function handleActionFailureRecordingError(
   });
   const direct = message("notice.notSaved", { failure });
   presentEscapedFailure(direct);
-  recordInterfaceFailure(direct);
+  recordInterfaceFailure(direct, recordingError);
 }

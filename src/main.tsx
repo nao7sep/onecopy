@@ -67,7 +67,7 @@ window.addEventListener("error", (event) => {
     column: event.colno,
   });
   const presentation = message("crash.windowStopped");
-  recordInterfaceFailure(presentation);
+  recordInterfaceFailure(presentation, event.error ?? event.message);
   recoverComparisonPresentation();
   presentEscapedFailure(presentation);
 });
@@ -75,7 +75,7 @@ window.addEventListener("error", (event) => {
 window.addEventListener("unhandledrejection", (event) => {
   log.error("unhandled promise rejection", toErrorFields(event.reason));
   const presentation = message("crash.actionUnfinished");
-  recordInterfaceFailure(presentation);
+  recordInterfaceFailure(presentation, event.reason);
   recoverComparisonPresentation();
   presentEscapedFailure(presentation);
 });
@@ -110,6 +110,6 @@ void Promise.all([installMediaUseBoundary(), installWindowAppearance()])
   .catch((error) => {
     log.error("media ownership bootstrap failed", toErrorFields(error));
     const presentation = message("crash.startUnsafe");
-    recordInterfaceFailure(presentation);
+    recordInterfaceFailure(presentation, error);
     presentEscapedFailure(presentation);
   });

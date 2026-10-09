@@ -123,7 +123,7 @@ function WizardContent() {
                 onChange={(e) => {
                   void setLanguage(normalizeLanguagePreference(e.target.value)).catch((error) => {
                     log.warn("language preview failed", toErrorFields(error));
-                    recordInterfaceFailure(message("app.appearanceUpdateFailed"));
+                    recordInterfaceFailure(message("app.appearanceUpdateFailed"), error);
                   });
                 }}
               >

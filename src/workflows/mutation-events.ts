@@ -34,7 +34,7 @@ const install = createEventInstaller(
         message: mutationResultLine(result, documentTranslator().t),
       }).catch((error) => {
         log.error("file-operation result recording failed", toErrorFields(error));
-        recordInterfaceFailure(message("mutation.resultNotSaved"));
+        recordInterfaceFailure(message("mutation.resultNotSaved"), error);
       });
     };
     await listeners.listen<MutationProgress>("mutation://progress", (event) => {
@@ -120,7 +120,7 @@ const install = createEventInstaller(
   },
   (error) => {
     log.warn("file operation event wiring failed", toErrorFields(error));
-    recordInterfaceFailure(message("mutation.liveStatusUnavailable"));
+    recordInterfaceFailure(message("mutation.liveStatusUnavailable"), error);
     useMutationStore.setState({ progress: null, cancelling: false });
     presentEscapedFailure(message("mutation.liveStatusUnavailableReload"));
   },

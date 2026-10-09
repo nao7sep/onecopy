@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { documentTranslator } from "../i18n/I18nContext";
 import { message, type Message } from "../i18n/translate";
+import { storedValues } from "../i18n/storedValues";
 
 const SURFACE_ID = "onecopy-escaped-failure";
 
@@ -52,15 +53,27 @@ export function presentEscapedDetail(detail: string): void {
 
 /** Persists one current interface condition per webview when the core remains reachable.
  *
- * The recorded Issue crosses IPC as text, so the sentence is rendered here in
- * the language this window is showing; the condition itself becomes a code the
- * core can restate in the Rust pass. */
-export function recordInterfaceFailure(failure: Message): void {
+ * The condition crosses IPC as its catalogue key and values, so the notice
+ * shows it in whatever language is in effect when it is read, and `error`,
+ * when the caller has one, as the recorded detail after that sentence. */
+export function recordInterfaceFailure(failure: Message, error?: unknown): void {
   void invoke("record_interface_failure", {
-    message: documentTranslator().text(failure),
+    messageKey: failure.key,
+    messageValues: storedValues(failure.values) ?? null,
+    detail: error === undefined ? null : errorDetail(error),
   }).catch(() => {
     // A failed IPC call means the promised durable Issue does not exist. The
     // DOM is the final independent channel in this webview; do not recurse.
     presentEscapedFailure(message("crash.notSaved", { failure }));
   });
+}
+
+function errorDetail(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  try {
+    return JSON.stringify(error) ?? String(error);
+  } catch {
+    return String(error);
+  }
 }

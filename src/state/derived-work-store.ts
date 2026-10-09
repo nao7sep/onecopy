@@ -339,7 +339,7 @@ const installEvents = createEventInstaller(
   },
   (error) => {
     log.warn("derived-work event wiring failed", toErrorFields(error));
-    recordInterfaceFailure(message("work.liveStatusUnavailable"));
+    recordInterfaceFailure(message("work.liveStatusUnavailable"), error);
     useDerivedWorkStore.setState({ error: message("work.liveStatusUnavailable") });
   },
 );
