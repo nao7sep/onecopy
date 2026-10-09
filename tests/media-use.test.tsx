@@ -75,8 +75,7 @@ describe("media-use boundary", () => {
     expect(play).not.toHaveBeenCalled();
   });
 
-  // content-presentation.md D5: "reports restoration failure otherwise" — a
-  // failed restore (seek or resumed playback) is surfaced, not swallowed.
+  // A failed restore (seek or resumed playback) is surfaced, not swallowed.
   it("reports a restoration failure when a surviving player fails to resume playing", async () => {
     mockCommand("record_recent_notification", () => ({}));
     const view = render(<Player />);

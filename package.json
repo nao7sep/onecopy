@@ -13,7 +13,6 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit --composite false -p tsconfig.node.json && tsc --noEmit -p tsconfig.test.json",
     "test": "node scripts/test.mjs",
     "test:full": "node scripts/test.mjs --full",
-    "check:specs": "node scripts/check-spec-structure.mjs",
     "check:hidden": "node scripts/check-hidden-characters.mjs",
     "check:release-version": "node scripts/check-release-version.mjs",
     "test:watch": "vitest",

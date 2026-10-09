@@ -13,7 +13,7 @@ fn unicode_markers_are_exact_including_utf32() {
     assert_eq!(decode_automatic(&utf32, "utf-8").unwrap().unwrap().0, "A");
 }
 
-// content-presentation.md D8: automatic decoding reports which step produced
+// Automatic decoding reports which step produced
 // its result, so the picker can show a marker guess, an exact match, and a
 // detector guess as the different confidences they are.
 #[test]
@@ -38,13 +38,11 @@ fn automatic_decoding_reports_which_step_produced_the_result() {
     );
 }
 
-// content-presentation.md D8 / R5.3 untested contract: the FALLBACK step,
-// reached only when the detector's own guess errors or is not convincingly
+// The FALLBACK step is reached only when the detector's own guess errors or is not convincingly
 // textual. These lead-byte-then-space Shift_JIS fragments make chardetng
 // guess an encoding whose decode has errors, so `decode_automatic` falls
 // through to the CONFIGURED fallback and decodes losslessly with U+FFFD in
-// place of the bytes that do not fit (content-presentation.md D7) rather
-// than failing the whole file.
+// place of the bytes that do not fit rather than failing the whole file.
 #[test]
 fn falls_through_to_the_configured_fallback_when_detection_itself_errors() {
     let bytes = [0x81, 0x20, 0x82, 0x20];
@@ -120,7 +118,7 @@ fn an_unbounded_setting_is_clamped_instead_of_overflowing_the_read_bound() {
     ));
 }
 
-// content-presentation.md D7: invalid bytes under a selected/fallback
+// Invalid bytes under a selected/fallback
 // encoding render replacement characters instead of failing the whole file.
 // `decode_named` is the exact function `decode_automatic`'s configured-
 // fallback step calls, so this covers both the manual-pick and fallback

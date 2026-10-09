@@ -199,8 +199,7 @@ describe("shared video presentation", () => {
     expect(video.volume).toBe(0.5);
   });
 
-  // content-presentation.md: "Picture click and Enter toggle" (R5.3 untested
-  // contract) -- clicking the video body itself must request the shared
+  // Picture click and Enter both toggle playback: clicking the video body itself must request the shared
   // player toggle for THIS surface's key, the same as pressing Enter does.
   it("toggles playback when the video picture itself is clicked", async () => {
     render(<PreviewSurface surface="fullscreen-view" hash="video-hash" detail={DETAIL} />);
@@ -674,7 +673,7 @@ describe("shared video presentation", () => {
     },
   );
 
-  // content-presentation.md D6: a failed video's poster is a PLAIN poster,
+  // A failed video's poster is a PLAIN poster,
   // not an inspectable original — holding it must never raise a bogus
   // "original pixels failed" notice, since the "original" would be the video
   // file itself, and decoding that as an image always fails.

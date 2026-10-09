@@ -242,7 +242,6 @@
   "settings.familyWidthHint": "Jusqu’où une famille peut s’étendre. 1 signifie que chaque photo doit ressembler directement au premier membre de la famille\u00a0; 2 permet à une rafale dont les extrémités diffèrent de se rejoindre par son milieu. Au-delà, des sujets sans rapport risquent de s’enchaîner dans une même famille.",
   "settings.resetSimilarPhotoSettings": "Réinitialiser les réglages des photos similaires",
   "settings.scoreFaces": "Noter les visages pour ordonner les photos (en arrière-plan, nécessite les modèles de visages)",
-  "settings.showFaceStars": "Afficher les étoiles de notation des visages sur les photos",
   "settings.maximumImagesInComparison": "Nombre maximal d’images dans la comparaison",
   "settings.maximumImagesInComparisonHint": "Les écrans connectés et la forme des images peuvent réduire le nombre affiché à la fois",
   "settings.autoplay": "Lecture automatique",

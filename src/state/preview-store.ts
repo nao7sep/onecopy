@@ -158,8 +158,8 @@ async function ensurePreviewWindow(config: Record<string, unknown>): Promise<voi
   // an overlapping Preview; the temporary raise pulse preserves command focus.
   const window = new WebviewWindow("preview", {
     url: "index.html?view=preview",
-    // The definitive title follows the language boot read (window-appearance.ts,
-    // interface-language.md L6); this creation-time value is only what shows
+    // The definitive title follows the language boot read (window-appearance.ts);
+    // this creation-time value is only what shows
     // for the brief instant before that first paint.
     title: documentTranslator().t("window.titlePreview"),
     width: 1280,

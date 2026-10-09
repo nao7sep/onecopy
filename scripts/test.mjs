@@ -1,8 +1,8 @@
 // The two test entry points, as a fixed list of lanes.
 //
-// `npm test` runs the default set: the hidden-character and spec-structure
-// checks, the type check, the frontend bundle, every Vitest test, and every
-// Cargo test. `npm run test:full` adds the lanes held out for cost — the heavy
+// `npm test` runs the default set: the hidden-character check, the type
+// check, the frontend bundle, every Vitest test, and every Cargo test.
+// `npm run test:full` adds the lanes held out for cost — the heavy
 // Rust suite, which downloads and runs the managed tools and models, and on
 // Windows the packaging failure script.
 //
@@ -31,7 +31,6 @@ function runNode(label, script, args = []) {
 const full = process.argv.includes("--full");
 
 runNode("hidden characters", "scripts/check-hidden-characters.mjs");
-runNode("spec structure", "scripts/check-spec-structure.mjs");
 // npm is a .cmd shim on Windows, which Node starts only through a shell.
 run("typecheck", "npm", ["run", "typecheck"], onWindows);
 runNode("frontend bundle", "node_modules/vite/bin/vite.js", ["build"]);

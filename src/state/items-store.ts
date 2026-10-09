@@ -458,6 +458,8 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     loadAnchorDetail(key);
   },
 
+  // Toggling the anchor off moves the anchor to the next selected item, then
+  // the previous one, else none.
   toggleItem: (key, position) => {
     invalidateMainFeedback("selection");
     rangeLoad.begin();

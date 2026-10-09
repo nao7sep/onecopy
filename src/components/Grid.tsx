@@ -772,6 +772,7 @@ export default function Grid({
             : "flex flex-wrap content-start gap-3 p-3"
         }`}
         onKeyDown={onGridKeyDown}
+        // A click on empty space between items clears the selection and anchor.
         onClick={(event) => {
           if ((event.target as Element).closest("[role='option']") === null) {
             selectItem(null);

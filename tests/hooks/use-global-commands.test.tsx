@@ -203,9 +203,8 @@ describe("global destructive commands", () => {
     expect(invokeCalls.some((call) => call.command === "delete_items")).toBe(false);
   });
 
-  // main-review.md: the configured single-item confirm preference applies to
-  // exactly one selected item; a multi-item Delete always reviews regardless
-  // of it (R5.1 D9's sibling contract, D11's single-item half).
+  // The configured single-item confirm preference applies to exactly one
+  // selected item; a multi-item Delete always reviews regardless of it.
   it("reviews a single-item Delete when the confirm-single-item preference is on", () => {
     useAppStore.setState({
       appData: {

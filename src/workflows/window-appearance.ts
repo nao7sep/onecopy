@@ -10,8 +10,8 @@ import { applyUiFont } from "../utils/uiFont";
 import { useLanguageStore } from "../state/language-store";
 import { useWindowPreferencesStore } from "../state/window-preferences-store";
 
-// Every window OneCopy draws speaks the interface language in its title
-// (interface-language.md L6). Main's title never carries a suffix; the
+// Every window OneCopy draws speaks the interface language in its title.
+// Main's title never carries a suffix; the
 // others own a translated catalogue key. Identify flashes are excluded: they
 // are a fixed brand-only flash.
 const WINDOW_TITLE_KEYS: Partial<Record<string, MessageKey>> = {

@@ -33,7 +33,7 @@ const WIZARD_STEPS = 3;
 // surface — Main behind it (there is none to show on a first run, but a
 // re-run replaces Main's whole body while it is open), the native menu, and
 // every other window — stays in the saved language until Finish actually
-// writes the choice (interface-language.md L3, R5.5 D-L3).
+// writes the choice.
 export default function Wizard() {
   const language = useWizardStore((s) => s.language);
   const systemLanguage = useLanguageStore((s) => s.systemLanguage);

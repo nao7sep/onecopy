@@ -14,7 +14,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-// screen-priority.md: the identify flash is self-closing — a flash, not a
+// The identify flash is self-closing — a flash, not a
 // surface a user dismisses — and must not linger or close early.
 describe("identify flash window", () => {
   it("closes itself after its timeout, not before", async () => {

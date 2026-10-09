@@ -128,9 +128,8 @@ describe("destination root failures", () => {
   });
 });
 
-// main-review.md: "Dragging an unselected item exclusively selects and drags
-// it. Crossing the drag threshold from a selected member drags the complete
-// selection." (R5.1 D9)
+// Dragging an unselected item exclusively selects and drags it; crossing the
+// drag threshold from a selected member drags the complete selection.
 describe("destination drag selection scope", () => {
   beforeEach(() => {
     mockCommands({ activity_record: () => null, record_recent_notification: () => ({}) });

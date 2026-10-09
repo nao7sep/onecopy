@@ -242,7 +242,6 @@
   "settings.familyWidthHint": "O quanto uma família pode se espalhar. 1 significa que toda foto precisa se parecer diretamente com a primeira integrante da família; 2 permite que uma rajada cujas pontas diferem se conecte pelo meio. Valores maiores correm o risco de encadear assuntos sem relação em uma só família.",
   "settings.resetSimilarPhotoSettings": "Redefinir as configurações de fotos semelhantes",
   "settings.scoreFaces": "Avaliar rostos para ordenar as fotos (em segundo plano, precisa dos modelos de rosto)",
-  "settings.showFaceStars": "Mostrar as estrelas de avaliação de rostos nas fotos",
   "settings.maximumImagesInComparison": "Máximo de imagens na Comparação",
   "settings.maximumImagesInComparisonHint": "As telas conectadas e o formato das imagens podem reduzir a quantidade exibida de uma vez",
   "settings.autoplay": "Reprodução automática",

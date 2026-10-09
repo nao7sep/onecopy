@@ -69,7 +69,7 @@ function Toast({
   // Only one open window may run the auto-dismiss timer: every NotificationHost
   // shows the same records from the same backend list, so two windows each
   // running their own timer meant hovering the notice in one window never
-  // paused the other's countdown (failures-and-recovery.md L29, Finding C).
+  // paused the other's countdown.
   ownsTimedDismissal: boolean;
 }) {
   const { t, text } = useI18n();

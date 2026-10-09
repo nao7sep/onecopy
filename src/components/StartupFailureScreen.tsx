@@ -13,7 +13,7 @@ import OperationResult from "./ui/OperationResult";
  * wrote are named with their paths, and any other failure is one pair of
  * sentences whose diagnostic stays in the session log — reachable here, since
  * a fatal startup halt must name a safe next step AND provide access to the
- * logs when they can help (failures-and-recovery.md L61, Finding D). */
+ * logs when they can help. */
 export default function StartupFailureScreen() {
   const { t } = useI18n();
   const newerStores = useAppStore((state) => state.startupFailure?.newerStores) ?? [];

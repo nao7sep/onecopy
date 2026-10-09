@@ -288,8 +288,7 @@ fn fingerprint_for(installation_id: &str, host_name: &str) -> String {
 /// data root settles. It carries no meaning beyond telling "this application
 /// home, on this computer" apart from every other one, including a different
 /// application home that happens to be configured to the exact same path on a
-/// different computer (`file-operations.md`, "Recoverable storage and manual
-/// recovery"): it combines this home's installation id (`installation_id`, a
+/// different computer: it combines this home's installation id (`installation_id`, a
 /// random value generated once per data root and stored inside it, not the
 /// data-root *path*) with a short hash of the host name, so a home is never
 /// confused with another home, another computer's home at the same path, or

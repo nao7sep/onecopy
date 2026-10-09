@@ -1160,7 +1160,7 @@ fn is_excluded_from_discovery(path: &Path, data_root: Option<&Path>) -> bool {
 /// extended attributes and resource forks on a volume that cannot store them
 /// natively (FAT, exFAT, many network shares); they are operating-system
 /// metadata, never library content, so they are excluded from discovery
-/// wherever trash and the data root are (plan decision; library-maintenance.md).
+/// wherever trash and the data root are.
 /// Trashing the real file leaves this indexed row to fail as missing, which
 /// is the concrete defect the exclusion closes. The sibling check keeps this
 /// from ever excluding a real file or directory that merely happens to start

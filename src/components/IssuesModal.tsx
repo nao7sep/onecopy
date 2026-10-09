@@ -72,6 +72,7 @@ export default function IssuesModal({ open, onClose }: {
     <ModalShell
       title={t("issues.title")}
       onClose={close}
+      // After Reveal, focus returns to Main's items, where the item now is.
       returnFocus={() => revealed.current ? document.getElementById("main-item-area") : null}
       widthClass="w-[min(820px,calc(100vw-3rem))]"
       footerStart={footer === undefined ? undefined : (

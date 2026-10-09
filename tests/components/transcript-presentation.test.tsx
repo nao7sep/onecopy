@@ -102,7 +102,7 @@ describe("transcript presentation owners", () => {
     }
   });
 
-  // content-presentation.md D11: a cancelled re-transcription is reported,
+  // A cancelled re-transcription is reported,
   // not silently reverted, and its own actions (Cancel/Background Work) no
   // longer apply once nothing is in progress.
   it("reports a cancelled replacement and offers only Re-transcribe", async () => {

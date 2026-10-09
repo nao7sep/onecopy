@@ -1,4 +1,4 @@
-// Restore from Deleted files (specs/file-operations.md, "Restore"), through
+// Restore from Deleted files, through
 // the crate's public API. Numbers in comments are the blueprint's edge cases.
 
 use onecopy_lib::file_names::{FolderNames, RenameStyle};

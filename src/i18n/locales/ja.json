@@ -242,7 +242,6 @@
   "settings.familyWidthHint": "ひとつのグループがどこまで広がれるかを決めます。1 は、すべての写真がグループの最初の 1 枚に直接似ていることを求めます。2 なら、両端が違って見える連写も中間の写真を介してつながります。値を大きくすると、無関係な被写体が数珠つなぎでひとつのグループになる恐れがあります。",
   "settings.resetSimilarPhotoSettings": "似ている写真の設定をリセット",
   "settings.scoreFaces": "写真の並び順のために顔をスコア付けする（バックグラウンド処理、顔モデルが必要）",
-  "settings.showFaceStars": "写真に顔スコアの星を表示する",
   "settings.maximumImagesInComparison": "比較に表示する画像の最大数",
   "settings.maximumImagesInComparisonHint": "接続されているディスプレイと画像の形によって、一度に表示される枚数は少なくなることがあります",
   "settings.autoplay": "自動再生",

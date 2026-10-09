@@ -242,7 +242,6 @@
   "settings.familyWidthHint": "한 그룹이 얼마나 넓게 퍼질 수 있는지 정합니다. 1이면 모든 사진이 그룹의 첫 구성원과 직접 닮아야 합니다. 2이면 양 끝이 서로 다른 연속 촬영이 중간을 통해 이어질 수 있습니다. 값이 높으면 서로 무관한 피사체가 한 그룹으로 엮일 위험이 커집니다.",
   "settings.resetSimilarPhotoSettings": "유사 사진 설정 초기화",
   "settings.scoreFaces": "사진 정렬을 위해 얼굴 점수 매기기(백그라운드, 얼굴 모델 필요)",
-  "settings.showFaceStars": "사진에 얼굴 점수 별 표시",
   "settings.maximumImagesInComparison": "비교에 표시할 최대 이미지 수",
   "settings.maximumImagesInComparisonHint": "연결된 디스플레이와 이미지 모양에 따라 한 번에 표시되는 수가 줄어들 수 있습니다",
   "settings.autoplay": "자동 재생",

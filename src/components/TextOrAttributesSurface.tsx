@@ -68,7 +68,7 @@ interface DecodeErrorBody {
 
 type PreviewBody = TextBody | AttributesBody | DecodeErrorBody;
 
-// content-presentation.md D9: this native `<select>` (like every other
+// This native `<select>` (like every other
 // picker in the app — Wizard's language/timezone selects, Grid's sort
 // select) has no custom keyboard handling. A browser's built-in option
 // type-ahead matches only the START of an option's visible label, so an
@@ -97,7 +97,7 @@ function encodingLabel(encoding: string): string {
   return aliases === undefined ? encoding : `${encoding} — ${aliases}`;
 }
 
-// content-presentation.md D8: a marker guess, an exact match, a detector
+// A marker guess, an exact match, a detector
 // guess and a fallback are different confidences and must not look
 // identical under one "Automatic (…)" label.
 const METHOD_KEYS: Record<string, MessageKey> = {

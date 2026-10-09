@@ -129,6 +129,8 @@ export function useGlobalCommands() {
         !event.ctrlKey &&
         !event.altKey
       ) {
+        // Space, like Enter and Delete, acts only from Main's items: the
+        // sidebar and other panes keep their own meaning for it.
         if (
           !(event.target instanceof Element) ||
           event.target.closest("#main-item-area") === null

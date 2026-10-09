@@ -36,7 +36,7 @@ interface WizardState {
    * written only by Finish; the wizard's own view previews it at once
    * (Wizard.tsx nests its own I18nProvider from this and `systemLanguage`),
    * but every other window, and the native menu, stay in the saved language
-   * until Finish actually writes it (interface-language.md L3, R5.5 D-L3). */
+   * until Finish actually writes it. */
   language: LanguagePreference;
   timezone: string;
   error: Message | null;

@@ -489,7 +489,7 @@ fn the_effective_config_is_the_stored_values_over_the_defaults() {
     let defaults = effective_config(None);
     assert_eq!(defaults, serde_json::to_value(DefaultConfig::default()).unwrap());
     // A config written before a key existed resolves that key to its default:
-    // new installations confirm a direct single-item Delete (file-operations.md).
+    // new installations confirm a direct single-item Delete.
     let older = serde_json::json!({ "sourceDirs": ["/photos"], "autoplay": false });
     let effective = effective_config(Some(&older));
     assert_eq!(effective["confirmTrashDelete"], serde_json::json!(true));

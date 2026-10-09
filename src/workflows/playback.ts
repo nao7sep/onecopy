@@ -111,8 +111,8 @@ function recompute(): void {
     // Single-shot regardless of match: a seek queued for a player that has
     // not registered YET is meant for the very next recompute, not for
     // whatever unrelated item eventually reuses this key later
-    // (content-presentation.md D2 — a timestamp with no live session must
-    // never leave a seek that fires minutes afterward on a different visit).
+    // (a timestamp with no live session must never leave a seek that fires
+    // minutes afterward on a different visit).
     pendingSeek = null;
   }
   broadcast();
@@ -214,7 +214,7 @@ function seek(target: PlaybackTarget): void {
     // single-shot consumption) — worth it for a player that is opening this
     // instant and about to register, never for "whenever this key is next
     // reused", which is what let a click minutes ago silently reappear on a
-    // later, unrelated visit (content-presentation.md D2).
+    // later, unrelated visit.
     pendingSeek = Number.isFinite(target.position) ? target : null;
     return;
   }

@@ -20,8 +20,7 @@ export function configString(config: AppConfig | null | undefined, key: string):
 }
 
 /** Whether a direct single-item recoverable Delete asks first
- * (file-operations.md: on for new installations, and the user may turn it
- * off). Every direct-Delete surface reads this one answer. */
+ * (on for new installations, and the user may turn it off). Every direct-Delete surface reads this one answer. */
 export function confirmsTrashDelete(config: AppConfig | null | undefined): boolean {
   return configFlag(config, "confirmTrashDelete");
 }

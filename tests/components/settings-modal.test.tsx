@@ -221,7 +221,7 @@ describe("Settings categories", () => {
     );
   });
 
-  // screen-priority.md: the configured display order is meaningful only with
+  // The configured display order is meaningful only with
   // two or more monitors, so a single-display machine must render no order
   // section at all (not merely a one-row, unreorderable one).
   it("renders no screen-priority section with a single display", async () => {

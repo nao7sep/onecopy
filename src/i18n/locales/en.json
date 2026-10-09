@@ -242,7 +242,6 @@
   "settings.familyWidthHint": "How far one family may spread. 1 means every photo must resemble the family’s first member directly; 2 lets a burst whose ends differ meet through its middle. Higher risks unrelated subjects chaining into one family.",
   "settings.resetSimilarPhotoSettings": "Reset similar photo settings",
   "settings.scoreFaces": "Score faces for photo ordering (background, needs the face models)",
-  "settings.showFaceStars": "Show face-score stars on photos",
   "settings.maximumImagesInComparison": "Maximum images in Comparison",
   "settings.maximumImagesInComparisonHint": "Connected displays and image shape may reduce the number shown at once",
   "settings.autoplay": "Autoplay",

@@ -129,10 +129,10 @@ describe("page-local decisions", () => {
     ).toEqual(["h4", "h5", "h6", "h7"]);
   });
 
-  // image-comparison.md: "With marks, Enter... opens an exact-count review
-  // before requesting recoverable deletion of every other image on the
-  // current visible page" — always, even when only one image is targeted (it
-  // is never skipped the way a single-item Delete elsewhere can be).
+  // With marks, Enter opens an exact-count review before requesting
+  // recoverable deletion of every other image on the current visible page,
+  // always, even when only one image is targeted (it is never skipped the way
+  // a single-item Delete elsewhere can be).
   it("still reviews a single-image visible complement, never skipping straight to deletion", async () => {
     useComparisonStore.getState().selectSlot(0, "toggle");
     useComparisonStore.getState().selectSlot(1, "toggle");
@@ -211,7 +211,7 @@ describe("page-local decisions", () => {
   });
 });
 
-// image-comparison.md G1, G2: Delete/Backspace trashes only the visible
+// Delete/Backspace trashes only the visible
 // keep-marked images, never a mark left on an unseen page; a single visible
 // mark trashes directly when the confirm-single-item preference is off, more
 // than one visible mark always reviews, and Shift always forces a permanent,

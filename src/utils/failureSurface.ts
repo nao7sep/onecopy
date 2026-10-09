@@ -11,7 +11,7 @@ export function presentEscapedFailure(failure: Message): void {
 
 /** The same surface for detail OneCopy cannot restate — a condition the core
  * reports as recorded words (`failure://direct`). It shows as it is, in
- * whatever language it arrived in (`interface-language.md`). */
+ * whatever language it arrived in. */
 export function presentEscapedDetail(detail: string): void {
   if (typeof document === "undefined") return;
   let surface = document.getElementById(SURFACE_ID);

@@ -985,8 +985,8 @@ fn leftover_private_staging_from_this_homes_dead_process_is_removed() {
     // A `.onecopy-stage-*.tmp` (or `.onecopy-claim-*.tmp`) leftover naming
     // this application home and a process that has since exited can only be
     // launch-time garbage from a previous process that quitting gave up on
-    // at the mutation-quiescence deadline (`app_lifecycle::MUTATION_QUIESCE_DEADLINE`,
-    // `specs/file-operations.md` "Normal exit and abnormal termination"). It
+    // at the mutation-quiescence deadline on normal exit
+    // (`app_lifecycle::MUTATION_QUIESCE_DEADLINE`). It
     // must never be indexed as library content, and this host's own walk
     // sweeps it away rather than leaking it forever — but only once this
     // process's own identity is actually proven (a settled data root with a
@@ -1030,8 +1030,7 @@ fn leftover_private_staging_from_this_homes_dead_process_is_removed() {
 #[test]
 fn leftover_private_staging_from_a_live_or_foreign_process_is_never_removed() {
     // Two application homes may be configured to see the same shared root
-    // (`specs/file-operations.md`, "Recoverable storage and manual
-    // recovery"). A live process's own staging file, or a different home's
+    // (recoverable storage and manual recovery). A live process's own staging file, or a different home's
     // file sitting in a folder this walk also happens to visit, must never
     // be deleted merely because the walk saw its name — 896c22f's
     // unconditional deletion was exactly this defect. Both stay excluded

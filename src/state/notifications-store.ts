@@ -55,7 +55,7 @@ export interface NotificationRequest {
 
 /** The sentence a record's OWN condition supplies, in the current interface
  * language when it carries a descriptor; the recorded text verbatim for a row
- * from before this descriptor existed (interface-language.md L12/L13), or a
+ * from before this descriptor existed, or a
  * generic sentence for a condition that never named one. Real, unrestatable
  * detail (a system error, a path) is not this function's job — it lives in
  * `record.message` as recorded, shown alongside this sentence, exactly as it

@@ -36,6 +36,9 @@ pub fn policy_applied(conn: &Connection, policy: &Policy) -> Result<bool, String
     Ok(flags == policy.hidden_flags && current == policy.ignored_file_names)
 }
 
+/// Applies the visibility policy to the index. Hiding changes only what is
+/// shown: an item's previews, transcripts and faces stay, so showing it again
+/// needs no new work.
 pub(crate) fn apply_policy_in_transaction(
     conn: &Connection,
     policy: &Policy,

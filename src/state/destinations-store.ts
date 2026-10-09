@@ -88,6 +88,7 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
   roots: [],
   children: {},
   listing: {},
+  // The expanded folders and the active destination last for this run only.
   expanded: new Set<string>(),
   emptiness: {},
   message: null,

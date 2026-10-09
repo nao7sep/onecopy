@@ -118,9 +118,9 @@ function resume(token: number, restorePlayback = true): void {
         }
         if (playing && restorePlayback) {
           element.play().catch((error) => {
-            // content-presentation.md: "reports restoration failure
-            // otherwise" — a failed file operation must not leave the player
-            // silently paused at the wrong spot with no explanation.
+            // A failed restore (seek or resumed playback) is reported: the
+            // player must not stay silently paused at the wrong spot with no
+            // explanation.
             log.error("playback restore failed", toErrorFields(error));
             recordActionFailure("playback-restore-failed", message("playback.restoreFailed"), error);
           });

@@ -82,9 +82,8 @@ pub enum PreviewBody {
         /// How automatic decoding picked `encoding` — a Unicode marker, an
         /// exact UTF-8 match, the detector's guess, or the configured
         /// fallback — so the picker can show that uncertainty instead of
-        /// implying every automatic result is equally confident
-        /// (content-presentation.md D8). `None` for an explicit manual
-        /// choice, which carries no such ambiguity.
+        /// implying every automatic result is equally confident. `None` for an
+        /// explicit manual choice, which carries no such ambiguity.
         method: Option<&'static str>,
         content_key: String,
         encodings: &'static [&'static str],
@@ -279,10 +278,9 @@ fn canonical_label(label: &str) -> Result<&'static str, String> {
 
 /// Decodes under an EXPLICIT choice — a manual selection or the configured
 /// fallback, never the automatic detector's own guess (that acceptance stays
-/// strict in `decode_automatic`). content-presentation.md: "Invalid byte
-/// sequences under a selected fallback render replacement characters rather
-/// than crashing or silently discarding bytes" — so an explicit choice always
-/// succeeds, substituting U+FFFD for whatever bytes do not fit, rather than
+/// strict in `decode_automatic`). Invalid byte sequences under a selected
+/// fallback render replacement characters rather than crashing or silently
+/// discarding bytes, so an explicit choice always succeeds, substituting U+FFFD for whatever bytes do not fit, rather than
 /// turning the whole file into a `DecodeError` over one bad byte.
 fn decode_named(bytes: &[u8], label: &str) -> Result<String, String> {
     match canonical_label(label)? {

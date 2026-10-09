@@ -101,7 +101,7 @@ export default function InspectableImage({
     onEnd: () => undefined,
   });
 
-  // content-presentation.md D10: with enlarge off and no source dimensions
+  // With enlarge off and no source dimensions
   // from the index, the visible <img> above only carries the cached preview
   // bitmap (long edge capped, `previewUrl`), so without a style cap of its
   // own it renders at that cached raster's own size — not the real original

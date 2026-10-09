@@ -47,7 +47,7 @@ describe("momentary original-pixel inspection", () => {
     expect(image.getAttribute("style")).toContain("max-height: 480px");
   });
 
-  // content-presentation.md D10: with enlarge off and no index dimensions,
+  // With enlarge off and no index dimensions,
   // the fitted image must cap at the original's real size (learned from a
   // background probe), not at the cached preview raster's own resolution.
   it("caps the fitted image at the original's real size once it loads, when enlarge is off and dimensions are unknown", () => {

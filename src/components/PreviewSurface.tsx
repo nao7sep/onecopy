@@ -147,7 +147,7 @@ function VideoSurface({
           // loads the ORIGINAL file at full size for 1:1 inspection, which
           // here is the video itself — that decode always fails and raised a
           // bogus "original pixels failed" notice for a poster that was
-          // already showing correctly (content-presentation.md D6).
+          // already showing correctly.
           <img
             src={previewUrl(hash)}
             alt={detail.fileName}

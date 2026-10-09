@@ -242,7 +242,6 @@
   "settings.familyWidthHint": "Quanto può estendersi una singola famiglia. 1 significa che ogni foto deve somigliare direttamente al primo membro della famiglia; 2 consente di collegare gli estremi diversi di una raffica passando per i suoi membri intermedi. Valori più alti rischiano di concatenare in un'unica famiglia soggetti senza alcuna relazione.",
   "settings.resetSimilarPhotoSettings": "Ripristina le impostazioni delle foto simili",
   "settings.scoreFaces": "Valuta i volti per ordinare le foto (in background, richiede i modelli dei volti)",
-  "settings.showFaceStars": "Mostra sulle foto le stelle della valutazione dei volti",
   "settings.maximumImagesInComparison": "Numero massimo di immagini nel Confronto",
   "settings.maximumImagesInComparisonHint": "Gli schermi collegati e la forma delle immagini possono ridurre il numero mostrato in una volta",
   "settings.autoplay": "Riproduzione automatica",

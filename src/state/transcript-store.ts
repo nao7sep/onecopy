@@ -324,10 +324,10 @@ const installEvents = createEventInstaller(
           (current?.replacement !== null &&
             current?.replacement !== undefined)
         ) {
-          // content-presentation.md D11: cancellation "reports the new
-          // attempt" — the prior completed transcript stays visible, but the
-          // cancelled replacement itself is a reported state, not a silent
-          // revert to no replacement in progress.
+          // Cancellation reports the new attempt: the prior completed
+          // transcript stays visible, but the cancelled replacement itself is
+          // a reported state, not a silent revert to no replacement in
+          // progress.
           publishIfLoaded(event.payload.hash, {
             replacement: {
               status: "cancelled",

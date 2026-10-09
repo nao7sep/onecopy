@@ -297,7 +297,7 @@ describe("playback workflow", () => {
     });
   });
 
-  // content-presentation.md D2: a timestamp seek queued for a key with no
+  // A timestamp seek queued for a key with no
   // live or registering player must not fire on some unrelated later visit.
   describe("seeking a key with no live player", () => {
     it("never survives past the next unrelated recompute to fire on a later, unrelated visit", () => {

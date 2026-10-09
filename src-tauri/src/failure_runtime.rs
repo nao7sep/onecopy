@@ -105,7 +105,7 @@ pub fn report(
             // The real diagnostic, finally kept rather than discarded: it
             // shows as recorded detail after the translated sentence
             // (message_key), which is drawn from a curated, safe catalogue
-            // entry and never contains it (interface-language.md).
+            // entry and never contains it.
             message: message.to_string(),
             message_key: Some(condition_message_key(kind).to_string()),
             message_values: None,

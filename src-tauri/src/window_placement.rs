@@ -54,9 +54,9 @@ pub fn frame_fills_work_area(frame: NormalRectangle, work_area: NormalRectangle)
 }
 
 /// The smallest on-screen sliver a restored window must show in each
-/// dimension to count as "restored safely" (main-review.md). Enough to see
+/// dimension to count as "restored safely". Enough to see
 /// and drag the title bar back into view; a 1px overlap after an unplugged
-/// or resized monitor is not (R5.1 D12).
+/// or resized monitor is not.
 const MIN_RESTORE_OVERLAP: i64 = 80;
 
 /// Whether `rectangle` overlaps `work_area` by a usable amount in both

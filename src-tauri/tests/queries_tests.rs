@@ -427,7 +427,7 @@ fn section_reconciliation_recovers_the_next_survivor_after_a_large_prior_removal
     assert_eq!(result.anchor.unwrap().hash.as_deref(), Some("h221"));
 }
 
-// image-comparison.md / R5.4 G3: after Comparison's final page, Main's anchor
+// After Comparison's final page, Main's anchor
 // recovers around the family's LAST member in section order — a next
 // neighbor when one exists, so the frontend's "next, else previous, else
 // none" falls through to `after` first.

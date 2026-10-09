@@ -72,8 +72,7 @@ fn section_recheck_answers_busy_while_a_file_operation_runs() {
 }
 
 // Quitting must not wait past its deadline for a file operation that never
-// reaches its own safe point (`specs/file-operations.md`, "Normal exit and
-// abnormal termination"): it gives up on the current file, not on the whole
+// reaches its own safe point: it gives up on the current file, not on the whole
 // exit sequence.
 #[test]
 fn wait_for_idle_gives_up_at_its_deadline_when_the_claim_never_drops() {

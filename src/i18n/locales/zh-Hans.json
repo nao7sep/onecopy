@@ -242,7 +242,6 @@
   "settings.familyWidthHint": "一个家族最多可以扩展多远。1 表示每张照片都必须与家族的第一张直接相似；2 则允许首尾差异较大的连拍通过中间的照片连接起来。数值越大，越有可能把毫不相关的主体串进同一个家族。",
   "settings.resetSimilarPhotoSettings": "重置相似照片设置",
   "settings.scoreFaces": "为照片排序评估人脸（后台运行，需要人脸模型）",
-  "settings.showFaceStars": "在照片上显示人脸评分星标",
   "settings.maximumImagesInComparison": "“对比”中最多显示的图像数",
   "settings.maximumImagesInComparisonHint": "已连接的显示器和图像形状可能会减少同时显示的数量",
   "settings.autoplay": "自动播放",

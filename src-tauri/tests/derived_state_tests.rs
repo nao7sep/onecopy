@@ -495,8 +495,7 @@ fn derived_failure_issues_keep_hostile_diagnostics_out_of_onecopys_own_sentence(
     // OneCopy's own sentence is a static catalogue entry, named by a key the
     // diagnostic can never influence; the diagnostic itself is kept, but only
     // as recorded detail shown after that sentence, never blended into it
-    // (R5.5 D-L12, D-L13; interface-language.md's "text that stays as
-    // recorded").
+    // (text that stays as recorded is shown as recorded).
     let (_dir, conn) = seeded();
     let hostile =
         "DecoderError EACCES /private/tmp/HOSTILE-SENTINEL [52, 49, 46, 46]";

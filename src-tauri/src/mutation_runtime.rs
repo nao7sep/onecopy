@@ -212,11 +212,10 @@ pub(crate) enum IdleWait {
 
 /// Waits up to `deadline` for the active mutation claim to drop, i.e. for the
 /// current file operation to reach its own safe point (between physical
-/// files, per `specs/file-operations.md` "Cancellation"). Normal exit calls
-/// this after requesting cancellation, so the wait only lasts as long as the
+/// files). Normal exit calls this after requesting cancellation, so the wait only lasts as long as the
 /// current bounded filesystem step takes, up to `deadline`; on `IdleWait::TimedOut`
 /// the caller gives up on that step (killing outstanding subprocesses) rather
-/// than waiting longer, per "Normal exit and abnormal termination".
+/// than waiting longer.
 pub(crate) fn wait_for_idle(deadline: Duration) -> Result<IdleWait, String> {
     let cutoff = Instant::now() + deadline;
     let (mut active, mut recovered) = match RUNTIME.active.lock() {

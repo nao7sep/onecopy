@@ -816,7 +816,9 @@ const RECOVERY_NEIGHBOR_LIMIT: u64 = 64;
 /// section snapshot, then returns only the display window around the chosen
 /// anchor. The section is sorted exactly once (`ordered_section_identities`);
 /// the match scan, display window, and recovery neighbors are all sliced from
-/// that single ordering instead of each re-sorting the section.
+/// that single ordering instead of each re-sorting the section. Recovery works
+/// from the current ordered list, so an item that became hidden is recovered
+/// from exactly as a deleted one is.
 #[allow(clippy::too_many_arguments)]
 pub fn reconcile_section(
     conn: &Connection,
