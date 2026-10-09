@@ -77,29 +77,6 @@ fn read_json_optional_missing_valid_and_corrupt() {
 }
 
 #[test]
-fn a_json_target_that_becomes_newer_at_publication_is_preserved_and_staging_is_removed() {
-    let dir = tempfile::tempdir().unwrap();
-    let target = dir.path().join("config.json");
-    let current = b"{\"formatVersion\":1,\"theme\":\"light\"}";
-    std::fs::write(&target, current).unwrap();
-    refuse_newer(&target, formats::CONFIG).unwrap();
-    let future = b"{\"formatVersion\":2,\"futureSetting\":true}";
-
-    let error = write_atomic_inner(&target, b"{\"formatVersion\":1,\"theme\":\"dark\"}", false, || {
-        let staged = std::fs::read_dir(dir.path()).unwrap()
-            .map(|entry| entry.unwrap().path()).find(|path| path.extension().is_some_and(|ext| ext == "tmp")).unwrap();
-        assert_eq!(std::fs::read(&target).unwrap(), current);
-        assert_eq!(std::fs::read(&staged).unwrap(), b"{\"formatVersion\":1,\"theme\":\"dark\"}");
-        std::fs::write(&target, future).unwrap();
-        refuse_newer(&target, formats::CONFIG)
-    }).unwrap_err();
-
-    assert!(error.contains("newer"), "{error}");
-    assert_eq!(std::fs::read(&target).unwrap(), future);
-    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
-}
-
-#[test]
 fn admission_failure_keeps_its_primary_error_and_cleans_the_owned_private_stage() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("state.json");

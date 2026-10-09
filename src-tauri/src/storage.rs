@@ -166,8 +166,22 @@ impl Default for DefaultConfig {
 
 /// Known set keys and built-ins have one owner: `DefaultConfig`. The one
 /// check on read (config-sets conventions' reading and healing).
+///
+/// Keys this build does not know (retired, renamed, or added by a newer build
+/// that kept the same format version) are dropped, and the next save writes
+/// the file without them. This is the deliberate compatibility decision:
+/// only preferences are at stake, only after running an older build, and a
+/// mapping per key would be machinery without a supported need. One line
+/// names what was dropped.
 pub fn effective_config(stored: Option<&JsonValue>) -> JsonValue {
     let mut effective = serde_json::to_value(DefaultConfig::default()).expect("the default config serializes");
+    if let Some(stored) = stored.and_then(JsonValue::as_object) {
+        let known = effective.as_object().expect("defaults are an object");
+        let unknown = stored.keys().filter(|key| !known.contains_key(*key)).collect::<Vec<_>>();
+        if !unknown.is_empty() {
+            logging::info("unknown settings dropped", serde_json::json!({ "keys": unknown }));
+        }
+    }
     for (key, builtin) in effective.as_object_mut().expect("defaults are an object") {
         if let Some(value) = stored.and_then(|document| document.get(key)) {
             if valid_set(key, value, builtin) {
@@ -670,7 +684,9 @@ pub fn write_json_file(target: &Path, document: &JsonValue, version: i64, record
     formats::stamp_json(&mut document, version)?;
     let mut text = serde_json::to_string_pretty(&document).map_err(|e| e.to_string())?;
     text.push('\n');
-    write_atomic_inner(target, text.as_bytes(), record, || refuse_newer(target, version))
+    // Checked once, before writing: the instance lock rules out another
+    // OneCopy writing this file between the check and the rename.
+    write_atomic_inner(target, text.as_bytes(), record, || Ok(()))
 }
 
 /// Refuses to replace or remove a JSON store a newer OneCopy wrote.
@@ -806,6 +822,8 @@ fn write_atomic_inner(
     target: &Path,
     bytes: &[u8],
     record: bool,
+    // Runs between the complete private stage and the rename. Every caller
+    // passes a no-op; the unit tests use it to refuse or obstruct publication.
     admit: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
     use std::io::{Read, Write};
