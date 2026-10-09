@@ -5,14 +5,14 @@ import type { Translator } from "../i18n/translate";
 import ModalShell from "./ModalShell";
 import Button from "./ui/Button";
 
-// What the user is told when a settings file would not parse.
+// What the user is told when a settings file or the records would not read.
 //
 // The core sets the unreadable file aside rather than resetting over it, which
 // preserves whatever was in there — but a set-aside nobody mentions is just a
 // silent reset with extra steps (storage-path-conventions). So this surface is
-// half of that recovery, not a courtesy: it names the file it could not read,
-// says that the original bytes were preserved and locatable through the log,
-// explains what the app is running on instead, and says what it did NOT touch.
+// half of that recovery, not a courtesy: it names the file it could not read
+// and the name its original bytes now have, explains what the app is running
+// on instead, and says what it did NOT touch.
 // Dismissible, because there is nothing to decide — the recovery already happened.
 
 /** What starting over means for each store, in the user's terms. Falls back to
@@ -23,9 +23,16 @@ function startedWith(t: Translator["t"], file: string): string {
       return t("quarantine.startedWithConfig");
     case "state.json":
       return t("quarantine.startedWithState");
+    case "records.sqlite3":
+      return t("quarantine.startedWithRecords");
     default:
       return t("quarantine.startedWithDefaults");
   }
+}
+
+/** The set-aside file's own name; it sits beside the original. */
+function fileName(path: string): string {
+  return path.split(/[\\/]/).pop() ?? path;
 }
 
 function Record({ record }: { record: QuarantineRecord }) {
@@ -39,7 +46,7 @@ function Record({ record }: { record: QuarantineRecord }) {
       </p>
       <p className="mt-1 text-sm text-ink">{startedWith(t, record.file)}</p>
       <p className="mt-2 text-xs text-ink-muted">
-        {t("quarantine.originalPreserved")}
+        {t("quarantine.originalPreserved", { name: fileName(record.quarantinedTo) })}
       </p>
     </li>
   );

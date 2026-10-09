@@ -13,7 +13,7 @@ describe("application initialization", () => {
   it("shares one startup read so a quarantine reaches the reporting surface", async () => {
     const quarantine = {
       file: "state.json",
-      quarantinedTo: "/data/state-20260827-083016-254-utc.invalid",
+      quarantinedTo: "/data/state-20260827-083016-utc.invalid",
     };
     mockCommands({
       load_app_data: () => ({

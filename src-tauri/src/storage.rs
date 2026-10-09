@@ -29,7 +29,7 @@
 //!
 //! Invalid-config policy (storage-path conventions): malformed JSON or a
 //! non-object config envelope is quarantined aside to
-//! `<stem>-<yyyymmdd-hhmmss-fff-utc>.invalid`
+//! `<stem>-<yyyymmdd-hhmmss-utc>.invalid`
 //! and built-ins are read without creating a replacement. The quarantine
 //! rename runs OUTSIDE the parse-failure handling: a failed rename propagates as
 //! an error instead of falling through to a default-reset that would clobber the
@@ -246,6 +246,14 @@ pub struct QuarantineRecord {
 /// `load_from_root` picks it up. Nothing else feeds or drains this.
 static PENDING_QUARANTINES: std::sync::Mutex<Vec<QuarantineRecord>> =
     std::sync::Mutex::new(Vec::new());
+
+/// Parks a store set aside before any webview exists, for Main to report.
+pub(crate) fn report_at_launch(record: QuarantineRecord) {
+    PENDING_QUARANTINES
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .push(record);
+}
 
 fn take_pending_quarantines() -> Vec<QuarantineRecord> {
     let mut pending = PENDING_QUARANTINES
@@ -743,8 +751,9 @@ fn read_json_optional_with_envelope(
 fn quarantine_invalid_store(path: &Path, reason: &str) -> Result<JsonRead, String> {
     let quarantined = quarantine_name(path);
     // not recorded: an invalid quarantine preserves the original raw bytes
-    // rather than creating new managed user text.
-    std::fs::rename(path, &quarantined).map_err(|rename_error| {
+    // rather than creating new managed user text. It never replaces an
+    // earlier set-aside file.
+    crate::fs_publish::rename_no_replace(path, &quarantined).map_err(|rename_error| {
         format!(
             "could not quarantine invalid {}: {rename_error} ({reason})",
             path.display()
@@ -771,9 +780,9 @@ fn quarantine_invalid_store(path: &Path, reason: &str) -> Result<JsonRead, Strin
     })
 }
 
-/// `<stem>-<yyyymmdd-hhmmss-fff-utc>.invalid`, sibling to the target — the
+/// `<stem>-<yyyymmdd-hhmmss-utc>.invalid`, sibling to the target — the
 /// derived-filename grammar with a moment discriminator.
-fn quarantine_name(path: &Path) -> PathBuf {
+pub(crate) fn quarantine_name(path: &Path) -> PathBuf {
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("store");
     path.with_file_name(format!("{stem}-{}.invalid", logging::filename_stamp_now()))
 }

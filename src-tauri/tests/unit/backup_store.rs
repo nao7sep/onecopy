@@ -83,7 +83,7 @@ fn written_at_utc_is_serialized_iso_ms_not_the_filename_stamp() {
                 && written.ends_with('Z'),
             "written_at_utc {written:?} must be serialized ISO-8601-ms (2026-07-06T04:05:12.345Z)"
         );
-        // Must NOT be the yyyymmdd-hhmmss-fff-utc filename stamp.
+        // Must NOT be the yyyymmdd-hhmmss-utc filename stamp.
         assert!(!written.ends_with("-utc"), "must not be the filename stamp");
         assert!(!written.contains("-utc"), "must not be the filename stamp");
     });

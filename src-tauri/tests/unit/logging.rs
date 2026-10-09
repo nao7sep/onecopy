@@ -40,7 +40,7 @@ fn iso_handles_leap_day() {
 
 #[test]
 fn filename_stamp_matches_known_vector() {
-    assert_eq!(filename_stamp(1_700_000_000_123), "20231114-221320-123-utc");
+    assert_eq!(filename_stamp(1_700_000_000_123), "20231114-221320-utc");
 }
 
 // --- Writer behavior: records, gating, level normalization, fallback ---

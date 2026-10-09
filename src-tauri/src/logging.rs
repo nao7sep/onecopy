@@ -102,15 +102,18 @@ fn iso_millis(ms: i64) -> String {
 // (`2026-07-06T04:05:12.345Z`) — the timestamp-conventions' internal/serialized
 // shape, a data value. Reuses the same `iso_millis` formatter the log lines use
 // so there is one time formatter, never a fourth. The data-backup store stamps
-// its `written_at_utc` column with this — NEVER the `yyyymmdd-hhmmss-fff-utc`
+// its `written_at_utc` column with this — NEVER the `yyyymmdd-hhmmss-utc`
 // filename stamp (`filename_stamp` above), which belongs to file names only.
 pub fn now_iso_millis() -> String {
     iso_millis(now_unix_millis())
 }
 
+// Seconds, the timestamp conventions' default: these names are one fallback
+// log per launch and a set-aside store, at most once per store per launch,
+// and set-asides are renamed without replacing anything.
 fn filename_stamp(ms: i64) -> String {
-    let (y, mo, d, h, mi, s, ms3) = parts_from_millis(ms);
-    format!("{y:04}{mo:02}{d:02}-{h:02}{mi:02}{s:02}-{ms3:03}-utc")
+    let (y, mo, d, h, mi, s, _) = parts_from_millis(ms);
+    format!("{y:04}{mo:02}{d:02}-{h:02}{mi:02}{s:02}-utc")
 }
 
 // --- The logger itself ---
@@ -447,7 +450,7 @@ fn into_map(value: Value) -> Map<String, Value> {
     }
 }
 
-// The current instant as the filename stamp (`yyyymmdd-hhmmss-fff-utc`) — for
+// The current instant as the filename stamp (`yyyymmdd-hhmmss-utc`) — for
 // derived sibling names whose discriminator is a moment (a quarantined corrupt
 // store), per the derived-filename grammar. File names only; data values use
 // `now_iso_millis`.

@@ -3,9 +3,9 @@
 // The user-facing half of corrupt-store recovery. Setting the unreadable file
 // aside preserves the bytes, but a set-aside nobody mentions is a silent reset
 // with extra steps (storage-path-conventions), so what this surface says IS
-// the contract: which file was affected, that its bytes were preserved and are
-// locatable through the log, what the app is running on instead, and what was
-// left alone. Internal recovery paths stay diagnostic-only.
+// the contract: which file was affected, the name its bytes were kept under,
+// what the app is running on instead, and what was left alone. Internal
+// recovery paths stay diagnostic-only.
 
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import { render, cleanup, act } from "@testing-library/react";
@@ -15,11 +15,15 @@ import { resetTauriMocks } from "../mocks/tauri";
 
 const CONFIG = {
   file: "config.json",
-  quarantinedTo: "/Users/x/.onecopy/config-20260817-031500-123-utc.invalid",
+  quarantinedTo: "/Users/x/.onecopy/config-20260817-031500-utc.invalid",
 };
 const STATE = {
   file: "state.json",
-  quarantinedTo: "/Users/x/.onecopy/state-20260817-031500-124-utc.invalid",
+  quarantinedTo: "/Users/x/.onecopy/state-20260817-031500-utc.invalid",
+};
+const RECORDS = {
+  file: "records.sqlite3",
+  quarantinedTo: "C:\\Users\\x\\AppData\\OneCopy\\records-20260817-031500-utc.invalid",
 };
 
 beforeEach(() => {
@@ -41,14 +45,16 @@ describe("when a store was set aside", () => {
     useAppStore.setState({ quarantines: [CONFIG] });
   });
 
-  it("names the file and recovery consequence without exposing the internal path", () => {
+  it("names the file and the name its original was kept under, not the whole path", () => {
     render(<QuarantineNotice />);
     const text = document.body.textContent ?? "";
     expect(text).toContain("config.json");
-    expect(text).toContain("preserved");
-    expect(text).toContain("application log");
+    expect(text).toContain("kept as config-20260817-031500-utc.invalid");
     expect(text).not.toContain(CONFIG.quarantinedTo);
     expect(text).toContain("built-in settings");
+    // Nothing was written yet; saving writes the new file.
+    expect(text).toContain("Saving your settings writes a new settings file");
+    expect(text).not.toContain("wrote");
     // And the reassurance that the reset was scoped to that one file.
     expect(text).toContain("photos");
   });
@@ -59,6 +65,15 @@ describe("when a store was set aside", () => {
     const text = document.body.textContent ?? "";
     expect(text).toContain("sort order");
     expect(text).not.toContain(STATE.quarantinedTo);
+  });
+
+  it("says a set-aside history starts a new one, with a Windows path", () => {
+    useAppStore.setState({ quarantines: [RECORDS] });
+    render(<QuarantineNotice />);
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("records.sqlite3");
+    expect(text).toContain("new history");
+    expect(text).toContain("kept as records-20260817-031500-utc.invalid");
   });
 
   it("reports every store on its own line when several failed", () => {

@@ -183,7 +183,16 @@ fn prepare(app: &tauri::App, debug_enabled: bool) -> Result<StartupState, Startu
     let started = Instant::now();
     let data_root = crate::paths::resolve_data_root(app.handle())?;
     let records_path = data_root.join(crate::records::RECORDS_DB_FILE_NAME);
+    // Before the log writer opens the records, so it opens the fresh store.
+    let records_set_aside = crate::records::set_aside_if_unreadable(&records_path)?;
     crate::logging::init(&records_path, &data_root.join(crate::paths::LOGS_DIR_NAME), debug_enabled);
+    if let Some(record) = records_set_aside {
+        crate::logging::warn(
+            "unreadable records set aside; starting fresh records",
+            json!({ "file": records_path.to_string_lossy(), "quarantinedTo": record.quarantined_to }),
+        );
+        crate::storage::report_at_launch(record);
+    }
     let newer = newer_required_stores(&data_root)?;
     if !newer.is_empty() {
         return Err(StartupError::Newer(newer));
