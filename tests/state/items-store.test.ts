@@ -551,6 +551,23 @@ describe("refreshWindow", () => {
     expect(useItemsStore.getState().selectedPositions).toEqual(before.selectedPositions);
   });
 
+  it("keeps an unchanged window and unchanged items as they are", async () => {
+    let rows = Array.from({ length: 4 }, (_, index) => item(index + 1));
+    mockSection(() => rows);
+    await useItemsStore.getState().select(SECTION);
+    const shown = useItemsStore.getState().items;
+
+    await useItemsStore.getState().refreshWindow();
+    expect(useItemsStore.getState().items).toBe(shown);
+
+    rows = rows.map((row) => (row.hash === "h3" ? { ...row, fileName: "renamed.jpg" } : { ...row }));
+    await useItemsStore.getState().refreshWindow();
+    const next = useItemsStore.getState().items;
+    expect(next).not.toBe(shown);
+    expect(next[2].fileName).toBe("renamed.jpg");
+    expect(next.filter((row, index) => row === shown[index]).map((row) => row.hash)).toEqual(["h1", "h2", "h4"]);
+  });
+
   it("re-derives selection positions when items enter above the range origin", async () => {
     let rows = Array.from({ length: 8 }, (_, index) => item(index + 1));
     mockSection(() => rows);

@@ -667,15 +667,37 @@ async function adoptWindow(
     await reconcileCurrent(set, get, false, "center");
     return;
   }
-  publishWindow(set, window);
+  publishWindow(set, get, window);
 }
 
-function publishWindow(set: (patch: Partial<ItemsState>) => void, window: SectionWindow): void {
+/** Publishes a read window. A refresh round re-reads the window Main shows
+ * many times during a scan, mostly unchanged: an identical window is not
+ * published at all, and an item equal to the one already shown keeps its
+ * object, so only the cells whose item changed re-render. */
+function publishWindow(
+  set: (patch: Partial<ItemsState>) => void,
+  get: () => ItemsState,
+  window: SectionWindow,
+): void {
+  const current = get();
+  const shown = new Map(current.items.map((item) => [itemKey(item), item]));
+  let changed =
+    window.start !== current.windowStart ||
+    window.total !== current.totalItems ||
+    window.items.length !== current.items.length ||
+    current.loadError !== null;
+  const items = window.items.map((item, index) => {
+    const before = shown.get(itemKey(item));
+    const kept = before !== undefined && JSON.stringify(before) === JSON.stringify(item) ? before : item;
+    if (kept !== current.items[index]) changed = true;
+    return kept;
+  });
+  if (!changed) return;
   set({
-    items: window.items,
+    items,
     totalItems: window.total,
     windowStart: window.start,
-    itemPositions: positionMap(window.start, window.items),
+    itemPositions: positionMap(window.start, items),
     loadError: null,
   });
 }
