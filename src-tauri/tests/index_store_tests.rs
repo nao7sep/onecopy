@@ -302,3 +302,73 @@ fn an_index_without_its_marker_is_rebuilt_from_the_files() {
         onecopy_lib::formats::INDEX
     );
 }
+
+fn projection_plan(conn: &rusqlite::Connection) -> Vec<String> {
+    let mut statement = conn
+        .prepare("EXPLAIN QUERY PLAN SELECT * FROM logical_content_projection WHERE content_hash = 'h5'")
+        .unwrap();
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(3))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    rows
+}
+
+// Without planner statistics SQLite chose `idx_paths_media_repair_by_id` for
+// the ranking subqueries and read every live path for each projected content,
+// on every path insert, update and delete.
+#[test]
+fn the_projection_ranks_copies_through_the_content_hash_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    conn.execute_batch("BEGIN").unwrap();
+    for i in 0..2000 {
+        let hash = format!("h{}", i / 2);
+        if i % 2 == 0 {
+            conn.execute("INSERT INTO contents (hash, byte_size, kind) VALUES (?1, 1, 'image')", [&hash]).unwrap();
+        }
+        conn.execute(
+            "INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash) VALUES (?1, '/d', ?2, 'image', ?3)",
+            rusqlite::params![format!("/d/f{i}.jpg"), format!("f{i}.jpg"), hash],
+        )
+        .unwrap();
+    }
+    conn.execute_batch("COMMIT").unwrap();
+
+    let plan = projection_plan(&conn);
+    let ranked: Vec<_> = plan.iter().filter(|step| step.contains("ranked")).collect();
+    assert_eq!(ranked.len(), 3, "{plan:#?}");
+    assert!(
+        ranked.iter().all(|step| step.contains("idx_paths_content_hash (content_hash=?)")),
+        "{plan:#?}"
+    );
+}
+
+#[test]
+fn an_index_with_an_older_projection_gets_the_current_one_and_an_ordinary_open_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("index.sqlite3");
+    drop(index_store::open(&file).unwrap());
+    {
+        let conn = rusqlite::Connection::open(&file).unwrap();
+        let current: String = conn
+            .query_row("SELECT sql FROM sqlite_master WHERE name = 'logical_content_projection'", [], |row| row.get(0))
+            .unwrap();
+        let older = current.replace(" INDEXED BY idx_paths_content_hash", "");
+        conn.execute_batch(&format!("DROP VIEW logical_content_projection; {older};")).unwrap();
+    }
+
+    let conn = index_store::open(&file).unwrap();
+    let refreshed: String = conn
+        .query_row("SELECT sql FROM sqlite_master WHERE name = 'logical_content_projection'", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(refreshed.matches("INDEXED BY idx_paths_content_hash").count(), 3);
+    let version = |conn: &rusqlite::Connection| -> i64 {
+        conn.pragma_query_value(None, "schema_version", |row| row.get(0)).unwrap()
+    };
+    let before = version(&conn);
+    drop(conn);
+    let reopened = index_store::open(&file).unwrap();
+    assert_eq!(version(&reopened), before, "an ordinary open replays no DDL");
+}

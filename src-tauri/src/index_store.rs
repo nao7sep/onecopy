@@ -16,7 +16,57 @@ use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension};
 
-const SCHEMA: &str = "
+/// The projection's definition, also replaced in an existing index whose
+/// stored definition differs (`refresh_projection_view`). Its ranking
+/// subqueries name `idx_paths_content_hash`: without planner statistics SQLite
+/// otherwise picks `idx_paths_media_repair_by_id` and reads every live path for
+/// each projected content, which made each path update cost milliseconds at
+/// tens of thousands of paths and far more at library scale.
+macro_rules! projection_view_sql {
+    () => {
+        "CREATE VIEW IF NOT EXISTS logical_content_projection AS
+SELECT c.hash AS content_hash,
+       CASE WHEN (SELECT ranked.kind FROM paths ranked INDEXED BY idx_paths_content_hash
+                  WHERE ranked.content_hash = c.hash
+                    AND ranked.missing = 0 AND ranked.companion_of IS NULL
+                  ORDER BY ranked.review_visible DESC, ranked.resolved_utc_ms IS NULL, ranked.resolved_utc_ms,
+                           ranked.abs_path COLLATE onecopy_nocase, ranked.abs_path
+                  LIMIT 1) IN ('image', 'video')
+         THEN (SELECT ranked.kind FROM paths ranked INDEXED BY idx_paths_content_hash
+               WHERE ranked.content_hash = c.hash
+                 AND ranked.missing = 0 AND ranked.companion_of IS NULL
+               ORDER BY ranked.review_visible DESC, ranked.resolved_utc_ms IS NULL, ranked.resolved_utc_ms,
+                        ranked.abs_path COLLATE onecopy_nocase, ranked.abs_path
+               LIMIT 1)
+         ELSE 'other'
+       END AS kind,
+       CASE
+         WHEN SUM(CASE WHEN p.resolved_source IS NULL THEN 1 ELSE 0 END) > 0
+           THEN 'pending'
+         WHEN MIN(p.resolved_utc_ms) IS NULL THEN 'undated'
+         ELSE 'dated'
+       END AS date_state,
+       CASE
+         WHEN SUM(CASE WHEN p.resolved_source IS NULL THEN 1 ELSE 0 END) = 0
+           THEN MIN(p.resolved_utc_ms)
+         ELSE NULL
+       END AS resolved_utc_ms,
+       (SELECT ranked.id FROM paths ranked INDEXED BY idx_paths_content_hash
+        WHERE ranked.content_hash = c.hash
+          AND ranked.missing = 0 AND ranked.companion_of IS NULL
+        ORDER BY ranked.review_visible DESC, ranked.resolved_utc_ms IS NULL, ranked.resolved_utc_ms,
+                 ranked.abs_path COLLATE onecopy_nocase, ranked.abs_path
+        LIMIT 1) AS representative_path_id,
+       COUNT(*) AS live_copy_count,
+       SUM(p.review_visible) AS visible_copy_count
+FROM contents c JOIN paths p ON p.content_hash = c.hash
+WHERE p.missing = 0 AND p.companion_of IS NULL
+GROUP BY c.hash;"
+    };
+}
+const PROJECTION_VIEW: &str = projection_view_sql!();
+
+const SCHEMA: &str = concat!("
 CREATE TABLE IF NOT EXISTS contents (
   hash            TEXT PRIMARY KEY,
   byte_size       INTEGER NOT NULL,
@@ -162,44 +212,7 @@ END;
 -- `contents.kind` (fixed by whichever copy was hashed first): byte-identical
 -- copies with different extensions must not have their section depend on
 -- indexing order (R4.1 finding 3).
-CREATE VIEW IF NOT EXISTS logical_content_projection AS
-SELECT c.hash AS content_hash,
-       CASE WHEN (SELECT ranked.kind FROM paths ranked
-                  WHERE ranked.content_hash = c.hash
-                    AND ranked.missing = 0 AND ranked.companion_of IS NULL
-                  ORDER BY ranked.review_visible DESC, ranked.resolved_utc_ms IS NULL, ranked.resolved_utc_ms,
-                           ranked.abs_path COLLATE onecopy_nocase, ranked.abs_path
-                  LIMIT 1) IN ('image', 'video')
-         THEN (SELECT ranked.kind FROM paths ranked
-               WHERE ranked.content_hash = c.hash
-                 AND ranked.missing = 0 AND ranked.companion_of IS NULL
-               ORDER BY ranked.review_visible DESC, ranked.resolved_utc_ms IS NULL, ranked.resolved_utc_ms,
-                        ranked.abs_path COLLATE onecopy_nocase, ranked.abs_path
-               LIMIT 1)
-         ELSE 'other'
-       END AS kind,
-       CASE
-         WHEN SUM(CASE WHEN p.resolved_source IS NULL THEN 1 ELSE 0 END) > 0
-           THEN 'pending'
-         WHEN MIN(p.resolved_utc_ms) IS NULL THEN 'undated'
-         ELSE 'dated'
-       END AS date_state,
-       CASE
-         WHEN SUM(CASE WHEN p.resolved_source IS NULL THEN 1 ELSE 0 END) = 0
-           THEN MIN(p.resolved_utc_ms)
-         ELSE NULL
-       END AS resolved_utc_ms,
-       (SELECT ranked.id FROM paths ranked
-        WHERE ranked.content_hash = c.hash
-          AND ranked.missing = 0 AND ranked.companion_of IS NULL
-        ORDER BY ranked.review_visible DESC, ranked.resolved_utc_ms IS NULL, ranked.resolved_utc_ms,
-                 ranked.abs_path COLLATE onecopy_nocase, ranked.abs_path
-        LIMIT 1) AS representative_path_id,
-       COUNT(*) AS live_copy_count,
-       SUM(p.review_visible) AS visible_copy_count
-FROM contents c JOIN paths p ON p.content_hash = c.hash
-WHERE p.missing = 0 AND p.companion_of IS NULL
-GROUP BY c.hash;
+", projection_view_sql!(), "
 
 -- Similarity is published as complete UTC-month cohorts. Dirty buckets are
 -- reconstructible invalidation facts, not jobs: a revision changes whenever
@@ -423,7 +436,7 @@ CREATE TABLE IF NOT EXISTS scan_dirs (
   -- unavailable root that resolves under another spelling is still known.
   configured_root       TEXT
 );
-";
+");
 
 /// Opens (creating if needed) the index DB with the fleet's SQLite posture:
 /// WAL so the scanner writes while the UI reads, and a busy timeout so a
@@ -522,6 +535,8 @@ fn open_before_setup(db_file: &Path, before_setup: impl FnOnce()) -> Result<Conn
                 return Err(error);
             }
         }
+    } else {
+        refresh_projection_view(&conn)?;
     }
     crate::records::attach(
         &conn,
@@ -539,6 +554,31 @@ fn open_before_setup(db_file: &Path, before_setup: impl FnOnce()) -> Result<Conn
 #[cfg(test)]
 #[path = "../tests/unit/index_store.rs"]
 mod setup_tests;
+
+/// Replaces an existing index's projection view when its stored definition
+/// differs from this build's. Ordinary opens find it equal and write nothing.
+fn refresh_projection_view(conn: &Connection) -> Result<(), String> {
+    let stored = |conn: &Connection| -> Result<Option<String>, String> {
+        conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'logical_content_projection'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())
+    };
+    let current = PROJECTION_VIEW.trim_end_matches(';').replacen("IF NOT EXISTS ", "", 1);
+    if stored(conn)?.as_deref() == Some(current.as_str()) {
+        return Ok(());
+    }
+    let transaction = crate::sqlite::write_transaction(conn).map_err(|error| error.to_string())?;
+    if stored(&transaction)?.as_deref() != Some(current.as_str()) {
+        transaction
+            .execute_batch(&format!("DROP VIEW IF EXISTS logical_content_projection; {PROJECTION_VIEW}"))
+            .map_err(|error| error.to_string())?;
+    }
+    transaction.commit().map_err(|error| error.to_string())
+}
 
 /// `user_version` as stored: 0 until the schema is created.
 #[cfg(test)]
