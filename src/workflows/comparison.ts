@@ -100,6 +100,8 @@ export async function openComparison(
       appConfig(),
     );
   if (result === "opened") {
+    // Where Main lands after this session; never an earlier session's spot.
+    mainRecoveryAfterFamily = null;
     await focusComparison();
     const items = useItemsStore.getState();
     const section = items.selected;

@@ -851,8 +851,10 @@ async function requestAction(
   action: ComparisonAction,
   configConfirms: boolean,
 ): Promise<ComparisonCommitResult | null> {
+  // Nothing to delete never asks: a page whose visible images are all marked
+  // completes at once, permanent or not.
   const requiresReview =
-    action.permanent ||
+    (action.permanent && action.targetHashes.length > 0) ||
     (action.kind === "page" && action.targetHashes.length > 0) ||
     action.targetHashes.length > 1 ||
     (configConfirms && action.targetHashes.length > 0);

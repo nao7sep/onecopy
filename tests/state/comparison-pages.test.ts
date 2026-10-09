@@ -163,6 +163,15 @@ describe("page-local decisions", () => {
     ).toEqual(["h4", "h5", "h6", "h7"]);
   });
 
+  it("completes an all-selected page with Shift as well, since nothing would be deleted", async () => {
+    useComparisonStore.getState().markAll();
+    const result = await useComparisonStore.getState().requestPageDecision(true);
+
+    expect(result).toEqual({ kind: "continued" });
+    expect(useComparisonStore.getState().pendingAction).toBeNull();
+    expect(invokeCalls.some((call) => call.command === "delete_items")).toBe(false);
+  });
+
   it("offers a separate explicit Trash-all action", async () => {
     await useComparisonStore.getState().requestPageDecision(false, true);
     expect(useComparisonStore.getState().pendingAction?.targetHashes).toEqual([
