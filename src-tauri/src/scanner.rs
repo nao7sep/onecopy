@@ -2424,6 +2424,35 @@ pub struct PairStats {
     pub paired: u64,
 }
 
+/// Every live image that carries a Live Photo identifier, keyed by folder and
+/// identifier, collected in one pass. Pairing then finds a movie's still with
+/// one keyed lookup: scanning the movie's folder for each movie was quadratic
+/// in folder size, and looking the identifier up across the whole index was
+/// quadratic in the number of copies of a folder (backup trees share
+/// identifiers).
+fn live_images_sql(scoped: bool) -> String {
+    let from = if scoped {
+        "FROM onecopy_pair_scope scope
+         CROSS JOIN paths image INDEXED BY idx_paths_dir
+         CROSS JOIN evidence image_id INDEXED BY idx_evidence_path
+         WHERE image.dir_path = scope.dir_path
+           AND image_id.path_id = image.id
+           AND"
+    } else {
+        "FROM evidence image_id INDEXED BY idx_evidence_source_raw
+         CROSS JOIN paths image
+         WHERE image.id = image_id.path_id
+           AND"
+    };
+    format!(
+        "INSERT OR IGNORE INTO onecopy_live_images (dir_path, raw, image_id)
+         SELECT image.dir_path, image_id.raw, image.id
+         {from} image_id.source = 'live-photo-identifier'
+           AND image_id.raw IS NOT NULL
+           AND image.kind = 'image' AND image.missing = 0"
+    )
+}
+
 fn raw_pair_candidates_sql(scoped: bool) -> String {
     let from = if scoped {
         "FROM onecopy_pair_scope scope
@@ -2444,16 +2473,12 @@ fn raw_pair_candidates_sql(scoped: bool) -> String {
              AND candidate.missing = 0
              AND (candidate.kind != 'video' OR NOT EXISTS (
                    SELECT 1 FROM evidence video_id INDEXED BY idx_evidence_path
+                   CROSS JOIN onecopy_live_images live
                    WHERE video_id.path_id = candidate.id
                      AND video_id.source = 'live-photo-identifier'
                      AND video_id.raw IS NOT NULL
-                     AND EXISTS (
-                       SELECT 1 FROM paths live_image
-                       JOIN evidence image_id INDEXED BY idx_evidence_path ON image_id.path_id = live_image.id
-                       WHERE live_image.dir_path = candidate.dir_path
-                         AND live_image.kind = 'image' AND live_image.missing = 0
-                         AND image_id.source = 'live-photo-identifier'
-                         AND image_id.raw = video_id.raw)))
+                     AND live.dir_path = candidate.dir_path
+                     AND live.raw = video_id.raw))
            ORDER BY candidate.abs_path COLLATE onecopy_nocase, candidate.abs_path LIMIT 1)
          {from}
          WHERE companion.kind = 'companion' AND companion.missing = 0{scope}"
@@ -2474,19 +2499,15 @@ fn live_photo_pair_candidates_sql(scoped: bool) -> String {
         "INSERT INTO onecopy_pair_results (path_id, primary_id)
          SELECT video.id, (
            SELECT image.id
-           FROM paths image INDEXED BY idx_paths_dir
-           WHERE image.dir_path = video.dir_path
-             AND image.kind = 'image' AND image.missing = 0
-             AND EXISTS (
-               SELECT 1 FROM evidence image_id INDEXED BY idx_evidence_path
-               WHERE image_id.path_id = image.id
-                 AND image_id.source = 'live-photo-identifier'
-                 AND image_id.raw IS NOT NULL
-                 AND EXISTS (
-                   SELECT 1 FROM evidence video_id INDEXED BY idx_evidence_path
-                   WHERE video_id.path_id = video.id
-                     AND video_id.source = 'live-photo-identifier'
-                     AND video_id.raw = image_id.raw))
+           FROM evidence video_id INDEXED BY idx_evidence_path
+           CROSS JOIN onecopy_live_images live
+           CROSS JOIN paths image
+           WHERE video_id.path_id = video.id
+             AND video_id.source = 'live-photo-identifier'
+             AND video_id.raw IS NOT NULL
+             AND live.dir_path = video.dir_path
+             AND live.raw = video_id.raw
+             AND image.id = live.image_id
            ORDER BY image.abs_path COLLATE onecopy_nocase, image.abs_path LIMIT 1)
          {from}
          WHERE video.kind = 'video' AND video.missing = 0{scope}"
@@ -2546,7 +2567,14 @@ fn pair_companions_with_progress(
              CREATE TEMP TABLE IF NOT EXISTS onecopy_pair_page (
                path_id INTEGER PRIMARY KEY
              ) WITHOUT ROWID;
+             CREATE TEMP TABLE IF NOT EXISTS onecopy_live_images (
+               dir_path TEXT NOT NULL,
+               raw TEXT NOT NULL,
+               image_id INTEGER NOT NULL,
+               PRIMARY KEY (dir_path, raw, image_id)
+             ) WITHOUT ROWID;
              DELETE FROM onecopy_pair_scope;
+             DELETE FROM onecopy_live_images;
              DELETE FROM onecopy_pair_results;
              DELETE FROM onecopy_pair_changes;",
             )
@@ -2569,7 +2597,10 @@ fn pair_companions_with_progress(
             .unwrap_or("");
 
         if enabled {
-            // Target row first, then a same-directory indexed lookup. The
+            transaction
+                .execute(&live_images_sql(dirs.is_some()), [])
+                .map_err(|error| error.to_string())?;
+            // Target row first, then a same-directory keyed lookup. The
             // scalar subquery prevents duplicate backup trees with the same
             // Apple identifier from forming a fleet-wide evidence cross-product.
             transaction
@@ -2585,6 +2616,7 @@ fn pair_companions_with_progress(
             transaction
                 .execute(&live_photo_pair_candidates_sql(dirs.is_some()), [])
                 .map_err(|error| error.to_string())?;
+
             transaction
                 .execute(
                     "DELETE FROM onecopy_pair_results WHERE primary_id IS NULL",
