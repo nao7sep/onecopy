@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use semver::Version;
@@ -106,21 +108,31 @@ fn parse_latest_tag(bytes: &[u8]) -> Result<String, String> {
         .ok_or_else(|| "GitHub release response has no tag_name".to_string())
 }
 
-/// Runs `write_timestamp` to completion first; `request` runs only when it
-/// succeeds, and never otherwise. This is the ordering `run_check` depends
-/// on (the attempt marker must land before any request goes out, and a
-/// failed write must send no request), isolated from `AppHandle`-bound state
+/// Runs `write_timestamp` to completion first, then `request`. The marker
+/// throttles automatic checks across launches, so an automatic check whose
+/// marker could not be saved sends no request; a manual one (`manual()` is
+/// read when the write has failed, so a click that joined meanwhile counts)
+/// logs the failure and still asks. Isolated from `AppHandle`-bound state
 /// persistence and HTTP transport so a test can drive both sides with local
 /// futures and prove the ordering rather than merely read it.
 async fn write_attempt_marker_then<T>(
     write_timestamp: impl std::future::Future<Output = Result<(), String>>,
+    manual: impl FnOnce() -> bool,
     request: impl std::future::Future<Output = Result<T, String>>,
 ) -> Result<T, String> {
-    write_timestamp.await?;
+    if let Err(error) = write_timestamp.await {
+        if !manual() {
+            return Err(error);
+        }
+        crate::logging::warn(
+            "release check attempt not saved; the manual check continues",
+            json!({ "error": { "message": error } }),
+        );
+    }
     request.await
 }
 
-async fn run_check(_app: &AppHandle) -> Result<ReleaseCheckOutcome, String> {
+async fn run_check(_app: &AppHandle, manual: &AtomicBool) -> Result<ReleaseCheckOutcome, String> {
     let attempted_at_utc = crate::logging::now_iso_millis();
     // The facts-file write is filesystem I/O; this function runs on a tokio
     // worker (spawned by `check()` below), so it goes through the same
@@ -140,7 +152,7 @@ async fn run_check(_app: &AppHandle) -> Result<ReleaseCheckOutcome, String> {
         crate::logging::info("GitHub release check started", json!({}));
         Ok(())
     };
-    let result = write_attempt_marker_then(write_timestamp, async {
+    let result = write_attempt_marker_then(write_timestamp, || manual.load(Ordering::SeqCst), async {
         let tag = request_latest_tag(LATEST_RELEASE_API).await?;
         let installed = Version::parse(env!("CARGO_PKG_VERSION"))
             .map_err(|error| format!("invalid installed version: {error}"))?;
@@ -179,25 +191,30 @@ async fn run_check(_app: &AppHandle) -> Result<ReleaseCheckOutcome, String> {
 }
 
 type SharedResult = Result<ReleaseCheckOutcome, String>;
-static IN_FLIGHT: std::sync::LazyLock<
-    std::sync::Mutex<Option<tokio::sync::watch::Receiver<Option<SharedResult>>>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+type InFlight = (tokio::sync::watch::Receiver<Option<SharedResult>>, Arc<AtomicBool>);
+static IN_FLIGHT: std::sync::LazyLock<std::sync::Mutex<Option<InFlight>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
 
 /// The frontend also joins ordinary same-webview callers, while this boundary
 /// preserves the invariant across a renderer reload during an active command.
-pub async fn check(app: &AppHandle) -> SharedResult {
+/// A manual caller joining an automatic check marks it manual.
+pub async fn check(app: &AppHandle, manual: bool) -> SharedResult {
     let mut receiver = {
         let mut active = IN_FLIGHT
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(receiver) = active.as_ref() {
+        if let Some((receiver, manual_requested)) = active.as_ref() {
+            if manual {
+                manual_requested.store(true, Ordering::SeqCst);
+            }
             receiver.clone()
         } else {
             let (sender, receiver) = tokio::sync::watch::channel(None);
-            *active = Some(receiver.clone());
+            let manual_requested = Arc::new(AtomicBool::new(manual));
+            *active = Some((receiver.clone(), manual_requested.clone()));
             let owned_app = app.clone();
             tokio::spawn(async move {
-                let result = run_check(&owned_app).await;
+                let result = run_check(&owned_app, &manual_requested).await;
                 let _ = sender.send(Some(result));
                 *IN_FLIGHT
                     .lock()

@@ -162,10 +162,9 @@ async fn a_request_that_never_gets_a_response_is_bounded_by_the_fixed_timeout() 
 }
 
 #[tokio::test]
-async fn the_attempt_marker_write_runs_before_the_request_and_a_failed_write_sends_none() {
+async fn the_attempt_marker_write_runs_before_the_request() {
     let calls: std::sync::Arc<std::sync::Mutex<Vec<&'static str>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-
     let ok_calls = calls.clone();
     let ok_write = async move {
         ok_calls.lock().unwrap().push("write");
@@ -175,23 +174,42 @@ async fn the_attempt_marker_write_runs_before_the_request_and_a_failed_write_sen
         calls.lock().unwrap().push("request");
         Ok::<_, String>("ok")
     };
-    let result = write_attempt_marker_then(ok_write, ok_request).await;
+    let result = write_attempt_marker_then(ok_write, || false, ok_request).await;
     assert_eq!(result, Ok("ok"));
     assert_eq!(*calls.lock().unwrap(), vec!["write", "request"]);
+}
 
-    let never_requested = std::sync::Arc::new(std::sync::Mutex::new(false));
-    let flag = never_requested.clone();
+#[tokio::test]
+async fn an_automatic_check_whose_marker_is_not_saved_sends_no_request() {
+    let requested = std::sync::Arc::new(std::sync::Mutex::new(false));
+    let flag = requested.clone();
     let failing_write = async { Err::<(), String>("write failed".to_string()) };
     let request_that_must_not_run = async move {
         *flag.lock().unwrap() = true;
         Ok::<_, String>("unreachable")
     };
-    let result = write_attempt_marker_then(failing_write, request_that_must_not_run).await;
+    let result = write_attempt_marker_then(failing_write, || false, request_that_must_not_run).await;
     assert_eq!(result, Err("write failed".to_string()));
-    assert!(
-        !*never_requested.lock().unwrap(),
-        "a failed attempt-marker write must send no request"
-    );
+    assert!(!*requested.lock().unwrap(), "the cross-launch throttle would be lost");
+}
+
+#[tokio::test]
+async fn a_manual_check_still_asks_when_its_marker_is_not_saved() {
+    let failing_write = async { Err::<(), String>("write failed".to_string()) };
+    // `manual` is read after the failed write, so a click that joined an
+    // automatic check meanwhile counts.
+    let joined = std::sync::atomic::AtomicBool::new(false);
+    let write = async {
+        joined.store(true, std::sync::atomic::Ordering::SeqCst);
+        failing_write.await
+    };
+    let result = write_attempt_marker_then(
+        write,
+        || joined.load(std::sync::atomic::Ordering::SeqCst),
+        async { Ok::<_, String>("asked") },
+    )
+    .await;
+    assert_eq!(result, Ok("asked"));
 }
 
 #[test]

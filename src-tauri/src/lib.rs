@@ -1439,8 +1439,11 @@ fn session_end_saved(id: u64) {
 }
 
 #[tauri::command]
-async fn check_github_release(app: AppHandle) -> Result<github_release::ReleaseCheckOutcome, String> {
-    let result = github_release::check(&app).await;
+async fn check_github_release(
+    app: AppHandle,
+    manual: Option<bool>,
+) -> Result<github_release::ReleaseCheckOutcome, String> {
+    let result = github_release::check(&app, manual.unwrap_or(false)).await;
     if let Err(error) = &result {
         logging::error(
             "GitHub release check could not start",

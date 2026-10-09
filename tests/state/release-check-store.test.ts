@@ -86,17 +86,23 @@ describe("GitHub release checking", () => {
   });
 
   it("joins a manual action to the launch request and presents that result once", async () => {
-    let resolve!: (value: unknown) => void;
-    mockCommands({ check_github_release: () => new Promise((done) => { resolve = done; }) });
+    // The core shares one check between its callers.
+    const waiting: Array<(value: unknown) => void> = [];
+    mockCommands({ check_github_release: () => new Promise((done) => { waiting.push(done); }) });
     const automatic = startAutomaticReleaseCheck(data);
     const manual = useReleaseCheckStore.getState().checkManual();
-    resolve({
-      status: "newer",
-      version: "0.2.0",
-      attemptedAtUtc: "2026-09-10T00:00:00.000Z",
-    });
+    for (const resolve of waiting) {
+      resolve({
+        status: "newer",
+        version: "0.2.0",
+        attemptedAtUtc: "2026-09-10T00:00:00.000Z",
+      });
+    }
     await Promise.all([automatic, manual]);
-    expect(invokeCalls.filter(({ command }) => command === "check_github_release")).toHaveLength(1);
+    // The join tells the core the check is now manual, so it asks even when
+    // the attempt cannot be recorded.
+    expect(invokeCalls.filter(({ command }) => command === "check_github_release").map(({ args }) => args))
+      .toEqual([{ manual: false }, { manual: true }]);
     expect(useReleaseCheckStore.getState().manualResult)
       .toEqual({ status: "newer", version: "0.2.0" });
     expect(useReleaseCheckStore.getState().noticeVersion).toBeNull();

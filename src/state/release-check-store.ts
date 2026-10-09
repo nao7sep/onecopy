@@ -49,14 +49,19 @@ export function releaseCheckEligible(value: unknown, nowMs = Date.now()): boolea
 
 function beginCheck(manual: boolean): ActiveCheck {
   if (activeCheck !== null) {
-    if (manual) activeCheck.manualRequested = true;
+    if (manual && !activeCheck.manualRequested) {
+      activeCheck.manualRequested = true;
+      // The core joins its check in flight and marks it manual, so it asks
+      // even when the attempt could not be recorded.
+      activeCheck.promise = invoke<ReleaseCheckOutcome>("check_github_release", { manual: true });
+    }
     return activeCheck;
   }
   const operation: ActiveCheck = {
     manualRequested: manual,
     promise: Promise.resolve(null as never),
   };
-  operation.promise = invoke<ReleaseCheckOutcome>("check_github_release")
+  operation.promise = invoke<ReleaseCheckOutcome>("check_github_release", { manual })
     .finally(() => {
       if (activeCheck === operation) activeCheck = null;
     });
