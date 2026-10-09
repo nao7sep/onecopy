@@ -4,6 +4,7 @@ import {
   monitorKey,
   orderMonitors,
   priorityFromConfig,
+  swappedPriority,
 } from "../../src/utils/screens";
 import { inEnglish } from "../helpers/i18n";
 
@@ -48,7 +49,7 @@ describe("screen priority ordering", () => {
     expect(ordered[0].position.x).toBe(2560);
   });
 
-  it("reads only string lists out of state", () => {
+  it("reads only string lists out of the settings", () => {
     expect(priorityFromConfig({ screenPriority: ["A", 1, "B"] })).toEqual(["A", "B"]);
     expect(priorityFromConfig({})).toEqual([]);
     expect(priorityFromConfig(null)).toEqual([]);
@@ -87,5 +88,30 @@ describe("describing where a monitor sits", () => {
     expect(inEnglish(describePosition(all[1], all))).toBe("position 2 of 4");
     expect(inEnglish(describePosition(all[2], all))).toBe("position 3 of 4");
     expect(inEnglish(describePosition(all[3], all))).toBe("position 4 of 4");
+  });
+});
+
+describe("swappedPriority", () => {
+  const at = (name: string, x: number) => ({ name, position: { x, y: 0 } });
+  const left = at("L", 0);
+  const right = at("R", 100);
+  const office = "Office@200,0";
+
+  it("swaps two connected displays and keeps a disconnected one's place", () => {
+    const saved = [monitorKey(left), office, monitorKey(right)];
+    expect(swappedPriority(saved, [left, right], monitorKey(left), monitorKey(right)))
+      .toEqual([monitorKey(right), office, monitorKey(left)]);
+  });
+
+  it("adds connected displays not yet saved after the saved ones", () => {
+    expect(swappedPriority([office], [left, right], monitorKey(left), monitorKey(right)))
+      .toEqual([office, monitorKey(right), monitorKey(left)]);
+  });
+
+  it("builds each swap on the order as saved, so quick moves each count", () => {
+    const third = at("T", 300);
+    const once = swappedPriority([], [left, right, third], monitorKey(left), monitorKey(right))!;
+    const twice = swappedPriority(once, [left, right, third], monitorKey(left), monitorKey(third))!;
+    expect(twice).toEqual([monitorKey(right), monitorKey(third), monitorKey(left)]);
   });
 });

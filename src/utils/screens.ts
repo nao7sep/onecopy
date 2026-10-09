@@ -1,8 +1,8 @@
-// Auxiliary display priority. The persisted order is app STATE — screen
-// identifiers are machine-specific — as a list of monitor keys; monitors not
-// in the list append last in native order, so a newly attached screen simply
-// joins the tail. Preview and Comparison exclude Main's current display at use
-// time.
+// Auxiliary display priority: a setting in config.json, kept as a list of
+// monitor keys (machine-specific identifiers). Monitors not in the list append
+// last in native order, so a newly attached screen simply joins the tail, and
+// a display that is not connected keeps its place for when it returns. Preview
+// and Comparison exclude Main's current display at use time.
 
 import type { MessageKey } from "../i18n/catalogues";
 import { message, type Message } from "../i18n/translate";
@@ -93,6 +93,29 @@ export function orderMonitors<T extends MonitorLike>(monitors: T[], priority: st
     return index === -1 ? priority.length : index;
   };
   return [...monitors].sort((a, b) => rank(a) - rank(b));
+}
+
+/** The saved priority after swapping two connected displays' places. Displays
+ * that are not connected keep their saved places, and connected ones not yet
+ * in the list join after the saved ones. */
+export function swappedPriority<T extends MonitorLike>(
+  saved: string[],
+  connected: T[],
+  first: string,
+  second: string,
+): string[] | null {
+  const visible = orderMonitors(connected, saved).map(monitorKey);
+  const i = visible.indexOf(first);
+  const j = visible.indexOf(second);
+  if (i < 0 || j < 0 || i === j) return null;
+  [visible[i], visible[j]] = [visible[j], visible[i]];
+  const result: string[] = [];
+  let next = 0;
+  for (const key of saved) {
+    result.push(visible.includes(key) ? visible[next++] : key);
+  }
+  while (next < visible.length) result.push(visible[next++]);
+  return result;
 }
 
 /** Reads the saved priority list out of the effective configuration. */

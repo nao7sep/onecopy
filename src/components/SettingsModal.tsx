@@ -16,6 +16,7 @@ import {
   monitorKey,
   orderMonitors,
   priorityFromConfig,
+  swappedPriority,
 } from "../utils/screens";
 import ModalShell from "./ModalShell";
 import ConfirmModal from "./ConfirmModal";
@@ -81,13 +82,21 @@ function ScreensSection() {
   const move = (index: number, delta: number) => {
     const target = index + delta;
     if (target < 0 || target >= ordered.length) return;
-    const keys = ordered.map(monitorKey);
-    [keys[index], keys[target]] = [keys[target], keys[index]];
+    const first = monitorKey(ordered[index]);
+    const second = monitorKey(ordered[target]);
+    const connected = monitors;
     void useAppStore
       .getState()
       // This row shows the failure itself, so the core stays quiet: one failed
-      // write is one notice and one Issue.
-      .saveConfig({ screenPriority: keys }, { reportFailure: false })
+      // write is one notice and one Issue. The swap is applied to the order as
+      // last saved when the write runs, so quick clicks each count.
+      .saveConfig(
+        (config) => {
+          const next = swappedPriority(priorityFromConfig(config), connected, first, second);
+          return next === null ? null : { screenPriority: next };
+        },
+        { reportFailure: false },
+      )
       .catch((error) => {
         log.error("screen priority save failed", toErrorFields(error));
         setScreenError("settings.screenOrderSaveFailed");
