@@ -221,6 +221,8 @@ fn a_filesystem_without_a_recorded_identity_retains_presence_only_support() {
     let status = volume::verify_source_dirs_with(app_data.path(), &|_| None).unwrap();
     assert!(status.missing.is_empty());
     assert!(status.substituted.is_empty());
+    // Said once, so the user knows a swapped drive there would go unnoticed.
+    assert_eq!(status.unidentified.len(), 1);
 }
 
 #[test]

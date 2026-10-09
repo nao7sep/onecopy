@@ -314,6 +314,9 @@ mod tests;
 pub struct SourceDirsStatus {
     pub missing: Vec<String>,
     pub substituted: Vec<String>,
+    /// Present folders whose drive has no identity OneCopy can read (some
+    /// network shares): a different drive mounted there would go unnoticed.
+    pub unidentified: Vec<String>,
 }
 
 /// A missing pathname alone cannot distinguish a deleted folder from an
@@ -380,6 +383,7 @@ pub fn verify_source_dirs_with(
                 "no volume identity readable; presence-only verification",
                 serde_json::json!({ "dir": dir }),
             );
+            status.unidentified.push(dir.clone());
             continue;
         };
         match check_identity(data_root, dir, &current)? {

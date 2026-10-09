@@ -1012,6 +1012,9 @@ pub struct TrashRootInfo {
     /// Names exactly what these totals measured. Emptying requires it back
     /// and removes nothing when the location no longer matches.
     pub plan_token: String,
+    /// The root is in a synced folder (`cloud_files`): emptying it deletes
+    /// the files from the cloud and other devices too.
+    pub synced: bool,
 }
 
 /// Every configured source and destination root has one local deleted-files
@@ -1025,11 +1028,13 @@ pub fn overview(configured_roots: &[PathBuf]) -> Vec<TrashRootInfo> {
             roots.push((root, configured));
         }
     }
+    let synced = crate::cloud_files::synced_folders();
     roots
         .into_iter()
         .map(|(root, configured)| {
             let measure = measure_root(&root);
             TrashRootInfo {
+                synced: crate::cloud_files::is_synced(&root, &synced),
                 root: root.to_string_lossy().to_string(),
                 available: volume_io::is_dir(configured).unwrap_or(false),
                 bytes: measure.bytes,

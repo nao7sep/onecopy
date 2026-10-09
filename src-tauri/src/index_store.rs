@@ -62,8 +62,9 @@ SELECT c.hash AS content_hash,
         ORDER BY ranked.review_visible DESC, ranked.resolved_utc_ms IS NULL, ranked.resolved_utc_ms,
                  ranked.abs_path COLLATE onecopy_nocase, ranked.abs_path
         LIMIT 1) AS representative_path_id,
-       COUNT(*) AS live_copy_count,
-       SUM(p.review_visible) AS visible_copy_count
+       COUNT(DISTINCT COALESCE(p.file_key, p.id)) AS live_copy_count,
+       COUNT(DISTINCT CASE WHEN p.review_visible = 1 THEN COALESCE(p.file_key, p.id) END)
+         AS visible_copy_count
 FROM contents c JOIN paths p ON p.content_hash = c.hash
 WHERE p.missing = 0 AND p.companion_of IS NULL
 GROUP BY c.hash;"
@@ -122,7 +123,11 @@ CREATE TABLE IF NOT EXISTS paths (
   visibility_flags INTEGER NOT NULL DEFAULT 0,
   own_visibility_flags INTEGER NOT NULL DEFAULT 0,
   visibility_checked INTEGER NOT NULL DEFAULT 1,
-  review_visible   INTEGER NOT NULL DEFAULT 1
+  review_visible   INTEGER NOT NULL DEFAULT 1,
+  -- The physical file a hard-linked path names (`scanner::hard_link_key`),
+  -- so two links to one file count as one copy; NULL for a file with one
+  -- link, which counts as itself.
+  file_key         TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_paths_content_hash ON paths (content_hash);
 CREATE INDEX IF NOT EXISTS idx_paths_dir ON paths (dir_path);
@@ -573,6 +578,20 @@ mod setup_tests;
 /// Brings an existing index's projection view and live-row index to this
 /// build's definitions. Ordinary opens find them current and write nothing.
 fn refresh_definitions(conn: &Connection) -> Result<(), String> {
+    let has_file_key = |conn: &Connection| -> Result<bool, String> {
+        conn.prepare("SELECT 1 FROM pragma_table_info('paths') WHERE name = 'file_key'")
+            .and_then(|mut statement| statement.exists([]))
+            .map_err(|error| error.to_string())
+    };
+    if !has_file_key(conn)? {
+        let transaction = crate::sqlite::write_transaction(conn).map_err(|error| error.to_string())?;
+        if !has_file_key(&transaction)? {
+            transaction
+                .execute_batch("ALTER TABLE paths ADD COLUMN file_key TEXT;")
+                .map_err(|error| error.to_string())?;
+        }
+        transaction.commit().map_err(|error| error.to_string())?;
+    }
     let has_old_index = |conn: &Connection| -> Result<bool, String> {
         conn.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_paths_media_repair_by_id'")
             .and_then(|mut statement| statement.exists([]))

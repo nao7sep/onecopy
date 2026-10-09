@@ -342,6 +342,18 @@ fn source_issues_coalesce_and_clear_on_return_or_configuration_removal() {
 }
 
 #[test]
+fn a_folder_whose_drive_cannot_be_identified_keeps_one_issue_until_it_can() {
+    let dir = tempfile::tempdir().unwrap();
+    let roots = vec!["/Volumes/share/photos".to_string(), "/Users/me/Pictures".to_string()];
+    for _ in 0..2 { onecopy_lib::watcher::reconcile_unidentified_sources(dir.path(), &roots, &roots[..1]).unwrap(); }
+    let conn = index_store::open(&dir.path().join(onecopy_lib::storage::INDEX_DB_FILE_NAME)).unwrap();
+    let count = || conn.query_row("SELECT count(*) FROM active_issues WHERE kind = 'source-identity-unavailable'", [], |row| row.get::<_, i64>(0)).unwrap();
+    assert_eq!(count(), 1);
+    onecopy_lib::watcher::reconcile_unidentified_sources(dir.path(), &roots, &[]).unwrap();
+    assert_eq!(count(), 0);
+}
+
+#[test]
 fn healthy_directory_updates_do_not_reopen_walk_issues_for_an_offline_source() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("healthy");

@@ -177,6 +177,12 @@ fn restat_dir_with(
                 continue;
             }
         };
+        // An online-only file is not indexed, as in the walk (`cloud_files`);
+        // the folder's count is the next source check's to update.
+        if crate::cloud_files::is_online_only(&meta) {
+            present.remove(&abs);
+            continue;
+        }
         // Database failures still stop the pass; only per-file reads are isolated.
         match scanner::upsert_file(conn, &path, &meta, lists, inherited)? {
             scanner::Upsert::Unchanged => {},
@@ -296,18 +302,21 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
         }
         if std::time::Instant::now() >= next_presence {
             let verified = crate::volume::verify_source_dirs(&data_root);
-            let (missing, substituted, unknown) = match verified {
-                Ok(status) => (status.missing, status.substituted, false),
+            let (missing, substituted, unidentified, unknown) = match verified {
+                Ok(status) => (status.missing, status.substituted, status.unidentified, false),
                 Err(error) => {
                     logging::warn("source availability verification failed", json!({"error": {"message": error}}));
-                    (source_dirs.clone(), Vec::new(), true)
+                    (source_dirs.clone(), Vec::new(), Vec::new(), true)
                 }
             };
             if !owns_generation(generation) { return Ok(()); }
             let recovering = last_status.is_some();
-            let status = (missing.clone(), substituted.clone(), unknown);
+            let status = (missing.clone(), substituted.clone(), unidentified.clone(), unknown);
             if last_status.as_ref() != Some(&status) {
                 reconcile_source_conditions(&data_root, &source_dirs, &missing, &substituted)?;
+                if !unknown {
+                    reconcile_unidentified_sources(&data_root, &source_dirs, &unidentified)?;
+                }
                 crate::failure_runtime::emit_or_record(&app, "source://availability",
                     json!({"missing": missing, "substituted": substituted, "presenceUnknown": unknown}));
                 last_status = Some(status);
@@ -611,6 +620,34 @@ pub fn reconcile_source_conditions(
             };
             crate::index_store::upsert_issue_with_descriptor(&conn, Some(root), "source-unavailable", Some(key), None, "")?;
         }
+    }
+    Ok(())
+}
+
+/// One current Issue per present source folder whose drive identity cannot
+/// be read (`volume::SourceDirsStatus::unidentified`): OneCopy cannot tell a
+/// different drive mounted there from the one it indexed. It closes once the
+/// identity can be read or the folder is no longer configured.
+pub fn reconcile_unidentified_sources(
+    data_root: &Path, configured: &[String], unidentified: &[String],
+) -> Result<(), String> {
+    const KIND: &str = "source-identity-unavailable";
+    let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
+    let mut statement = conn.prepare("SELECT path FROM active_issues WHERE kind = ?1")
+        .map_err(|error| error.to_string())?;
+    let prior = statement.query_map([KIND], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| error.to_string())?;
+    drop(statement);
+    for root in prior {
+        if !unidentified.contains(&root) {
+            crate::index_store::clear_issues(&conn, &root, &[KIND])?;
+        }
+    }
+    for root in configured.iter().filter(|root| unidentified.contains(root)) {
+        crate::index_store::upsert_issue_with_descriptor(
+            &conn, Some(root), KIND, Some("notice.sourceIdentityUnavailable"), None, "",
+        )?;
     }
     Ok(())
 }

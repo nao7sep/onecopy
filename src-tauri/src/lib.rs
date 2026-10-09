@@ -15,6 +15,7 @@ pub mod backup_store;
 pub mod binaries;
 mod binaries_acquisition;
 pub mod binaries_manager;
+pub mod cloud_files;
 mod copy_metadata;
 pub mod derived_runtime;
 pub mod derived_state;
@@ -1295,6 +1296,7 @@ async fn check_source_dirs() -> Result<volume::SourceDirsStatus, String> {
         let config = storage::config(&root)?;
         let settings = scanner::settings_from_config(Some(&config), &root, 0);
         watcher::reconcile_source_conditions(&root, &settings.source_dirs, &status.missing, &status.substituted)?;
+        watcher::reconcile_unidentified_sources(&root, &settings.source_dirs, &status.unidentified)?;
         Ok(status)
     }).await;
     logging::boundary(
@@ -1360,6 +1362,25 @@ async fn get_item_detail(
                 queries::item_detail(&conn, hash.as_deref(), path_id)
             },
             |detail| json!({ "copies": detail.copy_paths.len() }),
+        )
+    })
+    .await
+}
+
+/// Whether any copy of `items` is in a synced folder, so a permanent delete
+/// can say it reaches the cloud and other devices too (`cloud_files`).
+#[tauri::command]
+async fn items_in_synced_folders(items: Vec<operations::ItemIdentity>) -> Result<bool, String> {
+    dispatch(move || {
+        logging::boundary(
+            "items_in_synced_folders",
+            json!({ "items": items.len() }),
+            || {
+                let data_root = paths::data_root()?;
+                let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
+                cloud_files::items_in_synced_folders(&conn, &items, &cloud_files::synced_folders())
+            },
+            |synced| json!({ "synced": synced }),
         )
     })
     .await
@@ -1708,6 +1729,7 @@ pub fn run() {
             place_preview_window,
             close_preview_window,
             package_source_dirs,
+            items_in_synced_folders,
             ensure_preview,
             apply_library_settings,
             visibility_capabilities,

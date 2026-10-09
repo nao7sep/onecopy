@@ -2617,3 +2617,24 @@ fn a_source_folder_inside_a_library_indexes_nothing() {
 
     assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths WHERE missing = 0"), 0);
 }
+
+#[cfg(unix)]
+#[test]
+fn two_hard_links_to_one_file_count_as_one_copy() {
+    // A second name for the same file is not a backup of it.
+    let f = fixture("hard-links");
+    std::fs::write(f.root.join("a.jpg"), b"one photo, two names").unwrap();
+    std::fs::hard_link(f.root.join("a.jpg"), f.root.join("b.jpg")).unwrap();
+    let cache = test_cache(&f);
+
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+    onecopy_lib::scanner::hash_pending(&f.conn, &cache).unwrap();
+    assert_eq!(count(&f.conn, "SELECT live_copy_count FROM logical_contents"), 1);
+
+    // A real duplicate is a second copy.
+    std::fs::write(f.root.join("c.jpg"), b"one photo, two names").unwrap();
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+    onecopy_lib::scanner::hash_pending(&f.conn, &cache).unwrap();
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM logical_contents"), 1);
+    assert_eq!(count(&f.conn, "SELECT live_copy_count FROM logical_contents"), 2);
+}

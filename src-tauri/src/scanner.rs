@@ -42,6 +42,9 @@ pub const STAT_ERROR: &str = "stat-error";
 pub const READ_ERROR: &str = "read-error";
 pub const METADATA_READ_ERROR: &str = "metadata-read-error";
 pub const COPIES_DISAGREE: &str = "copies-disagree";
+/// A source folder holds online-only files (`cloud_files`), which the walk
+/// neither reads nor indexes; the Issue names how many, on the folder.
+pub const ONLINE_ONLY_SKIPPED: &str = "online-only-skipped";
 const PATH_SCAN_ISSUES: &[&str] = &[WALK_ERROR, STAT_ERROR, READ_ERROR, METADATA_READ_ERROR, COPIES_DISAGREE];
 
 /// The catalogue key for a scan-time Issue's kind: OneCopy's own sentence
@@ -1014,6 +1017,8 @@ pub struct WalkStats {
     pub unchanged: u64,
     pub marked_missing: u64,
     pub errors: u64,
+    /// Online-only files left unread (`cloud_files`).
+    pub online_only: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1069,6 +1074,7 @@ pub fn upsert_file(
         .unwrap_or(&file_name)
         .to_lowercase();
 
+    let file_key = hard_link_key(meta);
     // The per-file statements go through the statement cache
     // (`execute_cached`).
     let existing: Option<(i64, Option<i64>)> = conn
@@ -1088,9 +1094,10 @@ pub fn upsert_file(
         Some((old_size, old_mtime)) if old_size == size && old_mtime == mtime_ms => {
             let changed = execute_cached(
                 conn,
-                "UPDATE paths SET missing = 0, own_visibility_flags = ?2, visibility_flags = ?3, visibility_checked = 1
-                 WHERE abs_path = ?1 AND (missing = 1 OR own_visibility_flags != ?2 OR visibility_flags != ?3 OR visibility_checked != 1)",
-                params![abs, own_visibility_flags, visibility_flags],
+                "UPDATE paths SET missing = 0, own_visibility_flags = ?2, visibility_flags = ?3, visibility_checked = 1, file_key = ?4
+                 WHERE abs_path = ?1 AND (missing = 1 OR own_visibility_flags != ?2 OR visibility_flags != ?3 OR visibility_checked != 1
+                                          OR file_key IS NOT ?4)",
+                params![abs, own_visibility_flags, visibility_flags, file_key],
             )?;
             Ok(if changed == 0 { Upsert::Unchanged } else { Upsert::Updated })
         }
@@ -1120,8 +1127,9 @@ pub fn upsert_file(
                  kind = ?6, stem = ?7, prehash = NULL, content_hash = NULL, \
                  hash_attempt_failed = 0, metadata_attempt_failed = 0, \
                  indexed_at_utc = NULL, resolved_utc_ms = NULL, resolved_source = NULL, \
-                 date_only = 0, missing = 0, own_visibility_flags = ?8, visibility_flags = ?9, visibility_checked = 1 WHERE abs_path = ?1",
-                params![abs, size, mtime_ms, birthtime_ms, ext, kind, stem, own_visibility_flags, visibility_flags],
+                 date_only = 0, missing = 0, own_visibility_flags = ?8, visibility_flags = ?9, visibility_checked = 1, \
+                 file_key = ?10 WHERE abs_path = ?1",
+                params![abs, size, mtime_ms, birthtime_ms, ext, kind, stem, own_visibility_flags, visibility_flags, file_key],
             )
             .map_err(|e| e.to_string())?;
             // Only a row nothing else references: a provisional key that was
@@ -1144,9 +1152,9 @@ pub fn upsert_file(
             execute_cached(
                 conn,
                 "INSERT INTO paths (abs_path, dir_path, file_name, stem, ext, kind, size, \
-                 mtime_ms, birthtime_ms, missing, own_visibility_flags, visibility_flags, visibility_checked)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11, 1)",
-                params![abs, dir_path, file_name, stem, ext, kind, size, mtime_ms, birthtime_ms, own_visibility_flags, visibility_flags],
+                 mtime_ms, birthtime_ms, missing, own_visibility_flags, visibility_flags, visibility_checked, file_key)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11, 1, ?12)",
+                params![abs, dir_path, file_name, stem, ext, kind, size, mtime_ms, birthtime_ms, own_visibility_flags, visibility_flags, file_key],
             )?;
             Ok(Upsert::Added)
         }
@@ -1159,6 +1167,23 @@ pub fn upsert_file(
 /// under the root that no longer exist as missing.
 pub fn walk_root(conn: &Connection, root: &Path, lists: &ScanLists) -> Result<WalkStats, String> {
     walk_root_with_progress(conn, root, &root.to_string_lossy(), lists, &[crate::winpath::for_fs(root).to_string_lossy().into_owned()], 0, 1, 0, None, &|_| {})
+}
+
+/// The physical file a path names when the file has more than one hard link,
+/// so the projection counts the links as one copy (`paths.file_key`). Windows
+/// reports link counts only through an open handle, so there every path
+/// counts as its own copy.
+#[allow(unused_variables)]
+pub(crate) fn hard_link_key(meta: &std::fs::Metadata) -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        (meta.nlink() > 1).then(|| format!("{}:{}", meta.dev(), meta.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
 }
 
 /// Excludes the app's own storage the way `trash::is_trash_path` excludes
@@ -1345,6 +1370,13 @@ fn walk_root_with_progress(
             continue;
         }
         let path = entry.path.as_path();
+        // An online-only file is not read and not indexed: reading it would
+        // download it. Left out of `present`, a row indexed while the file
+        // was on this computer leaves the library like any absent file.
+        if matches!(&entry.metadata, Some(Ok(meta)) if crate::cloud_files::is_online_only(meta)) {
+            stats.online_only += 1;
+            continue;
+        }
         let abs = path.to_string_lossy().to_string();
         stats.seen += 1;
         record_present
@@ -1493,6 +1525,22 @@ fn walk_root_with_progress(
             params![root_str, scanned_at],
         )
         .map_err(|e| e.to_string())?;
+
+        // One current Issue per source folder that holds online-only files,
+        // with their count; a complete walk that found none closes it.
+        if stats.online_only > 0 {
+            let values = serde_json::json!({ "count": stats.online_only }).to_string();
+            crate::index_store::upsert_issue_with_descriptor(
+                conn,
+                Some(configured_root),
+                ONLINE_ONLY_SKIPPED,
+                Some("notice.onlineOnlySkipped"),
+                Some(&values),
+                &format!("{} online-only files were not read", stats.online_only),
+            )?;
+        } else {
+            crate::index_store::clear_issues(conn, configured_root, &[ONLINE_ONLY_SKIPPED])?;
+        }
     }
 
     progress(ScanProgress::walk(

@@ -1779,6 +1779,9 @@ pub struct ItemDetail {
     pub resolved_source: Option<String>,
     pub date_only: bool,
     pub copy_paths: Vec<String>,
+    /// The physical files among `copy_paths`: hard links to one file are one
+    /// copy (`paths.file_key`).
+    pub copy_count: u64,
     pub companion_paths: Vec<String>,
     pub strip_frames: Option<i64>,
 }
@@ -1887,6 +1890,18 @@ pub fn item_detail(
         .map(|path| crate::winpath::for_display(&path).into_owned())
         .collect();
     drop(stmt);
+    let copy_count = match hash {
+        Some(hash) => conn
+            .query_row(
+                "SELECT COUNT(DISTINCT COALESCE(file_key, id)) FROM paths \
+                 WHERE content_hash = ?1 AND missing = 0 AND companion_of IS NULL",
+                [hash],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|e| e.to_string())?
+            .max(0) as u64,
+        None => copies.len() as u64,
+    };
     let date_copy = copies.iter().filter(|copy| copy.5 == resolved_utc_ms)
         .min_by(|left, right| left.1.to_lowercase().cmp(&right.1.to_lowercase()).then_with(|| left.1.cmp(&right.1)));
     let resolved_source = if date_state == "pending" {
@@ -1912,6 +1927,7 @@ pub fn item_detail(
             .iter()
             .map(|c| crate::winpath::for_display(&c.1).into_owned())
             .collect(),
+        copy_count,
         companion_paths,
         strip_frames,
     })
