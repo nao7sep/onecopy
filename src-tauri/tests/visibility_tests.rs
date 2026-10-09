@@ -298,3 +298,106 @@ fn native_folder_attribute_change_republishes_unchanged_descendants() {
         );
     }
 }
+
+#[cfg(windows)]
+fn attrib(flag: &str, path: &std::path::Path) {
+    let output = std::process::Command::new("attrib")
+        .arg(flag)
+        .arg(path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "attrib {flag} {} failed: {}",
+        path.display(),
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn native_hidden_and_system_attributes_hide_files_and_folder_contents_without_pruning_inventory() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("source");
+    let at = |relative: &str| relative.split('/').fold(root.clone(), |path, part| path.join(part));
+    for folder in ["plain", "hidden-folder/deep", "system-folder/deep"] {
+        std::fs::create_dir_all(at(folder)).unwrap();
+    }
+    for file in [
+        "plain/photo.jpg",
+        "plain/hidden.jpg",
+        "plain/system.jpg",
+        "hidden-folder/deep/photo.jpg",
+        "system-folder/deep/photo.jpg",
+    ] {
+        std::fs::write(at(file), file.as_bytes()).unwrap();
+    }
+    attrib("+H", &at("plain/hidden.jpg"));
+    attrib("+S", &at("plain/system.jpg"));
+    attrib("+H", &at("hidden-folder"));
+    attrib("+S", &at("system-folder"));
+    let conn = index_store::open(&temp.path().join("index.sqlite3")).unwrap();
+    scanner::walk_root(&conn, &root, &lists()).unwrap();
+    let facts = |relative: &str| -> (i64, i64) {
+        conn.query_row(
+            "SELECT visibility_flags, review_visible FROM paths WHERE abs_path = ?1 AND missing = 0",
+            params![onecopy_lib::winpath::for_fs(&at(relative)).to_string_lossy()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+    };
+
+    assert_eq!(facts("plain/photo.jpg"), (0, 1));
+    assert_eq!(facts("plain/hidden.jpg"), (visibility::HIDDEN, 0));
+    assert_eq!(facts("plain/system.jpg"), (visibility::SYSTEM, 0));
+    assert_eq!(facts("hidden-folder/deep/photo.jpg"), (visibility::HIDDEN, 0));
+    assert_eq!(facts("system-folder/deep/photo.jpg"), (visibility::SYSTEM, 0));
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM paths WHERE missing = 0", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        5,
+        "hidden files and folders stay in the inventory"
+    );
+
+    // Showing the folder republishes its unchanged descendants.
+    attrib("-H", &at("hidden-folder"));
+    let roots = [root.to_string_lossy().into_owned()];
+    assert!(
+        onecopy_lib::watcher::restat_dir(
+            &conn,
+            &at("hidden-folder"),
+            &lists(),
+            &roots,
+            &temp.path().join("apphome"),
+        )
+        .unwrap()
+            > 0
+    );
+    assert_eq!(facts("hidden-folder/deep/photo.jpg"), (0, 1));
+}
+
+#[cfg(windows)]
+#[test]
+fn drive_letter_case_names_one_source_root() {
+    use std::path::{Path, PathBuf};
+    let indexed = Path::new(r"\\?\C:\Photos\2016\a.jpg");
+    assert_eq!(
+        visibility_index::root_for(&[r"c:\Photos".to_string()], indexed),
+        Some(PathBuf::from(r"\\?\C:\Photos"))
+    );
+    assert_eq!(
+        visibility_index::root_for(&[r"c:\".to_string()], indexed),
+        Some(PathBuf::from(r"\\?\C:\"))
+    );
+    assert_eq!(
+        visibility_index::root_for(&[r"C:\".to_string()], Path::new(r"\\?\c:\Photos\a.jpg")),
+        Some(PathBuf::from(r"\\?\c:\"))
+    );
+    // Of a drive and a folder on it, each spelled in the other case, the
+    // folder is the more specific root.
+    assert_eq!(
+        visibility_index::root_for(&[r"C:\".to_string(), r"c:\photos".to_string()], indexed),
+        Some(PathBuf::from(r"\\?\C:\Photos"))
+    );
+}

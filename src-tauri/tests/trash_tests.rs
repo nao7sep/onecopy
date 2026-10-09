@@ -1098,3 +1098,204 @@ fn a_root_with_no_location_lists_nothing_and_an_absent_root_is_unavailable() {
     assert!(rows[0].available);
     assert!(!rows[1].available, "a root that is not there cannot be browsed");
 }
+
+// ---------------------------------------------------------------------------
+// Windows: junctions, the hidden attribute and name components
+//
+// Every Windows-only step goes through a command (`mklink /J`, `attrib`,
+// PowerShell) so these tests need nothing from `std::os::windows`. A
+// junction needs no privilege, so the link-safety guarantees the Unix tests
+// above prove with symlinks are proven here with junctions.
+
+#[cfg(windows)]
+fn junction(link: &Path, target: &Path) {
+    let output = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "mklink /J {} {} failed: {}{}",
+        link.display(),
+        target.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// The file attributes Windows reports for `path`.
+#[cfg(windows)]
+fn windows_attributes(path: &Path) -> u32 {
+    let output = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "[int][System.IO.File]::GetAttributes($env:ONECOPY_TEST_PATH)",
+        ])
+        .env("ONECOPY_TEST_PATH", path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "attributes of {} could not be read: {}",
+        path.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().parse().unwrap()
+}
+
+#[cfg(windows)]
+#[test]
+fn empty_never_follows_a_root_replaced_by_a_junction() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-trash-empty-root-junction-")
+        .tempdir()
+        .unwrap();
+    let outside = dir.path().join("outside");
+    let root = dir.path().join("trash");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::write(outside.join("keep.jpg"), b"keep").unwrap();
+    junction(&root, &outside);
+
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    let error = empty_root_with_progress(&root, "reviewed", &cancelled, &|_| {}, &|_, _| Ok(()))
+        .unwrap_err();
+
+    assert_eq!(error, "trash root is not a directory");
+    assert_eq!(std::fs::read(outside.join("keep.jpg")).unwrap(), b"keep");
+}
+
+#[cfg(windows)]
+#[test]
+fn a_root_configured_through_a_junction_keeps_recoverable_deletion() {
+    let f = fixture("junction-root");
+    let link = f._dir.path().join("photos-link");
+    junction(&link, &f.source);
+    // The index records files under the root's resolved spelling.
+    let resolved = std::fs::canonicalize(&f.source).unwrap();
+    let file = resolved.join("a.jpg");
+    std::fs::write(&file, b"bytes").unwrap();
+
+    assert_eq!(root_for_file(&file, std::slice::from_ref(&link)).unwrap(), link);
+    assert_eq!(
+        root_for_file(&resolved.join("gone.jpg"), std::slice::from_ref(&link)).unwrap(),
+        link,
+        "a missing file under the resolved spelling keeps its configured owner"
+    );
+    let record = trash_file(&file, &link, None, &ctx()).unwrap();
+
+    assert!(!file.exists());
+    assert_eq!(std::fs::read(&record.stored_path).unwrap(), b"bytes");
+    assert!(f.source.join(TRASH_DIR_NAME).is_dir());
+}
+
+#[cfg(windows)]
+#[test]
+fn a_deleted_files_folder_that_is_a_junction_is_never_used() {
+    let f = fixture("junction-trash");
+    let elsewhere = f._dir.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    junction(&f.source.join(TRASH_DIR_NAME), &elsewhere);
+    let file = f.source.join("a.jpg");
+    std::fs::write(&file, b"bytes").unwrap();
+
+    assert!(trash_file(&file, &f.source, None, &ctx()).is_err());
+    assert_eq!(std::fs::read(&file).unwrap(), b"bytes");
+    assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+
+    // Removing a junction removes the link, never what it points at.
+    std::fs::remove_dir(f.source.join(TRASH_DIR_NAME)).unwrap();
+    std::fs::write(f.source.join(TRASH_DIR_NAME), b"a file").unwrap();
+    assert!(trash_file(&file, &f.source, None, &ctx()).is_err());
+    assert_eq!(std::fs::read(&file).unwrap(), b"bytes");
+}
+
+#[cfg(windows)]
+#[test]
+fn a_day_folder_replaced_by_a_junction_is_refused_not_followed() {
+    let f = fixture("day-junction");
+    let elsewhere = f._dir.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::create_dir_all(f.source.join(TRASH_DIR_NAME)).unwrap();
+    junction(&f.source.join(TRASH_DIR_NAME).join("20260901-utc"), &elsewhere);
+    assert!(list_root(&f.source, f._dir.path()).is_err());
+
+    let g = fixture("location-junction");
+    junction(&g.source.join(TRASH_DIR_NAME), &elsewhere);
+    assert!(list_root(&g.source, g._dir.path()).is_err());
+}
+
+#[cfg(windows)]
+#[test]
+fn the_deleted_files_folder_is_hidden_once_when_it_is_created() {
+    const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+    let f = fixture("hidden-location");
+    let first = f.source.join("first.jpg");
+    std::fs::write(&first, b"first").unwrap();
+    trash_file(&first, &f.source, None, &ctx()).unwrap();
+    let location = f.source.join(TRASH_DIR_NAME);
+    assert_ne!(
+        windows_attributes(&location) & FILE_ATTRIBUTE_HIDDEN,
+        0,
+        "a new deleted-files folder is hidden"
+    );
+
+    // Hidden once, when created, never per trashed file: a folder the user
+    // chose to show stays shown.
+    let shown = std::process::Command::new("attrib")
+        .arg("-H")
+        .arg(&location)
+        .output()
+        .unwrap();
+    assert!(shown.status.success(), "{}", String::from_utf8_lossy(&shown.stdout));
+    assert_eq!(windows_attributes(&location) & FILE_ATTRIBUTE_HIDDEN, 0);
+    let second = f.source.join("second.jpg");
+    std::fs::write(&second, b"second").unwrap();
+    trash_file(&second, &f.source, None, &ctx()).unwrap();
+    assert_eq!(
+        windows_attributes(&location) & FILE_ATTRIBUTE_HIDDEN,
+        0,
+        "a later deletion does not hide the folder again"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn a_component_windows_reads_as_a_separator_or_a_drive_is_unrepresentable() {
+    for relative in [r"trips\a.jpg", "trips/c:a.jpg", "C:/a.jpg", "trips/a.jpg:stream"] {
+        assert_eq!(relative_components(relative), Err(UnfitPath::Unrepresentable), "{relative}");
+        assert_eq!(
+            target_in_root(Path::new(r"C:\photos"), relative),
+            Err(UnfitPath::Unrepresentable),
+            "{relative}"
+        );
+    }
+    assert_eq!(relative_components("trips/a.jpg").unwrap(), ["trips", "a.jpg"]);
+
+    // A recorded path holding such a component is listed but never placed.
+    let f = fixture("windows-components");
+    let day = f.source.join(TRASH_DIR_NAME).join("20260901-utc");
+    std::fs::create_dir_all(&day).unwrap();
+    for name in ["backslash.jpg", "colon.jpg", "ok.jpg"] {
+        std::fs::write(day.join(name), b"x").unwrap();
+    }
+    let lines = [
+        record_line("backslash.jpg", r"trips\backslash.jpg", 1, mtime_of(&day.join("backslash.jpg"))),
+        record_line("colon.jpg", "trips/c:colon.jpg", 1, mtime_of(&day.join("colon.jpg"))),
+        record_line("ok.jpg", "trips/ok.jpg", 1, mtime_of(&day.join("ok.jpg"))),
+    ];
+    std::fs::write(day.join("manifest.jsonl"), lines.join("\n") + "\n").unwrap();
+
+    let listing = list_root(&f.source, &f._dir.path().join("apphome")).unwrap();
+    assert_eq!(
+        statuses(&listing),
+        [
+            ("backslash.jpg".to_string(), EntryStatus::Unrepresentable),
+            ("colon.jpg".to_string(), EntryStatus::Unrepresentable),
+            ("ok.jpg".to_string(), EntryStatus::Restorable),
+        ]
+    );
+}

@@ -3136,3 +3136,199 @@ fn a_busy_index_after_a_physical_trash_stops_the_batch_without_losing_the_file()
     let live: i64 = f.conn.query_row("SELECT COUNT(*) FROM paths WHERE missing = 0", [], |r| r.get(0)).unwrap();
     assert_eq!(live as usize, 3 - gone);
 }
+
+// ---------------------------------------------------------------------------
+// Windows: files held open by another program, and read-only destinations
+
+/// A file held open by another process that shares neither reading, writing
+/// nor deletion, as an editor or a sync client may hold one on Windows. The
+/// holder is killed when this is dropped.
+#[cfg(windows)]
+struct HeldOpen(std::process::Child);
+
+#[cfg(windows)]
+impl HeldOpen {
+    fn new(path: &std::path::Path) -> Self {
+        use std::io::BufRead;
+        let child = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "$ErrorActionPreference = 'Stop'; \
+                 $held = [System.IO.File]::Open($env:ONECOPY_HELD_PATH, 'Open', 'Read', 'None'); \
+                 [Console]::Out.WriteLine('held'); [Console]::Out.Flush(); \
+                 Start-Sleep -Seconds 3600; $held.Close()",
+            ])
+            .env("ONECOPY_HELD_PATH", path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut held = Self(child);
+        // The holder says so once the file is open; no wall-clock wait.
+        let mut line = String::new();
+        std::io::BufReader::new(held.0.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert_eq!(line.trim(), "held", "PowerShell could not hold {} open", path.display());
+        held
+    }
+}
+
+#[cfg(windows)]
+impl Drop for HeldOpen {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn a_copy_held_open_without_delete_sharing_fails_alone_and_stays_in_place() {
+    let f = fixture("held-open-delete");
+    std::fs::write(f.root.join("ok.jpg"), b"same").unwrap();
+    std::fs::create_dir_all(f.root.join("b")).unwrap();
+    let held_path = f.root.join("b").join("ok.jpg");
+    std::fs::write(&held_path, b"same").unwrap();
+    scan(&f);
+    let item = item_named(&f, "ok.jpg");
+
+    // Taken after the whole-set preflight read every copy, before the first
+    // copy is moved.
+    let mut held = None;
+    let outcome = delete_batch(
+        &f.conn, &f.app_root, &f.cache, &[item], DeleteMode::Trash, &|| false,
+        |_| {
+            if held.is_none() {
+                held = Some(HeldOpen::new(&held_path));
+            }
+        },
+    )
+    .unwrap();
+
+    assert!(held.is_some());
+    assert_eq!(outcome.error, None);
+    assert_eq!((outcome.deleted_files, outcome.failed_files), (1, 1));
+    let stored = onecopy_lib::winpath::for_fs(&held_path).into_owned();
+    assert_eq!(open_issue_kinds(&f, &stored), ["delete-error"]);
+    assert_eq!(
+        f.conn
+            .query_row(
+                "SELECT COUNT(*) FROM paths WHERE abs_path = ?1 AND missing = 0",
+                [stored.to_string_lossy()],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1,
+        "the held copy keeps its row"
+    );
+    drop(held);
+    assert_eq!(std::fs::read(&held_path).unwrap(), b"same", "the held copy is untouched");
+    assert!(!f.root.join("ok.jpg").exists());
+    let listing = onecopy_lib::trash::list_root(&f.root, &f.app_root).unwrap();
+    assert_eq!(listing.entries.len(), 1, "only the copy that moved is in Deleted files");
+    assert_eq!(listing.entries[0].original_relative.as_deref(), Some("ok.jpg"));
+    assert_eq!(std::fs::read(&listing.entries[0].stored_path).unwrap(), b"same");
+}
+
+#[cfg(windows)]
+#[test]
+fn a_move_source_held_open_without_sharing_fails_alone_and_stays_in_place() {
+    let f = fixture("held-open-move");
+    let held_path = f.root.join("held.jpg");
+    std::fs::write(&held_path, b"held-image").unwrap();
+    std::fs::write(f.root.join("free.jpg"), b"free-image").unwrap();
+    scan(&f);
+    let items = [item_named(&f, "held.jpg"), item_named(&f, "free.jpg")];
+    let dest = f._dir.path().join("destination");
+    std::fs::create_dir(&dest).unwrap();
+
+    let mut held = None;
+    let outcome = move_batch(
+        &f.conn, &f.app_root, &f.cache, &items, &dest, MoveOutMode::MoveTrashRest, &|| false,
+        |_| {
+            if held.is_none() {
+                held = Some(HeldOpen::new(&held_path));
+            }
+        },
+    )
+    .unwrap();
+
+    assert!(held.is_some());
+    assert_eq!(outcome.error, None);
+    assert_eq!(outcome.exported, 1);
+    assert_eq!(std::fs::read(dest.join("free.jpg")).unwrap(), b"free-image");
+    assert!(!f.root.join("free.jpg").exists(), "the delivered item's source is cleaned up");
+    assert!(!dest.join("held.jpg").exists());
+    assert!(private_leftovers(&dest).is_empty(), "{:?}", private_leftovers(&dest));
+    assert_eq!(
+        open_issue_kinds(&f, &onecopy_lib::winpath::for_fs(&held_path)),
+        ["copy-error"]
+    );
+    drop(held);
+    assert_eq!(std::fs::read(&held_path).unwrap(), b"held-image", "the held source is untouched");
+}
+
+#[cfg(windows)]
+#[test]
+fn an_approved_overwrite_replaces_a_read_only_destination_and_keeps_it_recoverable() {
+    let f = fixture("overwrite-read-only");
+    std::fs::write(f.root.join("x.jpg"), b"new-primary").unwrap();
+    scan(&f);
+    let dest = f._dir.path().join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    let target = dest.join("x.jpg");
+    std::fs::write(&target, b"old-primary").unwrap();
+    let set_read_only = |path: &std::path::Path, read_only: bool| {
+        let mut permissions = std::fs::metadata(path).unwrap().permissions();
+        permissions.set_readonly(read_only);
+        std::fs::set_permissions(path, permissions).unwrap();
+    };
+    set_read_only(&target, true);
+    let item = item_named(&f, "x.jpg");
+
+    let review = move_batch(
+        &f.conn, &f.app_root, &f.cache, std::slice::from_ref(&item), &dest,
+        MoveOutMode::MoveTrashRest, &|| false, |_| {},
+    )
+    .unwrap();
+    assert!(review.requires_conflict_choice);
+    assert!(review.overwrite_allowed);
+    let outcome = move_batch_reviewed(
+        &f.conn,
+        &f.app_root,
+        &f.cache,
+        std::slice::from_ref(&item),
+        &AcceptedFiles::capture(&f.conn, std::slice::from_ref(&item)).unwrap(),
+        &dest,
+        MoveOutMode::MoveTrashRest,
+        Some(DestinationConflictPolicy::Overwrite),
+        review.plan_token.as_deref(),
+        RenameStyle::SpaceNumber,
+        &|| false,
+        |_| {},
+    )
+    .unwrap();
+
+    assert_eq!(outcome.error, None);
+    assert_eq!(outcome.exported, 1);
+    assert_eq!(outcome.trashed_destination_files, 1);
+    assert_eq!(outcome.post_action.deleted_files, 1);
+    assert_eq!(std::fs::read(&target).unwrap(), b"new-primary");
+    assert!(
+        !std::fs::metadata(&target).unwrap().permissions().readonly(),
+        "the replacement carries its source's attributes, not the displaced file's"
+    );
+    assert!(private_leftovers(&dest).is_empty(), "{:?}", private_leftovers(&dest));
+    assert!(!f.root.join("x.jpg").exists());
+    // The displaced file is recoverable as it was, read-only included.
+    let listing = onecopy_lib::trash::list_root(f._dir.path(), &f.app_root).unwrap();
+    assert_eq!(listing.entries.len(), 1);
+    let displaced = std::path::Path::new(&listing.entries[0].stored_path);
+    assert_eq!(listing.entries[0].kind, Some(onecopy_lib::trash::TrashKind::OverwriteDisplaced));
+    assert_eq!(std::fs::read(displaced).unwrap(), b"old-primary");
+    assert!(std::fs::metadata(displaced).unwrap().permissions().readonly());
+    set_read_only(displaced, false);
+}

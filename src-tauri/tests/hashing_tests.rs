@@ -194,6 +194,50 @@ fn copying_reads_only_the_regular_file_at_the_source_path() {
     assert!(!dst.exists());
 }
 
+// Windows has no FIFOs, and a file symlink needs Developer Mode or elevation
+// to create, so the junction half always runs and the symlink half runs where
+// the machine allows it.
+#[cfg(windows)]
+#[test]
+fn copying_never_reads_through_a_junction_or_file_symlink_at_the_source_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("folder");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::write(folder.join("inside.jpg"), b"inside").unwrap();
+    let junction = dir.path().join("junction.jpg");
+    let made = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&junction)
+        .arg(&folder)
+        .output()
+        .unwrap();
+    assert!(made.status.success(), "mklink /J failed: {}", String::from_utf8_lossy(&made.stderr));
+    let dst = dir.path().join("out-junction.tmp");
+    assert!(hash_while_copying(&junction, &dst).is_err());
+    assert!(!dst.exists());
+
+    let outside = dir.path().join("outside.jpg");
+    std::fs::write(&outside, b"not the recorded file").unwrap();
+    let link = dir.path().join("link.jpg");
+    let made = std::process::Command::new("cmd")
+        .args(["/C", "mklink"])
+        .arg(&link)
+        .arg(&outside)
+        .output()
+        .unwrap();
+    if !made.status.success() {
+        eprintln!(
+            "skipping the file-symlink half: mklink needs Developer Mode or elevation ({}{})",
+            String::from_utf8_lossy(&made.stdout).trim(),
+            String::from_utf8_lossy(&made.stderr).trim()
+        );
+        return;
+    }
+    let dst = dir.path().join("out-link.tmp");
+    assert!(hash_while_copying(&link, &dst).is_err());
+    assert!(!dst.exists());
+}
+
 #[test]
 fn a_dropped_unpublished_copy_removes_its_private_output() {
     let (_dir, src) = temp_file("drop", b"bytes");
