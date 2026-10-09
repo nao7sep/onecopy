@@ -196,8 +196,8 @@ function WorkSection({
       <dt className="text-xs text-ink-muted">{t("metadata.processing")}</dt>
       <dd className="mt-1 space-y-1">
         {rows.map((row) => (
-          <div key={row.id} className="grid grid-cols-[max-content_minmax(0,1fr)] items-baseline gap-x-3 text-xs">
-            <span className="whitespace-nowrap text-ink-muted">{row.label}</span>
+          <div key={row.id} className="grid grid-cols-[fit-content(40%)_minmax(0,1fr)] items-baseline gap-x-3 text-xs">
+            <span className="break-words text-ink-muted">{row.label}</span>
             <span className={`break-words text-right ${workTone(row.tone)}`}>{row.value}</span>
           </div>
         ))}

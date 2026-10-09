@@ -2,14 +2,13 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-// localization-conventions: a label in a label-and-value row must never wrap.
-// The label column is sized to its longest label (CSS grid, max-content
-// column) with the label itself set to nowrap; the value wraps instead. This
-// is a source-level regression gate rather than a render test because the
-// failure mode is a CSS regression (someone drops `whitespace-nowrap` or
-// widens the grid track), not a logic bug — grepping the JSX for the pattern
-// catches that just as reliably as measuring layout, without needing to
-// render every surface in every language.
+// A label beside its value may wrap (localization-conventions, "Translated
+// text remains readable"); the value keeps the rest of the row. The label
+// column takes at most 40% of a narrow pane, so a long translated key wraps
+// instead of squeezing the value into a letter-wide column. Shortcut keys are
+// control captions and stay on one line. This is a source-level regression
+// gate for those bounds, not proof of rendered fit, which the developer's
+// visual check covers.
 
 const SRC = join(process.cwd(), "src/components");
 
@@ -25,14 +24,14 @@ const ROWS: Array<{ file: string; describe: string; container: string; label: st
   {
     file: "MetadataPane.tsx",
     describe: "the per-item background-work status rows in the Details pane",
-    container: "grid grid-cols-[max-content_minmax(0,1fr)]",
-    label: 'className="whitespace-nowrap text-ink-muted">{row.label}',
+    container: "grid grid-cols-[fit-content(40%)_minmax(0,1fr)]",
+    label: 'className="break-words text-ink-muted">{row.label}',
   },
   {
     file: "TextOrAttributesSurface.tsx",
     describe: "the Kind/Size/Date/Copies attribute rows",
-    container: "grid grid-cols-[max-content_minmax(0,1fr)]",
-    label: 'className="whitespace-nowrap text-ink-muted">{t("common.kind")}',
+    container: "grid grid-cols-[fit-content(40%)_minmax(0,1fr)]",
+    label: 'className="break-words text-ink-muted">{t("common.kind")}',
   },
   {
     file: "ShortcutsModal.tsx",
@@ -43,7 +42,7 @@ const ROWS: Array<{ file: string; describe: string; container: string; label: st
 ];
 
 describe("label/value row layout", () => {
-  it.each(ROWS)("$file keeps a nowrap, max-content label column for $describe", ({ file, container, label }) => {
+  it.each(ROWS)("$file bounds the label column for $describe", ({ file, container, label }) => {
     const source = read(file);
     expect(source.includes(container), `${file}: expected the row container to include ${JSON.stringify(container)}`).toBe(true);
     expect(source.includes(label), `${file}: expected a label to include ${JSON.stringify(label)}`).toBe(true);
