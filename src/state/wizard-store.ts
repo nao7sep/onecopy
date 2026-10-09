@@ -25,13 +25,16 @@ import {
 } from "../models/optionalFeatures";
 import { configString } from "../models/config";
 
+/** The pages, in order: language, folders, time zone, features. */
+export type WizardStep = 1 | 2 | 3 | 4;
+
 export interface WizardDir {
   path: string;
 }
 
 interface WizardState {
   open: boolean;
-  step: 1 | 2 | 3;
+  step: WizardStep;
   dirs: WizardDir[];
   /** The staged interface language. Like every other wizard answer it is
    * written only by Finish; the wizard's own view previews it at once
@@ -60,7 +63,7 @@ interface WizardState {
   reopen: (config: Record<string, unknown> | null) => void;
   addDirs: () => Promise<void>;
   removeDir: (path: string) => void;
-  setStep: (step: 1 | 2 | 3) => void;
+  setStep: (step: WizardStep) => void;
   setOptionalFeature: (id: OptionalFeatureId, enabled: boolean) => void;
   setTimezone: (name: string) => void;
   /** Stages a language once its catalogue is loaded for the preview. */

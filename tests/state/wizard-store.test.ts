@@ -26,7 +26,7 @@ beforeEach(() => {
   });
   useWizardStore.setState({
     open: true,
-    step: 2,
+    step: 4,
     dirs: [{ path: "/root", counting: false }] as never,
     timezone: "Asia/Tokyo",
     error: null,

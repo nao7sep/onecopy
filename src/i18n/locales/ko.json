@@ -9,6 +9,7 @@
   "settings.language": "언어",
   "settings.languageSystem": "시스템",
   "wizard.language": "언어",
+  "wizard.languageHint": "‘시스템’을 선택하면 컴퓨터의 언어를 따릅니다. OneCopy가 그 언어를 지원하지 않으면 영어로 표시됩니다. 나중에 설정에서 바꿀 수 있습니다.",
   "nativeMenu.about": "{app}에 관하여",
   "nativeMenu.services": "서비스",
   "nativeMenu.settings": "설정…",

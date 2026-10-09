@@ -9,6 +9,7 @@
   "settings.language": "Idioma",
   "settings.languageSystem": "Sistema",
   "wizard.language": "Idioma",
+  "wizard.languageHint": "“Sistema” segue o idioma do seu computador. Se o OneCopy não oferecer esse idioma, o inglês será usado. Você pode mudar isso depois em Configurações.",
   "nativeMenu.about": "Sobre o {app}",
   "nativeMenu.services": "Serviços",
   "nativeMenu.settings": "Ajustes…",

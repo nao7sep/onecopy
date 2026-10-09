@@ -9,6 +9,7 @@
   "settings.language": "言語",
   "settings.languageSystem": "システム",
   "wizard.language": "言語",
+  "wizard.languageHint": "「システム」を選ぶと、このコンピューターの言語に合わせます。その言語に対応していない場合は英語で表示します。あとから設定で変更できます。",
   "nativeMenu.about": "{app} について",
   "nativeMenu.services": "サービス",
   "nativeMenu.settings": "設定…",

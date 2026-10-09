@@ -8,7 +8,7 @@ import { useWizardStore } from "../../src/state/wizard-store";
 beforeEach(() => {
   useWizardStore.setState({
     open: true,
-    step: 1,
+    step: 2,
     dirs: [],
     timezone: "UTC",
     reconfigure: false,

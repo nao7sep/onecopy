@@ -102,13 +102,10 @@ describe("the setup wizard", () => {
 
   it("separates required preparation from optional features without adding an install page", () => {
     const view = render(<Wizard />);
-    expect(view.container.textContent).toContain("Step 1 of 3");
-
-    act(() => useWizardStore.setState({ step: 2 }));
-    expect(view.container.textContent).toContain("Step 2 of 3");
-
-    act(() => useWizardStore.setState({ step: 3 }));
-    expect(view.container.textContent).toContain("Step 3 of 3");
+    for (const step of [1, 2, 3, 4] as const) {
+      act(() => useWizardStore.setState({ step }));
+      expect(view.container.textContent).toContain(`Step ${step} of 4`);
+    }
     expect(view.container.textContent).toContain("OneCopy always prepares");
     expect(view.container.textContent).toContain("Additional features");
     expect(view.container.textContent).toContain("Finish and scan");
@@ -119,7 +116,7 @@ describe("the setup wizard", () => {
     // 2026-08-17). A FIRST run stays completable-only: nothing exists behind
     // it to cancel back to.
     const view = render(<Wizard />);
-    for (const step of [1, 2, 3] as const) {
+    for (const step of [1, 2, 3, 4] as const) {
       act(() => useWizardStore.setState({ step, reconfigure: true }));
       expect(view.container.textContent).toContain("Cancel");
       act(() => useWizardStore.setState({ step, reconfigure: false }));

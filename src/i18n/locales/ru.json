@@ -9,6 +9,7 @@
   "settings.language": "Язык",
   "settings.languageSystem": "Как в системе",
   "wizard.language": "Язык",
+  "wizard.languageHint": "«Как в системе» — язык вашего компьютера. Если OneCopy его не поддерживает, используется английский. Это можно изменить позже в настройках.",
   "nativeMenu.about": "О программе {app}",
   "nativeMenu.services": "Службы",
   "nativeMenu.settings": "Настройки…",

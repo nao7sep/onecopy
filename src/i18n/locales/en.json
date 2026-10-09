@@ -9,6 +9,7 @@
   "settings.language": "Language",
   "settings.languageSystem": "System",
   "wizard.language": "Language",
+  "wizard.languageHint": "System follows your computer’s language. If OneCopy doesn’t offer it, English is used. You can change this later in Settings.",
   "nativeMenu.about": "About {app}",
   "nativeMenu.services": "Services",
   "nativeMenu.settings": "Settings…",

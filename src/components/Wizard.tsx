@@ -1,4 +1,4 @@
-import { useWizardStore } from "../state/wizard-store";
+import { useWizardStore, type WizardStep } from "../state/wizard-store";
 import { finishWizard } from "../workflows/wizard";
 import { useBlockingSurface } from "../hooks/useBlockingSurface";
 import DirectoryRow from "./DirectoryRow";
@@ -15,7 +15,7 @@ import { message } from "../i18n/translate";
 import { log, toErrorFields } from "../repositories";
 import { recordInterfaceFailure } from "../utils/failureSurface";
 
-const WIZARD_STEPS = 3;
+const WIZARD_STEPS = 4;
 
 // The Setup surface is a blocking root launch gate. There is deliberately
 // NO install page (developer, 2026-08-17): Managed tools is the app's one
@@ -28,6 +28,10 @@ const WIZARD_STEPS = 3;
 // the app is already configured and the user may simply be looking, so it
 // offers Cancel, which writes nothing (every step edits store state, and
 // the Finish workflow is the sole writer).
+//
+// One page per decision: language, folders, time zone, features. Each page
+// mounts afresh, so `autoFocus` puts focus on its first control whether it
+// was reached by Next or by Back.
 
 // The wizard's choice previews inside its own view only: every other
 // surface — Main behind it (there is none to show on a first run, but a
@@ -71,7 +75,7 @@ function WizardContent() {
   useBlockingSurface();
 
   /** A re-run offers Cancel on EVERY page (developer, 2026-08-17 — being
-   * three pages deep is no reason to walk back out first), beside Back on
+   * four pages deep is no reason to walk back out first), beside Back on
    * steps 2+. A first run keeps neither on page 1: it is completable only,
    * with nothing behind it to return to. */
   const leading = (
@@ -82,7 +86,7 @@ function WizardContent() {
         </Button>
       ) : null}
       {step > 1 ? (
-        <Button variant="ghost" disabled={finishing} onClick={() => setStep((step - 1) as 1 | 2 | 3)}>
+        <Button variant="ghost" disabled={finishing} onClick={() => setStep((step - 1) as WizardStep)}>
           {t("wizard.back")}
         </Button>
       ) : null}
@@ -109,23 +113,39 @@ function WizardContent() {
             <h2 className="mb-1 text-sm font-semibold text-ink-strong">
               {t("wizard.language")}
             </h2>
-            <select
-              className="mb-6 rounded-md border border-input-border bg-surface px-2 py-1 text-sm text-ink"
-              value={language}
-              onChange={(e) => {
-                void setLanguage(normalizeLanguagePreference(e.target.value)).catch((error) => {
-                  log.warn("language preview failed", toErrorFields(error));
-                  recordInterfaceFailure(message("app.appearanceUpdateFailed"));
-                });
-              }}
-            >
-              <option value="system">{t("settings.languageSystem")}</option>
-              {LANGUAGES.map((tag) => (
-                <option key={tag} value={tag} lang={tag}>
-                  {LANGUAGE_NAMES[tag]}
-                </option>
-              ))}
-            </select>
+            <p className="mb-2 text-sm text-ink-muted">
+              {t("wizard.languageHint")}
+            </p>
+            <div className="mb-6">
+              <Select
+                autoFocus
+                value={language}
+                onChange={(e) => {
+                  void setLanguage(normalizeLanguagePreference(e.target.value)).catch((error) => {
+                    log.warn("language preview failed", toErrorFields(error));
+                    recordInterfaceFailure(message("app.appearanceUpdateFailed"));
+                  });
+                }}
+              >
+                <option value="system">{t("settings.languageSystem")}</option>
+                {LANGUAGES.map((tag) => (
+                  <option key={tag} value={tag} lang={tag}>
+                    {LANGUAGE_NAMES[tag]}
+                  </option>
+                ))}
+              </Select>
+            </div>
+            <div className="flex items-center justify-between">
+              {leading}
+              <Button variant="primary" onClick={() => setStep(2)}>
+                {t("wizard.next")}
+              </Button>
+            </div>
+          </section>
+        ) : null}
+
+        {step === 2 ? (
+          <section>
             <h2 className="mb-1 text-sm font-semibold text-ink-strong">
               {t("wizard.directories")}
             </h2>
@@ -144,20 +164,20 @@ function WizardContent() {
                 </li>
               ))}
             </ul>
-            <Button className="mb-6" onClick={() => void addDirs()}>
+            <Button autoFocus className="mb-6" onClick={() => void addDirs()}>
               <Plus size={14} />
               {t("settings.addDirectory")}
             </Button>
             <div className="flex items-center justify-between">
               {leading}
-              <Button variant="primary" disabled={dirs.length === 0} onClick={() => setStep(2)}>
+              <Button variant="primary" disabled={dirs.length === 0} onClick={() => setStep(3)}>
                 {t("wizard.next")}
               </Button>
             </div>
           </section>
         ) : null}
 
-        {step === 2 ? (
+        {step === 3 ? (
           <section>
             <h2 className="mb-1 text-sm font-semibold text-ink-strong">
               {t("settings.defaultTimezone")}
@@ -167,6 +187,7 @@ function WizardContent() {
             </p>
             <div className="mb-6">
               <Select
+                autoFocus
                 className="w-full"
                 value={timezone}
                 onChange={(e) => setTimezone(e.target.value)}
@@ -186,7 +207,7 @@ function WizardContent() {
               <Button
                 variant="primary"
                 disabled={timezone.trim() === ""}
-                onClick={() => setStep(3)}
+                onClick={() => setStep(4)}
               >
                 {t("wizard.next")}
               </Button>
@@ -194,7 +215,7 @@ function WizardContent() {
           </section>
         ) : null}
 
-        {step === 3 ? (
+        {step === 4 ? (
           <section>
             <h2 className="mb-1 text-sm font-semibold text-ink-strong">
               {t("wizard.alwaysPrepares")}
@@ -216,9 +237,10 @@ function WizardContent() {
                 ["videoTranscriptionEnabled", "wizard.videoTranscription"],
                 ["audioTranscriptionEnabled", "wizard.audioTranscription"],
               ] as const satisfies readonly [OptionalFeatureId, string][]
-            ).map(([id, label]) => (
+            ).map(([id, label], index) => (
               <Row key={id} label={t(label)}>
                 <Toggle
+                  autoFocus={index === 0}
                   checked={optionalFeatures[id]}
                   disabled={finishing}
                   onChange={(enabled) => setOptionalFeature(id, enabled)}
