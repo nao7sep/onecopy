@@ -133,6 +133,17 @@ fn copy_move_and_delete_on(filesystem: &str) {
         .set_times(std::fs::FileTimes::new().set_modified(dated))
         .unwrap();
     xattr_call(&local.join("photo.jpg"), "com.example.onecopy-test", Some(b"local only"));
+    // Dated 1969, which no FAT-family volume holds; FAT32 on macOS would
+    // store it as 2105.
+    std::fs::write(local.join("old.jpg"), vec![9u8; 1000]).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(local.join("old.jpg"))
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(
+            std::time::UNIX_EPOCH - std::time::Duration::from_secs(365 * 86_400),
+        ))
+        .unwrap();
     std::fs::write(local.join("empty.bin"), b"").unwrap();
     std::fs::write(on_volume.join("moved.jpg"), vec![3u8; 150_000]).unwrap();
     std::fs::write(on_volume.join("deleted.jpg"), vec![5u8; 120_000]).unwrap();
@@ -174,12 +185,19 @@ fn copy_move_and_delete_on(filesystem: &str) {
     )
     .unwrap();
     assert_eq!(copied.error, None, "{filesystem}");
-    assert_eq!(copied.exported, 2, "{filesystem}: {copied:?}");
+    assert_eq!(copied.exported, 3, "{filesystem}: {copied:?}");
     assert_eq!(std::fs::read(dest.join("photo.jpg")).unwrap(), vec![7u8; 200_000]);
     // The volume keeps the modified time; the attribute it cannot hold itself
     // is dropped rather than written to a `._` file.
     let output = dest.join("photo.jpg");
     assert_eq!(std::fs::metadata(&output).unwrap().modified().unwrap(), dated, "{filesystem}");
+    // A time the volume cannot hold becomes the earliest it can, not the
+    // unrelated one FAT32 would wrap it to.
+    assert_eq!(
+        std::fs::metadata(dest.join("old.jpg")).unwrap().modified().unwrap(),
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(315_619_200),
+        "{filesystem}"
+    );
     assert_eq!(xattr_call(&output, "com.example.onecopy-test", None), None, "{filesystem}");
     assert_eq!(std::fs::read(dest.join("empty.bin")).unwrap(), b"");
     assert!(private_leftovers(&dest).is_empty(), "{filesystem}: {:?}", private_leftovers(&dest));
