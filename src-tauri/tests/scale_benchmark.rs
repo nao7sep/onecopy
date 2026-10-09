@@ -206,10 +206,15 @@ fn scale_benchmark() {
     report("first scan: source check (walk)", walked);
     report("first scan: walk + file information", scanned);
     report_phases("first scan", &phases);
-    let ((walked, scanned), phases) = full_scan_phases(&conn, &settings);
-    report("repeat scan: source check (walk)", walked);
-    report("repeat scan: walk + file information", scanned);
-    report_phases("repeat scan", &phases);
+    // The second scan full-reads pending files whose size matches content the
+    // first scan established (here, many: the synthetic files differ only in
+    // a short suffix). That happens once; the third scan is the steady state.
+    for label in ["second scan", "repeat scan"] {
+        let ((walked, scanned), phases) = full_scan_phases(&conn, &settings);
+        report(&format!("{label}: source check (walk)"), walked);
+        report(&format!("{label}: walk + file information"), scanned);
+        report_phases(label, &phases);
+    }
     drop(conn);
 
     let started = Instant::now();
