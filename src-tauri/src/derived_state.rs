@@ -1119,17 +1119,19 @@ fn record_content_failure(
     issue_kind: &str,
     message: &str,
 ) -> Result<bool, String> {
-    let transaction = crate::sqlite::write_transaction(conn)
-        .map_err(|error| error.to_string())?;
-    transaction
-        .execute(
-            "UPDATE contents SET derive_outcome = ?2 WHERE hash = ?1",
-            params![hash, FAILED],
-        )
-        .map_err(|error| error.to_string())?;
-    let issues_changed = record_derived_issue(&transaction, path, issue_kind, message)?;
-    crate::records::commit(transaction).map_err(|error| error.to_string())?;
-    Ok(issues_changed)
+    logged_if_unrecorded(path, issue_kind, message, || {
+        let transaction = crate::sqlite::write_transaction(conn)
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "UPDATE contents SET derive_outcome = ?2 WHERE hash = ?1",
+                params![hash, FAILED],
+            )
+            .map_err(|error| error.to_string())?;
+        let issues_changed = record_derived_issue(&transaction, path, issue_kind, message)?;
+        crate::records::commit(transaction).map_err(|error| error.to_string())?;
+        Ok(issues_changed)
+    })
 }
 
 /// The catalogue key naming a derived-work Issue's sentence for `issue_kind`,
@@ -1147,6 +1149,32 @@ fn derived_issue_message_key(issue_kind: &str) -> &'static str {
     }
 }
 
+/// The Issue row (with any analysis row beside it) is the normal record of a
+/// derived-work failure, so nothing is logged when it is written. When the
+/// record cannot be written or committed, one error line keeps the original
+/// diagnostic together with the records error (logging conventions: failure
+/// evidence survives its record's failure).
+fn logged_if_unrecorded(
+    path: &str,
+    issue_kind: &str,
+    diagnostic: &str,
+    record: impl FnOnce() -> Result<bool, String>,
+) -> Result<bool, String> {
+    let recorded = record();
+    if let Err(record_error) = &recorded {
+        crate::logging::error(
+            "derived media failure could not be recorded",
+            json!({
+                "kind": issue_kind,
+                "path": path,
+                "error": { "message": diagnostic },
+                "recordError": { "message": record_error },
+            }),
+        );
+    }
+    recorded
+}
+
 /// Returns whether this call actually opened a new live Issue (C-M3).
 fn record_derived_issue(
     conn: &Connection,
@@ -1154,14 +1182,6 @@ fn record_derived_issue(
     issue_kind: &str,
     diagnostic: &str,
 ) -> Result<bool, String> {
-    crate::logging::warn(
-        "derived media work failed",
-        json!({
-            "kind": issue_kind,
-            "path": path,
-            "error": { "message": diagnostic },
-        }),
-    );
     crate::index_store::upsert_issue_with_descriptor(
         conn,
         Some(path),
@@ -1249,17 +1269,20 @@ pub fn record_strip_failure(
     path: &str,
     message: &str,
 ) -> Result<bool, String> {
-    let transaction = crate::sqlite::write_transaction(conn)
-        .map_err(|error| error.to_string())?;
-    transaction
-        .execute(
-            "UPDATE contents SET strip_frames = ?2 WHERE hash = ?1",
-            params![hash, STRIP_FAILED],
-        )
-        .map_err(|error| error.to_string())?;
-    let issues_changed = record_derived_issue(&transaction, path, VIDEO_STRIP_ERROR, message)?;
-    crate::records::commit(transaction).map_err(|error| error.to_string())?;
-    Ok(issues_changed)
+    logged_if_unrecorded(path, VIDEO_STRIP_ERROR, message, || {
+        let transaction = crate::sqlite::write_transaction(conn)
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "UPDATE contents SET strip_frames = ?2 WHERE hash = ?1",
+                params![hash, STRIP_FAILED],
+            )
+            .map_err(|error| error.to_string())?;
+        let issues_changed =
+            record_derived_issue(&transaction, path, VIDEO_STRIP_ERROR, message)?;
+        crate::records::commit(transaction).map_err(|error| error.to_string())?;
+        Ok(issues_changed)
+    })
 }
 
 pub fn record_face_success(
@@ -1362,19 +1385,21 @@ pub fn record_face_failure(
     path: &str,
     message: &str,
 ) -> Result<bool, String> {
-    let transaction = crate::sqlite::write_transaction(conn)
-        .map_err(|error| error.to_string())?;
-    record_analysis_failure(
-        &transaction,
-        hash,
-        FACES_CLASS,
-        &crate::ai_dependencies::face_model(),
-        path,
-        message,
-    )?;
-    let issues_changed = record_derived_issue(&transaction, path, FACE_ERROR, message)?;
-    crate::records::commit(transaction).map_err(|error| error.to_string())?;
-    Ok(issues_changed)
+    logged_if_unrecorded(path, FACE_ERROR, message, || {
+        let transaction = crate::sqlite::write_transaction(conn)
+            .map_err(|error| error.to_string())?;
+        record_analysis_failure(
+            &transaction,
+            hash,
+            FACES_CLASS,
+            &crate::ai_dependencies::face_model(),
+            path,
+            message,
+        )?;
+        let issues_changed = record_derived_issue(&transaction, path, FACE_ERROR, message)?;
+        crate::records::commit(transaction).map_err(|error| error.to_string())?;
+        Ok(issues_changed)
+    })
 }
 
 pub fn record_transcript_success(
@@ -1417,19 +1442,22 @@ pub fn record_transcript_failure(
     path: &str,
     message: &str,
 ) -> Result<bool, String> {
-    let transaction = crate::sqlite::write_transaction(conn)
-        .map_err(|error| error.to_string())?;
-    record_analysis_failure(
-        &transaction,
-        hash,
-        TRANSCRIPTS_CLASS,
-        &crate::ai_dependencies::transcription_model(),
-        path,
-        message,
-    )?;
-    let issues_changed = record_derived_issue(&transaction, path, TRANSCRIPT_ERROR, message)?;
-    crate::records::commit(transaction).map_err(|error| error.to_string())?;
-    Ok(issues_changed)
+    logged_if_unrecorded(path, TRANSCRIPT_ERROR, message, || {
+        let transaction = crate::sqlite::write_transaction(conn)
+            .map_err(|error| error.to_string())?;
+        record_analysis_failure(
+            &transaction,
+            hash,
+            TRANSCRIPTS_CLASS,
+            &crate::ai_dependencies::transcription_model(),
+            path,
+            message,
+        )?;
+        let issues_changed =
+            record_derived_issue(&transaction, path, TRANSCRIPT_ERROR, message)?;
+        crate::records::commit(transaction).map_err(|error| error.to_string())?;
+        Ok(issues_changed)
+    })
 }
 
 /// A replacement attempt never invalidates the completed transcript it was
@@ -1440,7 +1468,9 @@ pub fn record_transcript_replacement_failure(
     path: &str,
     message: &str,
 ) -> Result<bool, String> {
-    record_derived_issue(conn, path, TRANSCRIPT_ERROR, message)
+    logged_if_unrecorded(path, TRANSCRIPT_ERROR, message, || {
+        record_derived_issue(conn, path, TRANSCRIPT_ERROR, message)
+    })
 }
 
 // EXCEPTION (tests-folder convention): this pins a private database-state
