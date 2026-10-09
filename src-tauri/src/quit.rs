@@ -10,6 +10,11 @@ static SESSION_ENDING: AtomicBool = AtomicBool::new(false);
 static SESSION_COMMITTED: AtomicBool = AtomicBool::new(false);
 static SAVED: (Mutex<(u64, bool)>, Condvar) = (Mutex::new((0, false)), Condvar::new());
 
+/// Whether the OS is ending the session, which skips optional exit work.
+pub(crate) fn session_ending() -> bool {
+    SESSION_ENDING.load(Ordering::SeqCst)
+}
+
 pub(crate) fn request_quit(app: &AppHandle) {
     if SESSION_ENDING.load(Ordering::SeqCst) || crate::app_lifecycle::shutting_down() { return; }
     if app.get_webview_window("main").is_none() {

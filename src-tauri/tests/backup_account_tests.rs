@@ -12,7 +12,7 @@ fn durable_text_records_and_dependency_facts_and_volatile_state_do_not() {
         .tempdir()
         .unwrap();
     let backup_file = root.path().join(backup_store::BACKUPS_DB_FILE_NAME);
-    backup_store::init(backup_file.clone());
+    backup_store::init(backup_file.clone(), "account-session".to_string());
 
     volume::check_identity(root.path(), "/Volumes/Photos", "UUID-A").unwrap();
     binaries_manager::save_facts_for(
@@ -50,6 +50,7 @@ fn durable_text_records_and_dependency_facts_and_volatile_state_do_not() {
     storage::save_preview_window_state(root.path(), &serde_json::json!({ "x": 20 })).unwrap();
     storage::save_config(root.path(), &serde_json::json!({ "theme": "dark" })).unwrap();
 
+    assert!(backup_store::drain(std::time::Duration::from_secs(5)));
     let conn = rusqlite::Connection::open(backup_file).unwrap();
     let mut statement = conn
         .prepare("SELECT path FROM backups ORDER BY path")

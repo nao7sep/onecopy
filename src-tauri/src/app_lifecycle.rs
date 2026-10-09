@@ -87,6 +87,7 @@ const MUTATION_QUIESCE_DEADLINE: Duration = Duration::from_secs(30);
 // no diagnostic or cleanup can prevent it from exiting the process.
 const EXIT_TOTAL_DEADLINE: Duration = Duration::from_secs(42);
 pub(crate) const SESSION_EXIT_DEADLINE: Duration = Duration::from_secs(5);
+const BACKUP_DRAIN_DEADLINE: Duration = Duration::from_millis(500);
 
 struct ExitBudget {
     deadline: Mutex<Option<Instant>>,
@@ -181,6 +182,11 @@ pub(crate) fn quiesce(app: &AppHandle) {
                 drop(released);
                 crate::activity::record_shutdown();
                 crate::logging::flush(std::time::Duration::from_secs(2));
+                // Pending history writes get a short bound at ordinary quit;
+                // the OS ending the session skips them (data-backup conventions).
+                if !crate::quit::session_ending() {
+                    crate::backup_store::drain(BACKUP_DRAIN_DEADLINE);
+                }
                 if clean {
                     if let Ok(cache_root) = crate::paths::cache_root() {
                         crate::preview::clear_session_renders(&crate::preview::CachePaths::new(cache_root));

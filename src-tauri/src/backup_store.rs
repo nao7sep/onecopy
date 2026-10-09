@@ -1,33 +1,28 @@
-//! The write-through data-backup store (data-backup conventions). It owns one
-//! add-only SQLite file, `backups.sqlite3`, directly under onecopy's storage
-//! root (`ONECOPY_DATA_DIR` or `~/.onecopy`, resolved in one place by
-//! `paths::data_root` — never a hardcoded path). Every managed *text* save
-//! records the exact bytes it just wrote here, strictly AFTER its atomic rename
-//! lands (see `write_atomic` in lib.rs), so the history is always as current as
-//! the last save. There is no startup scan, no periodic pass, no restore path.
+//! The history of protected text (data-backup conventions). It owns one
+//! SQLite file, `backups.sqlite3`, directly under onecopy's storage root
+//! (`ONECOPY_DATA_DIR` or `~/.onecopy`, resolved in one place by
+//! `paths::data_root` — never a hardcoded path), holding the last version of
+//! each protected file saved in each session (one launch). Protected files
+//! reach it through `storage::write_atomic` after their rename lands. There is
+//! no startup scan, no periodic pass and no restore path.
 //!
-//! SQLite binding: `rusqlite` with the `bundled` feature. Bundled compiles
-//! SQLite from source into the binary, so the store needs no system libsqlite3
-//! and adds no packaging churn — the lowest-friction binding for the Rust core,
-//! per the convention's "built-in or lowest-friction binding" rule. It is
-//! synchronous, exactly what a record-after-rename hook wants, and stores/reads
-//! a BLOB as raw `&[u8]`/`Vec<u8>` so CR/LF, a BOM, and non-UTF-8 bytes are
-//! byte-identical.
+//! Recording never holds up a save: `record` hands the exact bytes to one
+//! writer thread and returns. That thread applies them in save order, so an
+//! earlier version never replaces a later one. Ordinary quit gives pending
+//! writes a short bound (`drain`); the OS ending the session skips them.
 //!
-//! Two absolute musts drive every line below (they are not best-effort
-//! aspirations):
+//! SQLite binding: `rusqlite` with the `bundled` feature, which compiles
+//! SQLite into the binary, so the store adds no packaging churn. Content is a
+//! BLOB of raw bytes, so CR/LF, a BOM and non-UTF-8 bytes stay byte-identical.
 //!
-//!  - It never breaks a save and never crashes the app. The save has already
-//!    succeeded — the file is on disk before `record` is called — so any failure
-//!    here (the DB is locked, the disk is full, an insert fails) is caught,
-//!    logged once at `warn`, and swallowed. A lost record self-heals on the next
-//!    save of that file, whose content will differ from the last recorded row.
-//!    Nothing here ever panics or propagates an error to the caller.
-//!  - It logs only failures. A successful record logs NOTHING; a line per save
-//!    would flood the log.
+//! Best effort: any failure (the store cannot open, a write fails) is logged
+//! once at `warn` and swallowed; a successful record logs nothing. A lost
+//! record heals on the file's next save.
 
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 use rusqlite::{Connection, TransactionBehavior};
 use serde_json::json;
@@ -39,12 +34,13 @@ use crate::logging;
 /// place (pinned by the storage_file_names integration test).
 pub const BACKUPS_DB_FILE_NAME: &str = "backups.sqlite3";
 
-/// The one add-only table. `content` is a BLOB of the exact bytes written —
-/// never decoded text, so CR/LF, a BOM, and non-UTF-8 bytes are stored
-/// byte-identically. `written_at_utc` is the serialized ISO-8601-ms form
+/// One row per protected path per session. `content` is a BLOB of the exact
+/// bytes written. `written_at_utc` is the serialized ISO-8601-ms form
 /// (`2026-07-06T04:05:12.345Z`), a data value — NEVER the
-/// `yyyymmdd-hhmmss-utc` filename stamp. The `(path, id)` index serves the
-/// latest-row-per-path dedup lookup.
+/// `yyyymmdd-hhmmss-utc` filename stamp. `session_id` is the launch's log
+/// session (its start time); rows from before sessions existed have none and
+/// stay as earlier history. The `(path, id)` index serves the latest-row
+/// lookup; the unique `(path, session_id)` index owns the session's rows.
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS backups (
   id             INTEGER PRIMARY KEY,
@@ -52,55 +48,107 @@ CREATE TABLE IF NOT EXISTS backups (
   content        BLOB NOT NULL,
   content_sha256 TEXT NOT NULL,
   byte_size      INTEGER NOT NULL,
-  written_at_utc TEXT NOT NULL
+  written_at_utc TEXT NOT NULL,
+  session_id     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_backups_path_id ON backups (path, id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_backups_path_session ON backups (path, session_id);
 ";
 
-/// Session state for the store singleton.
-///
-/// `initialized` records that `init` has run; `conn` is `Some` when the store is
-/// open and `None` when it could not be opened (a single warn was already logged,
-/// and every later `record` becomes a no-op rather than retrying a broken open on
-/// every save). Wrapped in a `Mutex` because `record` is called synchronously
-/// from the atomic-write path, which may run on any thread, and a
-/// `rusqlite::Connection` is not `Sync`.
-struct StoreState {
-    conn: Option<Connection>,
-    initialized: bool,
+enum Job {
+    Record(String, Vec<u8>),
+    Drained(Sender<()>),
 }
 
-fn store() -> &'static Mutex<StoreState> {
-    static STORE: OnceLock<Mutex<StoreState>> = OnceLock::new();
-    STORE.get_or_init(|| {
-        Mutex::new(StoreState {
-            conn: None,
-            initialized: false,
+/// The writer thread's mailbox, `None` when recording is off (never started,
+/// or closed). Rows are written only on that thread.
+struct Writer {
+    sender: Option<Sender<Job>>,
+    #[cfg(test)]
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+fn writer() -> &'static Mutex<Writer> {
+    static WRITER: OnceLock<Mutex<Writer>> = OnceLock::new();
+    WRITER.get_or_init(|| {
+        Mutex::new(Writer {
+            sender: None,
+            #[cfg(test)]
+            worker: None,
         })
     })
 }
 
-/// Open and initialize the store once, at startup, best-effort. Creates the
-/// `backups.sqlite3` file's parent directory if needed, opens the connection,
-/// switches on WAL, sets a busy timeout, and creates the table + index. On any
-/// failure it logs ONE `warn`, leaves recording disabled for the session, and
-/// never panics — startup is never blocked by a backup-store problem.
-///
-/// WAL lets an overlapping process/version serialize safely; the short
-/// `busy_timeout` gives a concurrent writer one
-/// scheduling beat, then drops the best-effort record instead of making an
-/// ordinary app save visibly wait.
-pub fn init(store_file: PathBuf) {
-    let mut state = lock();
-    state.initialized = true;
-    match open(&store_file) {
-        Ok(conn) => state.conn = Some(conn),
+fn lock() -> std::sync::MutexGuard<'static, Writer> {
+    // A prior panic elsewhere must not wedge recording shut; nothing here
+    // panics while holding the lock.
+    writer().lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Starts the writer for this launch's session. The store opens on the writer
+/// thread; if it cannot (a newer or unmarked history included), one `warn` is
+/// logged and every later record is dropped for the session. Startup never
+/// waits on it.
+pub fn init(store_file: PathBuf, session_id: String) {
+    let (sender, receiver) = mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("onecopy-backups".to_string())
+        .spawn(move || run_writer(&store_file, &session_id, receiver));
+    let mut writer = lock();
+    match spawned {
+        Ok(_worker) => {
+            writer.sender = Some(sender);
+            #[cfg(test)]
+            {
+                writer.worker = Some(_worker);
+            }
+        }
+        Err(error) => logging::warn(
+            "backup store: could not start its writer; recording disabled for this session",
+            json!({ "error": { "message": error.to_string() } }),
+        ),
+    }
+}
+
+fn run_writer(store_file: &Path, session_id: &str, jobs: Receiver<Job>) {
+    let mut conn = match open(store_file) {
+        Ok(conn) => Some(conn),
         Err(err) => {
             logging::warn(
                 "backup store: could not open; recording disabled for this session",
                 json!({ "file": store_file.to_string_lossy(), "error": { "message": err } }),
             );
-            state.conn = None;
+            None
+        }
+    };
+    while let Ok(first) = jobs.recv() {
+        // Take everything already waiting. Under pressure only the newest
+        // version of each path matters: it is what the session's row keeps.
+        let mut batch = vec![first];
+        batch.extend(jobs.try_iter());
+        let mut pending: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut drained = Vec::new();
+        for job in batch {
+            match job {
+                Job::Record(path, bytes) => {
+                    pending.retain(|(queued, _)| *queued != path);
+                    pending.push((path, bytes));
+                }
+                Job::Drained(done) => drained.push(done),
+            }
+        }
+        if let Some(conn) = conn.as_mut() {
+            for (path, bytes) in pending {
+                if let Err(err) = try_record(conn, session_id, &path, &bytes) {
+                    logging::warn(
+                        "backup store: failed to record a managed write",
+                        json!({ "file": path, "error": { "message": err.to_string() } }),
+                    );
+                }
+            }
+        }
+        for done in drained {
+            let _ = done.send(());
         }
     }
 }
@@ -112,8 +160,7 @@ fn open(store_file: &Path) -> Result<Connection, String> {
 fn open_before_setup(store_file: &Path, before_setup: impl FnOnce()) -> Result<Connection, String> {
     // not recorded: backups.sqlite3 is the store itself — binary, and written by
     // this backup layer, not through the managed-text atomic-write path — so it
-    // never records itself. No recursion, no special case (data-backup
-    // conventions: "A binary store, excluded from itself").
+    // never records itself.
     // The first writer under the root does the `mkdir -p`; the store may be the
     // first thing written on a fresh root.
     if let Some(parent) = store_file.parent() {
@@ -127,7 +174,9 @@ fn open_before_setup(store_file: &Path, before_setup: impl FnOnce()) -> Result<C
         Err(error) => return Err(error.to_string()),
     };
     let mut conn = Connection::open(store_file).map_err(|e| e.to_string())?;
-    conn.busy_timeout(std::time::Duration::from_millis(100))
+    // Short, as the convention asks: the instance lock leaves this writer
+    // alone with the file, so contention means something is wrong.
+    conn.busy_timeout(Duration::from_millis(100))
         .map_err(|e| e.to_string())?;
     // A history a newer OneCopy wrote, or one without its marker, is left
     // exactly as it is: recording stays disabled for the session
@@ -138,10 +187,8 @@ fn open_before_setup(store_file: &Path, before_setup: impl FnOnce()) -> Result<C
         crate::formats::SqliteMarker::New if !fresh => return Err(crate::formats::missing_marker(store_file)),
         crate::formats::SqliteMarker::New | crate::formats::SqliteMarker::Current => {}
     }
-    // WAL for cross-process overlap. SQLite contention uses a 100 ms timeout
-    // before this best-effort record is dropped and warned.
     static JOURNAL: crate::sqlite::JournalSetup = crate::sqlite::JournalSetup::new();
-    JOURNAL.configure(&conn, std::time::Duration::from_millis(100))?;
+    JOURNAL.configure(&conn, Duration::from_millis(100))?;
     before_setup();
     // The schema and its marker commit together.
     let tx = conn
@@ -152,7 +199,22 @@ fn open_before_setup(store_file: &Path, before_setup: impl FnOnce()) -> Result<C
         crate::formats::SqliteMarker::Missing => return Err(crate::formats::missing_marker(store_file)),
         crate::formats::SqliteMarker::New if fresh => {}
         crate::formats::SqliteMarker::New => return Err(crate::formats::missing_marker(store_file)),
-        crate::formats::SqliteMarker::Current => { tx.commit().map_err(|e| e.to_string())?; return Ok(conn); }
+        crate::formats::SqliteMarker::Current => {
+            // Format 1 is edited in place while OneCopy's data is not durable
+            // yet (`formats`). A history from before sessions gains the
+            // column, and its rows stay as earlier history.
+            let has_sessions = tx
+                .prepare("SELECT 1 FROM pragma_table_info('backups') WHERE name = 'session_id'")
+                .and_then(|mut statement| statement.exists([]))
+                .map_err(|e| e.to_string())?;
+            if !has_sessions {
+                tx.execute_batch("ALTER TABLE backups ADD COLUMN session_id TEXT;")
+                    .map_err(|e| e.to_string())?;
+            }
+            tx.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+            return Ok(conn);
+        }
     }
     tx.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
     tx.pragma_update(None, "user_version", crate::formats::BACKUPS)
@@ -168,101 +230,87 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
-/// Record one managed-text write: `absolute_path` is the FULL absolute path of
+/// Queues one protected write: `absolute_path` is the FULL absolute path of
 /// the file as written; `bytes` is the exact raw bytes just written (the caller
-/// already holds them — never a re-read of the file).
-///
-/// Dedup by content hash per path: the new content's SHA-256 is compared against
-/// the latest row for the same `path`, and the insert is SKIPPED when they are
-/// equal. This collapses consecutive identical saves (an autosave with no real
-/// change writes no row) while still recording every genuinely distinct version —
-/// including a revert, whose content differs from the immediately preceding row.
-///
-/// Best-effort and silent on success; any failure is caught, logged once at
-/// `warn` (file + reason), and swallowed. It never panics, never crashes the app,
-/// and never breaks the save.
+/// already holds them — never a re-read of the file). Returns at once.
 pub fn record(absolute_path: &Path, bytes: &[u8]) {
-    let mut state = lock();
-    let Some(conn) = state.conn.as_mut() else {
-        // Store never opened (open failed at startup, or init hasn't run under a
-        // test that doesn't exercise it): disabled for the session, already warned
-        // once if it was an open failure. No-op.
-        return;
-    };
-    let path = absolute_path.to_string_lossy();
-    if let Err(err) = try_record(conn, &path, bytes) {
-        logging::warn(
-            "backup store: failed to record a managed write",
-            json!({ "file": path, "error": { "message": err.to_string() } }),
-        );
+    let writer = lock();
+    if let Some(sender) = writer.sender.as_ref() {
+        let _ = sender.send(Job::Record(
+            absolute_path.to_string_lossy().into_owned(),
+            bytes.to_vec(),
+        ));
     }
 }
 
-/// The fallible core of `record`, factored out so the one `warn` site in `record`
-/// catches every failure path uniformly.
-fn try_record(conn: &mut Connection, path: &str, bytes: &[u8]) -> Result<(), rusqlite::Error> {
-    try_record_with_after_latest(conn, path, bytes, || {})
+/// Waits up to `timeout` for every queued record to be written. Ordinary quit
+/// calls this; the OS ending the session does not.
+pub fn drain(timeout: Duration) -> bool {
+    let (done, finished) = mpsc::channel();
+    let sent = lock()
+        .sender
+        .as_ref()
+        .is_some_and(|sender| sender.send(Job::Drained(done)).is_ok());
+    !sent || finished.recv_timeout(timeout).is_ok()
 }
 
-fn try_record_with_after_latest(
+/// The session's row for a path holds its last saved version: the first save
+/// in a session inserts it, unless its content equals the path's latest row
+/// from an earlier session, and later saves replace it.
+fn try_record(
     conn: &mut Connection,
+    session_id: &str,
     path: &str,
     bytes: &[u8],
-    after_latest: impl FnOnce(),
 ) -> Result<(), rusqlite::Error> {
     let hash = sha256_hex(bytes);
-    // Acquire SQLite's cross-process writer reservation BEFORE reading the
-    // predecessor. WAL serializes statements, not a read/decision/write unit;
-    // BEGIN IMMEDIATE makes two connections observe one ordered latest row.
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    // Compare against the latest row for this same path only — a cheap,
-    // append-only check with no full-history scan (served by the (path, id)
-    // index). No prior row (QueryReturnedNoRows) means never captured -> record.
-    let latest: Option<String> = match tx.query_row(
-        "SELECT content_sha256 FROM backups WHERE path = ?1 ORDER BY id DESC LIMIT 1",
+    let (latest_hash, latest_session): (Option<String>, Option<String>) = match tx.query_row(
+        "SELECT content_sha256, session_id FROM backups WHERE path = ?1 ORDER BY id DESC LIMIT 1",
         [path],
-        |row| row.get::<_, String>(0),
+        |row| Ok((Some(row.get(0)?), row.get(1)?)),
     ) {
-        Ok(h) => Some(h),
-        Err(rusqlite::Error::QueryReturnedNoRows) => None,
+        Ok(latest) => latest,
+        Err(rusqlite::Error::QueryReturnedNoRows) => (None, None),
         Err(other) => return Err(other),
     };
-    after_latest();
-    if latest.as_deref() == Some(hash.as_str()) {
+    let unchanged = latest_hash.as_deref() == Some(hash.as_str());
+    if unchanged && latest_session.as_deref() != Some(session_id) {
+        // Nothing new since an earlier session's version.
         tx.commit()?;
-        return Ok(()); // unchanged since the last recorded version — dedup skip
+        return Ok(());
     }
     tx.execute(
-        "INSERT INTO backups (path, content, content_sha256, byte_size, written_at_utc) \
-         VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO backups (path, content, content_sha256, byte_size, written_at_utc, session_id) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+         ON CONFLICT (path, session_id) DO UPDATE SET content = excluded.content, \
+           content_sha256 = excluded.content_sha256, byte_size = excluded.byte_size, \
+           written_at_utc = excluded.written_at_utc",
         rusqlite::params![
             path,
             bytes,
             hash,
             bytes.len() as i64,
-            logging::now_iso_millis()
+            logging::now_iso_millis(),
+            session_id
         ],
     )?;
     tx.commit()?;
     Ok(())
 }
 
-fn lock() -> std::sync::MutexGuard<'static, StoreState> {
-    // Recover from a poisoned mutex: a prior panic elsewhere must not wedge the
-    // store shut. (Nothing in this module panics while holding the lock, so the
-    // recovered state is consistent.)
-    store().lock().unwrap_or_else(|p| p.into_inner())
-}
-
-/// Close the store and reset the singleton (best-effort). For tests that need to
-/// release the file handle between throwaway roots so the next `init` re-opens
-/// against the current root.
+/// Stops the writer after it has written everything queued, so a test can
+/// read the store and the next `init` starts clean.
 #[cfg(test)]
 pub fn close_for_test() {
-    let mut state = lock();
-    // Dropping the Connection closes it.
-    state.conn = None;
-    state.initialized = false;
+    let (sender, worker) = {
+        let mut writer = lock();
+        (writer.sender.take(), writer.worker.take())
+    };
+    drop(sender);
+    if let Some(worker) = worker {
+        let _ = worker.join();
+    }
 }
 
 #[cfg(test)]

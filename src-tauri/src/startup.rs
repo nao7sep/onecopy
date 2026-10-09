@@ -204,7 +204,13 @@ fn prepare(app: &tauri::App, debug_enabled: bool) -> Result<StartupState, Startu
     crate::logging::install_panic_hook();
 
     // The backup store is best-effort by contract and records its own failure.
-    crate::backup_store::init(data_root.join(crate::backup_store::BACKUPS_DB_FILE_NAME));
+    // Its rows are kept per launch, named by the log session.
+    crate::backup_store::init(
+        data_root.join(crate::backup_store::BACKUPS_DB_FILE_NAME),
+        crate::logging::session_id()
+            .map(str::to_string)
+            .unwrap_or_else(crate::logging::now_iso_millis),
+    );
 
     let PreparedData { cache_root } = prepare_data(&data_root)?;
     crate::paths::settle_data_root(data_root.clone())?;

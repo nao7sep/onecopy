@@ -6,38 +6,27 @@ fn unique_store_file(label: &str) -> (tempfile::TempDir, PathBuf) {
     (dir, path)
 }
 
-// Opens a throwaway store, runs `body` against a direct connection to the same
-// file for assertions, and always closes the singleton afterward.
-// Serialization is provided by `#[serial(backup_store)]` on each caller, not by
-// an in-module lock, so this group is also mutually exclusive with the lib.rs
-// atomic-write test that shares the same key.
-fn with_store<F: FnOnce(&Path)>(label: &str, body: F) {
-    let (_directory, file) = unique_store_file(label);
+/// Runs one session against `file`: starts the writer, runs `body`, and stops
+/// the writer after everything queued is written.
+fn session(file: &Path, id: &str, body: impl FnOnce()) {
     struct Close;
     impl Drop for Close { fn drop(&mut self) { close_for_test(); } }
     let _close = Close;
-    init(file.clone());
-    body(&file);
+    init(file.to_path_buf(), id.to_string());
+    body();
 }
 
-// A read-only view of every row for a path, in insert order, for assertions.
-fn rows_for(file: &Path, path: &str) -> Vec<(Vec<u8>, String, i64, String)> {
+// Every row for a path, in insert order: content, hash, size, time, session.
+fn rows_for(file: &Path, path: &str) -> Vec<(Vec<u8>, String, i64, String, Option<String>)> {
     let conn = Connection::open(file).unwrap();
     let mut stmt = conn
         .prepare(
-            "SELECT content, content_sha256, byte_size, written_at_utc \
+            "SELECT content, content_sha256, byte_size, written_at_utc, session_id \
              FROM backups WHERE path = ?1 ORDER BY id ASC",
         )
         .unwrap();
     let rows = stmt
-        .query_map([path], |r| {
-            Ok((
-                r.get::<_, Vec<u8>>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, String>(3)?,
-            ))
-        })
+        .query_map([path], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
         .unwrap()
         .map(|r| r.unwrap())
         .collect();
@@ -47,164 +36,177 @@ fn rows_for(file: &Path, path: &str) -> Vec<(Vec<u8>, String, i64, String)> {
 #[test]
 #[serial(backup_store)]
 fn content_blob_is_byte_identical_including_crlf_and_non_utf8() {
-    with_store("blob-fidelity", |file| {
-        // A CR/LF pair, a UTF-8 BOM, and a lone 0xFF byte (invalid UTF-8):
-        // proves the BLOB stores raw bytes, never decoded/normalized text.
-        let raw: &[u8] = &[0xEF, 0xBB, 0xBF, b'a', b'\r', b'\n', b'b', 0xFF];
-        let p = "/abs/doc.json";
-        record(Path::new(p), raw);
+    let (_dir, file) = unique_store_file("blob-fidelity");
+    // A CR/LF pair, a UTF-8 BOM, and a lone 0xFF byte (invalid UTF-8):
+    // proves the BLOB stores raw bytes, never decoded/normalized text.
+    let raw: &[u8] = &[0xEF, 0xBB, 0xBF, b'a', b'\r', b'\n', b'b', 0xFF];
+    let p = "/abs/doc.json";
+    session(&file, "s1", || record(Path::new(p), raw));
 
-        let rows = rows_for(file, p);
-        assert_eq!(rows.len(), 1);
-        let (content, hash, byte_size, _written) = &rows[0];
-        assert_eq!(content.as_slice(), raw, "content BLOB must be byte-identical");
-        assert_eq!(*byte_size, raw.len() as i64);
-        assert_eq!(hash, &sha256_hex(raw), "hash is over the raw bytes");
-    });
+    let rows = rows_for(&file, p);
+    assert_eq!(rows.len(), 1);
+    let (content, hash, byte_size, _written, session) = &rows[0];
+    assert_eq!(content.as_slice(), raw, "content BLOB must be byte-identical");
+    assert_eq!(*byte_size, raw.len() as i64);
+    assert_eq!(hash, &sha256_hex(raw), "hash is over the raw bytes");
+    assert_eq!(session.as_deref(), Some("s1"));
 }
 
 #[test]
 #[serial(backup_store)]
 fn written_at_utc_is_serialized_iso_ms_not_the_filename_stamp() {
-    with_store("iso-shape", |file| {
-        let p = "/abs/a.json";
-        record(Path::new(p), b"x");
-        let rows = rows_for(file, p);
-        let written = &rows[0].3;
-        // Serialized ISO-8601-ms shape: yyyy-mm-ddThh:mm:ss.fffZ.
-        assert!(
-            written.len() == 24
-                && &written[4..5] == "-"
-                && &written[7..8] == "-"
-                && &written[10..11] == "T"
-                && &written[13..14] == ":"
-                && &written[16..17] == ":"
-                && &written[19..20] == "."
-                && written.ends_with('Z'),
-            "written_at_utc {written:?} must be serialized ISO-8601-ms (2026-07-06T04:05:12.345Z)"
-        );
-        // Must NOT be the yyyymmdd-hhmmss-utc filename stamp.
-        assert!(!written.ends_with("-utc"), "must not be the filename stamp");
-        assert!(!written.contains("-utc"), "must not be the filename stamp");
-    });
+    let (_dir, file) = unique_store_file("iso-shape");
+    let p = "/abs/a.json";
+    session(&file, "s1", || record(Path::new(p), b"x"));
+    let written = &rows_for(&file, p)[0].3;
+    // Serialized ISO-8601-ms shape: yyyy-mm-ddThh:mm:ss.fffZ.
+    assert!(
+        written.len() == 24
+            && &written[4..5] == "-"
+            && &written[7..8] == "-"
+            && &written[10..11] == "T"
+            && &written[13..14] == ":"
+            && &written[16..17] == ":"
+            && &written[19..20] == "."
+            && written.ends_with('Z'),
+        "written_at_utc {written:?} must be serialized ISO-8601-ms (2026-07-06T04:05:12.345Z)"
+    );
+    assert!(!written.contains("-utc"), "must not be the filename stamp");
 }
 
 #[test]
 #[serial(backup_store)]
-fn dedup_skips_an_unchanged_re_save() {
-    with_store("dedup", |file| {
-        let p = "/abs/b.json";
-        record(Path::new(p), b"same");
-        record(Path::new(p), b"same"); // identical -> deduped, no new row
-        assert_eq!(rows_for(file, p).len(), 1, "an unchanged re-save writes no row");
-    });
-}
-
-#[test]
-#[serial(backup_store)]
-fn a_changed_save_and_a_revert_each_insert_a_row() {
-    with_store("changed-and-revert", |file| {
-        let p = "/abs/c.json";
+fn a_session_keeps_one_row_per_path_holding_its_last_save() {
+    let (_dir, file) = unique_store_file("per-session");
+    let p = "/abs/c.json";
+    session(&file, "s1", || {
         record(Path::new(p), b"v1");
-        record(Path::new(p), b"v2"); // changed -> new row
-        record(Path::new(p), b"v1"); // revert to v1: differs from the LATEST (v2) -> new row
-        let rows = rows_for(file, p);
-        assert_eq!(rows.len(), 3, "changed save and revert each insert a row");
-        assert_eq!(rows[0].0, b"v1");
-        assert_eq!(rows[1].0, b"v2");
-        assert_eq!(rows[2].0, b"v1"); // the revert is recorded as the new version it is
+        assert!(drain(Duration::from_secs(5)));
+        record(Path::new(p), b"v2");
+        assert!(drain(Duration::from_secs(5)));
+        record(Path::new(p), b"v3");
     });
+    let rows = rows_for(&file, p);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0, b"v3");
 }
 
 #[test]
 #[serial(backup_store)]
-fn dedup_is_per_path_not_global() {
-    with_store("per-path", |file| {
-        // Identical content under two different paths each records (dedup is
-        // per-path against that path's latest row, never global).
+fn each_session_adds_its_own_row_and_earlier_rows_never_change() {
+    let (_dir, file) = unique_store_file("across-sessions");
+    let p = "/abs/d.json";
+    session(&file, "s1", || record(Path::new(p), b"v1"));
+    session(&file, "s2", || record(Path::new(p), b"v2"));
+    let rows = rows_for(&file, p);
+    assert_eq!(rows.iter().map(|row| (row.0.clone(), row.4.clone())).collect::<Vec<_>>(), vec![
+        (b"v1".to_vec(), Some("s1".to_string())),
+        (b"v2".to_vec(), Some("s2".to_string())),
+    ]);
+}
+
+#[test]
+#[serial(backup_store)]
+fn a_first_save_equal_to_an_earlier_session_writes_nothing_until_it_changes() {
+    let (_dir, file) = unique_store_file("unchanged");
+    let p = "/abs/b.json";
+    session(&file, "s1", || record(Path::new(p), b"same"));
+    session(&file, "s2", || record(Path::new(p), b"same"));
+    assert_eq!(rows_for(&file, p).len(), 1, "an unchanged first save writes no row");
+    session(&file, "s3", || {
+        record(Path::new(p), b"same");
+        assert!(drain(Duration::from_secs(5)));
+        record(Path::new(p), b"changed");
+    });
+    let rows = rows_for(&file, p);
+    assert_eq!(rows.len(), 2);
+    assert_eq!((rows[1].0.as_slice(), rows[1].4.as_deref()), (b"changed".as_slice(), Some("s3")));
+}
+
+#[test]
+#[serial(backup_store)]
+fn rows_are_per_path_not_global() {
+    let (_dir, file) = unique_store_file("per-path");
+    session(&file, "s1", || {
         record(Path::new("/abs/x.json"), b"same");
         record(Path::new("/abs/y.json"), b"same");
-        assert_eq!(rows_for(file, "/abs/x.json").len(), 1);
-        assert_eq!(rows_for(file, "/abs/y.json").len(), 1);
+    });
+    assert_eq!(rows_for(&file, "/abs/x.json").len(), 1);
+    assert_eq!(rows_for(&file, "/abs/y.json").len(), 1);
+}
+
+#[test]
+#[serial(backup_store)]
+fn a_save_never_waits_for_a_locked_history() {
+    let (_dir, file) = unique_store_file("locked");
+    session(&file, "s1", || {
+        assert!(drain(Duration::from_secs(5)));
+        let blocker = Connection::open(&file).unwrap();
+        blocker.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        let started = std::time::Instant::now();
+        for _ in 0..20 {
+            record(Path::new("/abs/locked.json"), b"bytes");
+        }
+        assert!(started.elapsed() < Duration::from_millis(50), "{:?}", started.elapsed());
+        blocker.execute_batch("ROLLBACK").unwrap();
     });
 }
 
 #[test]
 #[serial(backup_store)]
 fn record_is_a_silent_no_op_when_the_store_never_opened() {
-    // Best-effort: with the store disabled (never init'd / closed), a record
-    // call must not panic and must simply do nothing.
-    close_for_test(); // ensure disabled state
-    record(Path::new("/abs/whatever.json"), b"data"); // must not panic
+    close_for_test();
+    record(Path::new("/abs/whatever.json"), b"data");
+    assert!(drain(Duration::from_millis(10)));
 }
 
 #[test]
 #[serial(backup_store)]
-fn record_never_panics_on_a_broken_connection() {
-    // Best-effort under a store failure: prove the no-throw contract by
-    // pointing init at an un-creatable path — the open fails, recording is
-    // disabled, and a subsequent record is a silent no-op (never a panic,
-    // never a crash). A path whose parent is a FILE, so create_dir_all +
-    // open must fail.
-    let dir = std::env::temp_dir().join(format!(
-        "onecopy-backupstore-badpath-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let file_as_parent = dir.join("not-a-dir");
-    std::fs::write(&file_as_parent, b"x").unwrap(); // a regular file
-    let store_file = file_as_parent.join("backups.sqlite3"); // parent is a file -> mkdir fails
-
-    init(store_file); // open fails -> disabled, one warn logged, no panic
-    record(Path::new("/abs/whatever.json"), b"data"); // silent no-op, no panic
-    close_for_test();
-    let _ = std::fs::remove_dir_all(&dir);
+fn record_never_panics_when_the_store_cannot_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_as_parent = dir.path().join("not-a-dir");
+    std::fs::write(&file_as_parent, b"x").unwrap();
+    let store_file = file_as_parent.join("backups.sqlite3"); // parent is a file
+    session(&store_file, "s1", || record(Path::new("/abs/whatever.json"), b"data"));
 }
 
 #[test]
-fn concurrent_connections_serialize_the_latest_decision_before_insert() {
-    let (_directory, file) = unique_store_file("cross-connection-dedup");
-    let setup = open(&file).unwrap();
-    drop(setup);
-    let path = "/abs/concurrent.json";
-
-    let file_a = file.clone();
-    let first = std::thread::spawn(move || {
-        let mut conn = open(&file_a).unwrap();
-        try_record_with_after_latest(&mut conn, path, b"same", || {
-            // Keep the write reservation across the decision edge so the
-            // second connection has to read AFTER this commit. Removing or
-            // delaying BEGIN IMMEDIATE makes it read the same predecessor.
-            std::thread::sleep(std::time::Duration::from_millis(60));
-        })
+#[serial(backup_store)]
+fn a_history_from_before_sessions_gains_them_and_keeps_its_rows() {
+    let (_dir, file) = unique_store_file("before-sessions");
+    {
+        let conn = Connection::open(&file).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE backups (id INTEGER PRIMARY KEY, path TEXT NOT NULL, content BLOB NOT NULL, \
+             content_sha256 TEXT NOT NULL, byte_size INTEGER NOT NULL, written_at_utc TEXT NOT NULL); \
+             CREATE INDEX idx_backups_path_id ON backups (path, id); PRAGMA user_version = 1;",
+        )
         .unwrap();
-    });
-    std::thread::sleep(std::time::Duration::from_millis(10));
-    let file_b = file.clone();
-    let second = std::thread::spawn(move || {
-        let mut conn = open(&file_b).unwrap();
-        try_record(&mut conn, path, b"same").unwrap();
-    });
-    let first_result = first.join();
-    let second_result = second.join();
-    assert!(first_result.is_ok());
-    assert!(second_result.is_ok());
-
-    assert_eq!(rows_for(&file, path).len(), 1);
+        conn.execute(
+            "INSERT INTO backups (path, content, content_sha256, byte_size, written_at_utc) \
+             VALUES ('/abs/e.json', x'01', ?1, 1, 't')",
+            [sha256_hex(&[1])],
+        )
+        .unwrap();
+    }
+    session(&file, "s1", || record(Path::new("/abs/e.json"), b"newer"));
+    let rows = rows_for(&file, "/abs/e.json");
+    assert_eq!(rows.len(), 2);
+    assert_eq!((rows[0].0.as_slice(), rows[0].4.as_deref()), (&[1u8][..], None));
+    assert_eq!(rows[1].4.as_deref(), Some("s1"));
 }
 
 #[test]
 #[serial(backup_store)]
 fn the_history_records_format_version_1() {
-    with_store("format-version", |file| {
-        let conn = Connection::open(file).unwrap();
-        let version: i64 = conn
-            .pragma_query_value(None, "user_version", |row| row.get(0))
-            .unwrap();
-        assert_eq!(version, crate::formats::BACKUPS);
-        assert_eq!(crate::formats::BACKUPS, 1);
-    });
+    let (_dir, file) = unique_store_file("format-version");
+    session(&file, "s1", || record(Path::new("/abs/f.json"), b"x"));
+    let conn = Connection::open(&file).unwrap();
+    let version: i64 = conn
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, crate::formats::BACKUPS);
+    assert_eq!(crate::formats::BACKUPS, 1);
 }
 
 #[test]
@@ -222,9 +224,7 @@ fn a_history_without_its_marker_disables_recording_and_is_left_as_it_is() {
         .unwrap();
     }
     let before = std::fs::read(&file).unwrap();
-    init(file.clone());
-    record(Path::new("/abs/new.json"), b"new");
-    close_for_test();
+    session(&file, "s1", || record(Path::new("/abs/new.json"), b"new"));
     assert_eq!(std::fs::read(&file).unwrap(), before, "nothing is written to it");
     assert_eq!(rows_for(&file, "/abs/kept.json").len(), 1);
     assert!(rows_for(&file, "/abs/new.json").is_empty());
@@ -240,9 +240,7 @@ fn a_history_written_by_a_newer_onecopy_disables_recording_and_is_left_as_it_is(
         conn.pragma_update(None, "user_version", 2).unwrap();
     }
     let before = std::fs::read(&file).unwrap();
-    init(file.clone());
-    record(Path::new("/abs/new.json"), b"new");
-    close_for_test();
+    session(&file, "s1", || record(Path::new("/abs/new.json"), b"new"));
     assert_eq!(std::fs::read(&file).unwrap(), before, "nothing is written to it");
     assert!(rows_for(&file, "/abs/new.json").is_empty());
 }
