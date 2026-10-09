@@ -110,14 +110,15 @@ export default function App() {
 export function ReadyApp({ appData }: { appData: LoadedAppData }) {
   const { t, text, number, percent } = useI18n();
   useDestinationDragBoundary();
+  // The shell subscribes only to what changes its own layout. Progress ticks,
+  // item windows and the background-work line change many times a second
+  // during a scan; the components that show them subscribe themselves, so a
+  // tick re-renders a status line, not the whole window.
   const counts = useSectionsStore((s) => s.counts);
-  const sourceCheck = useSectionsStore((s) => s.sourceCheck);
-  const fileInformation = useSectionsStore((s) => s.fileInformation);
-  const maintenanceStatus = activeMaintenanceStatus(sourceCheck, fileInformation);
-  const { scanning } = maintenanceStatus;
-  const rescanNeeded = useSectionsStore((s) => s.rescanNeeded);
-  const feedback = useMainFeedbackStore(currentMainFeedback);
-  const mutationProgress = useMutationStore((s) => s.progress);
+  const sourceCheckRunning = useSectionsStore((s) => s.sourceCheck.running);
+  const sourceCheckStopping = useSectionsStore((s) => s.sourceCheck.stopping);
+  const scanning = useSectionsStore((s) => s.sourceCheck.running || s.fileInformation.running);
+  const mutationRunning = useMutationStore((s) => s.progress !== null);
   const mutationCancelling = useMutationStore((s) => s.cancelling);
   const mutationResult = useMutationStore((s) => s.result);
   const exitQuiescing = useMutationStore((s) => s.exiting);
@@ -126,26 +127,11 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
   const startSourceCheck = useSectionsStore((s) => s.startSourceCheck);
   const stopSourceCheck = useSectionsStore((s) => s.stopSourceCheck);
   const selected = useItemsStore((s) => s.selected);
-  const items = useItemsStore((s) => s.items);
-  const itemsLoading = useItemsStore((s) => s.loading);
-  const itemsLoadError = useItemsStore((s) => s.loadError);
-  const detail = useItemsStore((s) => s.detail);
-  const selectedItemKey = useItemsStore((s) => s.selectedItem);
-  const selectedHash =
-    selectedItemKey !== null && isHashKey(selectedItemKey)
-      ? selectedItemKey
-      : null;
-  const selectedSectionItem =
-    selectedItemKey === null
-      ? null
-      : (items.find((item) => itemKey(item) === selectedItemKey) ?? null);
   const wizardOpen = useWizardStore((s) => s.open);
   const missingDirs = useWizardStore((s) => s.missingDirs);
   const substitutedDirs = useWizardStore((s) => s.substitutedDirs);
   const presenceUnknown = useWizardStore((s) => s.presenceUnknown);
   const issuesTotal = useIssuesStore((s) => s.total);
-  const derivedWorkSnapshot = useDerivedWorkStore((s) => s.runtime);
-  const derivedWorkLine = backgroundRuntimeLine(derivedWorkSnapshot, t);
   const binariesEntries = useBinariesStore((s) => s.entries);
   // The chip narrates ffmpeg's own install only; a model download in flight
   // is the modal's story.
@@ -178,23 +164,6 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
     appData,
     splitOpen,
   });
-
-  const status = statusLine(
-    {
-      feedback,
-      mutation: mutationProgress === null
-        ? null
-        : { progress: mutationProgress, cancelling: mutationCancelling },
-      mutationResult,
-      exiting: exitQuiescing,
-      ...maintenanceStatus,
-      rescanNeeded,
-      counts,
-    },
-    t,
-    number,
-    percent,
-  );
 
   const allEmpty =
     counts !== null &&
@@ -296,10 +265,10 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
               )}
             >
               <MenuItem
-                disabled={sourceCheck.running}
+                disabled={sourceCheckRunning}
                 onSelect={() => void startSourceCheck()}
               >
-                {sourceCheck.running ? t("app.checkingSources") : t("app.checkSources")}
+                {sourceCheckRunning ? t("app.checkingSources") : t("app.checkSources")}
               </MenuItem>
               <MenuItem onSelect={() => openUtility("backgroundWork")}>{t("app.backgroundWork")}</MenuItem>
               <MenuSeparator />
@@ -377,12 +346,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
           className="flex min-w-0 flex-1 flex-col overflow-hidden"
         >
           {selected !== null ? (
-            <Grid
-              items={items}
-              loading={itemsLoading}
-              loadError={itemsLoadError}
-              layout={selected.kind === "other" ? "list" : "tiles"}
-            />
+            <MainGrid layout={selected.kind === "other" ? "list" : "tiles"} />
           ) : allEmpty ? (
             // While library work is active, empty counts do not yet prove the
             // configured sources have nothing to handle.
@@ -513,7 +477,7 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
             className="min-h-0 flex-1 overflow-y-auto outline-none"
           >
             {rightTab === "details" ? (
-              <MetadataPane detail={detail} hash={selectedHash} item={selectedSectionItem} />
+              <SelectedItemDetails />
             ) : (
               <DestinationsTab />
             )}
@@ -524,34 +488,17 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
           What it says is decided by `statusLine`, which is where the priority
           order and the "never blank" rule live. */}
       <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-border bg-surface px-3 py-1 text-xs">
-        <span
-          className={`min-w-0 truncate ${
-            status.tone === "danger"
-              ? "text-danger"
-              : status.tone === "warning"
-                ? "text-warning"
-                : "text-ink-muted"
-          }`}
-          title={status.title ?? status.text}
-          // The visible line clips at narrow widths; the accessible name
-          // carries the full value beyond the mouse-only hover title, the
-          // same escape hatch destination paths already give assistive
-          // technology (R8-09, matching R8-05).
-          aria-label={status.title ?? status.text}
-          role={status.announce === true ? (status.tone === "danger" ? "alert" : "status") : undefined}
-        >
-          {status.text}
-        </span>
+        <MainStatusLine />
         <span className="flex min-w-0 shrink items-center gap-3 [&>button]:min-w-0 [&>button]:truncate">
           <PlaybackControls />
-          {mutationProgress === null && mutationResult !== null && !exitQuiescing ? (
+          {!mutationRunning && mutationResult !== null && !exitQuiescing ? (
             <MutationResultActions
               result={mutationResult}
               onRevealTrash={() => openUtility("deletedFiles")}
               onDismiss={dismissMutationResult}
             />
           ) : null}
-          {mutationProgress !== null && !exitQuiescing ? (
+          {mutationRunning && !exitQuiescing ? (
             <button
               className="text-ink-muted enabled:hover:text-ink enabled:hover:underline disabled:opacity-40"
               disabled={mutationCancelling}
@@ -561,26 +508,18 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
               {mutationCancelling ? t("common.cancelling") : t("app.cancelOperation")}
             </button>
           ) : null}
-          {sourceCheck.running ? (
+          {sourceCheckRunning ? (
             <button
               className="text-ink-muted enabled:hover:text-ink enabled:hover:underline disabled:opacity-40"
-              disabled={sourceCheck.stopping}
+              disabled={sourceCheckStopping}
               title={t("app.stopCheckHint")}
               onClick={() => void stopSourceCheck()}
             >
-              {sourceCheck.stopping ? t("app.stopping") : t("app.stopCheck")}
+              {sourceCheckStopping ? t("app.stopping") : t("app.stopCheck")}
             </button>
           ) : null}
           {/* Why the fans spin while work runs in the background. */}
-          <button
-            className="text-ink-muted hover:text-ink hover:underline"
-            title={t("app.openBackgroundWork")}
-            onClick={() => {
-              openUtility("backgroundWork");
-            }}
-          >
-            {derivedWorkLine}
-          </button>
+          <BackgroundWorkLine onOpen={() => openUtility("backgroundWork")} />
           {/* Active conditions keep a durable status-bar count even after
               their nonblocking notification has been dismissed. */}
           {issuesTotal > 0 ? (
@@ -619,5 +558,95 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
       </footer>
     </div>
     </DestinationDragProvider>
+  );
+}
+
+/** The status bar's line. It follows every progress tick, so it subscribes
+ * to the progress itself rather than receiving it from the shell. What it
+ * says is decided by `statusLine`, which is where the priority order and the
+ * "never blank" rule live. */
+function MainStatusLine() {
+  const { t, number, percent } = useI18n();
+  const counts = useSectionsStore((s) => s.counts);
+  const sourceCheck = useSectionsStore((s) => s.sourceCheck);
+  const fileInformation = useSectionsStore((s) => s.fileInformation);
+  const rescanNeeded = useSectionsStore((s) => s.rescanNeeded);
+  const feedback = useMainFeedbackStore(currentMainFeedback);
+  const mutationProgress = useMutationStore((s) => s.progress);
+  const mutationCancelling = useMutationStore((s) => s.cancelling);
+  const mutationResult = useMutationStore((s) => s.result);
+  const exitQuiescing = useMutationStore((s) => s.exiting);
+  const status = statusLine(
+    {
+      feedback,
+      mutation: mutationProgress === null
+        ? null
+        : { progress: mutationProgress, cancelling: mutationCancelling },
+      mutationResult,
+      exiting: exitQuiescing,
+      ...activeMaintenanceStatus(sourceCheck, fileInformation),
+      rescanNeeded,
+      counts,
+    },
+    t,
+    number,
+    percent,
+  );
+  return (
+    <span
+      className={`min-w-0 truncate ${
+        status.tone === "danger"
+          ? "text-danger"
+          : status.tone === "warning"
+            ? "text-warning"
+            : "text-ink-muted"
+      }`}
+      title={status.title ?? status.text}
+      // The visible line clips at narrow widths; the accessible name
+      // carries the full value beyond the mouse-only hover title, the
+      // same escape hatch destination paths already give assistive
+      // technology (R8-09, matching R8-05).
+      aria-label={status.title ?? status.text}
+      role={status.announce === true ? (status.tone === "danger" ? "alert" : "status") : undefined}
+    >
+      {status.text}
+    </span>
+  );
+}
+
+/** The grid with the current item window, which changes on every refresh
+ * round and scroll-driven load. */
+function MainGrid({ layout }: { layout: "tiles" | "list" }) {
+  const items = useItemsStore((s) => s.items);
+  const loading = useItemsStore((s) => s.loading);
+  const loadError = useItemsStore((s) => s.loadError);
+  return <Grid items={items} loading={loading} loadError={loadError} layout={layout} />;
+}
+
+/** Details for the anchor item, looked up in the current item window. */
+function SelectedItemDetails() {
+  const detail = useItemsStore((s) => s.detail);
+  const selectedItemKey = useItemsStore((s) => s.selectedItem);
+  const item = useItemsStore((s) =>
+    s.selectedItem === null
+      ? null
+      : (s.items.find((candidate) => itemKey(candidate) === s.selectedItem) ?? null),
+  );
+  const hash = selectedItemKey !== null && isHashKey(selectedItemKey) ? selectedItemKey : null;
+  return <MetadataPane detail={detail} hash={hash} item={item} />;
+}
+
+/** The status bar's background-work summary, which follows the runtime. */
+function BackgroundWorkLine({ onOpen }: { onOpen: () => void }) {
+  const { t } = useI18n();
+  const runtime = useDerivedWorkStore((s) => s.runtime);
+  return (
+    <button
+      className="text-ink-muted hover:text-ink hover:underline"
+      title={t("app.openBackgroundWork")}
+      onClick={onOpen}
+    >
+      {backgroundRuntimeLine(runtime, t)}
+    </button>
   );
 }
