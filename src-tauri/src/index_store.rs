@@ -557,6 +557,12 @@ fn open_before_setup(db_file: &Path, before_setup: impl FnOnce()) -> Result<Conn
     // fail the transaction rather than survive silently (R1-11).
     conn.pragma_update(None, "foreign_keys", true)
         .map_err(|error| error.to_string())?;
+    // The index is rebuilt from the source folders, so a commit need not wait
+    // for the disk: in WAL mode NORMAL keeps the index consistent through a
+    // crash or power loss and may lose only the last commits, which the next
+    // check writes again. The attached records keep their own setting.
+    conn.execute_batch("PRAGMA main.synchronous = NORMAL")
+        .map_err(|error| error.to_string())?;
     Ok(conn)
 }
 
