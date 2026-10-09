@@ -546,6 +546,44 @@ fn section_reconciliation_prefers_a_selected_previous_survivor_over_an_unselecte
     assert_eq!(result.anchor.unwrap().hash.as_deref(), Some("b"));
 }
 
+// Deleting a long range from its top removes every neighbour the recovery
+// context lists after the anchor; the next survivor beyond them still wins
+// over the item before the range.
+#[test]
+fn section_reconciliation_recovers_the_next_survivor_beyond_every_listed_neighbour() {
+    let conn = db();
+    for index in 1..=100 {
+        seed_image(&conn, &format!("h{index:03}"), Some("ready"), &format!("{index:03}.jpg"));
+    }
+    let identity = |index: u64| queries::SectionIdentity { hash: Some(format!("h{index:03}")), path_id: 0 };
+    // The anchor h010 and the 70 items after it are deleted; the context
+    // lists only 64 of them.
+    conn.execute("DELETE FROM paths WHERE content_hash BETWEEN 'h010' AND 'h080'", []).unwrap();
+
+    let result = queries::reconcile_section(
+        &conn,
+        onecopy_lib::queries::SectionKind::Image,
+        "2026-01",
+        Tz::UTC,
+        sort(queries::SectionSortOrder::Name, false),
+        &[],
+        Some(&identity(10)),
+        None,
+        &[],
+        Some(&queries::SectionRecoveryContext {
+            index: 9,
+            before: (1..=9).rev().map(identity).collect(),
+            after: (11..=74).map(identity).collect(),
+        }),
+        false,
+        3,
+        projection(),
+    )
+    .unwrap();
+
+    assert_eq!(result.anchor.unwrap().hash.as_deref(), Some("h081"));
+}
+
 #[test]
 fn explicit_section_range_returns_only_requested_positions() {
     let conn = db();

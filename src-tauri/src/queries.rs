@@ -1011,12 +1011,25 @@ fn choose_reconciled_anchor(
         {
             return Some(AnchorChoice::Known(member.clone()));
         }
-        let neighbor = context
+        if let Some(member) = context
             .after
             .iter()
-            .chain(context.before.iter())
-            .find_map(|identity| matches.get(&identity.key()).cloned());
-        if let Some(member) = neighbor {
+            .find_map(|identity| matches.get(&identity.key()).cloned())
+        {
+            return Some(AnchorChoice::Known(member));
+        }
+        // Every listed neighbour after the anchor went too (a long range
+        // deleted from its top). While the section goes on past the anchor's
+        // old place, the item now there is a later survivor: prefer it to an
+        // earlier one.
+        if !context.after.is_empty() && context.index < total {
+            return Some(AnchorChoice::Index(context.index));
+        }
+        if let Some(member) = context
+            .before
+            .iter()
+            .find_map(|identity| matches.get(&identity.key()).cloned())
+        {
             return Some(AnchorChoice::Known(member));
         }
         return Some(AnchorChoice::Index(context.index.min(total - 1)));
