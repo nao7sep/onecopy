@@ -273,13 +273,15 @@ function cancelPublication(): void {
 }
 
 function publishCurrent(): void {
-  const { follow, placement, current } = usePreviewStore.getState();
+  const { follow, placement, current, error } = usePreviewStore.getState();
   if (follow && placement === "window" && previewWindowOpen && current !== null) {
     const request = surfaceRequest;
     lastSentAt = Date.now();
     void emit("preview://show", current)
       .then(() => {
-        if (request === surfaceRequest) usePreviewStore.setState({ error: null });
+        if (request === surfaceRequest && usePreviewStore.getState().error === error) {
+          usePreviewStore.setState({ error: null });
+        }
       })
       .catch((error) =>
         request === surfaceRequest && publishPreviewFailure(
@@ -372,13 +374,27 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
 
   // Closing Preview leaves Main's selection and anchor as they are.
   close: () => {
-    surfaceRequest += 1;
+    const request = ++surfaceRequest;
     cancelPublication();
-    const { placement } = get();
+    const { follow, placement, current, openFailed } = get();
     set({ follow: false, placement: null, current: null, openFailed: false });
     if (placement === "window") {
       void enqueueSurface(async () => {
         await closePreviewWindow();
+      }).catch((error) => {
+        if (request !== surfaceRequest) {
+          log.warn("superseded preview close failed", toErrorFields(error));
+          recordStaleSurface(request);
+          return;
+        }
+        // Failed destruction leaves this surface showing its last package.
+        // Keep it available to retry, without reviving a superseded surface.
+        set({ follow, placement, current, openFailed });
+        publishPreviewFailure(
+          "preview-close-failed",
+          message("preview.closeWindowFailed"),
+          error,
+        );
       });
     }
   },

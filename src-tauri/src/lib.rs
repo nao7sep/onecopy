@@ -550,11 +550,11 @@ async fn viewer_sequence_reconcile(token: String) -> Result<Option<viewer_sequen
     .await
 }
 
-// Control-like command: releases the sequence token from an in-memory map
-// only (see viewer_sequence::close); no index or filesystem access.
+// Closing waits for ACTIVE, disposes its SQLite connection, and removes the
+// temporary sequence file. Keep that cleanup on the blocking worker pool.
 #[tauri::command]
-fn viewer_sequence_close(token: Option<String>) -> Result<(), String> {
-    viewer_sequence::close(token.as_deref())
+async fn viewer_sequence_close(token: Option<String>) -> Result<(), String> {
+    dispatch(move || viewer_sequence::close(token.as_deref())).await
 }
 
 #[tauri::command]

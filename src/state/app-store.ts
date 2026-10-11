@@ -123,7 +123,8 @@ export function saveUnsettledConfig(): Promise<void> {
 }
 
 /** Waits until every queued config write has settled and nothing published
- * is left unsaved. Rejects with the first failure, for quit to decide on. */
+ * is left unsaved. Failed explicit saves remain with their caller's draft;
+ * a pending published-value save rejects here for quit to decide on. */
 export async function flushConfigForShutdown(): Promise<void> {
   while (true) {
     const tail = configWriteTail;

@@ -65,6 +65,12 @@ function projectAnchor(): void {
 export function installItemWorkflow(): void {
   if (installed) return;
   installed = true;
+  usePreviewStore.subscribe((state, previous) => {
+    // A concrete surface becoming a follower must start from Main's current
+    // selection, including recovery after a failed close. Selection may have
+    // changed while follow was off; the captured old package is no authority.
+    if (state.follow && !previous.follow && state.placement !== null) projectAnchor();
+  });
   useItemsStore.subscribe((state, previous) => {
     const patch: Record<string, unknown> = {};
     if (state.sortOrders !== previous.sortOrders) patch.sortOrders = state.sortOrders;

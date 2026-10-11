@@ -14,6 +14,7 @@ import {
   emitCalls,
   invokeCalls,
   mockCommands,
+  mockCommand,
   resetTauriMocks,
   rejectNextWindowListener,
   WebviewWindow,
@@ -180,6 +181,52 @@ describe("clearing the surface", () => {
 });
 
 describe("preview window failures", () => {
+  it("owns a rejected native close and preserves the recoverable window package", async () => {
+    const window = new WebviewWindow("preview");
+    usePreviewStore.setState({ placementPreference: "window" });
+    await usePreviewStore.getState().open(ITEM_A, detailFor("A.jpg"));
+    const current = usePreviewStore.getState().current;
+    window.destroy.mockRejectedValueOnce(new Error("TypeError: EACCES /private/tmp/close sentinel"));
+
+    usePreviewStore.getState().close();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(usePreviewStore.getState()).toMatchObject({ follow: true, placement: "window", current });
+    expect(inEnglish(usePreviewStore.getState().error)).toBe("Couldn’t close the Preview window.");
+    expect(inEnglish(usePreviewStore.getState().error)).not.toContain("sentinel");
+    expect(invokeCalls.filter((call) => call.command === "record_recent_notification").at(-1)?.args)
+      .toMatchObject({ request: { kind: "preview-close-failed" } });
+    // The owner settles the rejection; Vitest also fails this test if the
+    // discarded close promise escapes to the global unhandled handler.
+    usePreviewStore.getState().close();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(usePreviewStore.getState()).toMatchObject({ follow: false, placement: null, current: null });
+  });
+
+  it("keeps a newer open when an older native close rejects", async () => {
+    const window = new WebviewWindow("preview");
+    usePreviewStore.setState({ placementPreference: "window" });
+    await usePreviewStore.getState().open(ITEM_A, detailFor("A.jpg"));
+    let rejectClose!: (error: Error) => void;
+    mockCommand("close_preview_window", () => new Promise<void>((_resolve, reject) => {
+      rejectClose = reject;
+    }));
+    usePreviewStore.getState().close();
+    for (let index = 0; index < 10 && !rejectClose; index += 1) await Promise.resolve();
+    expect(rejectClose).toBeDefined();
+    const opening = usePreviewStore.getState().open(ITEM_B, detailFor("B.jpg"));
+    rejectClose(new Error("old close failed"));
+    await opening;
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(usePreviewStore.getState()).toMatchObject({
+      follow: true, placement: "window", error: null,
+      current: { ...ITEM_B, detail: detailFor("B.jpg") },
+    });
+    expect(window.show).toHaveBeenCalledTimes(2);
+    expect(invokeCalls.filter((call) => call.command === "record_recent_notification")).toEqual([]);
+  });
+
   it("does not lose queued detail when the placement is unchanged", async () => {
     new WebviewWindow("preview");
     usePreviewStore.setState({ placementPreference: "window" });

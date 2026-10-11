@@ -72,6 +72,8 @@ const FORBIDDEN_BOUNDARY = [
   /index_store::open\(/,
   /std::fs::/,
   /subprocess::/,
+  // This delegate waits for ACTIVE, disposes SQLite, and removes its file.
+  /viewer_sequence::close\(/,
 ];
 
 // Async commands that await their own non-blocking work instead of running a
@@ -79,6 +81,27 @@ const FORBIDDEN_BOUNDARY = [
 const ASYNC_WITHOUT_DISPATCH = new Set(["check_github_release"]);
 
 const DISPATCH_MARKERS = [/\bdispatch\(/, /spawn_blocking\(/];
+
+function boundaryViolations(commands: CommandFn[]): string[] {
+  const violations: string[] = [];
+  for (const command of commands) {
+    const touchesBoundary = FORBIDDEN_BOUNDARY.some((pattern) => pattern.test(command.body));
+    if (!touchesBoundary) continue;
+    if (!command.isAsync) {
+      violations.push(
+        `${command.name}: a plain #[tauri::command] touches the index, filesystem, or a subprocess directly — it runs on the MAIN thread and would freeze every window`,
+      );
+      continue;
+    }
+    const dispatched = DISPATCH_MARKERS.some((pattern) => pattern.test(command.body));
+    if (!dispatched) {
+      violations.push(
+        `${command.name}: an async command touches the index, filesystem, or a subprocess without dispatch() — it would block a tokio worker`,
+      );
+    }
+  }
+  return violations;
+}
 
 describe("command threading", () => {
   const commands = findCommands(rustLib);
@@ -90,24 +113,18 @@ describe("command threading", () => {
   });
 
   it("keeps plain commands off the index, filesystem, and subprocess, and routes async commands' access through dispatch()", () => {
-    const violations: string[] = [];
-    for (const command of commands) {
-      const touchesBoundary = FORBIDDEN_BOUNDARY.some((pattern) => pattern.test(command.body));
-      if (!touchesBoundary) continue;
-      if (!command.isAsync) {
-        violations.push(
-          `${command.name}: a plain #[tauri::command] touches the index, filesystem, or a subprocess directly — it runs on the MAIN thread and would freeze every window`,
-        );
-        continue;
+    expect(boundaryViolations(commands)).toEqual([]);
+  });
+
+  it("rejects a planted undispatched viewer-sequence close delegate", () => {
+    const planted = findCommands(`
+      #[tauri::command]
+      fn viewer_sequence_close(token: Option<String>) -> Result<(), String> {
+        viewer_sequence::close(token.as_deref())
       }
-      const dispatched = DISPATCH_MARKERS.some((pattern) => pattern.test(command.body));
-      if (!dispatched) {
-        violations.push(
-          `${command.name}: an async command touches the index, filesystem, or a subprocess without dispatch() — it would block a tokio worker`,
-        );
-      }
-    }
-    expect(violations).toEqual([]);
+    `);
+    expect(boundaryViolations(planted)).toHaveLength(1);
+    expect(boundaryViolations(planted)[0]).toContain("viewer_sequence_close");
   });
 
   it("runs every async command's body through dispatch()", () => {

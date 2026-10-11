@@ -151,9 +151,10 @@ function focusMainAnchor(): void {
   }
 }
 
-async function restoreMainFocus(): Promise<void> {
+async function restoreMainFocus(request: number): Promise<void> {
+  if (request !== viewerOpenRequest) return;
   await focusWhileActive("main").catch(reportWindowCall("main focus"));
-  focusMainAnchor();
+  if (request === viewerOpenRequest) focusMainAnchor();
 }
 
 /** A window failure closes only the session it was shown for: a later
@@ -200,7 +201,7 @@ const install = createEventInstaller(
     // its navigation, so one Space reopens the same item. Focus stays with
     // the app the user switched to.
     await listeners.listen<boolean>("app://activation", (event) => {
-      if (!event.payload && useFullscreenViewStore.getState().session !== null) {
+      if (!event.payload) {
         void closeFullscreenView({ restoreFocus: false });
       }
     });
@@ -291,24 +292,33 @@ export function openFullscreenView(): boolean {
     return index === undefined ? [] : [{ ...identityFromKey(key), index }];
   });
   const entrySort = items.currentSort();
-  void invoke<ViewerSequenceSnapshot>("viewer_sequence_start", {
-    kind: section.kind,
-    month: section.month,
-    sort: entrySort,
-    selected,
-    anchor: identityFromKey(items.selectedItem),
-  })
-    .then((snapshot) => {
+  const anchor = identityFromKey(items.selectedItem);
+  const recordStale = () => {
+    recordActivity({
+      kind: "stale", owner, operationId, previous: "running", current: "stale",
+      reason: "superseded",
+    });
+    feedback.finish();
+  };
+  // Native start installs one singleton when its disk-backed build finishes.
+  // Keep starts and token cleanup ordered through settlement: an older build
+  // must never replace a newer sequence before its stale response is dropped.
+  enqueueViewerSequence(async () => {
+    if (request !== viewerOpenRequest) {
+      recordStale();
+      return;
+    }
+    try {
+      const snapshot = await invoke<ViewerSequenceSnapshot>("viewer_sequence_start", {
+        kind: section.kind,
+        month: section.month,
+        sort: entrySort,
+        selected,
+        anchor,
+      });
       if (request !== viewerOpenRequest) {
-        recordActivity({
-          kind: "stale",
-          owner,
-          operationId,
-          previous: "running",
-          current: "stale",
-          reason: "superseded",
-        });
-        void invoke("viewer_sequence_close", { token: snapshot.token }).catch((error) =>
+        recordStale();
+        await invoke("viewer_sequence_close", { token: snapshot.token }).catch((error) =>
           log.warn("stale viewer sequence cleanup failed", toErrorFields(error)),
         );
         return;
@@ -326,8 +336,7 @@ export function openFullscreenView(): boolean {
         reason: "completion",
       });
       showWindow(snapshot.token, feedback);
-    })
-    .catch((error) => {
+    } catch (error) {
       if (request !== viewerOpenRequest) return;
       log.error("viewer sequence start failed", toErrorFields(error));
       const failure = message("fullscreenView.openFailed");
@@ -341,7 +350,8 @@ export function openFullscreenView(): boolean {
         current: "failed",
         reason: "error",
       });
-    });
+    }
+  });
   return true;
 }
 
@@ -385,7 +395,7 @@ export function moveFullscreenView(move: ViewerMove): void {
 }
 
 export async function closeFullscreenView({ restoreFocus = true } = {}): Promise<void> {
-  viewerOpenRequest += 1;
+  const request = ++viewerOpenRequest;
   const session = useFullscreenViewStore.getState().session;
   if (session !== null) {
     recordActivity({
@@ -397,15 +407,22 @@ export async function closeFullscreenView({ restoreFocus = true } = {}): Promise
     });
   }
   useFullscreenViewStore.getState().close();
+  // Admit physical retirement now, before a later open can enqueue its show.
+  // Native cleanup has its own queue owner and cannot delay window ordering
+  // or Main's independently admitted reconciliation.
+  const retirement = session === null ? Promise.resolve() : hideFullscreenViewWindow();
   if (session !== null) {
-    await invoke("viewer_sequence_close", { token: session.token }).catch((error) =>
-      log.warn("viewer sequence cleanup failed", toErrorFields(error)),
-    );
-    await hideFullscreenViewWindow();
+    enqueueViewerSequence(async () => {
+      await invoke("viewer_sequence_close", { token: session.token }).catch((error) =>
+        log.warn("viewer sequence cleanup failed", toErrorFields(error)),
+      );
+    });
   }
+  await retirement;
+  if (request !== viewerOpenRequest) return;
   // Library updates and mutations own Main reconciliation. Closing the view
   // must not replace an already-admitted Main navigation with a second load.
-  if (restoreFocus) await restoreMainFocus();
+  if (restoreFocus) await restoreMainFocus(request);
   else focusMainAnchor();
 }
 

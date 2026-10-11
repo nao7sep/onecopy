@@ -38,10 +38,10 @@ import { currentMainFeedback, useMainFeedbackStore } from "../../src/state/main-
 let sequence: Array<SectionItem> = [];
 let sequenceIndex = 0;
 
-function sequenceSnapshot() {
-  const current = sequence[sequenceIndex]!;
+function sequenceSnapshot(token = "fullscreen-view-token", index = sequenceIndex) {
+  const current = sequence[index]!;
   return {
-    token: "fullscreen-view-token",
+    token,
     member: { hash: current.hash, pathId: current.pathId },
     item: current,
     detail: {
@@ -51,7 +51,7 @@ function sequenceSnapshot() {
       resolvedSource: "metadata", dateOnly: false, copyPaths: [], copyCount: 0,
       companionPaths: [], stripFrames: null,
     },
-    index: sequenceIndex,
+    index,
     length: sequence.length,
     sectionIndex: current.pathId - 1,
     scope: sequence.length === 3 ? "section" : "selection",
@@ -129,6 +129,145 @@ beforeEach(() => {
 });
 
 describe("fullscreen view workflow", () => {
+  it("keeps the latest open navigable when an earlier native start settles late", async () => {
+    sequence = [item("a", 1), item("b", 2), item("c", 3)];
+    let active: ViewerSequenceSnapshot | null = null;
+    const starts = new Map<string, () => void>();
+    mockCommand("viewer_sequence_start", ({ anchor }) => {
+      const hash = (anchor as { hash: string }).hash;
+      return new Promise<ViewerSequenceSnapshot>((resolve) => {
+        let settled = false;
+        starts.set(hash, () => {
+          if (settled) return;
+          settled = true;
+          // Native start replaces the singleton when its build completes.
+          active = sequenceSnapshot(hash, hash === "a" ? 0 : 1) as ViewerSequenceSnapshot;
+          resolve(active);
+        });
+      });
+    });
+    mockCommand("viewer_sequence_close", ({ token }) => {
+      if (active?.token === token) active = null;
+      return null;
+    });
+    mockCommand("viewer_sequence_move", ({ token }) => {
+      if (active?.token !== token) throw new Error("viewer sequence is closed");
+      active = sequenceSnapshot(String(token), 2) as ViewerSequenceSnapshot;
+      return active;
+    });
+    useItemsStore.getState().selectItem("a", "nearest", 0);
+    openFullscreenView();
+    await vi.waitFor(() => expect(starts.has("a")).toBe(true));
+    useItemsStore.getState().selectItem("b", "nearest", 1);
+    openFullscreenView();
+    await Promise.resolve();
+    // Reproduce completion-order replacement if a second start was admitted
+    // before the first settled; serialized starts cannot reach this branch.
+    starts.get("b")?.();
+    await Promise.resolve();
+    starts.get("a")!();
+    await vi.waitFor(() => expect(starts.has("b")).toBe(true));
+    starts.get("b")!();
+    await vi.waitFor(() => expect(useFullscreenViewStore.getState().session?.token).toBe("b"));
+
+    moveFullscreenView("next");
+    await vi.waitFor(() => expect(useFullscreenViewStore.getState().session?.item.hash).toBe("c"));
+    expect(useFullscreenViewStore.getState().failure).toBeNull();
+    expect(active).toMatchObject({ token: "b" });
+  });
+
+  it.each(["command", "deactivation"] as const)("cancels pending and queued starts on %s without reopening", async (entry) => {
+    if (entry === "deactivation") await installFullscreenViewWorkflow();
+    sequence = [item("a", 1), item("b", 2), item("c", 3)];
+    let finishStart!: () => void;
+    mockCommand("viewer_sequence_start", () => new Promise<ViewerSequenceSnapshot>((resolve) => {
+      finishStart = () => resolve(sequenceSnapshot("pending") as ViewerSequenceSnapshot);
+    }));
+    openFullscreenView();
+    await vi.waitFor(() => expect(finishStart).toBeDefined());
+    openFullscreenView();
+    if (entry === "command") await closeFullscreenView();
+    else fireEvent("app://activation", false);
+    finishStart();
+    await vi.waitFor(() => expect(invokeCalls.some((call) =>
+      call.command === "viewer_sequence_close" && call.args.token === "pending",
+    )).toBe(true));
+    // Settle a wrongly admitted second start too, so the regression's failure
+    // cannot leave the shared sequence queue blocked for later tests.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (invokeCalls.filter((call) => call.command === "viewer_sequence_start").length > 1) finishStart();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(invokeCalls.filter((call) => call.command === "viewer_sequence_start")).toHaveLength(1);
+    expect(useFullscreenViewStore.getState().session).toBeNull();
+    const window = await WebviewWindow.getByLabel("fullscreen-view");
+    expect(window?.show).not.toHaveBeenCalled();
+  });
+
+  it.each(["command", "deactivation"] as const)(
+    "retires an old window before reopening while %s cleanup is delayed",
+    async (entry) => {
+      await installFullscreenViewWorkflow();
+      const window = await WebviewWindow.getByLabel("fullscreen-view");
+      let token = 0;
+      mockCommand("viewer_sequence_start", () => {
+        sequence = [item("a", 1), item("b", 2), item("c", 3)];
+        return sequenceSnapshot(`session-${++token}`, 1);
+      });
+      openFullscreenView();
+      await vi.waitFor(() => expect(window?.show).toHaveBeenCalledOnce());
+      let finishCleanup!: () => void;
+      mockCommand("viewer_sequence_close", () => new Promise<void>((resolve) => {
+        finishCleanup = resolve;
+      }));
+      setFocus.mockClear();
+      const closing = entry === "command" ? closeFullscreenView() : undefined;
+      if (entry === "deactivation") fireEvent("app://activation", false);
+      await vi.waitFor(() => expect(finishCleanup).toBeDefined());
+      setFocus.mockClear();
+      openFullscreenView();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      finishCleanup();
+      await closing;
+      await vi.waitFor(() => expect(window?.show).toHaveBeenCalledTimes(2));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(useFullscreenViewStore.getState().session?.token).toBe("session-2");
+      expect(window?.hide).toHaveBeenCalledOnce();
+      expect(window!.hide.mock.invocationCallOrder[0]).toBeLessThan(window!.show.mock.invocationCallOrder[1]!);
+      expect(setFocus).not.toHaveBeenCalled();
+    },
+  );
+
+  it("settles reconciliation that closes an empty native sequence", async () => {
+    await installFullscreenViewWorkflow();
+    const window = await WebviewWindow.getByLabel("fullscreen-view");
+    openFullscreenView();
+    await vi.waitFor(() => expect(window?.show).toHaveBeenCalledOnce());
+    mockCommand("viewer_sequence_reconcile", () => null);
+    useItemsStore.setState({ reconciliationId: useItemsStore.getState().reconciliationId + 1 });
+    await vi.waitFor(() => expect(window?.hide).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(invokeCalls.some((call) => call.command === "viewer_sequence_close")).toBe(true));
+    expect(useFullscreenViewStore.getState().session).toBeNull();
+    openFullscreenView();
+    await vi.waitFor(() => expect(window?.show).toHaveBeenCalledTimes(2));
+  });
+
+  it("does not restore Main focus after a newer open is admitted during window retirement", async () => {
+    const window = (await WebviewWindow.getByLabel("fullscreen-view"))!;
+    openFullscreenView();
+    await vi.waitFor(() => expect(window.show).toHaveBeenCalledOnce());
+    let finishHide!: () => void;
+    window.hide.mockImplementationOnce(() => new Promise<void>((resolve) => { finishHide = resolve; }));
+    const closing = closeFullscreenView();
+    await vi.waitFor(() => expect(finishHide).toBeDefined());
+    setFocus.mockClear();
+    openFullscreenView();
+    finishHide();
+    await closing;
+    await vi.waitFor(() => expect(window.show).toHaveBeenCalledTimes(2));
+    expect(setFocus).not.toHaveBeenCalled();
+  });
+
   it("reveals a diagnostic target out of the fullscreen view without replacing its new Main selection on close", async () => {
     expect(openFullscreenView()).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
