@@ -81,7 +81,7 @@ export const installWindowAppearance = createEventInstaller(async (listeners) =>
     try {
       const preferences = await readPreferences();
       if (current !== request) return;
-      await useLanguageStore.getState().apply(preferences);
+      await useLanguageStore.getState().apply(preferences, () => current === request);
       if (current !== request) return;
       applyUiFont(preferences.uiFontFamily);
       applyWindowTitle(useLanguageStore.getState().language);
@@ -95,7 +95,8 @@ export const installWindowAppearance = createEventInstaller(async (listeners) =>
       // language. It installs the fallback language instead; a later failed
       // refresh keeps the last good language.
       if (!succeeded) {
-        await useLanguageStore.getState().apply({}).catch((fallbackError) => {
+        await useLanguageStore.getState().apply({}, () => current === request).catch((fallbackError) => {
+          if (current !== request) return;
           log.warn("fallback language failed to load", toErrorFields(fallbackError));
         });
       }

@@ -75,6 +75,7 @@ interface WizardState {
 }
 
 const presenceCheck = requestSeq();
+const languageChoice = requestSeq();
 
 export const useWizardStore = create<WizardState>((set, get) => ({
   open: false,
@@ -91,6 +92,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
   presenceUnknown: false,
 
   init: async (config) => {
+    languageChoice.begin();
     const sourceDirs = stringArrayField(config, "sourceDirs");
     // First run opens on the computer's own zone, so finishing setup saves a
     // concrete zone; "System" stays a deliberate choice.
@@ -132,6 +134,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
   },
 
   reopen: (config) => {
+    languageChoice.begin();
     const sourceDirs = stringArrayField(config, "sourceDirs");
     const timezone = configString(config, "defaultTimezone") ?? "";
     set({
@@ -185,11 +188,19 @@ export const useWizardStore = create<WizardState>((set, get) => ({
   },
 
   setLanguage: async (preference) => {
-    await loadCatalogue(effectiveLanguage(preference, useLanguageStore.getState().systemLanguage));
+    const fresh = languageChoice.begin();
+    try {
+      await loadCatalogue(effectiveLanguage(preference, useLanguageStore.getState().systemLanguage));
+    } catch (error) {
+      if (fresh() && get().open) throw error;
+      return;
+    }
+    if (!fresh() || !get().open) return;
     set({ language: preference });
   },
 
   cancel: () => {
+    languageChoice.begin();
     // Nothing was written on the way through — every step edits store state
     // only, and the Finish workflow is the sole writer — so abandoning is
     // just a close. The wizard's own preview (Wizard.tsx) closes with it;

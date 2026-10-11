@@ -5,6 +5,7 @@ import {
   type Language,
 } from "../i18n/languages";
 import { loadCatalogue } from "../i18n/catalogues";
+import { requestSeq } from "./request-seq";
 
 // If the appearance read never completes (a slow core, or window-appearance's
 // own 5 s bound), the window must not paint in English regardless of what the
@@ -30,8 +31,10 @@ interface LanguageState {
    * formats when it shares the interface language. */
   systemLocale: string | null;
   /** Takes the language once its catalogue is loaded. */
-  apply: (input: LanguageInput) => Promise<void>;
+  apply: (input: LanguageInput, current?: () => boolean) => Promise<void>;
 }
+
+const languageApply = requestSeq();
 
 // Every window learns the language from the same appearance read it already
 // awaits before its first paint, so no window shows English first, and a saved
@@ -42,9 +45,13 @@ export const useLanguageStore = create<LanguageState>((set) => {
     language: fallback,
     systemLanguage: fallback,
     systemLocale: null,
-    apply: async (input) => {
+    apply: async (input, current = () => true) => {
+      const fresh = languageApply.begin();
       const language = isLanguage(input.language) ? input.language : fallback;
       await loadCatalogue(language);
+      // A catalogue may finish after either a newer apply or the caller's
+      // newer read admission. Cache completion never owns publication.
+      if (!fresh() || !current()) return;
       set({
         language,
         systemLanguage: isLanguage(input.systemLanguage) ? input.systemLanguage : fallback,

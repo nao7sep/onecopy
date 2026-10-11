@@ -23,6 +23,7 @@ function stillOwnsSubmission(submission: WizardSubmission): boolean {
   return (
     current.open &&
     current.finishing &&
+    current.language === submission.language &&
     JSON.stringify(current.dirs.map((dir) => dir.path)) ===
       JSON.stringify(submission.dirs.map((dir) => dir.path)) &&
     current.timezone === submission.timezone &&
