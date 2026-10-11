@@ -198,6 +198,93 @@ fn lifecycle_signals_cancel_the_selected_native_transcription() {
     }
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn dispatched_controls_yield_while_native_publication_holds_its_lock() {
+    let _serial = crate::scan_runtime::serial_test();
+    let active = ActiveGuard::begin(None, WorkClass::VideoTranscripts)
+        .unwrap()
+        .unwrap();
+    set_hash(active.id, "publishing");
+    let caller_thread = thread::current().id();
+    let (entered, publishing) = mpsc::channel();
+    let (release, finish_publication) = mpsc::channel();
+    let (retire, finish_native) = mpsc::channel();
+    let publisher = thread::spawn(move || {
+        let native = crate::transcription::claim().unwrap();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute("CREATE TABLE published (value TEXT)", [])
+            .unwrap();
+        // This is the real atomic publication boundary. Its barrier holds
+        // the native registry through an outbound publication closure, just
+        // as a busy SQLite write can hold it. No native UI or inference runs.
+        let outcome = crate::transcription::publish_if_active(&native, || {
+            entered.send(()).unwrap();
+            finish_publication.recv().unwrap();
+            conn.execute("INSERT INTO published VALUES ('settled')", [])
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        });
+        let committed: bool = conn
+            .query_row("SELECT COUNT(*) = 1 FROM published", [], |row| row.get(0))
+            .unwrap();
+        let _ = finish_native.recv();
+        drop(native);
+        (outcome, committed)
+    });
+    publishing.recv_timeout(Duration::from_secs(2)).unwrap();
+
+    // Drive the actual IPC wrappers on one executor. Cancellation owns
+    // RUNTIME while waiting for the native publication registry; a runtime
+    // poll must wait behind it, while another dispatch can still answer.
+    let cancel = tokio::spawn(crate::transcribe_cancel());
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let retained = loop {
+        if matches!(
+            RUNTIME.0.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        ) {
+            break true;
+        }
+        if Instant::now() >= deadline {
+            break false;
+        }
+        tokio::task::yield_now().await;
+    };
+    let runtime_read = tokio::spawn(crate::background_work_runtime());
+    let unrelated = tokio::time::timeout(
+        Duration::from_secs(2),
+        crate::dispatch(|| Ok(thread::current().id())),
+    )
+    .await;
+    let controls_pending = !cancel.is_finished() && !runtime_read.is_finished();
+
+    release.send(()).unwrap();
+    let cancellation = cancel.await.unwrap().unwrap();
+    let payload = runtime_read.await.unwrap().unwrap();
+    let native_cancelled = crate::transcription::is_cancelled();
+    retire.send(()).unwrap();
+    let (publication, committed) = publisher.join().unwrap();
+    drop(active);
+
+    assert!(
+        retained,
+        "cancellation never acquired the selected runtime owner"
+    );
+    assert!(
+        controls_pending,
+        "controls settled before the retained publication boundary"
+    );
+    assert_ne!(unrelated.unwrap().unwrap(), caller_thread);
+    assert!(cancellation);
+    assert_eq!(payload["active"]["stopping"], true);
+    assert!(native_cancelled);
+    assert!(
+        publication.unwrap().is_some(),
+        "publication already owning the boundary must finish before cancellation"
+    );
+    assert!(committed);
+}
+
 fn job(class: WorkClass, manual: bool) -> Job {
     Job {
         id: 1,

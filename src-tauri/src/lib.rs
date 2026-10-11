@@ -117,8 +117,8 @@ pub mod window_placement;
 // `async fn` whose body runs through `dispatch()`; there is no longer a
 // sync-fn-marked-`(async)` command anywhere in this file. Commands left as
 // plain `#[tauri::command]` are pure, in-memory, and fast — atomic flag
-// flips and bare state reads (logging_debug_enabled, transcribe_cancel,
-// mutation_cancel, note_user_activity, ...) — or must keep strict call order
+// flips and bare state reads (logging_debug_enabled, note_user_activity,
+// trash_empty_cancel, ...) — or must keep strict call order
 // (log_event). The get_* reads route through `dispatch()` too — their
 // responses may arrive OUT OF ORDER, which the stores absorb with
 // request-sequence guards (`staleGuard` in src/state/request-seq.ts): a
@@ -261,27 +261,31 @@ async fn start_source_check(app: AppHandle, explicit: bool) -> Result<bool, Stri
     .await
 }
 
-// Control command: only flips an in-memory stop flag (source_check_runtime's
-// own state Mutex) and wakes the file-information worker; it does no index or
-// filesystem work of its own, so it stays plain and immediate — a running
-// scan's Cancel must never queue behind another command.
+// The stop flag itself is immediate; reporting a failed state delivery can
+// write history, so the whole command uses the blocking owner.
 #[tauri::command]
-fn stop_source_check(app: AppHandle) -> bool {
-    source_check_runtime::stop(&app)
+async fn stop_source_check(app: AppHandle) -> Result<bool, String> {
+    dispatch(move || Ok(source_check_runtime::stop(&app))).await
 }
 
-// Control commands: both only flip in-memory atomics/state (no index or
-// filesystem access — see file_information_runtime::snapshot, which now
-// reads a cached flag instead of probing the index) and spawning a worker
-// thread is not itself blocking work, so they stay plain and immediate.
+// These controls can record failed state delivery even though their normal
+// state changes are in memory. Keep that reporting off the native thread.
 #[tauri::command]
-fn set_file_information_paused(app: AppHandle, paused: bool) {
-    file_information_runtime::set_paused(app, paused);
+async fn set_file_information_paused(app: AppHandle, paused: bool) -> Result<(), String> {
+    dispatch(move || {
+        file_information_runtime::set_paused(app, paused);
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
-fn admit_background_completion(app: AppHandle) {
-    file_information_runtime::admit_background_completion(app);
+async fn admit_background_completion(app: AppHandle) -> Result<(), String> {
+    dispatch(move || {
+        file_information_runtime::admit_background_completion(app);
+        Ok(())
+    })
+    .await
 }
 
 #[derive(serde::Serialize)]
@@ -337,16 +341,18 @@ async fn delete_items(
     dispatch(move || mutation_runtime::delete_items(&app, items, permanent)).await
 }
 
-// Control command: flips an in-memory cancellation atomic only (see
-// mutation_runtime::request_cancel); it must answer immediately so Cancel is
-// never queued behind the running operation it is meant to stop.
+// The cancellation atomic does not wait for the operation, but reporting a
+// recovered state failure writes history and must use the blocking owner.
 #[tauri::command]
-fn mutation_cancel(app: AppHandle, operation_id: u64) -> Result<bool, String> {
-    mutation_runtime::request_cancel(operation_id).map_err(|error| {
-        failure_runtime::report(&app, "file-operation-state-failed", None, &error)
-            .err()
-            .unwrap_or(error)
+async fn mutation_cancel(app: AppHandle, operation_id: u64) -> Result<bool, String> {
+    dispatch(move || {
+        mutation_runtime::request_cancel(operation_id).map_err(|error| {
+            failure_runtime::report(&app, "file-operation-state-failed", None, &error)
+                .err()
+                .unwrap_or(error)
+        })
     })
+    .await
 }
 
 #[tauri::command]
@@ -855,11 +861,11 @@ async fn record_recent_notification(
     .await
 }
 
-// Control-like command: the ACTIVE list lives in memory (see
-// notifications::dismiss); no index or filesystem access.
+// Dismissal updates the in-memory ACTIVE list, but failed event delivery
+// records activity in SQLite, so the entire delegate runs off the IPC thread.
 #[tauri::command]
-fn dismiss_notification(app: AppHandle, id: i64) -> Result<bool, String> {
-    notifications::dismiss(&app, id)
+async fn dismiss_notification(app: AppHandle, id: i64) -> Result<bool, String> {
+    dispatch(move || notifications::dismiss(&app, id)).await
 }
 
 // On-demand derive for ONE clicked photo the scan's bulk pass has not reached
@@ -1020,8 +1026,8 @@ fn media_use_released(window: tauri::WebviewWindow, token: u64) -> Result<bool, 
 }
 
 #[tauri::command]
-fn background_work_runtime() -> Result<Value, String> {
-    derived_runtime::state_payload()
+async fn background_work_runtime() -> Result<Value, String> {
+    dispatch(derived_runtime::state_payload).await
 }
 
 #[tauri::command]
@@ -1037,28 +1043,30 @@ async fn background_work_snapshot() -> Result<background_work::BackgroundWorkSna
     .await
 }
 
-// Control command: derived_runtime::set_paused and file_information_runtime::set_paused
-// only flip in-memory state (see their own comments); derived_work::start and
-// ::wake only spawn/notify a worker thread, which is not itself blocking
-// work. No index or filesystem access, so this stays plain and immediate.
+// Native cancellation retains its runtime owner until the signal is sent.
+// The native registry can be held through a transcript's SQLite commit, so
+// these controls and runtime reads use the blocking owner too.
 // Pausing everything pauses file-information completion and automatic
 // preparation and enrichment only: source checking and watchers keep running,
 // and resuming never enables work turned off in Settings.
 #[tauri::command]
-fn background_work_set_paused(
+async fn background_work_set_paused(
     app: AppHandle,
     class_id: Option<String>,
     paused: bool,
 ) -> Result<(), String> {
-    derived_runtime::set_paused(&app, class_id.as_deref(), paused)?;
-    if class_id.is_none() {
-        file_information_runtime::set_paused(app.clone(), paused);
-    }
-    if !paused {
-        derived_work::start(app.clone())?;
-    }
-    derived_work::wake();
-    Ok(())
+    dispatch(move || {
+        derived_runtime::set_paused(&app, class_id.as_deref(), paused)?;
+        if class_id.is_none() {
+            file_information_runtime::set_paused(app.clone(), paused);
+        }
+        if !paused {
+            derived_work::start(app.clone())?;
+        }
+        derived_work::wake();
+        Ok(())
+    })
+    .await
 }
 
 /// Ephemeral viewport hints for the fixed derived-work coordinator. Output
@@ -1097,8 +1105,8 @@ async fn prioritize_derived_work(
 }
 
 #[tauri::command]
-fn transcribe_cancel() -> bool {
-    derived_runtime::cancel_active_transcription()
+async fn transcribe_cancel() -> Result<bool, String> {
+    dispatch(|| Ok(derived_runtime::cancel_active_transcription())).await
 }
 
 // The Trash surface: standing sizes per trash root and the one deliberately
@@ -1477,11 +1485,15 @@ async fn records_list_width(app: AppHandle) -> Result<Option<f64>, String> {
     .await
 }
 
-// Renderer consent starts the one native drain; no index or filesystem
-// access runs in this synchronous control command.
+// Renderer consent starts the native drain. Its setup requests native
+// cancellation, so this IPC path uses the same blocking owner as controls.
 #[tauri::command]
-fn request_app_exit(app: AppHandle) {
-    app_lifecycle::quiesce(&app);
+async fn request_app_exit(app: AppHandle) -> Result<(), String> {
+    dispatch(move || {
+        app_lifecycle::quiesce(&app);
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]

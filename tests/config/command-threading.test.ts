@@ -3,7 +3,7 @@
 //
 // A plain `#[tauri::command]` fn runs on Tauri's MAIN thread; an `async fn`
 // command runs on a tokio worker. Neither may block on SQLite, the
-// filesystem, or a subprocess directly — a plain command would freeze every
+// filesystem, a subprocess, or a lock retained through those effects — a plain command would freeze every
 // window, and an async command would starve every other command's dispatch
 // (see the responsiveness audit's W-H2/C-H2 findings). The one place either
 // may touch those is through `dispatch()`, which moves the work onto
@@ -14,7 +14,7 @@
 // catches the regression class directly — a new command added straight to
 // the index/filesystem/subprocess boundary without going through dispatch().
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -71,9 +71,11 @@ const FORBIDDEN_BOUNDARY = [
   /paths::data_root\(/,
   /index_store::open\(/,
   /std::fs::/,
-  /subprocess::/,
+  /subprocess::(?!signal_all_running_for_exit\b)/,
   // This delegate waits for ACTIVE, disposes SQLite, and removes its file.
   /viewer_sequence::close\(/,
+  // This writer can be reached while a control reports failed delivery.
+  /activity::record(?:_work)?\(/,
 ];
 
 // Async commands that await their own non-blocking work instead of running a
@@ -82,23 +84,147 @@ const ASYNC_WITHOUT_DISPATCH = new Set(["check_github_release"]);
 
 const DISPATCH_MARKERS = [/\bdispatch\(/, /spawn_blocking\(/];
 
-function boundaryViolations(commands: CommandFn[]): string[] {
+// Thin delegates can hide both disk access and a lock retained by its owner
+// through disk access. Derive this graph from the real source modules so a
+// newly introduced helper cannot make a main-thread crossing disappear.
+const rustDirectory = new URL("../../src-tauri/src/", import.meta.url);
+const rustSources = new Map(
+  readdirSync(rustDirectory)
+    .filter((name) => name.endsWith(".rs"))
+    .map((name) => [name.slice(0, -3), readFileSync(new URL(name, rustDirectory), "utf8")]),
+);
+
+function rustCode(source: string): string {
+  // Keep offsets while excluding comments and literals from the call graph.
+  return source.replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\/|"(?:\\[\s\S]|[^"\\])*"|'(?:\\.|[^'\\\n])'/g,
+    (literal) => literal.replace(/[^\n]/g, " "));
+}
+
+function findFunctions(source: string): Array<{ name: string; body: string }> {
+  const code = rustCode(source);
+  const header = /\bfn\s+([A-Za-z_]\w*)\s*(?:<[^{};]*?>)?\s*\(/g;
+  const functions: Array<{ name: string; body: string }> = [];
+  let depth = 0;
+  let scanned = 0;
+  let match: RegExpExecArray | null;
+  while ((match = header.exec(code))) {
+    while (scanned < match.index) {
+      if (code[scanned] === "{") depth++;
+      else if (code[scanned] === "}") depth--;
+      scanned++;
+    }
+    // Method calls do not resolve as module::function; only free functions
+    // form the command delegate graph.
+    if (depth !== 0) continue;
+    let i = header.lastIndex - 1;
+    let argumentsDepth = 0;
+    do {
+      if (code[i] === "(") argumentsDepth++;
+      else if (code[i] === ")") argumentsDepth--;
+      i++;
+    } while (argumentsDepth > 0 && i < code.length);
+    while (code[i] !== "{" && i < code.length) i++;
+    const bodyStart = i;
+    let bodyDepth = 0;
+    do {
+      if (code[i] === "{") bodyDepth++;
+      else if (code[i] === "}") bodyDepth--;
+      i++;
+    } while (bodyDepth > 0 && i < code.length);
+    functions.push({ name: match[1]!, body: code.slice(bodyStart, i) });
+    scanned = i;
+    header.lastIndex = i;
+  }
+  return functions;
+}
+
+function synchronousBody(body: string): string {
+  // These adapters execute their arguments on another owner. A delegate's
+  // spawned callback is not work on the command caller's thread.
+  const offThread = /\b(?:dispatch|spawn_blocking|spawn_thread)\s*\(|\b(?:std::thread|tokio|tauri::async_runtime)::spawn\s*\(|\.spawn\s*\(/g;
+  let match: RegExpExecArray | null;
+  while ((match = offThread.exec(body))) {
+    let i = offThread.lastIndex - 1;
+    let depth = 0;
+    do {
+      if (body[i] === "(") depth++;
+      else if (body[i] === ")") depth--;
+      i++;
+    } while (depth > 0 && i < body.length);
+    body = body.slice(0, match.index) + " ".repeat(i - match.index) + body.slice(i);
+    offThread.lastIndex = i;
+  }
+  return body;
+}
+
+function commandBoundaryPaths(sources: ReadonlyMap<string, string>): Map<string, string[]> {
+  const nodes = new Map<string, { calls: string[]; boundary: boolean }>();
+  for (const [module, source] of sources) {
+    const code = rustCode(source);
+    const imports = new Map<string, string>();
+    for (const use of code.matchAll(/\buse\s+crate::(\w+)::(?:\{([^}]+)\}|(\w+))\s*;/g)) {
+      for (const name of (use[2] ?? use[3]!).split(",")) {
+        const imported = name.trim().match(/^(\w+)(?:\s+as\s+(\w+))?$/);
+        if (imported) imports.set(imported[2] ?? imported[1]!, `${use[1]}::${imported[1]}`);
+      }
+    }
+    for (const fn of findFunctions(source)) {
+      const body = synchronousBody(fn.body);
+      const calls = Array.from(body.matchAll(/(?<![\w:.])((?:\w+::)*\w+)\s*\(/g), (call) => {
+        const name = call[1]!.replace(/^crate::/, "");
+        return name.includes("::") ? name : imports.get(name) ?? `${module}::${name}`;
+      });
+      nodes.set(`${module}::${fn.name}`, {
+        calls,
+        boundary: FORBIDDEN_BOUNDARY.some((pattern) => pattern.test(body))
+          // RUNTIME is retained while signaling native cancellation. The
+          // transcription registry can be held by publish_if_active through
+          // SQLite write/commit, so even a runtime read can wait behind disk.
+          || (module === "derived_runtime" && /\bRUNTIME\s*\.\s*0\s*\.\s*lock\s*\(/.test(body)),
+      });
+    }
+  }
+  const paths = new Map<string, string[]>();
+  for (const name of findCommands(sources.get("lib")!).map((command) => command.name)) {
+    const pending = [[`lib::${name}`]];
+    const visited = new Set<string>();
+    while (pending.length) {
+      const path = pending.shift()!;
+      const current = path.at(-1)!;
+      if (visited.has(current)) continue;
+      visited.add(current);
+      const node = nodes.get(current);
+      if (!node) continue;
+      if (node.boundary) {
+        paths.set(name, path);
+        break;
+      }
+      for (const call of node.calls) pending.push([...path, call]);
+    }
+  }
+  return paths;
+}
+
+function boundaryViolations(commands: CommandFn[], sources = rustSources): string[] {
+  const delegatePaths = commandBoundaryPaths(sources);
   const violations: string[] = [];
   for (const command of commands) {
-    const touchesBoundary = FORBIDDEN_BOUNDARY.some((pattern) => pattern.test(command.body));
+    const touchesBoundary = FORBIDDEN_BOUNDARY.some((pattern) => pattern.test(synchronousBody(rustCode(command.body))))
+      || delegatePaths.has(command.name);
     if (!touchesBoundary) continue;
+    const path = delegatePaths.get(command.name)?.join(" -> ") ?? command.name;
     if (!command.isAsync) {
       violations.push(
-        `${command.name}: a plain #[tauri::command] touches the index, filesystem, or a subprocess directly — it runs on the MAIN thread and would freeze every window`,
+        `${command.name}: a plain #[tauri::command] reaches blocking work (${path}) — it runs on the MAIN thread and would freeze every window`,
       );
       continue;
     }
-    const dispatched = DISPATCH_MARKERS.some((pattern) => pattern.test(command.body));
-    if (!dispatched) {
-      violations.push(
-        `${command.name}: an async command touches the index, filesystem, or a subprocess without dispatch() — it would block a tokio worker`,
-      );
-    }
+    // The graph already excludes work passed through a blocking owner. Any
+    // remaining path is undispatched even if another part of the command
+    // happens to call dispatch().
+    violations.push(
+      `${command.name}: an async command reaches blocking work (${path}) outside dispatch() — it would block a tokio worker`,
+    );
   }
   return violations;
 }
@@ -112,7 +238,7 @@ describe("command threading", () => {
     expect(commands.length).toBeGreaterThan(30);
   });
 
-  it("keeps plain commands off the index, filesystem, and subprocess, and routes async commands' access through dispatch()", () => {
+  it("routes command delegates to blocking work through dispatch()", () => {
     expect(boundaryViolations(commands)).toEqual([]);
   });
 
@@ -125,6 +251,51 @@ describe("command threading", () => {
     `);
     expect(boundaryViolations(planted)).toHaveLength(1);
     expect(boundaryViolations(planted)[0]).toContain("viewer_sequence_close");
+  });
+
+  it.each(["", "async "])("rejects a planted %shidden native cancellation delegate", (mode) => {
+    const source = `
+      #[tauri::command]
+      ${mode}fn planted_cancel() -> bool {
+        hidden_control()
+      }
+      fn hidden_control() -> bool {
+        derived_runtime::cancel_active_transcription()
+      }
+    `;
+    const sources = new Map(rustSources).set("lib", source);
+    const violations = boundaryViolations(findCommands(source), sources);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain("lib::planted_cancel -> lib::hidden_control -> derived_runtime::cancel_active_transcription");
+  });
+
+  it("allows a delegate that moves its native work onto a worker", () => {
+    const source = `
+      #[tauri::command]
+      fn worker_control() {
+        std::thread::spawn(|| {
+          hidden_control();
+          std::fs::write("output", "done").unwrap();
+        });
+      }
+      fn hidden_control() {
+        derived_runtime::cancel_active_transcription();
+      }
+    `;
+    const sources = new Map(rustSources).set("lib", source);
+    expect(boundaryViolations(findCommands(source), sources)).toEqual([]);
+  });
+
+  it("rejects a native delegate outside a command's other dispatched work", () => {
+    const source = `
+      #[tauri::command]
+      async fn partly_dispatched() -> bool {
+        dispatch(|| Ok(())).await.unwrap();
+        derived_runtime::cancel_active_transcription()
+      }
+    `;
+    const sources = new Map(rustSources).set("lib", source);
+    expect(boundaryViolations(findCommands(source), sources)).toHaveLength(1);
   });
 
   it("runs every async command's body through dispatch()", () => {
