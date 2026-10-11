@@ -362,6 +362,7 @@
   "trash.entriesNotRemoved": { "other": "{count} 件を削除できませんでした。" },
   "trash.changedSinceReview": "計測後に削除済みファイルが変わったため、何も削除していません。新しい合計を確認してから、もう一度空にしてください。",
   "trash.totalsNotRefreshed": "削除済みファイルは処理しましたが、合計を更新できませんでした。",
+  "trash.totalsUnavailable": "削除済みファイルの合計数と合計サイズを取得できません。",
   "trash.emptyFailed": "この削除済みファイルを空にできませんでした。",
   "trash.cancelFailed": "削除済みファイルを空にする処理を中止できませんでした。",
   "trash.revealFailed": "この削除済みファイルの場所を表示できませんでした。",

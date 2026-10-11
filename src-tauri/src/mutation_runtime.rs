@@ -483,6 +483,131 @@ fn touched_source_dirs(source_dirs: &[String], touches: &Touches) -> Vec<String>
         .collect()
 }
 
+fn touched_source_dirs_at(
+    data_root: &std::path::Path,
+    source_dirs: &[String],
+    touches: &Touches,
+) -> Result<Vec<String>, String> {
+    let mut touched = touched_source_dirs(source_dirs, touches);
+    // Root mutations can predate the scanner's receipts (or follow a
+    // rebuild). Resolve this touched UI owner, and use current physical
+    // source spellings only where no remembered association established it.
+    // An unrelated source that cannot resolve is not thereby touched.
+    let owner_spellings = match touches {
+        Touches::Root(root) => crate::trash::root_spellings(std::path::Path::new(root)),
+        Touches::Files(_) => Vec::new(),
+    };
+    let current_root_sources = |touched: &mut Vec<String>| {
+        if owner_spellings.is_empty() {
+            return;
+        }
+        for source in source_dirs {
+            if touched.contains(source) {
+                continue;
+            }
+            let spellings = crate::trash::root_spellings(std::path::Path::new(source));
+            if spellings.iter().any(|source| {
+                owner_spellings.iter().any(|owner| {
+                    crate::scanner::directory_belongs_to_root(
+                        &owner.to_string_lossy(),
+                        &source.to_string_lossy(),
+                    )
+                })
+            }) {
+                touched.push(source.clone());
+            }
+        }
+    };
+    // The scanner records canonical paths but volume trust is keyed by the
+    // configured spelling. Read its remembered association, including when
+    // that alias now resolves elsewhere; probing today's spelling would
+    // silently detach accepted old rows from their source-volume gate.
+    // Empty needs no projection reservation and must not create an index.
+    // A missing index needs current Root proof; an unreadable one cannot
+    // establish source authority and closes this boundary.
+    let index = data_root.join(crate::storage::INDEX_DB_FILE_NAME);
+    match std::fs::metadata(&index) { // data root: app-owned source receipts
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            current_root_sources(&mut touched);
+            return Ok(touched);
+        }
+        Err(error) => return Err(format!("could not read source owners: {error}")),
+    }
+    let conn =
+        rusqlite::Connection::open_with_flags(&index, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|error| format!("could not read source owners: {error}"))?;
+    let mut statement = conn
+        .prepare("SELECT root, configured_root FROM scan_dirs")
+        .map_err(|error| format!("could not read source owners: {error}"))?;
+    let receipts = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| error.to_string())?;
+    let touches_root = |root: &str| {
+        touches.source(root)
+            || owner_spellings.iter().any(|owner| {
+                crate::scanner::directory_belongs_to_root(&owner.to_string_lossy(), root)
+            })
+    };
+    let same = |left: &str, right: &str| {
+        crate::scanner::directory_belongs_to_root(left, right)
+            && crate::scanner::directory_belongs_to_root(right, left)
+    };
+    for source in source_dirs {
+        if receipts.iter().any(|(root, configured)| {
+            configured
+                .as_deref()
+                .is_some_and(|configured| configured == source)
+                && touches_root(root)
+        }) && !touched.contains(source)
+        {
+            touched.push(source.clone());
+        }
+    }
+    current_root_sources(&mut touched);
+    // Older scan receipts had no configured spelling. Only a touched legacy
+    // receipt earns current physical resolution. Modern unrelated/offline
+    // sources are never probed to scope an accepted batch.
+    let legacy: Vec<_> = receipts
+        .iter()
+        .filter(|(root, configured)| configured.is_none() && touches_root(root))
+        .collect();
+    if !legacy.is_empty() {
+        let mut proved = std::collections::HashSet::new();
+        for source in source_dirs {
+            let spellings = crate::trash::root_spellings(std::path::Path::new(source));
+            for (root, _) in &legacy {
+                if spellings
+                    .iter()
+                    .any(|spelling| same(&spelling.to_string_lossy(), root))
+                {
+                    proved.insert(root.as_str());
+                    if !touched.contains(source) {
+                        touched.push(source.clone());
+                    }
+                }
+            }
+        }
+        if legacy
+            .iter()
+            .any(|(root, _)| !proved.contains(root.as_str()))
+        {
+            return Err(
+                "could not verify the configured owner of accepted source files".to_string(),
+            );
+        }
+    }
+    Ok(source_dirs
+        .iter()
+        .filter(|source| touched.contains(source))
+        .cloned()
+        .collect())
+}
+
 fn admit(
     app: &AppHandle,
     mutation: &Claim,
@@ -500,29 +625,69 @@ fn admit(
     // failed verification never blocks a batch that never touches it.
     let data_root = crate::paths::data_root()?;
     let source_dirs = crate::storage::configured_source_dirs(&data_root)?;
-    let touched_dirs = touched_source_dirs(&source_dirs, touches);
-    crate::volume::enforce_no_substitution(&data_root, &touched_dirs)?;
-    let cancelled = || mutation.cancelled();
-    let Some(index) = crate::scan_runtime::begin_admitted_mutation(app, &cancelled, on_wait)?
-    else {
+    let touched_dirs = touched_source_dirs_at(&data_root, &source_dirs, touches)?;
+    admit_checked(
+        &data_root,
+        &touched_dirs,
+        &crate::volume::enforce_no_substitution,
+        || {
+            let cancelled = || mutation.cancelled();
+            let Some(index) =
+                crate::scan_runtime::begin_admitted_mutation(app, &cancelled, on_wait)?
+            else {
+                return Ok(None);
+            };
+            // `None`: the operation changes no indexed file, so no reader or derived
+            // job is stopped for it (an empty key list would mean every item).
+            let Some(keys) = media else {
+                return Ok(Some(Admitted {
+                    _media: None,
+                    _index: index,
+                }));
+            };
+            match crate::media_use::begin(app, keys, &cancelled) {
+                Ok(media) => Ok(Some(Admitted {
+                    _media: Some(media),
+                    _index: index,
+                })),
+                Err(_) if mutation.cancelled() => Ok(None),
+                Err(error) => Err(error),
+            }
+        },
+    )
+}
+
+/// The source verdict belongs to admission, including its index/media wait.
+/// Keep the early refusal prompt and retain both guards until this returns.
+fn admit_checked<G>(
+    data_root: &std::path::Path,
+    touched_dirs: &[String],
+    check: &dyn Fn(&std::path::Path, &[String]) -> Result<(), String>,
+    wait: impl FnOnce() -> Result<Option<G>, String>,
+) -> Result<Option<G>, String> {
+    check(data_root, touched_dirs)?;
+    let Some(admitted) = wait()? else {
         return Ok(None);
     };
-    // `None`: the operation changes no indexed file, so no reader or derived
-    // job is stopped for it (an empty key list would mean every item).
-    let Some(keys) = media else {
-        return Ok(Some(Admitted {
-            _media: None,
-            _index: index,
-        }));
-    };
-    match crate::media_use::begin(app, keys, &cancelled) {
-        Ok(media) => Ok(Some(Admitted {
-            _media: Some(media),
-            _index: index,
-        })),
-        Err(_) if mutation.cancelled() => Ok(None),
-        Err(error) => Err(error),
-    }
+    check(data_root, touched_dirs)?;
+    Ok(Some(admitted))
+}
+
+/// Empty owns no index or media reservation. Its source gate still belongs
+/// to the configured owner of the UI's deleted-files location.
+fn empty_trash_gate_with(
+    data_root: &std::path::Path,
+    location: &std::path::Path,
+    check: &dyn Fn(&std::path::Path, &[String]) -> Result<(), String>,
+) -> Result<(), String> {
+    let roots = crate::storage::configured_file_roots(data_root)?;
+    let owner = crate::trash::owning_root_of(&roots, location)?;
+    let sources = crate::storage::configured_source_dirs(data_root)?;
+    let owner = owner.to_string_lossy();
+    check(
+        data_root,
+        &touched_source_dirs_at(data_root, &sources, &Touches::Root(&owner))?,
+    )
 }
 
 /// Runs the delete command under this runtime's ephemeral lifecycle. The
@@ -954,12 +1119,11 @@ pub(crate) fn empty_trash(
             // Scoped to the root being emptied, not every configured source:
             // a different source that failed verification never blocks
             // emptying deleted files under an unaffected root (R3-07, R1-14).
-            crate::volume::enforce_no_substitution(&data_root, std::slice::from_ref(&root))?;
-            let roots = crate::storage::configured_file_roots(&data_root)?;
-            let known = crate::trash::overview(&roots);
-            if !known.iter().any(|candidate| candidate.root == root) {
-                return Err("not a known trash root".to_string());
-            }
+            empty_trash_gate_with(
+                &data_root,
+                std::path::Path::new(&root),
+                &crate::volume::enforce_no_substitution,
+            )?;
             crate::trash::empty_root_with_progress(
                 std::path::Path::new(&root),
                 &plan_token,

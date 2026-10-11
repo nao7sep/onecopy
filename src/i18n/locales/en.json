@@ -362,6 +362,7 @@
   "trash.entriesNotRemoved": { "one": "{count} entry could not be removed.", "other": "{count} entries could not be removed." },
   "trash.changedSinceReview": "Deleted files changed after they were measured, so nothing was removed. Review the new totals and empty again.",
   "trash.totalsNotRefreshed": "Deleted files were processed, but their totals couldn’t be refreshed.",
+  "trash.totalsUnavailable": "Deleted-file totals are unavailable.",
   "trash.emptyFailed": "Couldn’t empty these deleted files.",
   "trash.cancelFailed": "Couldn’t cancel emptying deleted files.",
   "trash.revealFailed": "Couldn’t reveal this deleted-files location.",

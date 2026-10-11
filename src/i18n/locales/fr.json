@@ -362,6 +362,7 @@
   "trash.entriesNotRemoved": { "one": "{count} entrée n’a pas pu être retirée.", "many": "{count} d’entrées n’ont pas pu être retirées.", "other": "{count} entrées n’ont pas pu être retirées." },
   "trash.changedSinceReview": "Les fichiers supprimés ont changé après leur mesure ; rien n’a donc été retiré. Vérifiez les nouveaux totaux, puis videz de nouveau.",
   "trash.totalsNotRefreshed": "Les fichiers supprimés ont été traités, mais leurs totaux n’ont pas pu être actualisés.",
+  "trash.totalsUnavailable": "Le nombre total et la taille totale des fichiers supprimés sont indisponibles.",
   "trash.emptyFailed": "Impossible de vider ces fichiers supprimés.",
   "trash.cancelFailed": "Impossible d’annuler le vidage des fichiers supprimés.",
   "trash.revealFailed": "Impossible d’afficher cet emplacement de fichiers supprimés.",

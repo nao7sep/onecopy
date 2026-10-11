@@ -362,6 +362,7 @@
   "trash.entriesNotRemoved": { "one": "Impossibile rimuovere {count} voce.", "many": "Impossibile rimuovere {count} di voci.", "other": "Impossibile rimuovere {count} voci." },
   "trash.changedSinceReview": "I file eliminati sono cambiati dopo la misurazione, quindi non è stato rimosso nulla. Controlla i nuovi totali e svuota di nuovo.",
   "trash.totalsNotRefreshed": "I file eliminati sono stati elaborati, ma non è stato possibile aggiornare i loro totali.",
+  "trash.totalsUnavailable": "Il numero totale e la dimensione totale dei file eliminati non sono disponibili.",
   "trash.emptyFailed": "Impossibile svuotare questi file eliminati.",
   "trash.cancelFailed": "Impossibile annullare lo svuotamento dei file eliminati.",
   "trash.revealFailed": "Impossibile mostrare questa posizione dei file eliminati.",

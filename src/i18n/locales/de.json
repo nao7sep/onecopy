@@ -362,6 +362,7 @@
   "trash.entriesNotRemoved": { "one": "{count} Eintrag konnte nicht entfernt werden.", "other": "{count} Einträge konnten nicht entfernt werden." },
   "trash.changedSinceReview": "Die gelöschten Dateien haben sich nach dem Messen geändert, daher wurde nichts entfernt. Prüfe die neuen Summen und leere erneut.",
   "trash.totalsNotRefreshed": "Die gelöschten Dateien wurden verarbeitet, aber ihre Summen konnten nicht aktualisiert werden.",
+  "trash.totalsUnavailable": "Die Gesamtzahl und Gesamtgröße der gelöschten Dateien sind nicht verfügbar.",
   "trash.emptyFailed": "Diese gelöschten Dateien konnten nicht geleert werden.",
   "trash.cancelFailed": "Das Leeren der gelöschten Dateien konnte nicht abgebrochen werden.",
   "trash.revealFailed": "Dieser Speicherort für gelöschte Dateien konnte nicht angezeigt werden.",

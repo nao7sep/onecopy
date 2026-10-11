@@ -680,7 +680,20 @@ fn empty_notices_a_file_added_within_the_same_mtime_granule() {
     let later = source.join("later.jpg");
     std::fs::write(&later, vec![2u8; 900]).unwrap();
     trash_file(&later, &source, Some("h2"), &ctx()).unwrap();
-    std::fs::File::open(&day)
+    let mut options = std::fs::File::options();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_WRITE_ATTRIBUTES,
+        };
+        options
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+    }
+    options
+        .open(onecopy_lib::winpath::for_fs(&day))
         .unwrap()
         .set_modified(day_modified)
         .unwrap();

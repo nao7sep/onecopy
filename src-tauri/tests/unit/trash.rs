@@ -1,5 +1,304 @@
 use super::*;
 
+fn measured_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    let day = source.join(TRASH_DIR_NAME).join("20261001-utc");
+    std::fs::create_dir_all(&day).unwrap();
+    std::fs::write(day.join("a.jpg"), vec![1u8; 100]).unwrap();
+    std::fs::write(day.join("b.jpg"), vec![2u8; 900]).unwrap();
+    let mut options = std::fs::File::options();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_WRITE_ATTRIBUTES,
+        };
+        options
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+    }
+    options
+        .open(crate::winpath::for_fs(&day))
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(60))
+        .unwrap();
+    (dir, source, day)
+}
+
+#[cfg(unix)]
+#[test]
+fn measurement_uses_the_walks_filesystem_spelling_and_keeps_its_ui_owner() {
+    let (dir, source, _) = measured_fixture();
+    let alias = dir.path().join("configured-alias");
+    std::os::unix::fs::symlink(&source, &alias).unwrap();
+    let ui_root = alias.join(TRASH_DIR_NAME);
+    let filesystem_root = std::fs::canonicalize(source.join(TRASH_DIR_NAME)).unwrap();
+    // The actual walker yields a different spelling of the same tree. This
+    // exercises the same boundary as ordinary UI paths vs verbatim Windows
+    // entries without substituting a fake traversal or prefix algorithm.
+    let measured = measure_root_at(&ui_root, &filesystem_root, None).unwrap();
+    assert_eq!((measured.files, measured.bytes), (2, 1000));
+    let row = overview(std::slice::from_ref(&alias)).remove(0);
+    assert_eq!(row.root, ui_root.to_string_lossy());
+    assert_eq!(row.plan_token, measured.token);
+    assert!(row.measurement_error.is_none());
+    let emptied = empty_root_with_progress(
+        &ui_root,
+        &row.plan_token,
+        &AtomicBool::new(false),
+        &|_| {},
+        &|_, _| Ok(()),
+    )
+    .unwrap();
+    assert!(!emptied.plan_changed);
+    assert_eq!(std::fs::read_dir(&ui_root).unwrap().count(), 0);
+}
+
+#[cfg(windows)]
+#[test]
+fn ordinary_windows_root_can_be_measured_and_emptied() {
+    let (_dir, source, _) = measured_fixture();
+    let ordinary_source =
+        PathBuf::from(crate::winpath::for_display(source.to_str().unwrap()).as_ref());
+    let row = overview(std::slice::from_ref(&ordinary_source)).remove(0);
+    let ordinary_root = ordinary_source.join(TRASH_DIR_NAME);
+    assert_eq!(row.root, ordinary_root.to_string_lossy());
+    assert_eq!((row.files, row.bytes), (2, 1000));
+    assert!(row.measurement_error.is_none());
+    assert!(!row.plan_token.is_empty());
+    let emptied = empty_root_with_progress(
+        &ordinary_root,
+        &row.plan_token,
+        &AtomicBool::new(false),
+        &|_| {},
+        &|_, _| Ok(()),
+    )
+    .unwrap();
+    assert!(!emptied.plan_changed);
+    assert_eq!(std::fs::read_dir(&ordinary_root).unwrap().count(), 0);
+}
+
+#[test]
+fn incomplete_measurement_cannot_authorize_empty_after_recovery() {
+    use crate::volume_io::{FakeStallingVolume, Op};
+    use std::time::Duration;
+    let (_dir, source, day) = measured_fixture();
+    let fake = FakeStallingVolume::mount(&source, Duration::from_secs(10));
+    // The day root and one file are measured; the next file fails on the
+    // actual volume worker. Its directory mtime stays old and unchanged.
+    fake.stall_after(&[Op::List], Some(&day), 2);
+    let reviewed = std::thread::scope(|scope| {
+        let measuring = scope.spawn(|| overview(std::slice::from_ref(&source)).remove(0));
+        let held = fake.wait_until_held(1, Duration::from_secs(5));
+        fake.fail();
+        let row = measuring.join().unwrap();
+        assert!(held, "the real size walk reached the held file");
+        row
+    });
+    fake.release();
+    let outcome = empty_root_with_progress(
+        Path::new(&reviewed.root),
+        &reviewed.plan_token,
+        &AtomicBool::new(false),
+        &|_| {},
+        &|_, _| Ok(()),
+    )
+    .unwrap();
+    assert!(
+        outcome.plan_changed,
+        "incomplete review must remove nothing after recovery"
+    );
+    assert!(day.join("a.jpg").exists());
+    assert!(day.join("b.jpg").exists());
+    assert!(
+        reviewed.plan_token.is_empty(),
+        "failed totals grant no review authority"
+    );
+    assert!(reviewed.measurement_error.is_some());
+    let current = overview(std::slice::from_ref(&source)).remove(0);
+    assert_eq!((current.files, current.bytes), (2, 1000));
+    assert!(!current.plan_token.is_empty());
+    let retry = empty_root_with_progress(
+        Path::new(&current.root),
+        &current.plan_token,
+        &AtomicBool::new(false),
+        &|_| {},
+        &|_, _| Ok(()),
+    )
+    .unwrap();
+    assert!(!retry.plan_changed);
+    assert_eq!(std::fs::read_dir(&current.root).unwrap().count(), 0);
+}
+
+#[test]
+fn editing_an_existing_stored_file_refreshes_totals_and_refuses_old_review() {
+    let (_dir, source, day) = measured_fixture();
+    let reviewed = overview(std::slice::from_ref(&source)).remove(0);
+    let before = std::fs::metadata(&day).unwrap().modified().unwrap();
+    std::fs::write(day.join("a.jpg"), vec![3u8; 500]).unwrap();
+    assert_eq!(std::fs::metadata(&day).unwrap().modified().unwrap(), before);
+    let current = overview(std::slice::from_ref(&source)).remove(0);
+    assert_eq!((current.files, current.bytes), (2, 1400));
+    assert_ne!(current.plan_token, reviewed.plan_token);
+    let outcome = empty_root_with_progress(
+        Path::new(&reviewed.root),
+        &reviewed.plan_token,
+        &AtomicBool::new(false),
+        &|_| {},
+        &|_, _| Ok(()),
+    )
+    .unwrap();
+    assert!(outcome.plan_changed);
+    assert!(day.join("a.jpg").exists());
+    assert!(day.join("b.jpg").exists());
+    let retry = empty_root_with_progress(
+        Path::new(&current.root),
+        &current.plan_token,
+        &AtomicBool::new(false),
+        &|_| {},
+        &|_, _| Ok(()),
+    )
+    .unwrap();
+    assert!(!retry.plan_changed);
+    assert!(
+        !day.exists(),
+        "the newly reviewed complete totals permit Empty"
+    );
+}
+
+#[test]
+fn a_held_size_walk_never_blocks_measurement_of_another_root() {
+    use crate::volume_io::{FakeStallingVolume, Op};
+    use std::time::Duration;
+    let (_first, source, day) = measured_fixture();
+    let (_second, other, _) = measured_fixture();
+    let fake = FakeStallingVolume::mount(&source, Duration::from_secs(10));
+    fake.stall(&[Op::List], Some(&day));
+    let (held, independent) = std::thread::scope(|scope| {
+        let first = scope.spawn(|| overview(std::slice::from_ref(&source)));
+        let held = fake.wait_until_held(1, Duration::from_secs(5));
+        let (done, completed) = std::sync::mpsc::channel();
+        let second = scope.spawn(move || {
+            done.send(overview(std::slice::from_ref(&other))).unwrap();
+        });
+        let independent = completed.recv_timeout(Duration::from_millis(500)).is_ok();
+        fake.release();
+        first.join().unwrap();
+        second.join().unwrap();
+        (held, independent)
+    });
+    assert!(held);
+    assert!(
+        independent,
+        "another source's totals cannot wait on this volume's walk"
+    );
+}
+
+#[test]
+fn nested_changes_are_measured_even_when_the_day_folder_is_unchanged() {
+    let (_dir, source, day) = measured_fixture();
+    let nested = day.join("recovered-by-hand");
+    std::fs::create_dir(&nested).unwrap();
+    std::fs::write(nested.join("extra.jpg"), b"extra").unwrap();
+    let reviewed = overview(std::slice::from_ref(&source)).remove(0);
+    let modified = std::fs::metadata(&day).unwrap().modified().unwrap();
+    std::fs::write(nested.join("later.jpg"), b"later").unwrap();
+    assert_eq!(
+        std::fs::metadata(&day).unwrap().modified().unwrap(),
+        modified
+    );
+    let current = overview(std::slice::from_ref(&source)).remove(0);
+    assert_eq!((current.files, current.bytes), (4, 1010));
+    let outcome = empty_root_with_progress(
+        Path::new(&reviewed.root),
+        &reviewed.plan_token,
+        &AtomicBool::new(false),
+        &|_| {},
+        &|_, _| Ok(()),
+    )
+    .unwrap();
+    assert!(outcome.plan_changed);
+    assert!(nested.join("later.jpg").exists());
+}
+
+#[test]
+fn unavailable_measurement_is_distinct_from_a_missing_empty_location() {
+    use crate::volume_io::{FakeStallingVolume, Op};
+    use std::time::Duration;
+    let (_dir, source, _) = measured_fixture();
+    let location = source.join(TRASH_DIR_NAME);
+    let fake = FakeStallingVolume::mount(&source, Duration::from_secs(10));
+    fake.stall(&[Op::Stat], Some(&location));
+    let unavailable = std::thread::scope(|scope| {
+        let reading = scope.spawn(|| overview(std::slice::from_ref(&source)).remove(0));
+        let held = fake.wait_until_held(1, Duration::from_secs(5));
+        fake.fail();
+        let row = reading.join().unwrap();
+        assert!(held);
+        row
+    });
+    assert!(unavailable.measurement_error.is_some());
+    assert!(unavailable.plan_token.is_empty());
+    fake.release();
+    let missing_source = source.with_file_name("empty-source");
+    std::fs::create_dir(&missing_source).unwrap();
+    let missing = overview(std::slice::from_ref(&missing_source)).remove(0);
+    assert!(missing.available);
+    assert!(missing.measurement_error.is_none());
+    assert!(!missing.plan_token.is_empty());
+    assert_eq!((missing.files, missing.bytes), (0, 0));
+}
+
+#[test]
+fn cancelling_empty_during_its_held_measurement_returns_without_removing_files() {
+    use crate::volume_io::{FakeStallingVolume, Op};
+    use std::time::Duration;
+    let (_dir, source, day) = measured_fixture();
+    let reviewed = overview(std::slice::from_ref(&source)).remove(0);
+    let fake = FakeStallingVolume::mount(&source, Duration::from_secs(10));
+    // Hold the first yielded entry: there are no queued entries whose
+    // per-entry cancellation check could mask an uncancellable wait.
+    fake.stall(&[Op::List], Some(Path::new(&reviewed.root)));
+    let cancelled = AtomicBool::new(false);
+    let progress = std::sync::atomic::AtomicU64::new(0);
+    let (held, returned, outcome) = std::thread::scope(|scope| {
+        let (done, completed) = std::sync::mpsc::channel();
+        let (reviewed, cancelled, progress) = (&reviewed, &cancelled, &progress);
+        let emptying = scope.spawn(move || {
+            let outcome = empty_root_with_progress(
+                Path::new(&reviewed.root),
+                &reviewed.plan_token,
+                &cancelled,
+                &|_| {
+                    progress.fetch_add(1, Ordering::Relaxed);
+                },
+                &|_, _| Ok(()),
+            );
+            done.send(outcome).unwrap();
+        });
+        let held = fake.wait_until_held(1, Duration::from_secs(5));
+        cancelled.store(true, Ordering::SeqCst);
+        let early = completed.recv_timeout(Duration::from_secs(1));
+        let returned = early.is_ok();
+        fake.release();
+        emptying.join().unwrap();
+        let outcome = early.unwrap_or_else(|_| completed.recv().unwrap()).unwrap();
+        (held, returned, outcome)
+    });
+    assert!(held);
+    assert!(
+        returned,
+        "Cancel ends planning while the volume call is still held"
+    );
+    assert!(outcome.cancelled);
+    assert_eq!(progress.load(Ordering::Relaxed), 0, "Empty never started");
+    assert!(day.join("a.jpg").exists());
+    assert!(day.join("b.jpg").exists());
+    assert!(fake.wait_until_settled(Duration::from_secs(2)));
+}
+
 #[test]
 fn exact_boundary_winner_survives_and_source_remains_authoritative() {
     let dir = tempfile::tempdir().unwrap();
@@ -67,61 +366,21 @@ fn replacement_before_the_move_is_the_file_that_gets_trashed() {
 }
 
 #[test]
-fn overview_reuses_a_day_folders_size_while_its_mtime_is_unchanged() {
-    // C-L3: `trash_overview` used to walk every trashed file on every Trash
-    // modal open. The fix caches each day folder's size keyed by that
-    // folder's own mtime; this proves the cache is actually consulted (not
-    // merely present) by poisoning a cached entry and observing it win over
-    // the real on-disk size, as long as the folder's mtime it was cached
-    // under still matches.
-    let dir = tempfile::tempdir().unwrap();
-    let source = dir.path().join("source");
-    std::fs::create_dir_all(&source).unwrap();
-    let a = source.join("one.jpg");
-    std::fs::write(&a, vec![1u8; 100]).unwrap();
-    trash_file(&a, &source, Some("h1"), &ctx()).unwrap();
-
+fn unchanged_complete_measurements_keep_the_same_review_token() {
+    let (_dir, source, _) = measured_fixture();
     let root = source.join(TRASH_DIR_NAME);
-    let first = measure_root(&root);
-    let (first_bytes, first_files) = (first.bytes, first.files);
-    assert_eq!((first_bytes, first_files), (100, 1));
-
-    let day_dir = std::fs::read_dir(&root)
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    let modified = std::fs::metadata(&day_dir).unwrap().modified().unwrap();
-
-    {
-        let mut cache = DAY_SIZE_CACHE.lock().unwrap();
-        cache.insert(
-            day_dir.clone(),
-            CachedDaySize {
-                modified,
-                measured: modified + std::time::Duration::from_secs(60),
-                bytes: 999,
-                files: 7,
-            },
-        );
-    }
-
-    let cached = measure_root(&root);
-    let (cached_bytes, cached_files) = (cached.bytes, cached.files);
-    assert_eq!(
-        (cached_bytes, cached_files),
-        (999, 7),
-        "an unchanged day-folder mtime must reuse the cached size rather than re-walking"
-    );
+    let first = measure_root(&root).unwrap();
+    let second = measure_root(&root).unwrap();
+    assert_eq!((first.bytes, first.files), (1000, 2));
+    assert_eq!((second.bytes, second.files), (first.bytes, first.files));
+    assert_eq!(second.token, first.token);
 }
 
 #[test]
 fn overview_notices_a_file_added_directly_into_an_existing_day_folder() {
     // The recovery contract lets a user remove (or, here, add to) trash
-    // contents outside OneCopy. Because the day folder's own mtime changes
-    // whenever an entry is added or removed directly inside it, the cache
-    // must never report a stale total after such an external change.
+    // contents outside OneCopy. Every complete read must account for that
+    // external change before giving the user new Empty authority.
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("source");
     std::fs::create_dir_all(&source).unwrap();
@@ -148,7 +407,7 @@ fn overview_notices_a_file_added_directly_into_an_existing_day_folder() {
 }
 
 fn size_of(root: &Path) -> (u64, u64) {
-    let measure = measure_root(root);
+    let measure = measure_root(root).unwrap();
     (measure.bytes, measure.files)
 }
 

@@ -1,5 +1,399 @@
 use super::*;
 
+fn volume_fixture() -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    Vec<std::path::PathBuf>,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("apphome");
+    let roots = ["original", "healthy", "destination"]
+        .map(|name| dir.path().join(name))
+        .to_vec();
+    for root in roots.iter().chain(std::iter::once(&data)) {
+        std::fs::create_dir_all(root).unwrap();
+    }
+    std::fs::write(
+        data.join(crate::storage::CONFIG_FILE_NAME),
+        json!({
+            "formatVersion": 1,
+            "sourceDirs": [&roots[0], &roots[1]],
+            "destinationRoots": [&roots[2], roots[0].join("nested")],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    crate::volume::check_identity(&data, &roots[0].to_string_lossy(), "volume-a").unwrap();
+    crate::volume::check_identity(&data, &roots[1].to_string_lossy(), "volume-b").unwrap();
+    (dir, data, roots)
+}
+
+#[test]
+fn empty_checks_the_configured_source_owner_before_any_removal() {
+    let (_dir, data, roots) = volume_fixture();
+    let gate = |data: &std::path::Path, sources: &[String]| {
+        crate::volume::enforce_no_substitution_with(data, sources, &|_| Some("volume-b".into()))
+    };
+    for owner in [&roots[0], &roots[0].join("nested")] {
+        let day = owner
+            .join(crate::trash::TRASH_DIR_NAME)
+            .join("20261011-utc");
+        std::fs::create_dir_all(&day).unwrap();
+        let file = day.join("photo.jpg");
+        std::fs::write(&file, b"keep").unwrap();
+        let reviewed = crate::trash::overview(std::slice::from_ref(owner)).remove(0);
+        let result = empty_trash_gate_with(&data, std::path::Path::new(&reviewed.root), &gate)
+            .and_then(|()| {
+                crate::trash::empty_root_with_progress(
+                    std::path::Path::new(&reviewed.root),
+                    &reviewed.plan_token,
+                    &AtomicBool::new(false),
+                    &|_| {},
+                    &|_, _| Ok(()),
+                )
+            });
+        assert!(
+            result.is_err(),
+            "a fresh token does not authorize a substituted source"
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), b"keep");
+    }
+    for owner in &roots[1..] {
+        let location = owner.join(crate::trash::TRASH_DIR_NAME);
+        assert!(
+            empty_trash_gate_with(&data, &location, &gate).is_ok(),
+            "unaffected sources and destinations stay usable"
+        );
+    }
+}
+
+#[test]
+fn volume_admission_rechecks_after_background_work_and_releases_its_guard() {
+    let _serial = crate::scan_runtime::serial_test();
+    let (_dir, data, roots) = volume_fixture();
+    let current = std::sync::Arc::new(std::sync::Mutex::new("volume-a"));
+    let claim = begin().unwrap();
+    let touched = vec![roots[0].to_string_lossy().into_owned()];
+    let (result, waited) = std::thread::scope(|scope| {
+        let (release, released) = std::sync::mpsc::channel();
+        let (held, holding) = std::sync::mpsc::channel();
+        let background = scope.spawn(move || {
+            crate::scan_runtime::with_owner(
+                crate::scan_runtime::Owner::Watcher,
+                || false,
+                || {
+                    held.send(()).unwrap();
+                    let _ = released.recv();
+                    Ok(())
+                },
+            )
+        });
+        holding.recv().unwrap();
+        let (waiting, observed) = std::sync::mpsc::channel();
+        let current = &current;
+        let data = &data;
+        let claim = &claim;
+        let admitted = scope.spawn(move || {
+            admit_checked(
+                data,
+                &touched,
+                &|data, sources| {
+                    crate::volume::enforce_no_substitution_with(data, sources, &|_| {
+                        Some(current.lock().unwrap().to_string())
+                    })
+                },
+                || match crate::scan_runtime::admit_foreground(
+                    None,
+                    None,
+                    &|| claim.cancelled(),
+                    &mut || {
+                        waiting.send(()).unwrap();
+                    },
+                ) {
+                    Ok(guard) => Ok(Some(guard)),
+                    Err(crate::scan_runtime::Refusal::Cancelled) => Ok(None),
+                    Err(error) => Err(format!("{error:?}")),
+                },
+            )
+            .map(|guard| guard.is_some())
+        });
+        let waited = observed.recv_timeout(Duration::from_secs(5)).is_ok();
+        *current.lock().unwrap() = "volume-b";
+        release.send(()).unwrap();
+        let result = admitted.join().unwrap();
+        background.join().unwrap().unwrap();
+        (result, waited)
+    });
+    assert!(waited, "the real index owner was awaited");
+    assert!(
+        result.is_err(),
+        "a source substituted during the wait is refused"
+    );
+    // A refused late check releases its index reservation.
+    assert!(crate::scan_runtime::admit_foreground(
+        None,
+        Some(Instant::now() + Duration::from_secs(1)),
+        &|| false,
+        &mut || {}
+    )
+    .is_ok());
+    let healthy = vec![roots[1].to_string_lossy().into_owned()];
+    assert_eq!(
+        admit_checked(
+            &data,
+            &healthy,
+            &|data, sources| {
+                crate::volume::enforce_no_substitution_with(data, sources, &|_| {
+                    Some("volume-b".into())
+                })
+            },
+            || Ok(Some(()))
+        ),
+        Ok(Some(())),
+        "unaffected source remains admitted"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn canonical_accepted_paths_keep_their_configured_alias_volume_gate() {
+    let (_dir, data, roots) = volume_fixture();
+    let alias = roots[0].with_file_name("configured-alias");
+    std::os::unix::fs::symlink(&roots[0], &alias).unwrap();
+    std::fs::write(
+        data.join(crate::storage::CONFIG_FILE_NAME),
+        json!({
+            "formatVersion": 1, "sourceDirs": [&alias, &roots[1]],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    crate::volume::check_identity(&data, &alias.to_string_lossy(), "volume-a").unwrap();
+    let resolved = std::fs::canonicalize(&roots[0]).unwrap();
+    let photo = resolved.join("photo.jpg");
+    std::fs::write(&photo, b"keep").unwrap();
+    let conn = crate::index_store::open(&data.join(crate::storage::INDEX_DB_FILE_NAME)).unwrap();
+    conn.execute(
+        "INSERT INTO scan_dirs (root, dirty, configured_root) VALUES (?1, 0, ?2)",
+        rusqlite::params![resolved.to_string_lossy(), alias.to_string_lossy()],
+    )
+    .unwrap();
+    // Scanner's canonical row remains accepted after the configured alias
+    // points elsewhere. Admission must still use that alias's recorded A.
+    std::fs::remove_file(&alias).unwrap();
+    std::os::unix::fs::symlink(&roots[1], &alias).unwrap();
+    let accepted = crate::operations::AcceptedFiles::for_test_paths([photo.to_string_lossy()]);
+    let sources = crate::storage::configured_source_dirs(&data).unwrap();
+    let unrelated =
+        crate::volume_io::FakeStallingVolume::mount(&roots[1], Duration::from_millis(100));
+    unrelated.stall(&[], None);
+    let touched = touched_source_dirs_at(&data, &sources, &Touches::Files(&accepted)).unwrap();
+    assert_eq!(touched, [alias.to_string_lossy().into_owned()]);
+    assert_eq!(
+        unrelated.held(),
+        0,
+        "mapping modern receipts probes no unrelated source"
+    );
+    unrelated.release();
+    let result = admit_checked(
+        &data,
+        &touched,
+        &|data, sources| {
+            crate::volume::enforce_no_substitution_with(data, sources, &|_| Some("volume-b".into()))
+        },
+        || {
+            std::fs::remove_file(&photo).unwrap();
+            Ok(Some(()))
+        },
+    );
+    assert!(result.is_err());
+    assert_eq!(std::fs::read(&photo).unwrap(), b"keep");
+    let healthy = crate::operations::AcceptedFiles::for_test_paths([roots[1]
+        .join("photo.jpg")
+        .to_string_lossy()]);
+    assert_eq!(
+        touched_source_dirs_at(&data, &sources, &Touches::Files(&healthy)).unwrap(),
+        [roots[1].to_string_lossy().into_owned()],
+        "no blanket gate on another source"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn legacy_alias_receipts_require_a_current_physical_owner_and_read_failures_close_admission() {
+    let (_dir, data, roots) = volume_fixture();
+    let alias = roots[0].with_file_name("alias");
+    std::os::unix::fs::symlink(&roots[0], &alias).unwrap();
+    let sources = vec![
+        alias.to_string_lossy().into_owned(),
+        roots[1].to_string_lossy().into_owned(),
+    ];
+    let resolved = std::fs::canonicalize(&roots[0]).unwrap();
+    let accepted = crate::operations::AcceptedFiles::for_test_paths([resolved
+        .join("photo.jpg")
+        .to_string_lossy()]);
+    let index = data.join(crate::storage::INDEX_DB_FILE_NAME);
+    let conn = crate::index_store::open(&index).unwrap();
+    conn.execute(
+        "INSERT INTO scan_dirs (root, dirty) VALUES (?1, 0)",
+        [resolved.to_string_lossy()],
+    )
+    .unwrap();
+    assert_eq!(
+        touched_source_dirs_at(&data, &sources, &Touches::Files(&accepted)).unwrap(),
+        [sources[0].clone()]
+    );
+    std::fs::remove_file(&alias).unwrap();
+    std::os::unix::fs::symlink(&roots[1], &alias).unwrap();
+    assert!(
+        touched_source_dirs_at(&data, &sources, &Touches::Files(&accepted)).is_err(),
+        "a legacy alias that no longer proves its owner grants no effect authority"
+    );
+    let healthy = crate::operations::AcceptedFiles::for_test_paths([roots[1]
+        .join("photo.jpg")
+        .to_string_lossy()]);
+    assert_eq!(
+        touched_source_dirs_at(&data, &sources, &Touches::Files(&healthy)).unwrap(),
+        [sources[1].clone()]
+    );
+    drop(conn);
+    std::fs::write(&index, b"unreadable source receipts").unwrap();
+    assert!(
+        touched_source_dirs_at(&data, &sources, &Touches::Files(&accepted)).is_err(),
+        "reading no receipts is distinct from a failed receipt read"
+    );
+}
+
+#[test]
+fn early_volume_refusal_and_cancelled_wait_do_not_run_or_repeat_the_effect() {
+    let waited = std::cell::Cell::new(false);
+    let refused: Result<Option<()>, _> = admit_checked(
+        std::path::Path::new("/apphome"),
+        &[],
+        &|_, _| Err("source changed".into()),
+        || {
+            waited.set(true);
+            Ok(Some(()))
+        },
+    );
+    assert_eq!(refused, Err("source changed".into()));
+    assert!(!waited.get());
+    let probes = std::cell::Cell::new(0);
+    let cancelled: Result<Option<()>, _> = admit_checked(
+        std::path::Path::new("/apphome"),
+        &[],
+        &|_, _| {
+            probes.set(probes.get() + 1);
+            Ok(())
+        },
+        || Ok(None),
+    );
+    assert_eq!(cancelled, Ok(None));
+    assert_eq!(probes.get(), 1, "cancelled admission stays unstarted");
+}
+
+#[cfg(unix)]
+#[test]
+fn empty_and_restore_root_scope_find_a_physical_source_alias_without_index_receipts() {
+    let (_dir, data, roots) = volume_fixture();
+    let alias = roots[0].with_file_name("source-alias");
+    std::os::unix::fs::symlink(&roots[0], &alias).unwrap();
+    let nested = std::fs::canonicalize(&roots[0]).unwrap().join("nested");
+    let day = nested
+        .join(crate::trash::TRASH_DIR_NAME)
+        .join("20261011-utc");
+    std::fs::create_dir_all(&day).unwrap();
+    let photo = day.join("photo.jpg");
+    std::fs::write(&photo, b"keep").unwrap();
+    std::fs::write(
+        data.join(crate::storage::CONFIG_FILE_NAME),
+        json!({
+            "formatVersion": 1, "sourceDirs": [&alias, &roots[1]],
+            "destinationRoots": [&nested, &roots[2]],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    crate::volume::check_identity(&data, &alias.to_string_lossy(), "volume-a").unwrap();
+    let sources = crate::storage::configured_source_dirs(&data).unwrap();
+    assert!(!data.join(crate::storage::INDEX_DB_FILE_NAME).exists());
+    assert_eq!(
+        touched_source_dirs_at(&data, &sources, &Touches::Root(&nested.to_string_lossy())).unwrap(),
+        [alias.to_string_lossy().into_owned()],
+        "Restore's touched root has the same physical owner"
+    );
+    let reviewed = crate::trash::overview(std::slice::from_ref(&nested)).remove(0);
+    let result = empty_trash_gate_with(
+        &data,
+        std::path::Path::new(&reviewed.root),
+        &|data, sources| {
+            crate::volume::enforce_no_substitution_with(data, sources, &|_| Some("volume-b".into()))
+        },
+    )
+    .and_then(|()| {
+        crate::trash::empty_root_with_progress(
+            std::path::Path::new(&reviewed.root),
+            &reviewed.plan_token,
+            &AtomicBool::new(false),
+            &|_| {},
+            &|_, _| Ok(()),
+        )
+    });
+    assert!(result.is_err());
+    assert_eq!(std::fs::read(&photo).unwrap(), b"keep");
+    assert!(
+        !data.join(crate::storage::INDEX_DB_FILE_NAME).exists(),
+        "Empty creates no index"
+    );
+    // Existing index without a scan receipt has the same absence semantics.
+    let conn = crate::index_store::open(&data.join(crate::storage::INDEX_DB_FILE_NAME)).unwrap();
+    assert_eq!(
+        touched_source_dirs_at(&data, &sources, &Touches::Root(&nested.to_string_lossy())).unwrap(),
+        [alias.to_string_lossy().into_owned()]
+    );
+    drop(conn);
+    let unrelated =
+        crate::volume_io::FakeStallingVolume::mount(&roots[1], Duration::from_millis(100));
+    unrelated.stall(&[crate::volume_io::Op::Stat], None);
+    assert!(
+        empty_trash_gate_with(
+            &data,
+            &roots[2].join(crate::trash::TRASH_DIR_NAME),
+            &|data, sources| {
+                crate::volume::enforce_no_substitution_with(data, sources, &|_| {
+                    Some("volume-b".into())
+                })
+            },
+        )
+        .is_ok(),
+        "failed resolution of an unrelated source never gates a destination"
+    );
+    unrelated.release();
+    assert!(unrelated.wait_until_settled(Duration::from_secs(2)));
+}
+
+#[test]
+fn remembered_source_owner_uses_the_exact_current_volume_record_key() {
+    let data = tempfile::tempdir().unwrap();
+    let conn =
+        crate::index_store::open(&data.path().join(crate::storage::INDEX_DB_FILE_NAME)).unwrap();
+    let sources = vec![
+        "/configured/Photos".to_string(),
+        "/configured/photos".to_string(),
+    ];
+    conn.execute(
+        "INSERT INTO scan_dirs (root, dirty, configured_root) VALUES (?1, 0, ?2)",
+        rusqlite::params!["/settled", &sources[0]],
+    )
+    .unwrap();
+    let accepted = crate::operations::AcceptedFiles::for_test_paths(["/settled/photo.jpg"]);
+    assert_eq!(
+        touched_source_dirs_at(data.path(), &sources, &Touches::Files(&accepted)).unwrap(),
+        [sources[0].clone()],
+        "record keys must not inherit containment's spelling normalization"
+    );
+}
+
 #[test]
 fn cancellation_is_bound_to_one_claim_identity() {
     let _serial = crate::scan_runtime::serial_test();

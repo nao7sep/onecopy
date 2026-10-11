@@ -1053,6 +1053,10 @@ pub struct TrashRootInfo {
     /// Names exactly what these totals measured. Emptying requires it back
     /// and removes nothing when the location no longer matches.
     pub plan_token: String,
+    /// Incomplete or unavailable totals provide no Empty authority. The
+    /// configured root can still be available for browsing and a retry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub measurement_error: Option<String>,
     /// The root is in a synced folder (`cloud_files`): emptying it deletes
     /// the files from the cloud and other devices too.
     pub synced: bool,
@@ -1073,14 +1077,22 @@ pub fn overview(configured_roots: &[PathBuf]) -> Vec<TrashRootInfo> {
     roots
         .into_iter()
         .map(|(root, configured)| {
-            let measure = measure_root(&root);
+            let (bytes, files, plan_token, measurement_error) = match measure_root(&root) {
+                Ok(measure) => (measure.bytes, measure.files, measure.token, None),
+                Err(error) => {
+                    crate::logging::warn("trash totals could not be measured",
+                        json!({ "path": root, "error": { "message": error } }));
+                    (0, 0, String::new(), Some(error))
+                }
+            };
             TrashRootInfo {
                 synced: crate::cloud_files::is_synced(&root, &synced),
                 root: root.to_string_lossy().to_string(),
                 available: volume_io::is_dir(configured).unwrap_or(false),
-                bytes: measure.bytes,
-                files: measure.files,
-                plan_token: measure.token,
+                bytes,
+                files,
+                plan_token,
+                measurement_error,
             }
         })
         .collect()
@@ -1149,6 +1161,10 @@ pub fn empty_root_with_progress(
     progress: &dyn Fn(EmptyProgress),
     record_failure: &dyn Fn(&Path, &str) -> Result<(), String>,
 ) -> Result<EmptyOutcome, String> {
+    let is_cancelled = || cancelled.load(Ordering::Relaxed);
+    if is_cancelled() {
+        return Ok(EmptyOutcome { cancelled: true, ..EmptyOutcome::default() });
+    }
     match volume_io::symlink_metadata(root) {
         Ok(metadata) if metadata.file_type().is_dir() => {}
         Ok(_) => return Err("trash root is not a directory".to_string()),
@@ -1158,49 +1174,18 @@ pub fn empty_root_with_progress(
         }
         Err(error) => return Err(error.to_string()),
     }
-    if measure_root(root).token != reviewed_token {
+    let measure = match measure_root_with_cancel(root, Some(&is_cancelled)) {
+        _ if is_cancelled() => return Ok(EmptyOutcome { cancelled: true, ..EmptyOutcome::default() }),
+        measured => measured?,
+    };
+    if measure.token != reviewed_token {
         return Ok(EmptyOutcome {
             plan_changed: true,
             ..EmptyOutcome::default()
         });
     }
-
-    let mut files: Vec<(PathBuf, u64, bool)> = Vec::new();
-    let mut directories: Vec<PathBuf> = Vec::new();
-    let is_cancelled = || cancelled.load(Ordering::Relaxed);
-    let mut walk = volume_io::walk(root, |_, _| true).map_err(|error| error.to_string())?;
-    while let Some(entry) = walk.next(Some(&is_cancelled)) {
-        if is_cancelled() {
-            return Ok(EmptyOutcome {
-                cancelled: true,
-                ..EmptyOutcome::default()
-            });
-        }
-        let entry = entry
-            .map_err(|error| error.to_string())?
-            .map_err(|error| error.message)?;
-        if entry.depth == 0 {
-            continue;
-        }
-        if entry.file_type.is_dir() {
-            directories.push(entry.path);
-        } else {
-            // Symlinks and other stray non-directories are bookkeeping, never
-            // followed and never counted as recoverable media, but Empty must
-            // still remove their directory entries.
-            let recoverable = entry.file_type.is_file()
-                && entry.path.file_name().is_none_or(|name| name != MANIFEST_FILE_NAME);
-            let bytes = recoverable
-                .then(|| {
-                    entry
-                        .metadata
-                        .and_then(Result::ok)
-                        .map_or(0, |metadata| metadata.len())
-                })
-                .unwrap_or(0);
-            files.push((entry.path, bytes, recoverable));
-        }
-    }
+    let mut files = measure.entries;
+    let mut directories = measure.directories;
     directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
     // Never remove provenance before its stored files. On any failure, keep
     // all manifests: retaining an empty day's history is harmless, while a
@@ -1299,211 +1284,150 @@ pub fn empty_root_with_progress(
     })
 }
 
-struct CachedDaySize {
-    modified: std::time::SystemTime,
-    /// When `bytes` and `files` were counted.
-    measured: std::time::SystemTime,
-    bytes: u64,
-    files: u64,
+/// A complete, fresh snapshot of the entries Empty may remove. Folder mtime
+/// cannot prove byte totals: editing a stored file or a nested child leaves
+/// its day folder unchanged. Measure metadata on each overview and keep the
+/// same measured paths for Empty, so a later-added entry is never unreviewed
+/// work. No global cache lock can couple unrelated volumes.
+fn measure_root(root: &Path) -> Result<TrashMeasure, String> {
+    measure_root_with_cancel(root, None)
 }
 
-/// The coarsest directory mtime granularity OneCopy meets (FAT's two
-/// seconds). A change within this window after a count can leave a day
-/// folder's mtime equal to the one the count saw.
-const MTIME_GRANULARITY: std::time::Duration = std::time::Duration::from_secs(2);
-
-impl CachedDaySize {
-    /// Whether this count still describes a day folder whose mtime is
-    /// `modified`. An equal mtime proves nothing changed only when the count
-    /// was taken more than one mtime granule after that mtime; otherwise a
-    /// file added in the same granule would leave the mtime unchanged.
-    fn describes(&self, modified: std::time::SystemTime) -> bool {
-        self.modified == modified
-            && self
-                .measured
-                .duration_since(modified)
-                .is_ok_and(|settled| settled > MTIME_GRANULARITY)
-    }
+fn measure_root_with_cancel(
+    root: &Path,
+    cancelled: Option<&dyn Fn() -> bool>,
+) -> Result<TrashMeasure, String> {
+    measure_root_at(root, root, cancelled)
 }
 
-/// Per-day-folder size cache, keyed by that folder's own path. Trash layout is
-/// exactly `<root>/.onecopy-trash/<day>/<stored file or manifest>` (one level
-/// of files beneath one level of day folders), so a day folder's own mtime
-/// changes on every add, remove, or rename directly inside it -- whether done
-/// by OneCopy or, per this app's recovery contract, by hand outside it. That
-/// makes the day folder the exact right cache boundary: reusing its cached
-/// size whenever its mtime is unchanged, once that mtime is older than one
-/// mtime granule at counting time (`CachedDaySize::describes`), never risks
-/// serving a stale total,
-/// while a full walk of every day folder on every Trash-modal open (C-L3) is
-/// avoided for the common case of reopening it with nothing changed.
-static DAY_SIZE_CACHE: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<PathBuf, CachedDaySize>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-
-/// Total bytes and file count of the RECOVERABLE contents of a tree; a missing
-/// tree is (0, 0).
-///
-/// The per-day `manifest.jsonl` is excluded. It is our own bookkeeping, not
-/// something the user put in the trash, and counting it made the overview
-/// disagree with itself: a trash holding two deleted photos read "3 files",
-/// and a trash emptied of everything recoverable could still read "1 file" —
-/// with no way to reach zero. The count answers "how much of my library is in
-/// here", so only entries a restore could hand back may contribute.
-///
-/// The token covers every entry of the root and each day folder's own mtime
-/// and totals: any file added to or removed from a day folder changes that
-/// folder's mtime, so an unchanged token means the root still holds what
-/// these totals measured.
-fn measure_root(root: &Path) -> TrashMeasure {
-    // A trash root is created lazily by the first delete. Until then its
-    // absence is the ordinary empty state promised by `overview`, not a walk
-    // failure worth surfacing in the application log.
-    let Ok(day_entries) = volume_io::read_dir(root, true) else {
-        return TrashMeasure {
-            bytes: 0,
-            files: 0,
-            token: blake3::hash(b"absent").to_hex().to_string(),
-        };
+/// Derive the entry prefix from the walk's filesystem spelling (verbatim on
+/// Windows). Keep the walk input's original spelling for volume admission,
+/// and the selected UI root for its configured ownership and identity.
+fn measure_root_at(
+    root: &Path,
+    walk_root: &Path,
+    cancelled: Option<&dyn Fn() -> bool>,
+) -> Result<TrashMeasure, String> {
+    let filesystem_root = crate::winpath::for_fs(walk_root);
+    let metadata = match volume_io::symlink_metadata(root) {
+        Ok(metadata) if metadata.file_type().is_dir() => metadata,
+        Ok(_) => return Err("trash root is not a real directory".to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(TrashMeasure {
+                bytes: 0,
+                files: 0,
+                token: blake3::hash(b"absent").to_hex().to_string(),
+                entries: Vec::new(),
+                directories: Vec::new(),
+            });
+        }
+        Err(error) => return Err(format!("trash root is unavailable: {error}")),
     };
-    let mut token_parts: Vec<(std::ffi::OsString, Option<(u128, u64, u64)>)> = Vec::new();
-
-    let mut cache = DAY_SIZE_CACHE
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut total_bytes = 0u64;
-    let mut total_files = 0u64;
-    let mut seen = std::collections::HashSet::new();
-    for entry in day_entries {
-        if !entry.file_type.is_some_and(|kind| kind.is_dir()) {
-            token_parts.push((entry.file_name, None));
+    let root_identity = crate::file_identity::FileIdentity::from_path(root)
+        .map_err(|error| format!("trash root identity is unavailable: {error}"))?;
+    let root_modified = metadata.modified().map_err(|error| error.to_string())?;
+    let mut bytes = 0u64;
+    let mut files = 0u64;
+    let mut entries = Vec::new();
+    let mut directories = Vec::new();
+    let mut versions = Vec::new();
+    let mut walk =
+        volume_io::walk(walk_root, |_, _| true).map_err(|error| error.to_string())?;
+    while let Some(entry) = walk.next(cancelled) {
+        if cancelled.is_some_and(|cancelled| cancelled()) {
+            return Err("trash totals measurement cancelled".to_string());
+        }
+        let entry = entry
+            .map_err(|error| error.to_string())?
+            .map_err(|error| error.message)?;
+        // Read the entry itself: links are never followed, including a path
+        // changed while the walk was queued. Every metadata failure makes
+        // the entire review incomplete, never a smaller authorized total.
+        let metadata = if entry.file_type.is_file() {
+            entry
+                .metadata
+                .ok_or_else(|| "trash file metadata was not measured".to_string())?
+                .map_err(|error| error.to_string())?
+        } else {
+            volume_io::symlink_metadata(&entry.path).map_err(|error| error.to_string())?
+        };
+        if metadata.file_type() != entry.file_type {
+            return Err("trash entry changed while its totals were measured".to_string());
+        }
+        let relative = entry
+            .path
+            .strip_prefix(filesystem_root.as_ref())
+            .map_err(|error| error.to_string())?
+            .as_os_str()
+            .to_os_string();
+        let kind = if entry.file_type.is_dir() {
+            b'd'
+        } else if entry.file_type.is_file() {
+            b'f'
+        } else if entry.file_type.is_symlink() {
+            b'l'
+        } else {
+            b'o'
+        };
+        versions.push((
+            relative,
+            kind,
+            metadata.len(),
+            metadata.modified().map_err(|error| error.to_string())?,
+        ));
+        if entry.depth == 0 {
             continue;
         }
-        let day_path = entry.path;
-        let modified = match entry
-            .metadata
-            .unwrap_or_else(|| Err(std::io::Error::other("no metadata listed")))
-            .and_then(|metadata| metadata.modified())
-        {
-            Ok(modified) => modified,
-            Err(error) => {
-                crate::logging::warn(
-                    "trash day metadata read failed",
-                    json!({ "path": day_path, "error": { "message": error.to_string() } }),
-                );
-                token_parts.push((entry.file_name, None));
-                continue;
+        if entry.file_type.is_dir() {
+            directories.push(entry.path);
+        } else {
+            let recoverable = entry.file_type.is_file()
+                && entry
+                    .path
+                    .file_name()
+                    .is_none_or(|name| name != MANIFEST_FILE_NAME);
+            let size = if recoverable { metadata.len() } else { 0 };
+            if recoverable {
+                bytes += size;
+                files += 1;
             }
-        };
-        let modified_nanos = modified
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_nanos())
-            .unwrap_or(0);
-        seen.insert(day_path.clone());
-        if let Some(cached) = cache.get(&day_path) {
-            if cached.describes(modified) {
-                total_bytes += cached.bytes;
-                total_files += cached.files;
-                token_parts.push((
-                    entry.file_name.clone(),
-                    Some((modified_nanos, cached.bytes, cached.files)),
-                ));
-                continue;
-            }
+            entries.push((entry.path, size, recoverable));
         }
-        let measured = std::time::SystemTime::now();
-        let (bytes, files) = day_dir_size(&day_path);
-        total_bytes += bytes;
-        total_files += files;
-        token_parts.push((entry.file_name, Some((modified_nanos, bytes, files))));
-        cache.insert(
-            day_path,
-            CachedDaySize {
-                modified,
-                measured,
-                bytes,
-                files,
-            },
-        );
     }
-    // Drop cache entries for day folders this root no longer has (emptied or
-    // manually removed), without disturbing other roots' cached entries.
-    cache.retain(|path, _| !path.starts_with(root) || seen.contains(path));
-    token_parts.sort();
+    let after = volume_io::symlink_metadata(root).map_err(|error| error.to_string())?;
+    if !after.file_type().is_dir()
+        || after.modified().map_err(|error| error.to_string())? != root_modified
+        || crate::file_identity::FileIdentity::from_path(root).map_err(|error| error.to_string())?
+            != root_identity
+    {
+        return Err("trash root changed while its totals were measured".to_string());
+    }
+    versions.sort();
     let mut hasher = blake3::Hasher::new();
-    for (name, day) in &token_parts {
+    hasher.update(format!("{root_identity:?}").as_bytes());
+    for (name, kind, size, modified) in versions {
         let name = name.as_encoded_bytes();
         hasher.update(&(name.len() as u64).to_le_bytes());
         hasher.update(name);
-        match day {
-            Some((modified, bytes, files)) => {
-                hasher.update(b"d");
-                hasher.update(&modified.to_le_bytes());
-                hasher.update(&bytes.to_le_bytes());
-                hasher.update(&files.to_le_bytes());
-            }
-            None => {
-                hasher.update(b"o");
-            }
-        }
+        hasher.update(&[kind]);
+        hasher.update(&size.to_le_bytes());
+        hasher.update(format!("{modified:?}").as_bytes());
     }
-    TrashMeasure {
-        bytes: total_bytes,
-        files: total_files,
+    Ok(TrashMeasure {
+        bytes,
+        files,
         token: hasher.finalize().to_hex().to_string(),
-    }
+        entries,
+        directories,
+    })
 }
 
 struct TrashMeasure {
     bytes: u64,
     files: u64,
     token: String,
-}
-
-/// Walks one day folder's own contents. Bounded to a single day's files
-/// rather than the whole trash tree, and defensively recursive in case a
-/// future stored layout ever nests beneath the day folder.
-fn day_dir_size(day_dir: &Path) -> (u64, u64) {
-    let mut bytes = 0u64;
-    let mut files = 0u64;
-    let mut walk = match volume_io::walk(day_dir, |_, _| true) {
-        Ok(walk) => walk,
-        Err(error) => {
-            crate::logging::warn(
-                "trash size walk failed",
-                json!({ "path": day_dir, "error": { "message": error.to_string() } }),
-            );
-            return (bytes, files);
-        }
-    };
-    while let Some(entry) = walk.next(None) {
-        let entry = match entry {
-            Ok(Ok(entry)) => entry,
-            Ok(Err(error)) => {
-                crate::logging::warn(
-                    "trash size walk failed",
-                    json!({ "path": day_dir, "error": { "message": error.message } }),
-                );
-                continue;
-            }
-            // Given up on: the volume stopped answering; count what was seen.
-            Err(_) => break,
-        };
-        if entry.file_type.is_file()
-            && entry.path.file_name().is_none_or(|name| name != MANIFEST_FILE_NAME)
-        {
-            files += 1;
-            match entry.metadata {
-                Some(Ok(metadata)) => bytes += metadata.len(),
-                Some(Err(error)) => crate::logging::warn(
-                    "trash file metadata read failed",
-                    json!({ "path": entry.path, "error": { "message": error.to_string() } }),
-                ),
-                None => {}
-            }
-        }
-    }
-    (bytes, files)
+    entries: Vec<(PathBuf, u64, bool)>,
+    directories: Vec<PathBuf>,
 }
 
 /// The volume (mount point / drive) root containing `path`.

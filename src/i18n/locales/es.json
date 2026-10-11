@@ -362,6 +362,7 @@
   "trash.entriesNotRemoved": { "one": "No se pudo quitar {count} entrada.", "many": "No se pudieron quitar {count} de entradas.", "other": "No se pudieron quitar {count} entradas." },
   "trash.changedSinceReview": "Los archivos eliminados cambiaron después de medirse, así que no se quitó nada. Revisa los nuevos totales y vuelve a vaciar.",
   "trash.totalsNotRefreshed": "Los archivos eliminados se procesaron, pero no se pudieron actualizar sus totales.",
+  "trash.totalsUnavailable": "El número total y el tamaño total de los archivos eliminados no están disponibles.",
   "trash.emptyFailed": "No se pudieron vaciar estos archivos eliminados.",
   "trash.cancelFailed": "No se pudo cancelar el vaciado de los archivos eliminados.",
   "trash.revealFailed": "No se pudo mostrar esta ubicación de archivos eliminados.",

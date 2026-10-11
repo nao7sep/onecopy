@@ -362,6 +362,7 @@
   "trash.entriesNotRemoved": { "one": "Não foi possível remover {count} entrada.", "many": "Não foi possível remover {count} de entradas.", "other": "Não foi possível remover {count} entradas." },
   "trash.changedSinceReview": "Os arquivos excluídos mudaram depois de medidos, então nada foi removido. Revise os novos totais e esvazie de novo.",
   "trash.totalsNotRefreshed": "Os arquivos apagados foram processados, mas não foi possível atualizar os totais deles.",
+  "trash.totalsUnavailable": "O número total e o tamanho total dos arquivos excluídos não estão disponíveis.",
   "trash.emptyFailed": "Não foi possível esvaziar estes arquivos apagados.",
   "trash.cancelFailed": "Não foi possível cancelar o esvaziamento dos arquivos apagados.",
   "trash.revealFailed": "Não foi possível mostrar este local de arquivos apagados.",

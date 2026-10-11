@@ -30,6 +30,8 @@ interface TrashRootInfo {
   /** Names exactly what these totals measured; Empty sends it back and
    * removes nothing when the location changed since. */
   planToken: string;
+  /** An incomplete measurement supplies no authority for Empty. */
+  measurementError?: string | null;
   /** The location is in a synced folder, so emptying it also deletes the
    * files from the cloud and other devices. */
   synced: boolean;
@@ -230,12 +232,14 @@ export default function TrashModal({
               <div className="min-w-0 flex-1">
                 <p className="select-text break-all text-sm text-ink">{row.root}</p>
                 <p className="text-xs tabular-nums text-ink-muted">
-                  {row.available
-                    ? t("trash.rootSummary", {
+                  {!row.available
+                    ? t("trash.unavailable")
+                    : row.measurementError != null
+                      ? t("trash.totalsUnavailable")
+                      : t("trash.rootSummary", {
                         count: row.files,
                         size: formatBytes(row.bytes, number),
-                      })
-                    : t("trash.unavailable")}
+                      })}
                 </p>
                 {activeRoot === row.root ? (
                   <p className="mt-1 text-xs tabular-nums text-primary">
@@ -258,7 +262,7 @@ export default function TrashModal({
                 ) : null}
               </div>
               <Button
-                disabled={busy || !row.available || row.files === 0}
+                disabled={busy || !row.available || (row.measurementError == null && row.files === 0)}
                 onClick={() => setBrowsing(row.root)}
               >
                 {t("trash.browse")}
@@ -280,7 +284,7 @@ export default function TrashModal({
               ) : (
                 <Button
                   variant="danger"
-                  disabled={busy || row.files === 0}
+                  disabled={busy || !row.available || row.measurementError != null || !row.planToken || row.files === 0}
                   onClick={() => setConfirm(row)}
                 >
                   {t("trash.empty")}

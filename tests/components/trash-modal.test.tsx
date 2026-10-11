@@ -59,6 +59,34 @@ describe("the trash modal", () => {
     expect(document.body.textContent).not.toContain("No deleted-file locations");
   });
 
+  it("keeps failed per-root totals unknown and refuses Empty while allowing Browse and unaffected roots", async () => {
+    mockCommands({
+      trash_overview: () => [
+        { ...ROWS[0], bytes: 0, files: 0, planToken: "", measurementError: "EACCES /private/tmp/measurement-sentinel" },
+        { ...ROWS[0], root: "/other/.onecopy-trash" },
+      ],
+      trash_entries: () => ({ entries: [], unrecordedFiles: 0, malformedLines: 0, newerLines: 0 }),
+    });
+    const view = render(<TrashModal open onClose={() => {}} />);
+    await act(async () => {});
+    const row = view.getAllByRole("listitem")[0];
+    const empty = view.getAllByRole("button", { name: "Empty" });
+    const browse = view.getAllByRole("button", { name: "Browse…" });
+    const rendered = row.textContent;
+    const canBrowse = !browse[0].hasAttribute("disabled");
+    await act(async () => empty[0].click());
+    expect(invokeCalls.some((call) => call.command === "trash_empty")).toBe(false);
+    await act(async () => browse[0].click());
+
+    expect(rendered).toContain("Deleted-file totals are unavailable.");
+    expect(rendered).not.toContain("0 files");
+    expect(rendered).not.toContain("measurement-sentinel");
+    expect(empty[0].hasAttribute("disabled")).toBe(true);
+    expect(empty[1].hasAttribute("disabled")).toBe(false);
+    expect(canBrowse).toBe(true);
+    expect(invokeCalls.some((call) => call.command === "trash_entries" && call.args.root === ROWS[0].root)).toBe(true);
+  });
+
   it("does not publish an older measurement into a reopened modal", async () => {
     let finishOlder: ((rows: typeof ROWS) => void) | undefined;
     let calls = 0;
