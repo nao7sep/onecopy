@@ -161,6 +161,43 @@ describe("app state persistence settlement", () => {
     expect(useAppStore.getState().appData?.state).toEqual({ zoomLevel: 1 });
   });
 
+  it("keeps a newer same-value publication when an older batch fails, while rolling back its untouched keys", async () => {
+    useAppStore.setState((current) => ({
+      appData: { ...current.appData!, state: { zoomLevel: 1, rightPaneWidth: 300 } },
+    }));
+    let rejectFirst!: (error: Error) => void;
+    let finishLatest!: () => void;
+    let writes = 0;
+    let disk: Record<string, unknown> = { zoomLevel: 1, rightPaneWidth: 300 };
+    mockCommands({ patch_state: ({ patch }) => {
+      if (++writes === 1) return new Promise((_resolve, reject) => { rejectFirst = reject; });
+      return new Promise((resolve) => { finishLatest = () => {
+        disk = { ...disk, ...(patch as Record<string, unknown>) };
+        resolve(disk);
+      }; });
+    } });
+    const first = useAppStore.getState().patchState(
+      { zoomLevel: 1.2, rightPaneWidth: 320 },
+      { immediate: true, reportFailure: false },
+    );
+    const failed = expect(first).rejects.toThrow("older batch refused");
+    await vi.waitFor(() => expect(rejectFirst).toBeTypeOf("function"));
+    const intermediate = useAppStore.getState().patchState({ zoomLevel: 1.3 }, { reportFailure: false });
+    const latest = useAppStore.getState().patchState({ zoomLevel: 1.2 }, { reportFailure: false });
+    await vi.advanceTimersByTimeAsync(400);
+    rejectFirst(new Error("older batch refused"));
+    await failed;
+    await vi.waitFor(() => expect(finishLatest).toBeTypeOf("function"));
+    const beforeSettlement = { ...useAppStore.getState().appData?.state };
+    finishLatest();
+    await Promise.all([intermediate, latest]);
+
+    expect(beforeSettlement).toEqual({ zoomLevel: 1.2, rightPaneWidth: 300 });
+    expect(useAppStore.getState().appData?.state).toEqual(disk);
+    expect(disk).toEqual({ zoomLevel: 1.2, rightPaneWidth: 300 });
+    expect(writes).toBe(2);
+  });
+
   it("leaves the core quiet when the caller reports the failure itself", async () => {
     mockCommands({
       patch_state: () => Promise.reject(new TypeError("EACCES writing state.json")),

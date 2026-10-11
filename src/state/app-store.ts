@@ -161,6 +161,9 @@ let pendingStateReportFailure = false;
 // now-stale optimistic snapshot (D-S15).
 const ABSENT = Symbol("state key had no confirmed value");
 let confirmedState: Record<string, unknown> = {};
+// Values can return to an earlier value while a write is pending. Track each
+// key's authored publication so a failed older batch cannot undo that intent.
+const statePublications = new Map<string, number>();
 function noteUnconfirmed(patch: Record<string, unknown>, published: Record<string, unknown>): void {
   for (const key of Object.keys(patch)) {
     if (key in confirmedState) continue;
@@ -186,6 +189,7 @@ function flushPendingStatePatch(): Promise<void> {
   pendingStateReportFailure = false;
   stateFlushTimer = null;
   if (toWrite === null) return stateWriteTail;
+  const publications = new Map(Object.keys(toWrite).map((key) => [key, statePublications.get(key)]));
 
   const write = stateWriteTail.then(() =>
     patchStateFile(toWrite, reportFailure).then(() => undefined),
@@ -196,7 +200,7 @@ function flushPendingStatePatch(): Promise<void> {
       // any later failure rolls back to.
       confirmedState = { ...confirmedState, ...toWrite };
     },
-    () => revertPublishedState(confirmedState, toWrite),
+    () => revertPublishedState(confirmedState, toWrite, publications),
   );
   stateWriteTail = write.catch(() => undefined);
   void write.then(
@@ -215,6 +219,7 @@ function flushPendingStatePatch(): Promise<void> {
 function revertPublishedState(
   previous: Record<string, unknown>,
   attempted: Record<string, unknown>,
+  publications: ReadonlyMap<string, number | undefined>,
 ): void {
   useAppStore.setState((s) => {
     if (s.appData === null) return s;
@@ -222,7 +227,7 @@ function revertPublishedState(
     const restored: Record<string, unknown> = { ...current };
     let changed = false;
     for (const [key, value] of Object.entries(attempted)) {
-      if (current[key] !== value) continue;
+      if (statePublications.get(key) !== publications.get(key) || current[key] !== value) continue;
       const base = previous[key];
       if (base === ABSENT) delete restored[key];
       else restored[key] = base;
@@ -274,6 +279,7 @@ export function resumeStatePatchesAfterFailedShutdown(): void {
  * clean slate instead of an earlier test's baseline. */
 export function resetConfirmedStateForTests(): void {
   confirmedState = {};
+  statePublications.clear();
 }
 
 // Main bootstrap is single-flight because load_app_data carries one-shot
@@ -292,6 +298,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   patchState: async (patch, options) => {
     const published = get().appData?.state ?? {};
     noteUnconfirmed(patch, published);
+    for (const key of Object.keys(patch)) {
+      statePublications.set(key, (statePublications.get(key) ?? 0) + 1);
+    }
     pendingStateReportFailure =
       pendingStateReportFailure || (options?.reportFailure ?? true);
     // Publish optimistically so readers see the new state immediately; the
