@@ -147,6 +147,9 @@ pub struct TrashError {
     /// is already written, so it is recoverable either way, and the next
     /// source check settles the index.
     pub outcome_unknown: bool,
+    /// Move refused the final mutation because its source-read proof no
+    /// longer names this version. Ordinary Delete never sets this flag.
+    pub source_changed: bool,
 }
 
 impl From<String> for TrashError {
@@ -154,6 +157,7 @@ impl From<String> for TrashError {
         Self {
             message,
             outcome_unknown: false,
+            source_changed: false,
         }
     }
 }
@@ -174,11 +178,32 @@ pub fn trash_file(
     trash_file_with_before_move(file, owning_root, content_hash, context, |_| {})
 }
 
+pub(crate) fn trash_file_proven(
+    file: &Path,
+    owning_root: &Path,
+    content_hash: Option<&str>,
+    context: &TrashContext,
+    source_version: crate::file_identity::FileVersion,
+) -> Result<TrashedRecord, TrashError> {
+    trash_file_checked(file, owning_root, content_hash, context, Some(source_version), |_| {})
+}
+
 fn trash_file_with_before_move(
     file: &Path,
     owning_root: &Path,
     content_hash: Option<&str>,
     context: &TrashContext,
+    before_move: impl FnOnce(&Path),
+) -> Result<TrashedRecord, TrashError> {
+    trash_file_checked(file, owning_root, content_hash, context, None, before_move)
+}
+
+fn trash_file_checked(
+    file: &Path,
+    owning_root: &Path,
+    content_hash: Option<&str>,
+    context: &TrashContext,
+    source_version: Option<crate::file_identity::FileVersion>,
     before_move: impl FnOnce(&Path),
 ) -> Result<TrashedRecord, TrashError> {
     if !file.is_absolute() {
@@ -198,7 +223,7 @@ fn trash_file_with_before_move(
         .into());
     }
     let plan = prepare_trash(file, owning_root, content_hash, context, &metadata)?;
-    commit_trash(file, plan, before_move)
+    commit_trash(file, plan, source_version, before_move)
 }
 
 struct TrashPlan {
@@ -318,15 +343,27 @@ fn prepare_trash(
 fn commit_trash(
     source: &Path,
     plan: TrashPlan,
+    source_version: Option<crate::file_identity::FileVersion>,
     before_move: impl FnOnce(&Path),
 ) -> Result<TrashedRecord, TrashError> {
     before_move(&plan.stored);
     let moved = refuse_newer_day(&plan.day_dir)
-        .map_err(|message| TrashError { message, outcome_unknown: false })
-        .and_then(|()| crate::fs_publish::rename_no_replace(source, &plan.stored).map_err(|error| TrashError {
-            message: format!("trash move failed for {}: {error}", source.display()),
-            outcome_unknown: volume_io::outcome_unknown(&error),
-        }));
+        .map_err(|message| TrashError {
+            message,
+            outcome_unknown: false,
+            source_changed: false,
+        })
+        .and_then(|()| {
+            let moved = match source_version {
+                Some(version) => crate::fs_publish::rename_no_replace_proven(source, &plan.stored, version),
+                None => crate::fs_publish::rename_no_replace(source, &plan.stored),
+            };
+            moved.map_err(|error| TrashError {
+                message: format!("trash move failed for {}: {error}", source.display()),
+                outcome_unknown: volume_io::outcome_unknown(&error),
+                source_changed: crate::file_identity::source_version_changed(&error),
+            })
+        });
     record_trash_action(&plan.record, moved.as_ref().err());
     moved?;
     if let Err(error) = crate::fs_publish::sync_directory(&plan.day_dir) {
@@ -345,7 +382,11 @@ fn commit_trash(
 fn record_trash_action(record: &TrashedRecord, failure: Option<&TrashError>) {
     let mut detail = json!(record);
     if let Some(failure) = failure {
-        detail["error"] = json!({ "message": failure.message, "outcomeUnknown": failure.outcome_unknown });
+        detail["error"] = json!({
+            "message": failure.message,
+            "outcomeUnknown": failure.outcome_unknown,
+            "sourceChanged": failure.source_changed,
+        });
     }
     crate::records::trash_action(crate::records::TrashAction {
         action: if failure.is_some() { "trash-failed" } else { "trashed" },
@@ -1094,8 +1135,10 @@ pub struct EmptyOutcome {
 /// totals measured (`reviewed_token` from `overview`). Emptying is permanent
 /// and confirms exact totals, so a location that gained or lost files since
 /// then is left untouched and reported as changed. The caller holds the
-/// mutation boundary, so OneCopy adds nothing to it while it empties. Manifests are bookkeeping and do not inflate the same
-/// totals the overview/confirmation shows. The root itself must remain a real
+/// mutation boundary, so OneCopy adds nothing to it while it empties. Manifests
+/// do not inflate the overview totals, but remain authoritative Restore data
+/// until every other entry was removed successfully. Partial or cancelled
+/// Empty keeps them for surviving files. The root itself must remain a real
 /// directory and inner symlinks are never followed. Cancellation is checked
 /// while planning and between files; an individual filesystem deletion is
 /// already atomic at that unit.
@@ -1159,6 +1202,13 @@ pub fn empty_root_with_progress(
         }
     }
     directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    // Never remove provenance before its stored files. On any failure, keep
+    // all manifests: retaining an empty day's history is harmless, while a
+    // surviving file without its record cannot be restored. A later complete
+    // Empty removes these manifests through the same path.
+    files.sort_by_key(|(path, _, _)| {
+        path.file_name().is_some_and(|name| name == MANIFEST_FILE_NAME)
+    });
 
     let mut snapshot = EmptyProgress {
         total: files
@@ -1181,6 +1231,11 @@ pub fn empty_root_with_progress(
                 failures: snapshot.failures,
                 plan_changed: false,
             });
+        }
+        if snapshot.failures > 0
+            && path.file_name().is_some_and(|name| name == MANIFEST_FILE_NAME)
+        {
+            continue;
         }
         let removed = volume_io::remove_file(&path);
         if recoverable || removed.is_err() {

@@ -127,7 +127,8 @@ pub fn hash_while_copying(
     src: &Path,
     dst: &Path,
 ) -> std::io::Result<(String, u64, crate::file_identity::PrivateFile)> {
-    hash_while_copying_detailed(src, dst, &|| false, &mut |_, _| {}, |_| {})
+    hash_while_copying_detailed(src, dst, &|| false, &mut |_, _| {}, false, |_| {})
+        .map(|(hash, bytes, private, _)| (hash, bytes, private))
         .map_err(CopyFailure::into_io)
 }
 
@@ -140,13 +141,15 @@ pub fn hash_while_copying_cancellable(
     cancelled: &dyn Fn() -> bool,
     progress: &mut dyn FnMut(u64, u64),
 ) -> std::io::Result<(String, u64, crate::file_identity::PrivateFile)> {
-    hash_while_copying_detailed(src, dst, cancelled, progress, |_| {})
+    hash_while_copying_detailed(src, dst, cancelled, progress, false, |_| {})
+        .map(|(hash, bytes, private, _)| (hash, bytes, private))
         .map_err(CopyFailure::into_io)
 }
 
 #[derive(Debug)]
 pub(crate) enum CopyFailure {
     Cancelled,
+    SourceChanged,
     Source(std::io::Error),
     Destination(std::io::Error),
 }
@@ -155,6 +158,10 @@ impl CopyFailure {
     fn into_io(self) -> std::io::Error {
         match self {
             Self::Cancelled => std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled"),
+            Self::SourceChanged => std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "source changed while copying",
+            ),
             Self::Source(error) | Self::Destination(error) => error,
         }
     }
@@ -165,8 +172,12 @@ pub(crate) fn hash_while_copying_cancellable_detailed(
     dst: &Path,
     cancelled: &dyn Fn() -> bool,
     progress: &mut dyn FnMut(u64, u64),
-) -> Result<(String, u64, crate::file_identity::PrivateFile), CopyFailure> {
-    hash_while_copying_detailed(src, dst, cancelled, progress, |_| {})
+    prove_source: bool,
+) -> Result<
+    (String, u64, crate::file_identity::PrivateFile, Option<crate::file_identity::FileVersion>),
+    CopyFailure,
+> {
+    hash_while_copying_detailed(src, dst, cancelled, progress, prove_source, |_| {})
 }
 
 fn hash_while_copying_detailed(
@@ -174,8 +185,12 @@ fn hash_while_copying_detailed(
     dst: &Path,
     cancelled: &dyn Fn() -> bool,
     progress: &mut dyn FnMut(u64, u64),
+    prove_source: bool,
     after_sync: impl FnOnce(&Path),
-) -> Result<(String, u64, crate::file_identity::PrivateFile), CopyFailure> {
+) -> Result<
+    (String, u64, crate::file_identity::PrivateFile, Option<crate::file_identity::FileVersion>),
+    CopyFailure,
+> {
     // A read or write given up on because Cancel was pressed is a
     // cancellation, not a failure of either side.
     let classify = |error: std::io::Error, side: fn(std::io::Error) -> CopyFailure| {
@@ -196,6 +211,10 @@ fn hash_while_copying_detailed(
         .metadata()
         .map_err(|error| classify(error, CopyFailure::Source))?
         .len();
+    let source_version = prove_source
+        .then(|| crate::file_identity::FileVersion::of(&mut reader))
+        .transpose()
+        .map_err(|error| classify(error, CopyFailure::Source))?;
     let writer =
         volume_io::create_new(dst).map_err(|error| classify(error, CopyFailure::Destination))?;
     // From here every failure or cancellation drops the private output, which
@@ -223,6 +242,15 @@ fn hash_while_copying_detailed(
             .map_err(|error| classify(error, CopyFailure::Destination))?;
         total += n as u64;
         progress(total, expected_total);
+    }
+    // This is evidence about the descriptor that actually supplied the
+    // bytes, including in-place edits during a provisional/unhashed read.
+    if let Some(before) = source_version {
+        let after = crate::file_identity::FileVersion::of(&mut reader)
+            .map_err(|error| classify(error, CopyFailure::Source))?;
+        if before != after {
+            return Err(CopyFailure::SourceChanged);
+        }
     }
     // Before the flush, so the flush makes the metadata durable with the bytes.
     let metadata = reader
@@ -264,7 +292,7 @@ fn hash_while_copying_detailed(
             "staged destination read-back did not match the copied bytes",
         )));
     }
-    Ok((streamed_hash, total, private))
+    Ok((streamed_hash, total, private, source_version))
 }
 
 #[cfg(test)]

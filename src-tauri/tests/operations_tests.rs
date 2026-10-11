@@ -1795,10 +1795,9 @@ fn a_shared_hash_split_across_paired_and_unpaired_rows_still_agrees() {
 
 #[test]
 fn unhashed_other_files_move_out_and_conflict_correctly_by_path_id() {
-    // Every other move_out test uses ItemRef::Hash. The PathId path skips tee
-    // verification entirely — there is no indexed hash to verify against — and
-    // instead compares the destination against the first copy's bytes re-read
-    // from disk, so it is a genuinely different code path.
+    // An unhashed PathId item has no recorded hash to compare against. Its
+    // delivered bytes are still tee-hashed and verified, and Move's cleanup
+    // requires the version evidence from that actual source read.
     let cases: [(&str, &[u8], u64, u64, bool); 3] = [
         // (label, pre-existing destination bytes, exported, skipped, needs review)
         ("empty", b"", 1, 0, false),
@@ -2513,6 +2512,182 @@ fn move_keeps_a_later_changed_copy_and_all_its_companions() {
 }
 
 #[test]
+fn move_keeps_a_family_replaced_after_main_publication() {
+    for mode in [MoveOutMode::MoveTrashRest, MoveOutMode::MoveDeleteRest] {
+        for changed_name in ["photo.jpg", "photo.xmp"] {
+            let f = fixture("late-source-replacement");
+            std::fs::write(f.root.join("photo.jpg"), b"original-image").unwrap();
+            std::fs::write(f.root.join("photo.xmp"), b"original-edit").unwrap();
+            scan(&f);
+            let dest = f._dir.path().join("destination");
+            std::fs::create_dir(&dest).unwrap();
+            let mut replaced = false;
+
+            let outcome = move_batch(
+                &f.conn, &f.app_root, &f.cache, &[item_named(&f, "photo.jpg")],
+                &dest, mode, &|| false, |progress| {
+                    if !replaced && matches!(progress, MoveBatchProgress::Delivering { files_done: 1, .. }) {
+                        // Keep the old inode alive while replacing the path, so
+                        // this is certainly a new file, as with an editor's save.
+                        std::fs::rename(f.root.join(changed_name), f._dir.path().join("old-source")).unwrap();
+                        std::fs::write(f.root.join(changed_name), b"new-authored-bytes-not-in-output").unwrap();
+                        replaced = true;
+                    }
+                },
+            ).unwrap();
+
+            assert!(replaced);
+            assert_eq!(std::fs::read(dest.join("photo.jpg")).unwrap(), b"original-image");
+            assert_eq!(std::fs::read(dest.join("photo.xmp")).unwrap(), b"original-edit");
+            for name in ["photo.jpg", "photo.xmp"] {
+                let expected = if name == changed_name { b"new-authored-bytes-not-in-output".as_slice() }
+                    else if name == "photo.jpg" { b"original-image".as_slice() } else { b"original-edit".as_slice() };
+                assert_eq!(std::fs::read(f.root.join(name)).unwrap(), expected, "{mode:?}: {changed_name} keeps {name}");
+                assert_eq!(row_state(&f, name), Some(0), "the preserved source stays indexed");
+            }
+            assert_eq!(outcome.exported, 2);
+            assert_eq!(outcome.post_action.deleted_files, 0);
+            assert!(outcome.post_action.failed_files > 0, "{outcome:?}");
+            let descriptor: String = f.conn.query_row(
+                "SELECT message_key FROM active_issues WHERE kind = 'copy-error' AND path = ?1",
+                [f.root.join(changed_name).to_string_lossy().as_ref()], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(descriptor, "notice.copySourceChanged");
+        }
+    }
+}
+
+#[test]
+fn move_keeps_a_duplicate_family_replaced_after_verification() {
+    for mode in [MoveOutMode::MoveTrashRest, MoveOutMode::MoveDeleteRest] {
+        let (f, hash, dest) = rotten_copy_fixture("late-duplicate-replacement");
+        for sub in ["a", "b"] {
+            std::fs::write(f.root.join(sub).join("r.xmp"), b"same-sidecar").unwrap();
+        }
+        scan(&f);
+        assert!(!scanner::is_provisional(&hash));
+        let mut replaced = false;
+        let outcome = move_batch(
+            &f.conn, &f.app_root, &f.cache, &[ItemIdentity { hash: Some(hash), path_id: None }],
+            &dest, mode, &|| false, |progress| {
+                if !replaced && matches!(progress, MoveBatchProgress::Delivering { files_done: 1, .. }) {
+                    std::fs::rename(f.root.join("b/r.jpg"), f._dir.path().join("old-source")).unwrap();
+                    std::fs::write(f.root.join("b/r.jpg"), b"new-duplicate-bytes").unwrap();
+                    replaced = true;
+                }
+            },
+        ).unwrap();
+        assert!(replaced);
+        assert_eq!(std::fs::read(dest.join("r.jpg")).unwrap(), b"healthy-bytes");
+        assert_eq!(std::fs::read(dest.join("r.xmp")).unwrap(), b"same-sidecar");
+        assert_eq!(std::fs::read(f.root.join("b/r.jpg")).unwrap(), b"new-duplicate-bytes");
+        assert_eq!(std::fs::read(f.root.join("b/r.xmp")).unwrap(), b"same-sidecar");
+        assert!(!f.root.join("a/r.jpg").exists());
+        assert!(!f.root.join("a/r.xmp").exists());
+        assert_eq!(outcome.post_action.deleted_files, 2);
+        assert_eq!(outcome.post_action.failed_files, 1);
+        let live: i64 = f.conn.query_row("SELECT COUNT(*) FROM paths WHERE missing = 0", [], |row| row.get(0)).unwrap();
+        assert_eq!(live, 2, "the kept family stays indexed");
+    }
+}
+
+#[test]
+fn move_keeps_an_inplace_edit_made_while_staging_a_companion() {
+    for mode in [MoveOutMode::MoveTrashRest, MoveOutMode::MoveDeleteRest] {
+        let f = fixture("source-edit-during-companion");
+        std::fs::write(f.root.join("photo.jpg"), b"original-image").unwrap();
+        std::fs::write(f.root.join("photo.xmp"), b"original-edit").unwrap();
+        scan(&f);
+        let dest = f._dir.path().join("destination");
+        std::fs::create_dir(&dest).unwrap();
+        let mut edited = false;
+        let outcome = move_batch(
+            &f.conn, &f.app_root, &f.cache, &[item_named(&f, "photo.jpg")], &dest,
+            mode, &|| false, |progress| {
+                if !edited && matches!(progress, MoveBatchProgress::Delivering {
+                    current_file_bytes_done: Some(0), current_file_bytes_total: Some(13), ..
+                }) {
+                    std::fs::write(f.root.join("photo.jpg"), b"new-inplace-authored-image").unwrap();
+                    edited = true;
+                }
+            },
+        ).unwrap();
+        assert!(edited);
+        assert_eq!(std::fs::read(dest.join("photo.jpg")).unwrap(), b"original-image");
+        assert_eq!(std::fs::read(dest.join("photo.xmp")).unwrap(), b"original-edit");
+        assert_eq!(std::fs::read(f.root.join("photo.jpg")).unwrap(), b"new-inplace-authored-image");
+        assert_eq!(std::fs::read(f.root.join("photo.xmp")).unwrap(), b"original-edit");
+        assert_eq!(outcome.post_action.deleted_files, 0);
+        assert_eq!(outcome.post_action.failed_files, 1);
+    }
+}
+
+#[test]
+fn move_keeps_the_family_of_a_companion_changed_during_its_read() {
+    for mode in [MoveOutMode::MoveTrashRest, MoveOutMode::MoveDeleteRest] {
+        let f = fixture("companion-edited-during-read");
+        std::fs::write(f.root.join("photo.jpg"), b"original-image").unwrap();
+        std::fs::write(f.root.join("photo.xmp"), b"original-edit").unwrap();
+        scan(&f);
+        let dest = f._dir.path().join("destination");
+        std::fs::create_dir(&dest).unwrap();
+        let mut edited = false;
+        let outcome = move_batch(
+            &f.conn, &f.app_root, &f.cache, &[item_named(&f, "photo.jpg")], &dest,
+            mode, &|| false, |progress| {
+                if !edited && matches!(progress, MoveBatchProgress::Delivering {
+                    current_file_bytes_done: Some(0), current_file_bytes_total: Some(13), ..
+                }) {
+                    std::fs::write(f.root.join("photo.xmp"), b"new-edited-companion-data").unwrap();
+                    edited = true;
+                }
+            },
+        ).unwrap();
+        assert!(edited);
+        assert_eq!(std::fs::read(dest.join("photo.jpg")).unwrap(), b"original-image");
+        assert!(!dest.join("photo.xmp").exists(), "the unstable read is not published");
+        assert_eq!(std::fs::read(f.root.join("photo.jpg")).unwrap(), b"original-image");
+        assert_eq!(std::fs::read(f.root.join("photo.xmp")).unwrap(), b"new-edited-companion-data");
+        assert_eq!(row_state(&f, "photo.jpg"), Some(0));
+        assert_eq!(row_state(&f, "photo.xmp"), Some(0));
+        assert_eq!(outcome.post_action.deleted_files, 0);
+        assert_eq!(outcome.undelivered, vec![dest.join("photo.xmp").to_string_lossy().into_owned()]);
+    }
+}
+
+#[test]
+fn move_keeps_an_unhashed_source_changed_after_staging() {
+    for mode in [MoveOutMode::MoveTrashRest, MoveOutMode::MoveDeleteRest] {
+        let f = fixture("late-unhashed-source-edit");
+        std::fs::write(f.root.join("unique.bin"), b"original-unhashed-bytes").unwrap();
+        scan(&f);
+        let (path_id, hash): (i64, Option<String>) = f.conn.query_row(
+            "SELECT id, content_hash FROM paths WHERE file_name = 'unique.bin'", [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(hash, None);
+        let dest = f._dir.path().join("destination");
+        std::fs::create_dir(&dest).unwrap();
+        let mut edited = false;
+        let outcome = move_batch(
+            &f.conn, &f.app_root, &f.cache, &[ItemIdentity { hash: None, path_id: Some(path_id) }],
+            &dest, mode, &|| false, |progress| {
+                if !edited && matches!(progress, MoveBatchProgress::Delivering { files_done: 1, .. }) {
+                    std::fs::write(f.root.join("unique.bin"), b"new-unhashed-bytes").unwrap();
+                    edited = true;
+                }
+            },
+        ).unwrap();
+        assert!(edited);
+        assert_eq!(std::fs::read(dest.join("unique.bin")).unwrap(), b"original-unhashed-bytes");
+        assert_eq!(std::fs::read(f.root.join("unique.bin")).unwrap(), b"new-unhashed-bytes");
+        assert_eq!(row_state(&f, "unique.bin"), Some(0));
+        assert_eq!(outcome.post_action.deleted_files, 0);
+        assert_eq!(outcome.post_action.failed_files, 1);
+    }
+}
+
+#[test]
 fn move_keeps_companions_of_an_unreadable_main_before_or_after_the_healthy_copy() {
     for mode in [MoveOutMode::MoveTrashRest, MoveOutMode::MoveDeleteRest] {
         for unreadable in ["a", "b"] {
@@ -2755,6 +2930,47 @@ use onecopy_lib::volume_io::{FakeStallingVolume, Op};
 
 const STALL_BOUND: std::time::Duration = std::time::Duration::from_millis(300);
 const SETTLE: std::time::Duration = std::time::Duration::from_secs(10);
+
+#[test]
+fn move_refuses_a_replacement_while_the_final_source_removal_is_held() {
+    for mode in [MoveOutMode::MoveTrashRest, MoveOutMode::MoveDeleteRest] {
+        let f = fixture("queued-source-replacement");
+        let source = f.root.join("photo.jpg");
+        std::fs::write(&source, b"original-image").unwrap();
+        std::fs::write(f.root.join("photo.xmp"), b"original-edit").unwrap();
+        scan(&f);
+        let dest = f._dir.path().join("destination");
+        std::fs::create_dir(&dest).unwrap();
+        let volume = FakeStallingVolume::mount(&f.root, SETTLE);
+        // Publication happens on the separate destination lane. Hold the
+        // source's final cleanup only, after all preflight/family checks.
+        volume.stall(&[if mode == MoveOutMode::MoveTrashRest { Op::Rename } else { Op::Remove }], None);
+        let outcome = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                assert!(volume.wait_until_held(1, SETTLE));
+                std::fs::rename(&source, f._dir.path().join("old-source")).unwrap();
+                std::fs::write(&source, b"replacement-bytes-never-delivered").unwrap();
+                volume.release();
+            });
+            move_batch(&f.conn, &f.app_root, &f.cache, &[item_named(&f, "photo.jpg")],
+                &dest, mode, &|| false, |_| {}).unwrap()
+        });
+        assert_eq!(std::fs::read(dest.join("photo.jpg")).unwrap(), b"original-image");
+        assert_eq!(std::fs::read(dest.join("photo.xmp")).unwrap(), b"original-edit");
+        assert_eq!(std::fs::read(&source).unwrap(), b"replacement-bytes-never-delivered");
+        assert_eq!(std::fs::read(f.root.join("photo.xmp")).unwrap(), b"original-edit");
+        assert_eq!(row_state(&f, "photo.jpg"), Some(0));
+        assert_eq!(row_state(&f, "photo.xmp"), Some(0));
+        assert_eq!(outcome.post_action.deleted_files, 0);
+        assert_eq!(outcome.post_action.failed_files, 1);
+        assert_eq!(outcome.post_action.unknown_files, 0);
+        let descriptor: String = f.conn.query_row(
+            "SELECT message_key FROM active_issues WHERE kind = 'copy-error' AND path = ?1",
+            [source.to_string_lossy().as_ref()], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(descriptor, "notice.copySourceChanged");
+    }
+}
 
 fn open_issue_kinds(f: &Fixture, path: &std::path::Path) -> Vec<String> {
     let mut statement = f

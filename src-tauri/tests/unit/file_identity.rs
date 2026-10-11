@@ -5,6 +5,34 @@
 
 use super::*;
 
+#[test]
+fn a_source_version_rejects_a_new_inode_with_the_same_size_and_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.bin");
+    std::fs::write(&source, b"original").unwrap();
+    let (mut file, _) = open_regular_nofollow(&source).unwrap();
+    let version = FileVersion::of(&mut file).unwrap();
+    assert!(version.matches_path(&source).unwrap());
+    std::fs::rename(&source, dir.path().join("old-source.bin")).unwrap();
+    std::fs::write(&source, b"changed!").unwrap();
+    std::fs::OpenOptions::new().write(true).open(&source).unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(version.modified)).unwrap();
+    assert!(!version.matches_path(&source).unwrap());
+}
+
+#[test]
+fn a_source_version_rejects_an_inplace_edit_with_a_changed_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.bin");
+    std::fs::write(&source, b"original").unwrap();
+    let (mut file, _) = open_regular_nofollow(&source).unwrap();
+    let version = FileVersion::of(&mut file).unwrap();
+    std::fs::write(&source, b"changed!").unwrap();
+    std::fs::OpenOptions::new().write(true).open(&source).unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(version.modified + std::time::Duration::from_secs(60))).unwrap();
+    assert!(!version.matches_path(&source).unwrap());
+}
+
 fn owner_name(fingerprint: &str, pid: u32) -> String {
     format!(
         "{STAGE_PREFIX}{fingerprint}-{:0width$}-nanoid{PRIVATE_TMP_SUFFIX}",

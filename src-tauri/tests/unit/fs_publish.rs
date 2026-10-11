@@ -48,3 +48,32 @@ fn a_failed_publication_leaves_no_placeholder_behind() {
     assert!(!target.exists());
     assert!(directory.is_dir());
 }
+
+#[test]
+fn a_proven_move_without_exclusive_rename_refuses_a_queued_source_replacement() {
+    use crate::file_identity::{open_regular_nofollow, FileVersion};
+    use crate::volume_io::{FakeStallingVolume, Op};
+    use std::time::Duration;
+
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.jpg");
+    let target = dir.path().join("stored.jpg");
+    std::fs::write(&source, b"covered-by-output").unwrap();
+    let (mut file, _) = open_regular_nofollow(&source).unwrap();
+    let version = FileVersion::of(&mut file).unwrap();
+    let bound = Duration::from_secs(10);
+    let volume = FakeStallingVolume::mount(dir.path(), bound);
+    volume.stall(&[Op::Rename], None);
+    let result = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            assert!(volume.wait_until_held(1, bound));
+            std::fs::rename(&source, dir.path().join("old-source")).unwrap();
+            std::fs::write(&source, b"new-uncovered-source-bytes").unwrap();
+            volume.release();
+        });
+        without_exclusive_rename(|| rename_no_replace_proven(&source, &target, version))
+    });
+    assert!(crate::file_identity::source_version_changed(&result.unwrap_err()));
+    assert_eq!(std::fs::read(&source).unwrap(), b"new-uncovered-source-bytes");
+    assert!(!target.exists(), "the owned fallback placeholder was cleaned");
+}

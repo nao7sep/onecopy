@@ -86,6 +86,76 @@ impl FileIdentity {
     }
 }
 
+/// Version evidence for bytes read from an open source. A pathname sampled
+/// after copying cannot establish which version supplied the output. Move
+/// takes this before and after the read, then checks it again before cleanup.
+/// Same-size edits preserving modification time remain the accepted limit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FileVersion {
+    identity: FileIdentity,
+    bytes: u64,
+    modified: std::time::SystemTime,
+}
+
+impl FileVersion {
+    pub(crate) fn of(file: &mut VolumeFile) -> io::Result<Self> {
+        file.with(Op::Stat, None, None, |file| {
+            let metadata = file.metadata()?;
+            #[cfg(windows)]
+            let identity = FileIdentity::from_file(file)?;
+            #[cfg(not(windows))]
+            let identity = FileIdentity::from_metadata(&metadata)?;
+            Ok(Self {
+                identity,
+                bytes: metadata.len(),
+                modified: metadata.modified()?,
+            })
+        })
+    }
+
+    pub(crate) fn matches_path(self, path: &Path) -> io::Result<bool> {
+        let (mut file, identity) = open_regular_nofollow(path)?;
+        Ok(identity == self.identity
+            && Self::of(&mut file)? == self
+            && path_names(path, self.identity))
+    }
+
+    /// Used inside the final mutation worker, after its queued wait. The
+    /// typed refusal keeps a Move source failure distinct from an ordinary
+    /// Delete failure without interpreting an error's text.
+    pub(crate) fn require_path(self, path: &Path) -> io::Result<()> {
+        match self.matches_path(path) {
+            Ok(true) => Ok(()),
+            result => Err(io::Error::other(SourceVersionChanged { cause: result.err() })),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct SourceVersionChanged {
+    cause: Option<io::Error>,
+}
+
+impl std::fmt::Display for SourceVersionChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("source no longer matches the version read for Move")?;
+        if let Some(cause) = &self.cause {
+            write!(f, ": {cause}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for SourceVersionChanged {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.cause.as_ref().map(|cause| cause as &dyn std::error::Error)
+    }
+}
+
+pub(crate) fn source_version_changed(error: &io::Error) -> bool {
+    error.get_ref().is_some_and(|cause| cause.is::<SourceVersionChanged>())
+}
+
 /// The physical volume holding `path`, following a final symlink. Two paths
 /// are on the same filesystem exactly when these agree, however each is
 /// spelled (a mapped or `subst` drive, a symlinked root, a verbatim path).

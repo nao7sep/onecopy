@@ -1036,7 +1036,7 @@
   "notice.copyOutcomeUnknown": "OneCopy がこのファイルを保存先に発行している間に保存先のドライブが応答しなくなったため、ファイルが保存先にあるかどうかわかりません。ソースの複製はそのまま残しています。もう一度試す前に保存先を確認してください。",
   "notice.copyDirectorySyncFailed": "OneCopy はこのファイルを発行しましたが、保存先フォルダを同期できませんでした。",
   "notice.copyPreserveDestinationFailed": "OneCopy は置き換える前に、既存の保存先を「削除済みファイル」へ移動できませんでした。",
-  "notice.copySourceChanged": "このコピーは OneCopy がインデックス化した内容と一致しなくなったため、配信も削除も行われませんでした。一致するコピーが他に残っていれば、それが使用されました。",
+  "notice.copySourceChanged": "変更されていないことを確認できなかったため、OneCopy はこの元のファイルを残しました。すでに転送されたファイルには、以前のバージョンが含まれている場合があります。",
   "notice.copySourceReadFailed": "OneCopy はこのソースファイルをコピー中に読み取れませんでした。",
   "notice.copyDestinationRefused": "OneCopy の保存先はこのファイルを受け入れられませんでした。",
   "metadata.seconds": { "other": "{count} 秒" },

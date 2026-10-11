@@ -1036,7 +1036,7 @@
   "notice.copyOutcomeUnknown": "O disco de destino parou de responder enquanto o OneCopy publicava este arquivo, então ele pode ou não estar lá. As cópias de origem foram mantidas no lugar. Verifique o destino antes de tentar de novo.",
   "notice.copyDirectorySyncFailed": "O OneCopy publicou este arquivo, mas não conseguiu sincronizar a pasta de destino.",
   "notice.copyPreserveDestinationFailed": "O OneCopy não conseguiu mover o destino existente para Arquivos excluídos antes de substituí-lo.",
-  "notice.copySourceChanged": "O OneCopy não entregou nem removeu esta cópia porque ela não correspondia mais ao conteúdo indexado pelo OneCopy. Outra cópia correspondente foi usada, se restasse alguma.",
+  "notice.copySourceChanged": "O OneCopy manteve este arquivo de origem porque não conseguiu confirmar que ele permanecia sem alterações. Um arquivo já transferido pode conter uma versão anterior.",
   "notice.copySourceReadFailed": "O OneCopy não conseguiu ler este arquivo de origem ao copiá-lo.",
   "notice.copyDestinationRefused": "O destino do OneCopy não pôde aceitar este arquivo.",
   "metadata.seconds": { "one": "{count} s", "many": "{count} s", "other": "{count} s" },

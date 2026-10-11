@@ -1036,7 +1036,7 @@
   "notice.copyOutcomeUnknown": "Das Ziellaufwerk hat nicht mehr reagiert, während OneCopy diese Datei übertragen hat. Daher ist unklar, ob sie dort angekommen ist. Die Quellkopien wurden nicht angetastet. Prüfen Sie das Ziel, bevor Sie es erneut versuchen.",
   "notice.copyDirectorySyncFailed": "OneCopy hat diese Datei übertragen, konnte den Zielordner aber nicht synchronisieren.",
   "notice.copyPreserveDestinationFailed": "OneCopy konnte das vorhandene Ziel nicht in „Gelöschte Dateien“ verschieben, bevor es ersetzt wurde.",
-  "notice.copySourceChanged": "OneCopy hat diese Kopie weder übertragen noch entfernt, da sie nicht mehr mit dem von OneCopy indizierten Inhalt übereinstimmte. Falls noch eine passende Kopie vorhanden war, wurde diese verwendet.",
+  "notice.copySourceChanged": "OneCopy hat diese Quelldatei beibehalten, weil nicht bestätigt werden konnte, dass sie unverändert war. Eine bereits übertragene Datei kann eine frühere Version enthalten.",
   "notice.copySourceReadFailed": "OneCopy konnte diese Quelldatei beim Kopieren nicht lesen.",
   "notice.copyDestinationRefused": "Das Ziel von OneCopy konnte diese Datei nicht annehmen.",
   "metadata.seconds": { "one": "{count} Sek.", "other": "{count} Sek." },

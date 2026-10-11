@@ -397,6 +397,83 @@ fn empty_cancellation_stops_between_files_without_hiding_remaining_contents() {
     assert!(root.join("20260827-utc/two.jpg").exists());
 }
 
+#[test]
+fn partial_empty_keeps_restore_provenance_for_a_file_it_could_not_remove() {
+    use onecopy_lib::volume_io::{FakeStallingVolume, Op};
+    use std::sync::atomic::AtomicBool;
+    use std::time::Duration;
+
+    let f = fixture("empty-partial-provenance");
+    let a = f.source.join("one.jpg");
+    let b = f.source.join("two.jpg");
+    std::fs::write(&a, b"first").unwrap();
+    std::fs::write(&b, b"second").unwrap();
+    let first = trash_file(&a, &f.source, None, &ctx()).unwrap();
+    trash_file(&b, &f.source, None, &ctx()).unwrap();
+    let root = f.source.join(TRASH_DIR_NAME);
+    let stored = PathBuf::from(&first.stored_path);
+    let fake = FakeStallingVolume::mount(&f.source, Duration::from_secs(5));
+    fake.stall(&[Op::Remove], Some(&stored));
+    let token = reviewed_token(&root);
+    let outcome = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            assert!(fake.wait_until_held(1, Duration::from_secs(5)));
+            fake.fail();
+        });
+        empty_root_with_progress(&root, &token, &AtomicBool::new(false), &|_| {}, &|_, _| Ok(()))
+            .unwrap()
+    });
+
+    assert_eq!(outcome.failures, 1);
+    assert!(!outcome.cancelled);
+    assert_eq!(std::fs::read(&stored).unwrap(), b"first");
+    let listing = list_root(&f.source, &f._dir.path().join("app-data")).unwrap();
+    assert_eq!(listing.unrecorded_files, 0);
+    assert_eq!(listing.entries.len(), 1);
+    assert_eq!(listing.entries[0].original_relative.as_deref(), Some("one.jpg"));
+    assert_eq!(listing.entries[0].status, EntryStatus::Restorable);
+    let candidate = onecopy_lib::restore::observe(
+        &f.source, &listing.entries[0], &|_| Ok(1), &|| false,
+    ).unwrap();
+    assert_eq!(candidate.target, Some(a));
+    assert_eq!(candidate.blocked, None);
+
+    let retry = empty_root_with_progress(
+        &root, &reviewed_token(&root), &AtomicBool::new(false), &|_| {}, &|_, _| Ok(()),
+    ).unwrap();
+    assert_eq!(retry.failures, 0);
+    assert!(!retry.cancelled);
+    assert!(!stored.exists());
+    assert!(list_root(&f.source, &f._dir.path().join("app-data")).unwrap().entries.is_empty());
+}
+
+#[test]
+fn cancelled_empty_keeps_restore_provenance_after_a_completed_removal() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let f = fixture("empty-cancel-provenance");
+    for name in ["one.jpg", "two.jpg"] {
+        let file = f.source.join(name);
+        std::fs::write(&file, name.as_bytes()).unwrap();
+        trash_file(&file, &f.source, None, &ctx()).unwrap();
+    }
+    let root = f.source.join(TRASH_DIR_NAME);
+    let cancelled = AtomicBool::new(false);
+    let outcome = empty_root_with_progress(
+        &root, &reviewed_token(&root), &cancelled,
+        &|progress| {
+            if progress.done == 1 { cancelled.store(true, Ordering::Relaxed); }
+        },
+        &|_, _| Ok(()),
+    ).unwrap();
+
+    assert!(outcome.cancelled);
+    let listing = list_root(&f.source, &f._dir.path().join("app-data")).unwrap();
+    assert_eq!(listing.unrecorded_files, 0);
+    assert_eq!(listing.entries.len(), 1);
+    assert_eq!(listing.entries[0].status, EntryStatus::Restorable);
+}
+
 #[cfg(unix)]
 #[test]
 fn empty_stops_when_a_file_failure_cannot_be_recorded() {

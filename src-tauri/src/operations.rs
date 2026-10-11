@@ -144,6 +144,8 @@ struct DeleteTarget {
     /// deleted-file record.
     item: Option<String>,
     role: trash::TrashRole,
+    /// Present only for Move cleanup, from the read that covered this source.
+    source_version: Option<crate::file_identity::FileVersion>,
 }
 
 #[derive(Clone, Debug)]
@@ -310,10 +312,11 @@ pub fn delete_item(
         &trash::TrashContext::new(trash::TrashKind::Delete, &operation),
         &mut |_, _| {},
     )
+    .map(|(outcome, _)| outcome)
 }
 
 /// `trash` names the operation for the deleted-file records; each target
-/// supplies its own item and role. Deletion acts on whatever file is now at
+/// supplies its own item and role. Ordinary deletion acts on whatever file is now at
 /// the recorded path, without comparing its bytes with the indexed content:
 /// the user chose that file, and an edit since indexing does not change the
 /// decision. Move cleanup is different, since it removes a copy because
@@ -325,23 +328,29 @@ fn delete_targets(
     mode: DeleteMode,
     trash: &trash::TrashContext,
     on_attempt: &mut (impl FnMut(u64, bool) + ?Sized),
-) -> Result<DeleteOutcome, String> {
+) -> Result<(DeleteOutcome, Vec<i64>), String> {
     let mut outcome = DeleteOutcome::default();
+    let mut changed_sources = Vec::new();
 
     for target in targets {
         let file = Path::new(&target.abs_path);
         let result = match mode {
             DeleteMode::Trash => match &target.owning_root {
-                Ok(owning_root) => trash::trash_file(
-                    file,
-                    owning_root,
-                    target.content_hash.as_deref(),
-                    &trash.clone().item(target.item.clone()).role(target.role),
-                )
-                .map(|_| ()),
+                Ok(owning_root) => {
+                    let context = trash.clone().item(target.item.clone()).role(target.role);
+                    match target.source_version {
+                        Some(version) => trash::trash_file_proven(
+                            file, owning_root, target.content_hash.as_deref(), &context, version,
+                        ),
+                        None => trash::trash_file(
+                            file, owning_root, target.content_hash.as_deref(), &context,
+                        ),
+                    }
+                    .map(|_| ())
+                }
                 Err(error) => Err(error.clone().into()),
             },
-            DeleteMode::Permanent => permanently_delete_file(file),
+            DeleteMode::Permanent => permanently_delete_file(file, target.source_version),
         };
 
         match result {
@@ -434,6 +443,23 @@ fn delete_targets(
                 }
                 on_attempt(target.bytes, false);
             }
+            Err(err) if err.source_changed => {
+                outcome.failed_files += 1;
+                changed_sources.push(target.path_id);
+                logging::warn(
+                    "move kept a source changed before final removal",
+                    json!({ "path": target.abs_path, "error": { "message": err.message } }),
+                );
+                crate::index_store::upsert_issue_with_descriptor(
+                    conn,
+                    Some(&target.abs_path),
+                    "copy-error",
+                    Some("notice.copySourceChanged"),
+                    None,
+                    &err.message,
+                )?;
+                on_attempt(target.bytes, true);
+            }
             Err(err) if err.outcome_unknown => {
                 // Given up on while the volume was not responding: the file
                 // may be gone or still in place. Its row stays; the next
@@ -488,7 +514,7 @@ fn delete_targets(
         }),
     );
 
-    Ok(outcome)
+    Ok((outcome, changed_sources))
 }
 
 fn collect_delete_targets(
@@ -529,6 +555,7 @@ fn collect_delete_targets(
                 owning_root,
                 item: Some(item_key.clone()),
                 role,
+                source_version: None,
             }
         })
         .collect())
@@ -668,7 +695,7 @@ pub fn delete_accepted_batch(
                 },
             );
             let step = match step {
-                Ok(step) => step,
+                Ok((step, _)) => step,
                 Err(error) => {
                     logging::warn(
                         "delete batch stopped inside one logical item",
@@ -713,7 +740,10 @@ pub fn delete_accepted_batch(
     Ok(batch)
 }
 
-fn permanently_delete_file(file: &Path) -> Result<(), trash::TrashError> {
+fn permanently_delete_file(
+    file: &Path,
+    source_version: Option<crate::file_identity::FileVersion>,
+) -> Result<(), trash::TrashError> {
     // A missing file fails as that one file, exactly as recoverable deletion
     // does: nothing was deleted, so the receipt must not count it.
     let metadata = volume_io::symlink_metadata(file)
@@ -721,9 +751,20 @@ fn permanently_delete_file(file: &Path) -> Result<(), trash::TrashError> {
     if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
         return Err(format!("not a regular file: {}", file.display()).into());
     }
-    volume_io::remove_file(file).map_err(|error| trash::TrashError {
+    let removed = if let Some(version) = source_version {
+        let path = file.to_path_buf();
+        let fs_path = crate::winpath::for_fs(file).into_owned();
+        volume_io::call(file, volume_io::Op::Remove, None, move || {
+            version.require_path(&path)?;
+            std::fs::remove_file(fs_path) // volume_io worker
+        })
+    } else {
+        volume_io::remove_file(file)
+    };
+    removed.map_err(|error| trash::TrashError {
         message: error.to_string(),
         outcome_unknown: volume_io::outcome_unknown(&error),
+        source_changed: crate::file_identity::source_version_changed(&error),
     })
 }
 
@@ -1853,6 +1894,15 @@ struct StagedOutput {
     hash: String,
     bytes: u64,
     primary: bool,
+    /// Only Move needs these: each version belongs to the descriptor whose
+    /// bytes were copied or proven equal to this output.
+    source_proofs: Vec<SourceProof>,
+}
+
+#[derive(Clone)]
+struct SourceProof {
+    source: DeliverySource,
+    version: crate::file_identity::FileVersion,
 }
 
 enum MoveUnitProgress {
@@ -1866,10 +1916,12 @@ enum StageResult {
     /// paired with such a copy, unreadable sources and companions whose
     /// content differs from the output), and the paths of those differing
     /// companions.
-    Ready(StagedOutput, Vec<i64>, Vec<String>),
+    /// The final field names main copies whose companion changed during its
+    /// read: the whole family stays even if no companion output was prepared.
+    Ready(StagedOutput, Vec<i64>, Vec<String>, Vec<i64>),
     Cancelled,
     /// No output; the planned sources left uncovered as in `Ready`.
-    Failed(Vec<i64>),
+    Failed(Vec<i64>, Vec<i64>),
 }
 
 enum MoveUnitResult {
@@ -1934,7 +1986,7 @@ fn execute_move_unit(
             cancelled,
             on_progress,
         )? {
-            StageResult::Ready(output, uncovered, different) => {
+            StageResult::Ready(output, uncovered, different, changed_families) => {
                 if delivery.primary {
                     changed_mains.extend(&uncovered);
                 }
@@ -1945,14 +1997,16 @@ fn execute_move_unit(
                         .filter(|source| different.contains(&source.abs_path))
                         .filter_map(|source| source.beside),
                 );
+                kept_mains.extend(changed_families);
                 outcome.different_companions.extend(different);
                 staged.push((delivery, output, uncovered))
             }
             StageResult::Cancelled => return Ok(MoveUnitResult::Cancelled(outcome)),
-            StageResult::Failed(uncovered) => {
+            StageResult::Failed(uncovered, changed_families) => {
                 if delivery.primary {
                     changed_mains.extend(&uncovered);
                 }
+                kept_mains.extend(changed_families);
                 replacement_prepared = false;
                 outcome
                     .undelivered
@@ -1969,6 +2023,15 @@ fn execute_move_unit(
             crate::scanner::promote_identity(conn, cache, stored, &primary.hash)?;
         }
     }
+
+    // All companions are staged before the first main is removed. Their
+    // evidence also guards the main's cleanup, so a late companion edit keeps
+    // its main and the remaining family in place.
+    let source_proofs = staged
+        .iter()
+        .flat_map(|(_, output, _)| output.source_proofs.iter().cloned())
+        .collect::<Vec<_>>();
+    let mut cleaned_sources = HashSet::new();
 
     for (delivery, mut output, changed_sources) in staged {
         if cancelled() {
@@ -2110,14 +2173,39 @@ fn execute_move_unit(
             // A source this output does not cover stays in place, and so does
             // the whole family of a main copy kept above.
             let item_key = unit.item.key()?;
-            let targets = delivery
+            let sources = delivery
                 .sources
                 .iter()
-                .filter(|source| {
-                    !changed_sources.contains(&source.path_id)
-                        && !kept_mains.contains(&source.beside.unwrap_or(source.path_id))
-                })
-                .map(|source| DeleteTarget {
+                .filter(|source| !changed_sources.contains(&source.path_id))
+                .collect::<Vec<_>>();
+            let cleanup_context = trash::TrashContext::new(trash::TrashKind::MoveCleanup, operation)
+                .moved_to(Some(output.target.to_string_lossy().into_owned()));
+            let delete_mode = if mode == MoveOutMode::MoveTrashRest {
+                DeleteMode::Trash
+            } else {
+                DeleteMode::Permanent
+            };
+            for source in sources {
+                if cancelled() {
+                    return Ok(MoveUnitResult::Cancelled(outcome));
+                }
+                let main = source.beside.unwrap_or(source.path_id);
+                if kept_mains.contains(&main) {
+                    continue;
+                }
+                if !source_family_unchanged(
+                    conn,
+                    &source_proofs,
+                    main,
+                    source.path_id,
+                    &cleaned_sources,
+                    &mut outcome.post_action,
+                    on_progress,
+                )? {
+                    kept_mains.push(main);
+                    continue;
+                }
+                let target = DeleteTarget {
                     path_id: source.path_id,
                     abs_path: source.abs_path.clone(),
                     content_hash: source.content_hash.clone(),
@@ -2129,27 +2217,28 @@ fn execute_move_unit(
                     } else {
                         trash::TrashRole::Main
                     },
-                })
-                .collect::<Vec<_>>();
-            let cleanup_context = trash::TrashContext::new(trash::TrashKind::MoveCleanup, operation)
-                .moved_to(Some(output.target.to_string_lossy().into_owned()));
-            let delete_mode = if mode == MoveOutMode::MoveTrashRest {
-                DeleteMode::Trash
-            } else {
-                DeleteMode::Permanent
-            };
-            for target in &targets {
-                if cancelled() {
-                    return Ok(MoveUnitResult::Cancelled(outcome));
-                }
-                let cleanup = delete_targets(
+                    source_version: Some(
+                        source_proofs
+                            .iter()
+                            .find(|proof| proof.source.path_id == source.path_id)
+                            .ok_or_else(|| "Move cleanup has no source-read proof".to_string())?
+                            .version,
+                    ),
+                };
+                let (cleanup, changed_sources) = delete_targets(
                     conn,
                     cache,
-                    std::slice::from_ref(target),
+                    std::slice::from_ref(&target),
                     delete_mode,
                     &cleanup_context,
                     &mut |bytes, failed| on_progress(MoveUnitProgress::Attempt { bytes, failed }),
                 )?;
+                if changed_sources.contains(&source.path_id) {
+                    kept_mains.push(main);
+                }
+                if cleanup.deleted_files > 0 || cleanup.unknown_files > 0 {
+                    cleaned_sources.insert(source.path_id);
+                }
                 outcome.post_action.deleted_files = outcome
                     .post_action
                     .deleted_files
@@ -2174,6 +2263,58 @@ fn execute_move_unit(
     }
 
     Ok(MoveUnitResult::Completed(outcome))
+}
+
+/// Rechecks the covered members of one physical source family immediately
+/// before its next destructive step. Successful earlier removals are no
+/// longer paths to inspect. This is a bounded check, not a family transaction:
+/// external writers are not locked out between the check and removal.
+fn source_family_unchanged(
+    conn: &Connection,
+    proofs: &[SourceProof],
+    main: i64,
+    current: i64,
+    cleaned: &HashSet<i64>,
+    outcome: &mut DeleteOutcome,
+    on_progress: &mut dyn FnMut(MoveUnitProgress),
+) -> Result<bool, String> {
+    let mut unchanged = true;
+    let family = || {
+        proofs.iter().filter(|proof| {
+            proof.source.beside.unwrap_or(proof.source.path_id) == main
+                && !cleaned.contains(&proof.source.path_id)
+        })
+    };
+    // Inspect the file about to be removed last, after the companion probes.
+    for proof in family()
+        .filter(|proof| proof.source.path_id != current)
+        .chain(family().filter(|proof| proof.source.path_id == current))
+    {
+        let detail = match proof.version.matches_path(Path::new(&proof.source.abs_path)) {
+            Ok(true) => continue,
+            Ok(false) => String::new(),
+            Err(error) => error.to_string(),
+        };
+        logging::warn(
+            "move kept a source changed after staging",
+            json!({ "path": proof.source.abs_path, "error": { "message": detail } }),
+        );
+        crate::index_store::upsert_issue_with_descriptor(
+            conn,
+            Some(&proof.source.abs_path),
+            "copy-error",
+            Some("notice.copySourceChanged"),
+            None,
+            &detail,
+        )?;
+        outcome.failed_files = outcome.failed_files.saturating_add(1);
+        on_progress(MoveUnitProgress::Attempt {
+            bytes: proof.source.bytes,
+            failed: true,
+        });
+        unchanged = false;
+    }
+    Ok(unchanged)
 }
 
 /// Ends a unit whose publication the destination did not answer. A call
@@ -2309,6 +2450,7 @@ fn stage_delivery(
     cancelled: &dyn Fn() -> bool,
     on_progress: &mut dyn FnMut(MoveUnitProgress),
 ) -> Result<StageResult, String> {
+    let mut changed_families = Vec::new();
     let mut changed_sources = delivery
         .sources
         .iter()
@@ -2325,9 +2467,10 @@ fn stage_delivery(
             &staged,
             cancelled,
             &mut |done, total| on_progress(MoveUnitProgress::Stream { done, total }),
+            mode != MoveOutMode::CopyKeepAll,
         );
         match copied {
-            Ok((hash, _, private)) if recorded_hash.is_some_and(|recorded| recorded != hash) => {
+            Ok((hash, _, private, _)) if recorded_hash.is_some_and(|recorded| recorded != hash) => {
                 drop(private);
                 logging::warn(
                     "move skipped a changed source copy",
@@ -2343,15 +2486,23 @@ fn stage_delivery(
                 )?;
                 changed_sources.push(source.path_id);
             }
-            Ok((hash, bytes, private)) => {
+            Ok((hash, bytes, private, source_version)) => {
                 let mut different = Vec::new();
+                let mut source_proofs = source_version
+                    .into_iter()
+                    .map(|version| SourceProof { source: source.clone(), version })
+                    .collect::<Vec<_>>();
                 // A main delivery proves the other copies against the item's
                 // recorded content. A companion delivery compares them with the
                 // output itself: same-named companions of different main copies
                 // need not be identical, and one that differs is not covered.
                 // Copy removes nothing, so an unreadable companion (an offline
                 // duplicate, typically) is simply not compared.
-                let expected = if delivery.primary { recorded_hash } else { Some(hash.as_str()) };
+                let expected = if delivery.primary && mode == MoveOutMode::CopyKeepAll {
+                    recorded_hash
+                } else {
+                    Some(recorded_hash.unwrap_or(hash.as_str()))
+                };
                 if let Some(recorded) = expected {
                     for remaining in &delivery.sources[index + 1..] {
                         if changed_sources.contains(&remaining.path_id) {
@@ -2361,15 +2512,31 @@ fn stage_delivery(
                             Path::new(&remaining.abs_path),
                         )
                         .and_then(|(mut file, _)| {
-                            crate::hashing::full_hash_file_cancellable(
+                            let version = (mode != MoveOutMode::CopyKeepAll)
+                                .then(|| crate::file_identity::FileVersion::of(&mut file))
+                                .transpose()?;
+                            let hash = crate::hashing::full_hash_file_cancellable(
                                 &mut file,
                                 remaining.bytes,
                                 cancelled,
                                 &mut |done, total| on_progress(MoveUnitProgress::Stream { done, total }),
-                            )
+                            )?;
+                            let version = if let Some(before) = version {
+                                (crate::file_identity::FileVersion::of(&mut file)? == before).then_some(before)
+                            } else {
+                                None
+                            };
+                            Ok((hash, version))
                         });
                         let (descriptor, detail) = match verified {
-                            Ok(current) if current == recorded => continue,
+                            Ok((_, None)) if mode != MoveOutMode::CopyKeepAll => {
+                                changed_families.extend(remaining.beside);
+                                ("notice.copySourceChanged", String::new())
+                            }
+                            Ok((current, version)) if current == recorded => {
+                                source_proofs.extend(version.map(|version| SourceProof { source: remaining.clone(), version }));
+                                continue;
+                            }
                             Ok(_) if !delivery.primary => {
                                 logging::info(
                                     "a companion differs from the one delivered under its name",
@@ -2408,12 +2575,30 @@ fn stage_delivery(
                         hash,
                         bytes,
                         primary: delivery.primary,
+                        source_proofs,
                     },
                     changed_sources,
                     different,
+                    changed_families,
                 ));
             }
             Err(crate::hashing::CopyFailure::Cancelled) => return Ok(StageResult::Cancelled),
+            Err(crate::hashing::CopyFailure::SourceChanged) => {
+                changed_sources.push(source.path_id);
+                changed_families.extend(source.beside);
+                logging::warn(
+                    "move skipped a source changed during staging",
+                    json!({ "path": source.abs_path, "target": delivery.target.to_string_lossy() }),
+                );
+                crate::index_store::upsert_issue_with_descriptor(
+                    conn,
+                    Some(&source.abs_path),
+                    "copy-error",
+                    Some("notice.copySourceChanged"),
+                    None,
+                    "",
+                )?;
+            }
             Err(crate::hashing::CopyFailure::Source(error)) => {
                 changed_sources.push(source.path_id);
                 logging::warn(
@@ -2453,7 +2638,7 @@ fn stage_delivery(
             }
         }
     }
-    Ok(StageResult::Failed(changed_sources))
+    Ok(StageResult::Failed(changed_sources, changed_families))
 }
 
 /// A private name beside the final target with a short fixed length. It never

@@ -1036,7 +1036,7 @@
   "notice.copyOutcomeUnknown": "L’unità di destinazione ha smesso di rispondere mentre OneCopy pubblicava questo file, quindi potrebbe trovarsi lì oppure no. Le copie di origine sono state lasciate al loro posto. Controlla la destinazione prima di riprovare.",
   "notice.copyDirectorySyncFailed": "OneCopy ha pubblicato questo file, ma non è riuscito a sincronizzare la cartella di destinazione.",
   "notice.copyPreserveDestinationFailed": "OneCopy non è riuscito a spostare la destinazione esistente in File eliminati prima di sostituirla.",
-  "notice.copySourceChanged": "OneCopy non ha consegnato né rimosso questa copia perché non corrispondeva più al contenuto indicizzato da OneCopy. Se ne restava un’altra corrispondente, è stata usata quella.",
+  "notice.copySourceChanged": "OneCopy ha conservato questo file di origine perché non ha potuto confermare che fosse rimasto invariato. Un file già trasferito potrebbe contenere una versione precedente.",
   "notice.copySourceReadFailed": "OneCopy non è riuscito a leggere questo file di origine durante la copia.",
   "notice.copyDestinationRefused": "La destinazione di OneCopy non ha potuto accettare questo file.",
   "metadata.seconds": { "one": "{count} s", "many": "{count} s", "other": "{count} s" },

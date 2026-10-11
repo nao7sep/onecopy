@@ -1036,7 +1036,7 @@
   "notice.copyOutcomeUnknown": "OneCopy 将此文件发布到目标位置时，目标驱动器停止响应，因此无法确定文件是否已在那里。源副本保持原样。请先检查目标位置，然后再重试。",
   "notice.copyDirectorySyncFailed": "OneCopy 已发布此文件，但无法同步其目标文件夹。",
   "notice.copyPreserveDestinationFailed": "OneCopy 在替换前无法将现有目标文件移动到“已删除的文件”。",
-  "notice.copySourceChanged": "由于此副本已不再与 OneCopy 索引的内容匹配，因此既未传送也未移除。如果还有其他匹配的副本，则使用了该副本。",
+  "notice.copySourceChanged": "OneCopy 无法确认此源文件未发生变化，因此保留了它。已传送的文件可能包含较早的版本。",
   "notice.copySourceReadFailed": "OneCopy 在复制此源文件时无法读取它。",
   "notice.copyDestinationRefused": "OneCopy 的目标位置无法接受此文件。",
   "metadata.seconds": { "other": "{count} 秒" },
