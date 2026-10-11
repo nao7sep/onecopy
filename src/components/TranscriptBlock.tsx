@@ -1,3 +1,4 @@
+import { requestBackgroundWork } from "../workflows/auxiliary-utilities";
 import { useEffect, useRef, useState } from "react";
 import { reasonRemedy, reasonText } from "../models/workReasons";
 import type { MessageKey } from "../i18n/catalogues";
@@ -106,8 +107,10 @@ export default function TranscriptBlock({
   medium,
   variant = "preview",
   work = null,
+  viewingOnly = false,
 }: {
   hash: string;
+  viewingOnly?: boolean;
   medium: "video" | "audio";
   variant?: "preview" | "details";
   /** Backend-authored item projection when the owning surface has it. The
@@ -151,6 +154,7 @@ export default function TranscriptBlock({
   const transcriptRef = useRef<HTMLOListElement | null>(null);
   const panelRef = useRef<HTMLElement | null>(null);
   const transcriptViewRequest = useRef(0);
+  const [routeError, setRouteError] = useState<Message | null>(null);
   const [sessionErrors, setSessionErrors] = useState<Partial<Record<SessionOwner, Message>>>({});
   const visibilityRequest = useRef(0);
   const state = view ?? {
@@ -391,7 +395,18 @@ export default function TranscriptBlock({
   const controlError = state.controlError ?? null;
 
   const actions: React.ReactNode[] = [];
-  if (!inDetails) {
+  if (!inDetails && viewingOnly) {
+    actions.push(
+      <Button size="toolbar" key="work" variant="ghost" onClick={() => {
+        void requestBackgroundWork().then(() => setRouteError(null)).catch((error) => {
+          log.error("Background work request failed", toErrorFields(error));
+          setRouteError(message("preview.commandFailed"));
+        });
+      }}>
+        {t("app.openBackgroundWork")}
+      </Button>,
+    );
+  } else if (!inDetails) {
     const openBackgroundWork = () => {
       useAppShellStore.getState().openUtility("backgroundWork");
     };
@@ -543,6 +558,7 @@ export default function TranscriptBlock({
           </Button>
         </span> : null}
       </div>
+      {routeError !== null ? <OperationResult level="error" className="mb-2">{text(routeError)}</OperationResult> : null}
       {controlError !== null ? (
         <OperationResult level="error" className="mb-2">
           {text(controlError)}

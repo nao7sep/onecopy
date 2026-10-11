@@ -539,3 +539,20 @@ describe("fullscreen view workflow", () => {
     });
   });
 });
+
+it("refuses stale fullscreen deletion keys and accepts the displayed session member", async () => {
+  mockCommand("delete_items", () => ({ error: null, failedFiles: 0 }));
+  expect(openFullscreenView()).toBe(true);
+  await vi.waitFor(() => expect(useFullscreenViewStore.getState().session?.item.hash).toBe("b"));
+  const shown = fullscreenViewBroadcast();
+  sequenceIndex = 2;
+  useFullscreenViewStore.getState().update(sequenceSnapshot() as ViewerSequenceSnapshot);
+  await handleFullscreenViewKey({ key: "Delete", token: shown.token, itemKey: "b" });
+  await handleFullscreenViewKey({ key: "Delete", token: "old-session", itemKey: "c" });
+  await handleFullscreenViewKey({ key: "Delete" });
+  expect(invokeCalls.filter((call) => call.command === "delete_items")).toEqual([]);
+  expect(useFullscreenViewStore.getState().pendingDelete).toBeNull();
+  await handleFullscreenViewKey({ key: "Delete", token: shown.token, itemKey: "c" });
+  expect(invokeCalls.filter((call) => call.command === "delete_items").at(-1)?.args)
+    .toEqual({ items: [{ hash: "c", pathId: null }], permanent: false });
+});

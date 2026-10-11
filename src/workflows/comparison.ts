@@ -125,10 +125,16 @@ export async function openComparison(
       } catch (error) {
         log.error("comparison return position failed", toErrorFields(error));
         await useComparisonStore.getState().close();
+        await restorePreviewAfterComparison();
+        await restoreMainFocus();
         recordInterfaceFailure(message("comparison.prepareFailed"), error);
         return "failed";
       }
     }
+  }
+  if (result === "failed") {
+    await restorePreviewAfterComparison();
+    await restoreMainFocus();
   }
   return result;
 }

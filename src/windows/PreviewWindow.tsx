@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n/I18nContext";
 import { listenThenAnnounce } from "../utils/handshake";
 import { emit } from "@tauri-apps/api/event";
@@ -13,11 +13,7 @@ import { message, type Message } from "../i18n/translate";
 import { log, toErrorFields } from "../repositories";
 import { recordActionFailure } from "../state/notifications-store";
 import OperationResult from "../components/ui/OperationResult";
-import {
-  installBinariesEventWiring,
-  useBinariesStore,
-} from "../state/binaries-store";
-import { installTranscriptEventWiring } from "../state/transcript-store";
+import { useSecondaryPreviewFeatures } from "../hooks/useSecondaryPreviewFeatures";
 
 // The separate Preview window renders the shared PreviewSurface
 // from `preview://show` messages — payload AND detail arrive together from
@@ -30,7 +26,9 @@ import { installTranscriptEventWiring } from "../state/transcript-store";
 export default function PreviewWindow() {
   const { t, text } = useI18n();
   const [shown, setShown] = useState<PreviewShowMessage | null>(null);
-  const [featuresReady, setFeaturesReady] = useState(false);
+  const shownRef = useRef(shown);
+  shownRef.current = shown;
+  const featuresReady = useSecondaryPreviewFeatures();
   const [actionError, setActionError] = useState<Message | null>(null);
   const [publishedError, setPublishedError] = useState<Message | null>(null);
 
@@ -41,18 +39,6 @@ export default function PreviewWindow() {
   };
 
   useEffect(() => {
-    let active = true;
-    // Zustand stores are isolated per webview. Preview therefore admits the
-    // two feature stores it renders instead of assuming Main's instances are
-    // visible here.
-    void Promise.all([
-      installBinariesEventWiring(),
-      installTranscriptEventWiring(),
-    ]).then(async () => {
-      await useBinariesStore.getState().load();
-      if (active) setFeaturesReady(true);
-    });
-
     // Ask the main window for the current selection — only once this window
     // can actually hear the reply (see handshake.ts).
     const unlisten = listenThenAnnounce<PreviewShowMessage>(
@@ -113,6 +99,7 @@ export default function PreviewWindow() {
         event.stopPropagation();
         void emit("preview://key", {
           key: event.key,
+          selectionRevision: shownRef.current?.selectionRevision,
           code: event.code,
           repeat: event.repeat,
           shiftKey: event.shiftKey,
@@ -132,7 +119,6 @@ export default function PreviewWindow() {
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => {
-      active = false;
       unlisten();
       stopError();
       window.removeEventListener("keydown", onKeyDown, true);

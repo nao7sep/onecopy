@@ -1550,11 +1550,10 @@ pub fn run() {
         .manage(language)
         .on_window_event(move |window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "main" {
-                    api.prevent_close();
-                    quit::request_quit(window.app_handle());
-                }
-                if let Some(session_event) = fullscreen::session_close_event(window.label()) {
+                if let Some(session_event) = fullscreen::session_close_event(
+                    window.label(),
+                    fullscreen::is_fullscreen("main"),
+                ) {
                     api.prevent_close();
                     if let Err(error) = window.emit_to("main", session_event, ()) {
                         logging::warn(
@@ -1562,6 +1561,9 @@ pub fn run() {
                             json!({ "window": window.label(), "error": { "message": error.to_string() } }),
                         );
                     }
+                } else if window.label() == "main" {
+                    api.prevent_close();
+                    quit::request_quit(window.app_handle());
                 }
             }
             window_placement::on_window_event(

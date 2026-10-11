@@ -1,3 +1,5 @@
+import { itemKey } from "../models/items";
+import { useSecondaryPreviewFeatures } from "../hooks/useSecondaryPreviewFeatures";
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n/I18nContext";
 import { emit } from "@tauri-apps/api/event";
@@ -20,6 +22,9 @@ export default function FullscreenViewWindow() {
   const { t, text } = useI18n();
   const [state, setState] = useState<FullscreenViewBroadcast | null>(null);
   const [commandFailure, setCommandFailure] = useState<Message | null>(null);
+  const featuresReady = useSecondaryPreviewFeatures();
+  const stateRef = useRef(state);
+  stateRef.current = state;
   const surface = useRef<HTMLDivElement>(null);
   const pendingDeleteRef = useRef<FullscreenViewBroadcast["pendingDelete"]>(null);
   const sectionKindRef = useRef<FullscreenViewBroadcast["sectionKind"]>(null);
@@ -36,7 +41,10 @@ export default function FullscreenViewWindow() {
   }, [hasItem]);
 
   const sendKey = (key: string, shiftKey = false): void => {
-    void emit("fullscreen-view://key", { key, shiftKey })
+    void emit("fullscreen-view://key", {
+      key, shiftKey, token: state?.token,
+      itemKey: state?.item ? itemKey(state.item) : null,
+    })
       .then(() => setCommandFailure(null))
       .catch((error) => {
         log.error("fullscreen view key forward failed", toErrorFields(error));
@@ -58,6 +66,8 @@ export default function FullscreenViewWindow() {
       event.preventDefault();
       event.stopPropagation();
       void emit("fullscreen-view://key", {
+        token: stateRef.current?.token,
+        itemKey: itemRef.current === null ? null : itemKey(itemRef.current),
         key: event.key,
         repeat: event.repeat,
         shiftKey: event.shiftKey,
@@ -118,7 +128,7 @@ export default function FullscreenViewWindow() {
         </IconButton>
       </header>
       <div className="min-h-0 flex-1">
-        {state.detail === null ? (
+        {state.detail === null || !featuresReady ? (
           <div className="flex h-full items-center justify-center text-sm text-white/60">{t("common.loading")}</div>
         ) : (
           <PreviewSurface

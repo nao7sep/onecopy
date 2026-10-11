@@ -233,13 +233,13 @@ pub const ACTIVATION_EVENT: &str = "app://activation";
 /// of Main's sessions (Alt+F4, Close Window). The session ends as Escape ends
 /// it, and the session alone hides or tears down its window; closing it
 /// directly would leave the session open and Main ignoring every key.
-pub fn session_close_event(label: &str) -> Option<&'static str> {
+pub fn session_close_event(label: &str, main_in_comparison: bool) -> Option<&'static str> {
     let spread = label
         .strip_prefix("comparison-")
         .is_some_and(|index| !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit()));
     if label == "fullscreen-view" {
         Some("fullscreen-view://close-requested")
-    } else if spread {
+    } else if spread || (label == "main" && main_in_comparison) {
         Some("comparison://close-requested")
     } else {
         None

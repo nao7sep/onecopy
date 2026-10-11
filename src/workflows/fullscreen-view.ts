@@ -30,6 +30,7 @@ import { message, type Message } from "../i18n/translate";
 import { confirmsTrashDelete } from "../models/config";
 
 export interface FullscreenViewBroadcast {
+  token: string | null;
   item: SectionItem | null;
   detail: ItemDetail | null;
   index: number;
@@ -42,6 +43,8 @@ export interface FullscreenViewBroadcast {
 }
 
 interface FullscreenViewKeyMessage {
+  token?: string | null;
+  itemKey?: string | null;
   key: string;
   repeat?: boolean;
   shiftKey?: boolean;
@@ -66,6 +69,7 @@ export function fullscreenViewBroadcast(): FullscreenViewBroadcast {
   const session = useFullscreenViewStore.getState().session;
   const item = currentItem();
   return {
+    token: session?.token ?? null,
     item,
     detail: session?.detail ?? null,
     index: session?.index ?? 0,
@@ -458,7 +462,8 @@ export async function handleFullscreenViewKey(message: FullscreenViewKeyMessage)
       toggleMainPlayback(itemKey(item));
     }
   } else if (message.key === "Delete" || message.key === "Backspace") {
-    if (message.repeat === true) return;
+    if (message.repeat === true || message.token !== session.token ||
+      message.itemKey !== identityKey(session.member)) return;
     await requestFullscreenViewDelete(message.shiftKey === true);
   }
 }

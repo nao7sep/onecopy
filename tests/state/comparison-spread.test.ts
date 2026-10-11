@@ -5,6 +5,8 @@
 // even though the subject is not the interface.
 
 import { beforeEach, describe, expect, it } from "vitest";
+import { openComparison } from "../../src/workflows/comparison";
+import { useItemsStore } from "../../src/state/items-store";
 import {
   recoverComparisonDisplay,
   useComparisonStore,
@@ -419,4 +421,25 @@ describe("opening Comparison across displays", () => {
       .at(-1);
     expect(replacement?.options.x).toBe(2560);
   });
+});
+
+it.each(["fullscreen", "return-context"])("restores the separate Preview when Comparison entry fails at %s", async (stage) => {
+  setMonitors(THREE_SCREENS.slice(0, 1));
+  const preview = new WebviewWindow("preview");
+  usePreviewStore.setState({ follow: true, placement: "window" });
+  useItemsStore.setState({ selected: { kind: "image", month: "2026-01" } });
+  mockCommands({
+    get_similar_group: () => members(2),
+    record_interface_failure: () => null,
+    set_window_fullscreen: ({ enable }) => {
+      if (enable && stage === "fullscreen") throw new Error("fullscreen unavailable");
+      return null;
+    },
+    get_section_family_context: () => { throw new Error("context unavailable"); },
+  });
+  expect(await openComparison("m0")).toBe("failed");
+  expect(useComparisonStore.getState().open).toBe(false);
+  expect(preview.hide).toHaveBeenCalled();
+  expect(preview.show).toHaveBeenCalled();
+  expect(usePreviewStore.getState().follow).toBe(true);
 });

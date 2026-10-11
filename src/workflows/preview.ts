@@ -20,6 +20,7 @@ let persistenceInstalled = false;
 
 interface PreviewKeyMessage {
   key: string;
+  selectionRevision?: number;
   code?: string;
   repeat?: boolean;
   shiftKey?: boolean;
@@ -63,6 +64,14 @@ const installCommands = createEventInstaller(async (listeners) => {
     const message = event.payload;
     const area = document.getElementById("main-item-area");
     if (area === null) return;
+    const deletion = message.key === "Delete" || message.key === "Backspace";
+    const isCurrent = () => {
+      const preview = usePreviewStore.getState();
+      return preview.follow && preview.placement === "window" &&
+        message.selectionRevision !== undefined &&
+        message.selectionRevision === preview.current?.selectionRevision;
+    };
+    if (deletion && (message.repeat || !isCurrent())) return;
     const needsConfirmation =
       (message.key === "Delete" || message.key === "Backspace") &&
       (message.shiftKey === true ||
@@ -71,6 +80,8 @@ const installCommands = createEventInstaller(async (listeners) => {
     if (needsConfirmation) {
       await getCurrentWindow().setFocus().catch(reportWindowCall("main setFocus"));
     }
+    // Focusing Main crosses an asynchronous boundary; selection may change there too.
+    if (deletion && !isCurrent()) return;
     area.dispatchEvent(
       new KeyboardEvent("keydown", {
         key: message.key,

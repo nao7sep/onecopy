@@ -86,10 +86,10 @@ describe("the stale-detail guard", () => {
     await vi.advanceTimersByTimeAsync(200);
 
     expect(usePreviewStore.getState().current).toEqual({
-      ...ITEM_B, detail: detailFor("B.jpg"),
+      ...ITEM_B, detail: detailFor("B.jpg"), selectionRevision: expect.any(Number),
     });
     expect(emitCalls.filter((call) => call.event === "preview://show").at(-1)?.payload)
-      .toEqual({ ...ITEM_B, detail: detailFor("B.jpg") });
+      .toMatchObject({ ...ITEM_B, detail: detailFor("B.jpg") });
   });
 
   it("drops a late detail for an anchor the user already left", () => {
@@ -134,11 +134,11 @@ describe("the follow throttle", () => {
     }
     expect(usePreviewStore.getState().current?.hash).toBe("h5");
     expect(emitCalls.filter((call) => call.event === "preview://show"))
-      .toEqual([{ event: "preview://show", payload: { hash: "h1", pathId: null, detail: null } }]);
+      .toEqual([{ event: "preview://show", payload: { hash: "h1", pathId: null, detail: null, selectionRevision: expect.any(Number) } }]);
 
     vi.advanceTimersByTime(200);
     expect(emitCalls.filter((call) => call.event === "preview://show").at(-1)?.payload)
-      .toEqual({ hash: "h5", pathId: null, detail: null });
+      .toMatchObject({ hash: "h5", pathId: null, detail: null });
   });
 });
 
@@ -156,7 +156,7 @@ describe("clearing the surface", () => {
 
     expect(emitCalls).toHaveLength(publishedCount);
     expect(usePreviewStore.getState().current).toEqual(
-      action === "close" ? null : { hash: null, pathId: null, detail: null },
+      action === "close" ? null : { hash: null, pathId: null, detail: null, selectionRevision: expect.any(Number) },
     );
   });
 
@@ -190,7 +190,7 @@ describe("preview window failures", () => {
     await vi.advanceTimersByTimeAsync(200);
 
     expect(emitCalls.filter((call) => call.event === "preview://show").at(-1)?.payload)
-      .toEqual({ ...ITEM_A, detail: detailFor("A.jpg") });
+      .toMatchObject({ ...ITEM_A, detail: detailFor("A.jpg") });
   });
 
   it.each(["open", "placement"] as const)("publishes the latest package after delayed %s", async (entry) => {
@@ -215,7 +215,7 @@ describe("preview window failures", () => {
     await vi.advanceTimersByTimeAsync(200);
 
     expect(emitCalls.filter((call) => call.event === "preview://show").at(-1)?.payload)
-      .toEqual({ ...ITEM_B, detail: detailFor("B.jpg") });
+      .toMatchObject({ ...ITEM_B, detail: detailFor("B.jpg") });
   });
 
   it("cancels window publication when moving the latest package to the pane", async () => {

@@ -37,13 +37,14 @@ function selectedCount(state: ReturnType<typeof useItemsStore.getState>): number
 
 function projectAnchor(): void {
   const state = useItemsStore.getState();
-  const { selectedItem, items, detail } = state;
+  const { selectedItem, detail } = state;
   if (selectedItem === null) {
     usePreviewStore.getState().anchorCleared();
     return;
   }
-  const item = items.find((candidate) => itemKey(candidate) === selectedItem);
-  if (!item) return;
+  // Selection identity is valid even outside the loaded row window. Always
+  // advance Preview’s projection so its previous deletion token expires.
+  const item = identityFromKey(selectedItem);
   const payload = {
     hash: item.hash,
     pathId: item.hash === null ? item.pathId : null,
@@ -84,14 +85,11 @@ export function installItemWorkflow(): void {
       state.items !== previous.items &&
       !previous.items.some((item) => itemKey(item) === state.selectedItem) &&
       state.items.some((item) => itemKey(item) === state.selectedItem);
-    if (state.selectedItem !== previous.selectedItem || selectedEnteredWindow) {
+    if (state.selectedItem !== previous.selectedItem || state.selectedKeys !== previous.selectedKeys || selectedEnteredWindow) {
       projectAnchor();
     } else if (state.detail !== previous.detail && state.detail !== null) {
-      const item =
-        state.selectedItem === null
-          ? undefined
-          : state.items.find((candidate) => itemKey(candidate) === state.selectedItem);
-      if (item) {
+      if (state.selectedItem !== null) {
+        const item = identityFromKey(state.selectedItem);
         usePreviewStore.getState().detailLoaded(
           {
             hash: item.hash,

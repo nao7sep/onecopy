@@ -123,7 +123,8 @@ describe("the preview window", () => {
     });
     await act(async () => {});
     view.getByRole("button", { name: "Expand" }).click();
-    expect(view.getByRole("button", { name: "Transcribe this file" })).toBeTruthy();
+    expect(view.queryByRole("button", { name: "Transcribe this file" })).toBeNull();
+    expect(view.getByRole("button", { name: "Background work & tools" })).toBeTruthy();
   });
 
   // Space does nothing in the preview window: the fullscreen view opens only
@@ -314,4 +315,12 @@ describe("a comparison window", () => {
     await act(async () => {});
     expect(emitCalls.some((c) => c.event === "comparison://ready")).toBe(true);
   });
+});
+
+it("includes the rendered selection revision when Preview forwards Delete", async () => {
+  render(<PreviewWindow />);
+  await act(async () => {});
+  await act(async () => fireEvent("preview://show", { hash: "abc", pathId: null, detail: DETAIL, selectionRevision: 42 }));
+  await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Delete" })));
+  expect(emitCalls).toContainEqual({ event: "preview://key", payload: expect.objectContaining({ key: "Delete", selectionRevision: 42 }) });
 });

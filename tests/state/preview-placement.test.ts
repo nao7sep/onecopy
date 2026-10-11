@@ -149,3 +149,15 @@ describe("activating the preview", () => {
     expect(usePreviewStore.getState().placement).toBeNull();
   });
 });
+
+it("projects same-anchor selection changes and invalidates earlier Preview deletion gestures", async () => {
+  useItemsStore.setState({ selectedItem: "h1", selectedKeys: new Set(["h1"]) });
+  await togglePreview();
+  const before = usePreviewStore.getState().current!;
+  expect(before.selectedCount).toBe(1);
+  useItemsStore.setState({ selectedKeys: new Set(["h1", "h2"]) });
+  const after = usePreviewStore.getState().current!;
+  expect(after.hash).toBe(before.hash);
+  expect(after.selectedCount).toBe(2);
+  expect(after.selectionRevision).not.toBe(before.selectionRevision);
+});

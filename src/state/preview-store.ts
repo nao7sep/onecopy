@@ -39,6 +39,8 @@ export interface PreviewPayload {
 }
 
 export interface PreviewShowMessage extends PreviewPayload {
+  /** Identifies the selection projection that a deletion gesture saw. */
+  selectionRevision?: number;
   detail: ItemDetail | null;
 }
 
@@ -97,6 +99,7 @@ interface PreviewState {
 // Cached existence flag: getByLabel per keystroke is an IPC round trip.
 let previewWindowOpen = false;
 let surfaceRequest = 0;
+let selectionRevision = 0;
 let surfaceTail: Promise<void> = Promise.resolve();
 
 function enqueueSurface(task: () => Promise<void>): Promise<void> {
@@ -323,7 +326,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
       const placement = resolvePlacement(get().placementPreference);
       // State FIRST: the side pane renders `current` the moment this lands,
       // which is what makes the image appear immediately on activation.
-      const message = { ...payload, detail };
+      const message = { ...payload, detail, selectionRevision: ++selectionRevision };
       set({ follow: true, placement, current: message, error: null, openFailed: false });
       if (placement === "window") {
         await enqueueSurface(async () => {
@@ -447,7 +450,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     const { follow, placement } = get();
     if (!follow || placement === null) return;
     cancelPublication();
-    set({ current: { hash: null, pathId: null, detail: null } });
+    set({ current: { hash: null, pathId: null, detail: null, selectionRevision: ++selectionRevision } });
     publishCurrent();
   },
 
@@ -459,7 +462,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
       // is available.
       return;
     }
-    set({ current: { ...payload, detail } });
+    set({ current: { ...payload, detail, selectionRevision: ++selectionRevision } });
     schedulePublication();
   },
 
@@ -470,7 +473,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     // for a superseded anchor must never paint the wrong name (the stale
     // race the old double-fetch had).
     if (current !== null && current.hash === payload.hash && current.pathId === payload.pathId) {
-      set({ current: { ...payload, detail } });
+      set({ current: { ...current, ...payload, detail } });
       schedulePublication();
     }
   },

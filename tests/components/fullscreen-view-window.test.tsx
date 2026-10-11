@@ -9,6 +9,7 @@ import type { FullscreenViewBroadcast } from "../../src/workflows/fullscreen-vie
 import { emitCalls, fireEvent as deliver, resetTauriMocks } from "../mocks/tauri";
 
 const state: FullscreenViewBroadcast = {
+  token: "session-1",
   item: { hash: "photo", pathId: 1, fileName: "photo.jpg", resolvedUtcMs: null,
     copyCount: 1, width: 10, height: 10, hasThumb: true, similarGroupId: null,
     sharpness: null, faceScore: null, byteSize: 10, hasCompanions: false,
@@ -19,7 +20,7 @@ const state: FullscreenViewBroadcast = {
   index: 1, length: 3, pendingDelete: null, sectionKind: "image", failure: null,
 };
 
-beforeEach(() => resetTauriMocks());
+beforeEach(() => resetTauriMocks({ keepListeners: true }));
 afterEach(cleanup);
 
 it("focuses the fullscreen command surface on entry and native-window reactivation", async () => {
@@ -33,7 +34,7 @@ it("focuses the fullscreen command surface on entry and native-window reactivati
 
   screen.getByRole("button", { name: "Previous item" }).focus();
   await user.keyboard("{Enter}");
-  expect(emitCalls).toContainEqual({ event: "fullscreen-view://key", payload: { key: "ArrowLeft", shiftKey: false } });
+  expect(emitCalls).toContainEqual({ event: "fullscreen-view://key", payload: { key: "ArrowLeft", shiftKey: false, token: "session-1", itemKey: "photo" } });
   fireEvent(window, new Event("focus"));
   expect(document.activeElement).toBe(surface);
   await user.keyboard(" ");
@@ -66,4 +67,13 @@ it("does not steal confirmation focus on reactivation or forward its decision ke
   await user.keyboard("{ArrowRight}{Enter}");
   expect(emitCalls).toContainEqual({ event: "fullscreen-view://confirm-delete", payload: {} });
   expect(emitCalls.filter((call) => call.event === "fullscreen-view://key")).toEqual([]);
+});
+
+it("forwards the session and item actually rendered with a destructive key", async () => {
+  render(<FullscreenViewWindow />);
+  await act(async () => deliver("fullscreen-view://state", state));
+  await act(async () => fireEvent.keyDown(window, { key: "Delete" }));
+  expect(emitCalls).toContainEqual({ event: "fullscreen-view://key", payload: expect.objectContaining({
+    key: "Delete", token: "session-1", itemKey: "photo",
+  }) });
 });

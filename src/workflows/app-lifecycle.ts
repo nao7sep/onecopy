@@ -2,6 +2,7 @@
 // own adapter, then project the loaded config into the wizard and destination
 // stores. No store imports a peer to make startup happen.
 
+import { installAuxiliaryUtilityWiring } from "./auxiliary-utilities";
 import { useAppStore } from "../state/app-store";
 import {
   installBinariesEventWiring,
@@ -59,6 +60,7 @@ async function bootstrapOnce(): Promise<void> {
     installMutationEventWiring(),
     installFullscreenViewWorkflow(),
     installPreviewCommandWiring(),
+    installAuxiliaryUtilityWiring(),
     installPlaybackWorkflow(),
     installContentSessionWorkflow(),
     installIssuesEventWiring(),

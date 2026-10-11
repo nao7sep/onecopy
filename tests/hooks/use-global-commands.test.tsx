@@ -6,6 +6,8 @@ import { useGlobalCommands } from "../../src/hooks/useGlobalCommands";
 import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import { useComparisonStore } from "../../src/state/comparison-store";
 import { useAppStore } from "../../src/state/app-store";
+import { installItemWorkflow } from "../../src/workflows/items";
+import { usePreviewStore } from "../../src/state/preview-store";
 import { useItemsStore } from "../../src/state/items-store";
 import { currentMainFeedback, useMainFeedbackStore } from "../../src/state/main-feedback-store";
 import { useFullscreenViewStore } from "../../src/state/fullscreen-view-store";
@@ -19,6 +21,7 @@ import {
   mockSectionItems,
   resetTauriMocks,
   setCurrentMonitor,
+  setFocus,
 } from "../mocks/tauri";
 import { effectiveConfig } from "../helpers/config";
 
@@ -65,7 +68,8 @@ function Harness() {
 }
 
 beforeEach(() => {
-  resetTauriMocks();
+  resetTauriMocks({ keepListeners: true });
+  usePreviewStore.setState({ follow: false, placement: null, current: null });
   mockSectionItems(() => [ITEM]);
   mockCommand("set_window_fullscreen", () => null);
   mockCommand("set_spread_fullscreen", () => null);
@@ -184,12 +188,16 @@ describe("global destructive commands", () => {
       items: [ITEM, second],
       selectedKeys: new Set(["image-hash", "image-hash-2"]),
     });
+    usePreviewStore.setState({ follow: true, placement: "window", current: {
+      hash: ITEM.hash, pathId: null, detail: null, selectedCount: 2, selectionRevision: 11,
+    } });
     await installPreviewCommandWiring();
     const view = render(<Harness />);
 
     await act(async () => {
       fireBackendEvent("preview://key", {
         key: "Delete",
+        selectionRevision: 11,
         code: "",
         repeat: false,
         shiftKey: false,
@@ -444,4 +452,80 @@ describe("Select All (Cmd/Ctrl+A)", () => {
     expect([...useItemsStore.getState().selectedKeys]).toEqual(["h4"]);
     expect(invokeCalls.some((call) => call.command === "get_section_range")).toBe(false);
   });
+});
+
+it("rejects a Preview Delete whose selection changed even with the same anchor and count", async () => {
+  installItemWorkflow();
+  await installPreviewCommandWiring();
+  usePreviewStore.setState({ follow: true, placement: "window" });
+  useItemsStore.setState({ selectedItem: ITEM.hash, selectedKeys: new Set([ITEM.hash!, "second"]) });
+  const shownRevision = usePreviewStore.getState().current!.selectionRevision;
+  useItemsStore.setState({ selectedKeys: new Set([ITEM.hash!, "third"]) });
+  const view = render(<Harness />);
+  await act(async () => fireBackendEvent("preview://key", { key: "Delete", selectionRevision: shownRevision }));
+  expect(view.getByLabelText("Trash confirmation").textContent).toBe("none");
+  expect(invokeCalls.some((call) => call.command === "delete_items")).toBe(false);
+});
+
+it("rechecks Preview's selection after bringing Main forward for confirmation", async () => {
+  installItemWorkflow();
+  await installPreviewCommandWiring();
+  usePreviewStore.setState({ follow: true, placement: "window" });
+  useItemsStore.setState({ selectedItem: ITEM.hash, selectedKeys: new Set([ITEM.hash!, "second"]) });
+  const shownRevision = usePreviewStore.getState().current!.selectionRevision;
+  setFocus.mockImplementationOnce(async () => {
+    useItemsStore.setState({ selectedKeys: new Set([ITEM.hash!, "third"]) });
+  });
+  const view = render(<Harness />);
+  await act(async () => fireBackendEvent("preview://key", { key: "Delete", selectionRevision: shownRevision }));
+  expect(setFocus).toHaveBeenCalled();
+  expect(view.getByLabelText("Trash confirmation").textContent).toBe("none");
+  expect(invokeCalls.some((call) => call.command === "delete_items")).toBe(false);
+});
+
+it.each(["offscreen-selection", "path-1001"])("rejects stale Preview Delete after the anchor moves to unloaded %s", async (nextKey) => {
+  installItemWorkflow();
+  await installPreviewCommandWiring();
+  mockCommand("get_item_detail", () => new Promise(() => {}));
+  mockCommand("delete_items", () => ({ error: null, failedFiles: 0, sections: [] }));
+  mockCommand("get_section_counts", () => []);
+  mockCommand("log_event", () => null);
+  usePreviewStore.setState({ follow: true, placement: "window" });
+  useItemsStore.setState({
+    selectedItem: ITEM.hash,
+    selectedKeys: new Set([ITEM.hash!, nextKey]),
+    selectedPositions: new Map([[ITEM.hash!, 0], [nextKey, 1000]]),
+  });
+  const shownRevision = usePreviewStore.getState().current!.selectionRevision;
+  const view = render(<Harness />);
+  // Removing the loaded anchor recovers to a selected item outside the
+  // current row window. Its detail and row have not arrived yet.
+  await act(async () => useItemsStore.getState().toggleItem(ITEM.hash!, 0));
+  expect(useItemsStore.getState().selectedItem).toBe(nextKey);
+  await act(async () => fireBackendEvent("preview://key", { key: "Delete", selectionRevision: shownRevision }));
+  expect(invokeCalls.filter((call) => call.command === "delete_items")).toEqual([]);
+  expect(view.getByLabelText("Trash confirmation").textContent).toBe("none");
+  expect(usePreviewStore.getState().current?.selectionRevision).not.toBe(shownRevision);
+  expect(usePreviewStore.getState().current).toMatchObject({
+    hash: nextKey === "path-1001" ? null : nextKey,
+    pathId: nextKey === "path-1001" ? 1001 : null,
+    selectedCount: 1,
+    detail: null,
+  });
+  // Detail can finish before the grid fetches that row. It must complete the
+  // new projection, after which a fresh gesture can delete that selection.
+  const detail = {
+    fileName: "offscreen.jpg", kind: "image", byteSize: 10, width: 10, height: 10,
+    durationMs: null, dateState: "undated" as const, resolvedUtcMs: null,
+    resolvedSource: null, dateOnly: false, copyPaths: [], copyCount: 1,
+    companionPaths: [], stripFrames: null,
+  };
+  await act(async () => useItemsStore.setState({ detail }));
+  const current = usePreviewStore.getState().current!;
+  expect(current.detail).toEqual(detail);
+  await act(async () => fireBackendEvent("preview://key", { key: "Delete", selectionRevision: current.selectionRevision }));
+  expect(invokeCalls.filter((call) => call.command === "delete_items")).toEqual([{
+    command: "delete_items",
+    args: { items: [{ hash: current.hash, pathId: current.pathId }], permanent: false },
+  }]);
 });

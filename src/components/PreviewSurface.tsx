@@ -48,8 +48,7 @@ import { useAppShellStore } from "../state/app-shell-store";
 /** Whether this surface offers to install ffmpeg: only while ffmpeg is
  * missing, and only in Main's own preview pane, which opens Background work &
  * tools in place. The preview window and the fullscreen view are separate
- * webviews with no route to Main's utility surfaces, so they keep the words
- * alone. */
+ * webviews that keep tool management in Main. */
 function useOffersFfmpegInstall(surface: PlaybackSurface): boolean {
   const missing = useBinariesStore(
     (state) => ffmpegEntry(state.entries)?.status === "not-installed",
@@ -374,7 +373,7 @@ function VideoSurface({
           />
         </div>
       ) : null}
-      <TranscriptBlock hash={hash} medium="video" />
+      <TranscriptBlock hash={hash} medium="video" viewingOnly={surface !== "preview-split"} />
     </div>
   );
 }
@@ -541,7 +540,7 @@ function AudioSurface({
         <div className="min-h-0 flex-1">
           <TextOrAttributesSurface hash={hash} pathId={pathId} detail={detail} />
         </div>
-        {hash === null ? null : <TranscriptBlock hash={hash} medium="audio" />}
+        {hash === null ? null : <TranscriptBlock hash={hash} medium="audio" viewingOnly={surface !== "preview-split"} />}
       </div>
     );
   }
@@ -604,7 +603,7 @@ function AudioSurface({
         ) : null}
       </div>
       {hash !== null ? (
-        <TranscriptBlock hash={hash} medium="audio" />
+        <TranscriptBlock hash={hash} medium="audio" viewingOnly={surface !== "preview-split"} />
       ) : null}
     </div>
   );
