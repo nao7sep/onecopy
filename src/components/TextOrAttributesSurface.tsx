@@ -422,8 +422,8 @@ function AttributesBodyView({
   return (
     <div className="h-full w-full overflow-auto p-5">
       <div className="mx-auto max-w-3xl">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 flex-[1_1_16rem]">
             <h2 className="break-all text-base font-medium text-ink">
               {detail.fileName}
             </h2>
@@ -431,7 +431,7 @@ function AttributesBodyView({
           </div>
           {/* A narrow pane moves the actions under the name rather than
               squeezing either. */}
-          <div className="flex shrink-0 flex-wrap justify-end gap-2">
+          <div className="flex max-w-full flex-wrap gap-2">
             {action}
             <Button onClick={onOpen}>
               <ExternalLink size={14} /> {t("preview.openInDefaultApp")}
