@@ -1008,7 +1008,7 @@ pub(crate) fn cache_entry_hash(tree: &str, name: &str) -> Option<String> {
 }
 
 /// Serializes the startup sweep's cache-tree scan against an identity
-/// promotion's post-commit cache rename/removal (`scanner::promote_identity`).
+/// promotion's database decision and cache rename/removal (`scanner::promote_identity`).
 /// Both sides act on the same invariant — "a cache file's key names a live
 /// `contents` row" — from two different angles: the sweep deletes a file
 /// whose key is NOT in `contents`, while a promotion commits a key OUT of
@@ -1018,8 +1018,9 @@ pub(crate) fn cache_entry_hash(tree: &str, name: &str) -> Option<String> {
 /// provisional key as orphaned, and delete the file out from under the
 /// rename that was about to move it — losing a derived thumb/preview that
 /// then has to be regenerated. Held for the sweep's entire pass (it runs
-/// once, at startup) and only around a single promotion's commit-to-rename
-/// step, so ordinary derivation is never blocked once the sweep has finished.
+/// once, at startup) and from before a single promotion's write transaction
+/// through its committed cache effect. Both owners acquire this reservation
+/// before SQLite's writer, so neither waits for it while holding that writer.
 static CACHE_IDENTITY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// `pub` (not `pub(crate)`) so the race this closes can be exercised directly
@@ -1097,8 +1098,8 @@ pub fn startup_sweep(
     cancel_when: &impl Fn() -> bool,
 ) -> Result<u64, String> {
     // Held for the whole sweep (see `CACHE_IDENTITY_LOCK`): an identity
-    // promotion committing mid-sweep must wait for the sweep to finish
-    // before it renames or removes its provisional cache files, so the
+    // promotion must wait for the sweep to finish before taking SQLite's
+    // writer and renaming or removing its provisional cache files, so the
     // sweep's existence check is never answered against a key a promotion
     // has already committed out of `contents` but not yet acted on.
     let _identity_lock = lock_cache_identity();

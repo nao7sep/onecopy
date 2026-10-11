@@ -274,10 +274,34 @@ fn folders_differing_only_by_case_on_a_case_sensitive_volume_are_two_roots() {
     assert_ne!(first, second);
     let rows: i64 = conn.query_row("SELECT COUNT(*) FROM paths", [], |r| r.get(0)).unwrap();
     assert_eq!(rows, 2, "each folder's file is indexed under its own root");
+    let live: i64 = conn.query_row("SELECT COUNT(*) FROM paths WHERE missing = 0", [], |r| r.get(0)).unwrap();
+    assert_eq!(live, 2, "walking photos must not mark the distinct Photos source missing");
+    scanner::walk_root(&conn, &first, &lists()).unwrap();
+    let live: i64 = conn.query_row("SELECT COUNT(*) FROM paths WHERE missing = 0", [], |r| r.get(0)).unwrap();
+    assert_eq!(live, 2, "walking Photos must preserve the distinct photos source too");
+
+    // A watcher's vanished subtree has the same exact spelling boundary as
+    // a complete walk, even when a case-only sibling really exists beside it.
+    let vanished = first.join("Shots");
+    let kept = first.join("shots");
+    std::fs::create_dir_all(&vanished).unwrap();
+    std::fs::create_dir_all(&kept).unwrap();
+    std::fs::write(vanished.join("gone.jpg"), b"vanished child").unwrap();
+    std::fs::write(kept.join("kept.jpg"), b"kept child").unwrap();
+    scanner::walk_root(&conn, &first, &lists()).unwrap();
+    index_store::upsert_issue(&conn, Some(&kept.join("kept.jpg").to_string_lossy()), scanner::READ_ERROR, "unrelated read failure").unwrap();
+    std::fs::remove_dir_all(&vanished).unwrap();
+    let roots = [first.to_string_lossy().to_string(), second.to_string_lossy().to_string()];
+    assert_eq!(onecopy_lib::watcher::restat_dir(&conn, &vanished, &lists(), &roots, index.path()).unwrap(), 1);
+    let kept_state: (i64, i64) = conn.query_row(
+        "SELECT missing, (SELECT COUNT(*) FROM active_issues WHERE path = ?1) FROM paths WHERE abs_path = ?1",
+        [kept.join("kept.jpg").to_string_lossy()], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).unwrap();
+    assert_eq!(kept_state, (0, 1), "the sibling's live path and read Issue stay intact");
 
     let cache = onecopy_lib::preview::CachePaths::new(index.path().join("cache"));
     scanner::hash_pending(&conn, &cache).unwrap();
-    assert_eq!(scanner::forget_unconfigured_roots(&conn, &[lower.to_string_lossy().to_string()], &cache).unwrap(), 1);
+    assert_eq!(scanner::forget_unconfigured_roots(&conn, &[lower.to_string_lossy().to_string()], &cache).unwrap(), 3);
     let remaining: Vec<String> = conn.prepare("SELECT file_name FROM paths ORDER BY file_name").unwrap()
         .query_map([], |row| row.get(0)).unwrap().map(Result::unwrap).collect();
     assert_eq!(remaining, vec!["b.jpg"], "removing Photos leaves the distinct photos source indexed");

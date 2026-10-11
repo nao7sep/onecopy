@@ -1,7 +1,37 @@
 use super::{
-    live_images_sql, live_photo_pair_candidates_sql, raw_pair_candidates_sql, scan_issue_message_key,
+    directory_belongs_to_root, live_images_sql, live_photo_pair_candidates_sql, raw_pair_candidates_sql, scan_issue_message_key,
     COPIES_DISAGREE, METADATA_READ_ERROR, READ_ERROR, STAT_ERROR, WALK_ERROR,
 };
+
+#[test]
+fn directory_containment_uses_native_components_and_spelling_aliases() {
+    for (directory, root) in [
+        ("/Photos/Nested", "/Photos"),
+        ("/Photos", "/Photos/"),
+        ("/Photos/Nested", "/"),
+    ] {
+        assert!(directory_belongs_to_root(directory, root), "{directory} under {root}");
+    }
+    for (directory, root) in [
+        ("/Photos2/Nested", "/Photos"),
+    ] {
+        assert!(!directory_belongs_to_root(directory, root), "{directory} is a different root from {root}");
+    }
+    #[cfg(not(windows))]
+    {
+        assert!(!directory_belongs_to_root("/photos/Nested", "/Photos"));
+        assert!(!directory_belongs_to_root("/Photos/Private", r"/Photos\Private"));
+        assert!(directory_belongs_to_root(r"/Photos\Private/Nested", r"/Photos\Private"));
+    }
+    #[cfg(windows)]
+    for (directory, root) in [
+        (r"\\?\c:\PHOTOS\Nested", r"C:/Photos"),
+        (r"c:\photos\Nested", r"\\?\C:\Photos"),
+        (r"\\?\UNC\server\share\PHOTOS\Nested", r"\\server\share\Photos"),
+    ] {
+        assert!(directory_belongs_to_root(directory, root), "{directory} under {root}");
+    }
+}
 
 #[test]
 fn every_scan_issue_message_key_exists_in_every_embedded_catalogue() {

@@ -92,7 +92,8 @@ fn close_path_scan_issues(
 /// the projection-batch publisher like the settings re-resolve, so a large
 /// vanished folder never holds the write lock for its whole size.
 pub(crate) fn mark_missing_under(conn: &Connection, dir: &str) -> Result<u64, String> {
-    let prefix = like_prefix(dir);
+    let prefix = ensure_trailing_separator(dir);
+    let path_scope = descendant_path_predicate("abs_path", 1);
     conn.execute_batch(
         "CREATE TEMP TABLE IF NOT EXISTS missing_under_page (id INTEGER PRIMARY KEY);",
     )
@@ -106,8 +107,8 @@ pub(crate) fn mark_missing_under(conn: &Connection, dir: &str) -> Result<u64, St
                 tx.execute("DELETE FROM missing_under_page", [])
                     .map_err(|error| error.to_string())?;
                 tx.execute(
-                    "INSERT INTO missing_under_page SELECT id FROM paths \
-                     WHERE abs_path LIKE ?1 ESCAPE '!' AND missing = 0 LIMIT ?2",
+                    &format!("INSERT INTO missing_under_page SELECT id FROM paths \
+                     WHERE {path_scope} AND missing = 0 LIMIT ?2"),
                     params![prefix, RESOLVE_PAGE_SIZE as i64],
                 )
                 .map_err(|error| error.to_string())?;
@@ -136,7 +137,7 @@ pub(crate) fn mark_missing_under(conn: &Connection, dir: &str) -> Result<u64, St
         // Let a concurrent writer in between pages (see `re_resolve_all_with_progress`).
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
-    close_path_scan_issues(conn, "path LIKE ?2 ESCAPE '!'", &[&prefix])?;
+    close_path_scan_issues(conn, &descendant_path_predicate("path", 2), &[&prefix])?;
     Ok(changed)
 }
 
@@ -350,34 +351,22 @@ pub struct ScanSummary {
     pub failures: u64,
 }
 
-/// Escapes LIKE wildcards in a path prefix. `_` is common in real paths and
-/// `!` appears in no sane one on either OS, so it is the escape character.
-fn like_prefix(root: &str) -> String {
-    let escaped = root
-        .replace('!', "!!")
-        .replace('%', "!%")
-        .replace('_', "!_");
-    format!("{}%", ensure_trailing_separator(&escaped))
-}
-
-fn relationship_path_key(path: &str) -> String {
-    let mut key = path.replace('\\', "/").to_lowercase();
-    while key.len() > 1 && key.ends_with('/') {
-        key.pop();
-    }
-    key
+/// Settled paths share their root's spelling and native separators. Bind a
+/// separator-terminated literal prefix: LIKE folds ASCII case and treats real
+/// filename characters as wildcards. Column and parameter are fixed SQL syntax
+/// supplied by scanner callers; only the path value crosses the SQL boundary.
+fn descendant_path_predicate(column: &str, parameter: usize) -> String {
+    format!("substr({column}, 1, length(?{parameter})) = ?{parameter} COLLATE BINARY")
 }
 
 pub(crate) fn directory_belongs_to_root(directory: &str, root: &str) -> bool {
-    let directory = relationship_path_key(directory);
-    let root = relationship_path_key(root);
-    (root == "/" && directory.starts_with('/'))
-        || directory == root
-        || (directory.starts_with(&root)
-            && directory
-                .as_bytes()
-                .get(root.len())
-                .is_some_and(|separator| *separator == b'/'))
+    // Share the source boundary's native component rules: Unix case and
+    // literal backslashes stay significant; Windows spelling aliases retain
+    // its existing drive/case and ordinary/verbatim equivalence.
+    crate::visibility_index::root_for(
+        &[root.to_string()],
+        crate::winpath::for_fs(Path::new(directory)).as_ref(),
+    ).is_some()
 }
 
 /// Marks roots whose companion projection needs repair. This receipt is
@@ -581,13 +570,11 @@ pub fn forget_unconfigured_roots(
         // default LIKE folds ASCII case and can sweep up a different directory.
         // The identical scope owns touched hashes, evidence and all path writes.
         let mut abs_path_params: Vec<String> = vec![ensure_trailing_separator(&root)];
-        let mut path_scope = "substr(abs_path, 1, length(?1)) = ?1 COLLATE BINARY".to_string();
+        let mut path_scope = descendant_path_predicate("abs_path", 1);
         for kept in &nested_kept_roots {
             abs_path_params.push(ensure_trailing_separator(kept));
             let param = abs_path_params.len();
-            path_scope.push_str(&format!(
-                " AND substr(abs_path, 1, length(?{param})) <> ?{param} COLLATE BINARY"
-            ));
+            path_scope.push_str(&format!(" AND NOT ({})", descendant_path_predicate("abs_path", param)));
         }
         // Evidence, companions, paths, orphan contents and scan_dirs all
         // move in one IMMEDIATE batch transaction: a crash or DB error
@@ -1458,21 +1445,22 @@ fn walk_root_with_progress(
     if !walk_incomplete {
         // Anything under this root the walk did not see is missing. The rows
         // stay (their trash/delete history may matter) but leave every view
-        // and count. LIKE wildcards in the root itself (`_` is common in real
-        // paths) are escaped with `!`, which appears in no sane path.
-        let placeholders_root = like_prefix(&root_str);
+        // and count. The literal root prefix keeps case-only sibling sources
+        // and wildcard-like filename characters outside this publication.
+        let placeholders_root = ensure_trailing_separator(&root_str);
+        let path_scope = descendant_path_predicate("paths.abs_path", 1);
         check_cancel()?;
         crate::index_store::publish_paths_batch(
             conn,
             |tx| {
                 tx.execute(
-                    "INSERT INTO walk_vanished_paths (abs_path, content_hash) \
+                    &format!("INSERT INTO walk_vanished_paths (abs_path, content_hash) \
                      SELECT paths.abs_path, paths.content_hash FROM paths \
-                     WHERE paths.abs_path LIKE ?1 ESCAPE '!' AND paths.missing = 0 \
+                     WHERE {path_scope} AND paths.missing = 0 \
                      AND NOT EXISTS (\
                          SELECT 1 FROM walk_present_paths \
                          WHERE walk_present_paths.abs_path = paths.abs_path\
-                     )",
+                     )"),
                     [&placeholders_root],
                 )
                 .map_err(|error| error.to_string())?;
@@ -1504,10 +1492,11 @@ fn walk_root_with_progress(
         // A complete walk also proves that old entry failures beneath this
         // root no longer exist, including when the failed entry itself was
         // removed and therefore yielded no success event above.
+        let root_issue_scope = format!("kind = ?1 AND (path = ?2 COLLATE BINARY OR {})", descendant_path_predicate("path", 3));
         crate::index_store::close_issues(
             conn,
             "resolved",
-            "kind = ?1 AND (path = ?2 OR path LIKE ?3 ESCAPE '!')",
+            &root_issue_scope,
             params![WALK_ERROR, root_str, placeholders_root],
         )?;
 
@@ -1516,8 +1505,7 @@ fn walk_root_with_progress(
         // preserve the exact paths that failed again in this pass.
         let mut statement = conn
             .prepare(
-                "SELECT path FROM active_issues WHERE kind = ?1 \
-                 AND (path = ?2 OR path LIKE ?3 ESCAPE '!')",
+                &format!("SELECT path FROM active_issues WHERE {root_issue_scope}"),
             )
             .map_err(|error| error.to_string())?;
         let stale_stat_paths = statement
@@ -1617,6 +1605,11 @@ pub fn promote_identity(
     if !is_provisional(provisional) || provisional == real_hash {
         return Ok(());
     }
+    // The startup sweep reserves cache identity before its SQLite writes.
+    // Take the same reservation first, so a promotion waiting for that sweep
+    // never holds SQLite's writer while the sweep is waiting for the writer.
+    // Retain it through commit and cache publication below.
+    let _identity_lock = crate::preview::lock_cache_identity();
     // One IMMEDIATE transaction is the single owner of this decision: it
     // re-reads `already_known` after taking the write lock, so two
     // concurrent promoters of the same provisional key never both see
@@ -1704,13 +1697,12 @@ pub fn promote_identity(
             .map_err(|e| e.to_string())?;
         Some(strip_frames.unwrap_or(0))
     };
-    // Held from just before commit through the cache rename/removal below, so
+    // The reservation remains held through the cache rename/removal below, so
     // the startup sweep (which takes the same lock for its whole pass) can
     // never run its "is this key still in `contents`?" check in the gap
     // between this commit and the cache files actually moving — otherwise it
     // can see the just-vacated provisional key as orphaned and delete the
     // file this function is about to rename out from under it.
-    let _identity_lock = crate::preview::lock_cache_identity();
     crate::records::commit(tx).map_err(|e| e.to_string())?;
 
     if let Some(strip_frames) = strip_frames_for_rename {

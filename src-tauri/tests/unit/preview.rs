@@ -166,3 +166,60 @@ fn startup_sweep_cannot_run_between_an_identity_promotions_commit_and_its_rename
     assert!(cache.preview("real1").exists());
     assert!(!cache.thumb("p1").exists(), "renamed away, not deleted by the sweep");
 }
+
+#[test]
+fn an_identity_promotion_waiting_for_the_sweep_never_holds_sqlites_writer() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("index.sqlite3");
+    let cache_root = dir.path().join("cache");
+    let sweep_conn = crate::index_store::open(&db_path).unwrap();
+    sweep_conn.busy_timeout(std::time::Duration::from_millis(100)).unwrap();
+    sweep_conn.execute_batch(
+        "INSERT INTO contents (hash, byte_size, kind) VALUES ('p1', 1, 'image');
+         INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash)
+           VALUES ('/a.jpg', '/', 'a.jpg', 'image', 'p1');
+         INSERT INTO contents (hash, byte_size, kind) VALUES ('orphan', 1, 'image');",
+    ).unwrap();
+    let cache = CachePaths::new(cache_root.clone());
+    let thumb = cache.thumb("p1");
+    std::fs::create_dir_all(thumb.parent().unwrap()).unwrap();
+    std::fs::write(&thumb, b"derived thumb").unwrap();
+
+    // This is the sweep's reservation-to-orphan-delete boundary. A separate
+    // promotion must queue for that reservation before claiming SQLite's
+    // writer, or the two owners wait for each other in the reverse order.
+    let identity_lock = lock_cache_identity();
+    let (writer_entered, writer_observed) = std::sync::mpsc::channel();
+    let ready = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let promotion_ready = ready.clone();
+    let promotion = std::thread::spawn(move || {
+        let conn = crate::index_store::open(&db_path).unwrap();
+        conn.create_collation("promotion_writer", move |left, right| {
+            let _ = writer_entered.send(());
+            left.cmp(right)
+        }).unwrap();
+        conn.execute_batch(
+            "CREATE TEMP TRIGGER observe_promotion_writer BEFORE UPDATE OF content_hash ON main.paths
+             WHEN OLD.content_hash = 'p1' BEGIN
+               SELECT 'entered' = 'writer' COLLATE promotion_writer;
+             END;",
+        ).unwrap();
+        promotion_ready.wait();
+        crate::scanner::promote_identity(&conn, &CachePaths::new(cache_root), "p1", "real1")
+    });
+    ready.wait();
+    // The trigger positively observes the old implementation holding a real
+    // SQLite write transaction. With reservation-first acquisition it cannot
+    // run yet; the bounded receive only lets that competing attempt settle.
+    let held_writer = writer_observed.recv_timeout(std::time::Duration::from_millis(200)).is_ok();
+    let sweep_result = reconcile_orphan_contents(&sweep_conn);
+    drop(identity_lock);
+    let promotion_result = promotion.join().unwrap();
+
+    assert!(sweep_result.is_ok(), "sweep orphan deletion failed while a promotion queued (writer entered: {held_writer}): {sweep_result:?}");
+    assert!(promotion_result.is_ok(), "{promotion_result:?}");
+    assert_eq!(sweep_result.unwrap(), 1);
+    assert_eq!(sweep_conn.query_row("SELECT content_hash FROM paths", [], |row| row.get::<_, String>(0)).unwrap(), "real1");
+    assert!(cache.thumb("real1").exists(), "promotion keeps its derived cache after the sweep finishes");
+    assert!(!thumb.exists());
+}

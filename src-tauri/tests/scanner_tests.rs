@@ -220,6 +220,65 @@ fn complete_walk_republishes_a_shared_logical_item_once_after_one_copy_vanishes(
 }
 
 #[test]
+fn a_complete_walk_limits_missing_paths_projection_and_issues_to_the_exact_root() {
+    // Seed case-only siblings so this SQL boundary is exercised on every
+    // host, independently of whether its filesystem can create both names.
+    let f = fixture("walk-case-prefix");
+    let root = f.root.join("Photos!%_[");
+    std::fs::create_dir_all(&root).unwrap();
+    let root = onecopy_lib::winpath::for_fs(&root).into_owned();
+    let removed = root.join("vanished.jpg");
+    seed_forget_path(&f.conn, &removed, "removed", false);
+    seed_forget_path(&f.conn, &root.join("nested").join("gone.jpg"), "removed-nested", false);
+    let sibling_paths = [
+        f.root.join("photos!%_[").join("kept.jpg"),
+        f.root.join("Photos!%_[2").join("kept.jpg"),
+        f.root.join("PhotosXq_[").join("kept.jpg"),
+    ].map(|path| onecopy_lib::winpath::for_fs(&path).into_owned());
+    for (index, path) in sibling_paths.iter().enumerate() {
+        seed_forget_path(&f.conn, path, &format!("sibling-{index}"), false);
+    }
+    let issue_paths = [
+        root.clone(), removed.clone(), root.join("stale-stat.jpg"),
+        sibling_paths[0].clone(), sibling_paths[0].parent().unwrap().to_path_buf(),
+        sibling_paths[1].clone(), sibling_paths[2].clone(),
+    ];
+    for path in &issue_paths {
+        for kind in [WALK_ERROR, STAT_ERROR] {
+            index_store::upsert_issue(&f.conn, Some(&path.to_string_lossy()), kind, "old scan failure").unwrap();
+        }
+    }
+    index_store::upsert_issue(&f.conn, Some(&removed.to_string_lossy()), READ_ERROR, "old read failure").unwrap();
+    index_store::upsert_issue(&f.conn, Some(&sibling_paths[0].to_string_lossy()), READ_ERROR, "unrelated read failure").unwrap();
+    f.conn.execute_batch(
+        "CREATE TEMP TABLE unrelated_projection_deletes (hash TEXT);
+         CREATE TEMP TRIGGER observe_unrelated_projection AFTER DELETE ON main.logical_contents
+         WHEN OLD.content_hash GLOB 'sibling-*' BEGIN
+           INSERT INTO unrelated_projection_deletes VALUES (OLD.content_hash);
+         END;",
+    ).unwrap();
+
+    let stats = walk_root(&f.conn, &root, &lists()).unwrap();
+    let sibling_missing: i64 = f.conn.query_row(
+        "SELECT SUM(missing) FROM paths WHERE content_hash GLOB 'sibling-*'", [], |row| row.get(0),
+    ).unwrap();
+    let sibling_issues: i64 = f.conn.query_row(
+        "SELECT COUNT(*) FROM active_issues WHERE path = ?1 OR path = ?2",
+        rusqlite::params![sibling_paths[0].to_string_lossy(), sibling_paths[0].parent().unwrap().to_string_lossy()],
+        |row| row.get(0),
+    ).unwrap();
+    let unrelated_publications = count(&f.conn, "SELECT COUNT(*) FROM unrelated_projection_deletes");
+    assert_eq!((stats.errors, stats.marked_missing, sibling_missing, sibling_issues, unrelated_publications), (0, 2, 0, 5, 0));
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM logical_contents WHERE content_hash GLOB 'sibling-*' AND live_copy_count = 1"), 3);
+    for path in &issue_paths[..3] {
+        assert_eq!(f.conn.query_row("SELECT COUNT(*) FROM active_issues WHERE path = ?1", [path.to_string_lossy()], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    }
+    for (index, path) in issue_paths[3..].iter().enumerate() {
+        assert_eq!(f.conn.query_row("SELECT COUNT(*) FROM active_issues WHERE path = ?1", [path.to_string_lossy()], |row| row.get::<_, i64>(0)).unwrap(), if index == 0 { 3 } else { 2 }, "unrelated Issues retain their own root scope");
+    }
+}
+
+#[test]
 fn an_incomplete_walk_preserves_known_rows_and_keeps_the_root_dirty() {
     let f = fixture("incomplete-walk");
     let known = f.root.join("known.jpg");
@@ -690,6 +749,28 @@ fn scoped_repair_debt_is_independent_from_walk_debt() {
         count(&f.conn, "SELECT relationship_dirty FROM scan_dirs"),
         0
     );
+}
+
+#[cfg(not(windows))]
+#[test]
+fn scoped_repair_marks_only_the_completed_root_with_the_same_spelling() {
+    let f = fixture("repair-case-prefix");
+    let root = stored_path(&f.root.join("Photos"));
+    let sibling = stored_path(&f.root.join("photos"));
+    let nested = stored_path(&f.root.join("Photos").join("Nested"));
+    let prefix_sibling = stored_path(&f.root.join("Photos2"));
+    for root in [&root, &sibling, &nested, &prefix_sibling] {
+        f.conn.execute("INSERT INTO scan_dirs (root, last_completed_at_utc) VALUES (?1, 'completed')", [root]).unwrap();
+    }
+    let marked = begin_scoped_index_repair(&f.conn, &[stored_path(&f.root.join("Photos").join("Nested").join("changed"))]).unwrap();
+    let mut expected = vec![root, nested];
+    expected.sort();
+    let mut marked_sorted = marked.clone();
+    marked_sorted.sort();
+    assert_eq!(marked_sorted, expected);
+    assert_eq!(f.conn.query_row("SELECT relationship_dirty FROM scan_dirs WHERE root = ?1", [&sibling], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    complete_scoped_index_repair(&f.conn, &marked).unwrap();
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM scan_dirs WHERE relationship_dirty <> 0"), 0);
 }
 
 #[test]

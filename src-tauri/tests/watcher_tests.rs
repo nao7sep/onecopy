@@ -160,6 +160,49 @@ fn a_vanished_directory_marks_every_row_under_it_missing() {
     assert_eq!(state, (0, 0), "the file's return is seen on the next pass");
 }
 
+#[test]
+fn a_vanished_directory_preserves_case_only_siblings_projection_and_issues() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    let root = dir.path().join("watched");
+    std::fs::create_dir_all(&root).unwrap();
+    let vanished = root.join("Photos!%_[");
+    let paths = [
+        vanished.join("gone.jpg"), vanished.join("nested").join("gone.jpg"),
+        root.join("photos!%_[").join("kept.jpg"),
+        root.join("Photos!%_[2").join("kept.jpg"),
+        root.join("PhotosXq_[").join("kept.jpg"),
+    ].map(|path| onecopy_lib::winpath::for_fs(&path).into_owned());
+    for (index, path) in paths.iter().enumerate() {
+        let hash = format!("content-{index}");
+        conn.execute("INSERT INTO contents (hash, byte_size, kind) VALUES (?1, 1, 'image')", [&hash]).unwrap();
+        conn.execute(
+            "INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash) VALUES (?1, ?2, 'fixture.jpg', 'image', ?3)",
+            rusqlite::params![path.to_string_lossy(), path.parent().unwrap().to_string_lossy(), hash],
+        ).unwrap();
+        for kind in [onecopy_lib::scanner::WALK_ERROR, onecopy_lib::scanner::STAT_ERROR, onecopy_lib::scanner::READ_ERROR] {
+            index_store::upsert_issue(&conn, Some(&path.to_string_lossy()), kind, "old path failure").unwrap();
+        }
+    }
+    conn.execute_batch(
+        "CREATE TEMP TABLE unrelated_projection_deletes (hash TEXT);
+         CREATE TEMP TRIGGER observe_unrelated_projection AFTER DELETE ON main.logical_contents
+         WHEN OLD.content_hash IN ('content-2', 'content-3', 'content-4') BEGIN
+           INSERT INTO unrelated_projection_deletes VALUES (OLD.content_hash);
+         END;",
+    ).unwrap();
+
+    let changed = restat_dir(&conn, &vanished, &lists(), &[root.to_string_lossy().into_owned()], &no_data_root()).unwrap();
+    assert_eq!(changed, 2, "only the vanished folder's descendants are newly missing");
+    for (index, path) in paths.iter().enumerate() {
+        let missing: i64 = conn.query_row("SELECT missing FROM paths WHERE abs_path = ?1", [path.to_string_lossy()], |row| row.get(0)).unwrap();
+        let issues: i64 = conn.query_row("SELECT COUNT(*) FROM active_issues WHERE path = ?1", [path.to_string_lossy()], |row| row.get(0)).unwrap();
+        assert_eq!((missing, issues), if index < 2 { (1, 0) } else { (0, 3) });
+    }
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM logical_contents WHERE content_hash IN ('content-2', 'content-3', 'content-4') AND live_copy_count = 1", [], |row| row.get::<_, i64>(0)).unwrap(), 3);
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM unrelated_projection_deletes", [], |row| row.get::<_, i64>(0)).unwrap(), 0, "unrelated logical items are not republished");
+}
+
 // A genuinely unreadable-but-present directory (permission denied) cannot
 // prove absence the way a vanished one can, so it keeps the original
 // contract: an `Err`, no missing rows, and a recheckable walk-error Issue.
