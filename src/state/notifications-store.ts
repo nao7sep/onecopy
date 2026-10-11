@@ -82,6 +82,15 @@ function mergeRecord(
   return newestFirst([...rows.filter((row) => row.id !== record.id), record]);
 }
 
+interface InitialNotificationChanges {
+  cleared: boolean;
+  records: Map<number, NotificationRecord | null>;
+}
+
+// Only the initial read needs replay: keep the final live change per ID, not
+// an event history. A clear drops earlier changes; settlement retires the map.
+let initialChanges: InitialNotificationChanges | null = null;
+
 export const useNotificationsStore = create<NotificationsState>((set) => ({
   active: [],
   dismissing: new Set(),
@@ -89,6 +98,7 @@ export const useNotificationsStore = create<NotificationsState>((set) => ({
     set((state) => ({ dismissing: new Set(state.dismissing).add(id) }));
     try {
       await invoke("dismiss_notification", { id });
+      initialChanges?.records.set(id, null);
       set((state) => ({
         active: state.active.filter((row) => row.id !== id),
         dismissing: new Set([...state.dismissing].filter((value) => value !== id)),
@@ -111,13 +121,19 @@ let installation: Promise<void> | null = null;
 
 async function install(): Promise<void> {
   const unlisten: Array<() => void> = [];
+  const changes: InitialNotificationChanges = { cleared: false, records: new Map() };
+  let disposed = false;
   try {
     unlisten.push(await listen<NotificationRecord>("notification://published", (event) => {
+      if (disposed) return;
+      if (initialChanges === changes) changes.records.set(event.payload.id, event.payload);
       useNotificationsStore.setState((state) => ({
         active: mergeRecord(state.active, event.payload),
       }));
     }));
     unlisten.push(await listen<{ id: number }>("notification://dismissed", (event) => {
+      if (disposed) return;
+      if (initialChanges === changes) changes.records.set(event.payload.id, null);
       useNotificationsStore.setState((state) => ({
         active: state.active.filter((row) => row.id !== event.payload.id),
         dismissing: new Set(
@@ -126,20 +142,34 @@ async function install(): Promise<void> {
       }));
     }));
     unlisten.push(await listen("notification://cleared", () => {
+      if (disposed) return;
+      if (initialChanges === changes) {
+        changes.cleared = true;
+        changes.records.clear();
+      }
       useNotificationsStore.setState({ active: [], dismissing: new Set() });
     }));
+    // Earlier events may precede another listener's admission. The snapshot
+    // owns that interval; only events during its read need replay over it.
+    initialChanges = changes;
     const current = await invoke<NotificationRecord[]>("get_active_notifications");
-    useNotificationsStore.setState((state) => ({
-      active: newestFirst(
-        current.reduce(
-          (rows, record) => mergeRecord(rows, record),
-          state.active,
-        ),
-      ),
-    }));
+    const records = new Map((changes.cleared ? [] : current).map((record) => [record.id, record]));
+    for (const [id, record] of changes.records) {
+      if (record === null) records.delete(id);
+      // A repeated active notice keeps its ID and increments this count.
+      // An earlier live occurrence may precede a newer snapshot occurrence.
+      else if ((records.get(id)?.occurrenceCount ?? 0) <= record.occurrenceCount) records.set(id, record);
+    }
+    useNotificationsStore.setState({ active: newestFirst([...records.values()]) });
   } catch (error) {
-    for (const stop of unlisten) stop();
+    disposed = true;
+    for (const stop of unlisten.reverse()) {
+      try { stop(); } catch { /* Retire every registered listener, even after one failed removal. */ }
+    }
     throw error;
+  } finally {
+    initialChanges = null;
+    changes.records.clear();
   }
 }
 
