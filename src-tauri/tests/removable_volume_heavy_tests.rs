@@ -274,4 +274,15 @@ fn folders_differing_only_by_case_on_a_case_sensitive_volume_are_two_roots() {
     assert_ne!(first, second);
     let rows: i64 = conn.query_row("SELECT COUNT(*) FROM paths", [], |r| r.get(0)).unwrap();
     assert_eq!(rows, 2, "each folder's file is indexed under its own root");
+
+    let cache = onecopy_lib::preview::CachePaths::new(index.path().join("cache"));
+    scanner::hash_pending(&conn, &cache).unwrap();
+    assert_eq!(scanner::forget_unconfigured_roots(&conn, &[lower.to_string_lossy().to_string()], &cache).unwrap(), 1);
+    let remaining: Vec<String> = conn.prepare("SELECT file_name FROM paths ORDER BY file_name").unwrap()
+        .query_map([], |row| row.get(0)).unwrap().map(Result::unwrap).collect();
+    assert_eq!(remaining, vec!["b.jpg"], "removing Photos leaves the distinct photos source indexed");
+    let roots: Vec<String> = conn.prepare("SELECT root FROM scan_dirs").unwrap()
+        .query_map([], |row| row.get(0)).unwrap().map(Result::unwrap).collect();
+    assert_eq!(roots, vec![second.to_string_lossy().to_string()]);
+    assert!(upper.join("a.jpg").exists(), "forgetting a source preserves its file");
 }

@@ -357,6 +357,9 @@ export function mockSectionItems(handler: InvokeHandler): void {
     }
     if (anchor === null && args.selectFirst === true) anchor = keyed[0] ?? null;
     const selected = keyed.filter((item) => requestedSelected.has(item.key));
+    const rangeOrigin = args.rangeOrigin as { hash: string | null; pathId: number } | null;
+    const rangeOriginKey = rangeOrigin?.hash ?? (rangeOrigin ? `path-${rangeOrigin.pathId}` : null);
+    const rangeBaseKeys = new Set(recoverKeys(args.rangeBase as Array<{ hash: string | null; pathId: number }>));
     const start = Math.max(
       0,
       Math.min(all.length - 512, (anchor?.index ?? 0) - 256),
@@ -374,8 +377,8 @@ export function mockSectionItems(handler: InvokeHandler): void {
     return {
       anchor,
       selected,
-      rangeOrigin: null,
-      rangeBase: selected,
+      rangeOrigin: keyed.find((item) => item.key === rangeOriginKey) ?? null,
+      rangeBase: keyed.filter((item) => rangeBaseKeys.has(item.key)),
       context,
       window: { total: all.length, start, items: all.slice(start, start + 512), order: orderToken(all) },
     };

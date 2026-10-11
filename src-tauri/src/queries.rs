@@ -560,6 +560,7 @@ pub fn section_window(
 struct SectionOrderCache {
     kind: String,
     month: String,
+    bounds: Option<(i64, i64)>,
     sort: SectionSort,
     revision: i64,
     identities: Arc<SectionOrder>,
@@ -690,7 +691,7 @@ impl std::ops::Deref for SectionSnapshot<'_> {
 /// index revision instead of once per caller. `reconcile_section`, section
 /// windows, range reads, family-context recovery, and viewer-session
 /// materialization share this one ordering for a given `(db, kind, month,
-/// sort)` while the index revision stays the same.
+/// effective month bounds, sort)` while the index revision stays the same.
 fn ordered_section_identities(
     snapshot: &SectionSnapshot<'_>,
     kind: &str,
@@ -706,6 +707,7 @@ fn ordered_section_identities(
         if let Some(existing) = cache.get(&db_file) {
             if existing.kind == kind
                 && existing.month == month
+                && existing.bounds == bounds
                 && existing.sort == sort
                 && existing.revision == revision
             {
@@ -741,6 +743,7 @@ fn ordered_section_identities(
         cache.insert(db_file, SectionOrderCache {
             kind: kind.to_string(),
             month: month.to_string(),
+            bounds,
             sort,
             revision,
             identities: identities.clone(),

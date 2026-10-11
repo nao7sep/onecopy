@@ -482,6 +482,44 @@ fn section_order_is_sorted_once_per_index_revision_and_reused_across_callers() {
 }
 
 #[test]
+fn section_order_cache_tracks_effective_month_bounds_without_an_index_write() {
+    let (_dir, conn) = seeded();
+    seed_month_image(&conn, "boundary", "a.jpg", utc_ms(2016, 3, 31, 16));
+    seed_month_image(&conn, "april", "b.jpg", utc_ms(2016, 4, 2, 0));
+    let sort = SectionSort { order: SectionSortOrder::Time, desc: false };
+    let order = |zone| {
+        let snapshot = SectionSnapshot::begin(&conn).unwrap();
+        ordered_section_identities(&snapshot, "image", "2016-04", month_bounds("2016-04", zone).unwrap(), sort).unwrap()
+    };
+    let tokyo = order(chrono_tz::Asia::Tokyo);
+    assert_eq!(tokyo.iter().map(|item| item.hash.as_deref()).collect::<Vec<_>>(), vec![Some("boundary"), Some("april")]);
+    assert!(Arc::ptr_eq(&tokyo, &order(chrono_tz::Asia::Tokyo)));
+    let tokyo_window = section_window(&conn, SectionKind::Image, "2016-04", chrono_tz::Asia::Tokyo, sort, 0, 10, projection()).unwrap();
+
+    let utc = order(chrono_tz::UTC);
+    assert_eq!(utc.iter().map(|item| item.hash.as_deref()).collect::<Vec<_>>(), vec![Some("april")]);
+    assert!(!Arc::ptr_eq(&tokyo, &utc));
+    assert!(Arc::ptr_eq(&utc, &order(chrono_tz::UTC)), "unchanged effective bounds still reuse the allocation");
+    let utc_window = section_window(&conn, SectionKind::Image, "2016-04", chrono_tz::UTC, sort, 0, 10, projection()).unwrap();
+    assert_eq!(utc_window.total, 1);
+    assert_eq!(utc_window.items[0].hash.as_deref(), Some("april"));
+    assert_ne!(tokyo_window.order, utc_window.order);
+    let range = section_range(&conn, SectionKind::Image, "2016-04", chrono_tz::UTC, sort, 0, 10).unwrap();
+    assert_eq!(range.len(), 1);
+    assert_eq!(range[0].hash.as_deref(), Some("april"));
+    assert_eq!(range[0].index, 0);
+    let boundary = &tokyo[0];
+    let selected = [PositionedSectionIdentity::from_identity(boundary.clone(), 0)];
+    let recovery = SectionRecoveryContext { index: 0, before: vec![], after: vec![tokyo[1].clone()] };
+    let reconciled = reconcile_section(&conn, SectionKind::Image, "2016-04", chrono_tz::UTC, sort,
+        &selected, Some(boundary), Some(boundary), std::slice::from_ref(boundary), Some(&recovery), false, 10, projection()).unwrap();
+    assert_eq!(reconciled.anchor.unwrap().hash.as_deref(), Some("april"));
+    assert_eq!(reconciled.window.order, utc_window.order);
+    assert!(reconciled.selected.is_empty());
+    assert!(reconciled.range_base.is_empty());
+}
+
+#[test]
 fn section_order_cache_does_not_serve_a_stale_order_after_this_same_connection_writes() {
     // Regression guard for a subtler trap than a cross-connection write:
     // `PRAGMA data_version` only advances for a *different* connection's

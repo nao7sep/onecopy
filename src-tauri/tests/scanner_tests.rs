@@ -1922,6 +1922,76 @@ fn removing_a_source_keeps_a_nested_root_still_configured_as_its_own_source() {
     );
 }
 
+fn seed_forget_path(conn: &Connection, path: &std::path::Path, hash: &str, missing: bool) -> i64 {
+    conn.execute("INSERT OR IGNORE INTO contents (hash, byte_size, kind) VALUES (?1, 1, 'image')", [hash]).unwrap();
+    conn.execute(
+        "INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, missing) VALUES (?1, ?2, ?3, 'image', ?4, ?5)",
+        rusqlite::params![path.to_string_lossy(), path.parent().unwrap().to_string_lossy(), path.file_name().unwrap().to_string_lossy(), hash, missing],
+    ).unwrap();
+    let id = conn.last_insert_rowid();
+    conn.execute("INSERT INTO evidence (path_id, source, raw) VALUES (?1, 'metadata', '{}')", [id]).unwrap();
+    id
+}
+
+#[test]
+fn forgetting_a_root_uses_a_literal_case_correct_separator_bounded_path_scope() {
+    // Seed names rather than create case-only siblings: the SQL scope must be
+    // correct on every host, independently of its filesystem's case rules.
+    let f = fixture("forget-literal-prefix");
+    let removed = f.root.join("Photos!%_[");
+    f.conn.execute("INSERT INTO scan_dirs (root) VALUES (?1)", [removed.to_string_lossy()]).unwrap();
+    let removed_id = seed_forget_path(&f.conn, &removed.join("a.jpg"), "removed", false);
+    let companion_id = seed_forget_path(&f.conn, &removed.join("a.xmp"), "companion", false);
+    f.conn.execute("UPDATE paths SET companion_of = ?1 WHERE id = ?2", rusqlite::params![removed_id, companion_id]).unwrap();
+    let sibling = f.root.join("photos!%_[");
+    let kept_id = seed_forget_path(&f.conn, &sibling.join("b.jpg"), "kept", false);
+    let kept_companion = seed_forget_path(&f.conn, &sibling.join("b.xmp"), "kept-companion", false);
+    f.conn.execute("UPDATE paths SET companion_of = ?1 WHERE id = ?2", rusqlite::params![kept_id, kept_companion]).unwrap();
+    seed_forget_path(&f.conn, &f.root.join("Photos!%_[2").join("c.jpg"), "prefix-sibling", false);
+    let cache = test_cache(&f);
+    for hash in ["removed", "kept", "prefix-sibling"] {
+        let path = cache.thumb(hash);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"cached").unwrap();
+    }
+
+    assert_eq!(forget_unconfigured_roots(&f.conn, &[], &cache).unwrap(), 2);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths"), 3);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM evidence"), 3);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM contents"), 3);
+    assert_eq!(f.conn.query_row("SELECT companion_of FROM paths WHERE id = ?1", [kept_companion], |r| r.get::<_, i64>(0)).unwrap(), kept_id);
+    assert!(!cache.thumb("removed").exists());
+    assert!(cache.thumb("kept").exists());
+    assert!(cache.thumb("prefix-sibling").exists());
+}
+
+#[test]
+fn forgetting_a_parent_excludes_only_the_exact_nested_root_in_every_batch_step() {
+    let f = fixture("forget-nested-case");
+    let parent = f.root.join("Parent");
+    let kept = parent.join("Child");
+    for root in [&parent, &kept] {
+        f.conn.execute("INSERT INTO scan_dirs (root, configured_root) VALUES (?1, ?1)", [root.to_string_lossy()]).unwrap();
+    }
+    seed_forget_path(&f.conn, &parent.join("a.jpg"), "parent", false);
+    seed_forget_path(&f.conn, &parent.join("child").join("b.jpg"), "different-child", false);
+    seed_forget_path(&f.conn, &kept.join("c.jpg"), "kept", false);
+    // An offline file in the kept root must not enter orphan collection just
+    // because the removed parent's scope includes that nested spelling.
+    seed_forget_path(&f.conn, &kept.join("offline.jpg"), "offline-kept", true);
+    let cache = test_cache(&f);
+    let cached = cache.thumb("offline-kept");
+    std::fs::create_dir_all(cached.parent().unwrap()).unwrap();
+    std::fs::write(&cached, b"cached").unwrap();
+
+    assert_eq!(forget_unconfigured_roots(&f.conn, &[kept.to_string_lossy().to_string()], &cache).unwrap(), 2);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths"), 2);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM evidence"), 2);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM contents"), 2);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM scan_dirs"), 1);
+    assert!(cached.exists(), "the excluded root's offline cache survives");
+}
+
 #[test]
 fn removing_a_root_with_more_orphaned_hashes_than_sqlites_bound_parameter_limit_still_works() {
     // R6-01: orphan collection is a subquery over `batch_touched_hashes`,

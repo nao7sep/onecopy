@@ -44,6 +44,10 @@ interface ExplicitRestore {
   anchor: string | null;
   context: AnchorContext | null;
   selectedKeys?: readonly string[];
+  /** A gesture's former positions share its recovery context's old order. */
+  selectedPositions?: ReadonlyMap<string, number>;
+  rangeOrigin?: string | null;
+  rangeBase?: readonly string[];
 }
 
 const SECTION_WINDOW_LIMIT = 512;
@@ -530,6 +534,23 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       ) return;
       const selectedPositions = new Map(state.rangeBasePositions);
       for (const member of members) selectedPositions.set(identityKey(member), member.index);
+      if (current.orderToken !== state.orderToken) {
+        // These are the members the gesture chose under its original order.
+        // A refresh may already have published another order: keep those
+        // identities and reconcile their positions, never re-read the numbers.
+        await reconcileCurrent(set, get, false, "nearest", {
+          anchor: key,
+          context: contextFromWindow(state, target),
+          selectedKeys: [...selectedPositions.keys()],
+          selectedPositions,
+          rangeOrigin: state.rangeOrigin ?? state.selectedItem,
+          rangeBase: [...state.rangeBase],
+        }, false, fresh);
+        return;
+      }
+      // A refresh may have captured the intent while this range was loading.
+      // Its result must also observe the now-settled selection.
+      rangeLoad.begin();
       set({
         selectedItem: key,
         selectedKeys: new Set(selectedPositions.keys()),
@@ -579,11 +600,23 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
         members.length === 0
       ) return;
       const selectedPositions = membersMap(members);
-      const previous = current.selectedItem;
+      const previous = state.selectedItem;
       const anchor = previous !== null && selectedPositions.has(previous)
         ? previous
         : identityKey(members[0]!);
       const anchorIndex = selectedPositions.get(anchor)!;
+      if (current.orderToken !== state.orderToken) {
+        await reconcileCurrent(set, get, false, "nearest", {
+          anchor,
+          context: contextFromWindow(state, anchorIndex),
+          selectedKeys: [...selectedPositions.keys()],
+          selectedPositions,
+          rangeOrigin: anchor,
+          rangeBase: [...selectedPositions.keys()],
+        }, false, fresh);
+        return;
+      }
+      rangeLoad.begin();
       set({
         selectedItem: anchor,
         selectedKeys: new Set(selectedPositions.keys()),
@@ -654,7 +687,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     // The backend projected this complete row specifically for this event.
     // Re-reading the same section here once per derived result caused large
     // completion batches to flood the UI/backend boundary with duplicate work.
-    if (selectedItem === current) loadAnchorDetail(current);
+    if (selectedItem === current) loadAnchorDetail(current, "background");
   },
 
   selectAfterFamily: async (recovery) => {
@@ -752,6 +785,9 @@ function publishWindow(
     return kept;
   });
   if (!changed) return;
+  const anchor = current.selectedItem;
+  const selectedRowChanged = anchor !== null && items.some((item) =>
+    itemKey(item) === anchor && shown.has(anchor) && item !== shown.get(anchor));
   set({
     items,
     totalItems: window.total,
@@ -759,6 +795,7 @@ function publishWindow(
     itemPositions: positionMap(window.start, items),
     loadError: null,
   });
+  if (selectedRowChanged) loadAnchorDetail(anchor, "background");
 }
 
 async function reconcileCurrent(
@@ -775,12 +812,25 @@ async function reconcileCurrent(
   if (section === null) return;
   const sort = before.currentSort();
   const fresh = sectionLoad.begin();
+  // Refresh owns section data, but the user still owns selection. Capture
+  // that intent without cancelling an in-flight range or explicit restore.
+  const selectionUnchanged = rangeLoad.capture();
+  const currentInputs = () => {
+    const current = get();
+    return current.selected?.kind === section.kind &&
+      current.selected.month === section.month && sameSort(current.currentSort(), sort);
+  };
   const selected = remembered?.selectedKeys !== undefined
-    ? remembered.selectedKeys.map((key) => positionedIdentityFromKey(key, before.selectedPositions))
+    ? remembered.selectedKeys.map((key) => positionedIdentityFromKey(key, remembered.selectedPositions ?? before.selectedPositions))
     : replaceSelection
       ? []
       : [...before.selectedKeys].map((key) => positionedIdentityFromKey(key, before.selectedPositions));
-  const rangeBase = replaceSelection ? [] : [...before.rangeBase].map(identityFromKey);
+  const rangeBase = remembered?.rangeBase !== undefined
+    ? remembered.rangeBase.map(identityFromKey)
+    : replaceSelection ? [] : [...before.rangeBase].map(identityFromKey);
+  const rangeOrigin = remembered?.rangeOrigin !== undefined
+    ? remembered.rangeOrigin
+    : replaceSelection ? null : before.rangeOrigin;
   const requestedAnchor = remembered === undefined ? before.selectedItem : (remembered?.anchor ?? null);
   const inferredContext =
     before.selectedItem === null
@@ -798,36 +848,52 @@ async function reconcileCurrent(
       sort,
       selected,
       anchor: requestedAnchor === null ? null : identityFromKey(requestedAnchor),
-      rangeOrigin: replaceSelection || before.rangeOrigin === null ? null : identityFromKey(before.rangeOrigin),
+      rangeOrigin: rangeOrigin === null ? null : identityFromKey(rangeOrigin),
       rangeBase,
       recovery: anchorContextPayload(recovery),
       selectFirst,
       limit: SECTION_WINDOW_LIMIT,
     });
-    const current = get();
+    if (!fresh()) {
+      // A later routine refresh owns the newer order read, but does not cancel
+      // this authored gesture. Retry its exact captured identities against the
+      // current order; publishing this obsolete snapshot could undo that refresh.
+      if (ownsIntent?.() === true && currentInputs()) {
+        await reconcileCurrent(set, get, selectFirst, align, remembered, replaceSelection, ownsIntent);
+      }
+      return;
+    }
     if (fresh() && ownsIntent !== undefined && !ownsIntent()) {
       set({ loading: false });
       return;
     }
-    if (
-      !fresh() ||
-      (ownsIntent !== undefined && !ownsIntent()) ||
-      current.selected?.kind !== section.kind ||
-      current.selected.month !== section.month ||
-      !sameSort(current.currentSort(), sort)
-    )
+    if (!currentInputs() || (ownsIntent !== undefined && !ownsIntent())) return;
+    if (ownsIntent === undefined && !selectionUnchanged()) {
+      await reconcileCurrent(set, get, false, align);
       return;
+    }
     // A restoration (remembered !== undefined) deliberately re-anchors the
     // view and must scroll even when the recovered anchor happens to match
     // the current one. A routine reconcile (refresh, sort, derived-item
     // catch-up) must not yank the view back to the anchor when nothing about
     // it needed recovering -- publishReconciliation already scrolls whenever
     // the resulting anchor differs from the one Main currently shows.
+    if (ownsIntent !== undefined) rangeLoad.begin();
     publishReconciliation(set, get, result, align, {}, remembered !== undefined);
   } catch (error) {
-    if (!fresh()) return;
+    if (!fresh()) {
+      if (ownsIntent?.() === true && currentInputs()) {
+        await reconcileCurrent(set, get, selectFirst, align, remembered, replaceSelection, ownsIntent);
+      }
+      return;
+    }
+    if (!currentInputs()) return;
     if (ownsIntent !== undefined && !ownsIntent()) {
       set({ loading: false });
+      return;
+    }
+    if (ownsIntent === undefined && !selectionUnchanged()) {
+      await reconcileCurrent(set, get, false, align);
       return;
     }
     log.error("section reconciliation failed", toErrorFields(error));
@@ -850,9 +916,11 @@ function contextFromWindow(state: ItemsState, index: number): AnchorContext {
   };
 }
 
-function loadAnchorDetail(key: string | null): void {
+function loadAnchorDetail(key: string | null, mode: "foreground" | "background" = "foreground"): void {
   if (key === null) return;
-  const feedback = beginMainFeedback("detail");
+  // Background projection updates own the detail read, not a new Main command.
+  // Keep an unchanged selection's command result while recording read failures.
+  const feedback = mode === "foreground" ? beginMainFeedback("detail") : null;
   const payload = identityFromKey(key);
   const fresh = detailLoad.begin();
   void invoke<ItemDetail>("get_item_detail", {
@@ -862,14 +930,14 @@ function loadAnchorDetail(key: string | null): void {
     .then((detail) => {
       if (fresh() && useItemsStore.getState().selectedItem === key) {
         useItemsStore.setState({ detail });
-        feedback.finish();
+        feedback?.finish();
       }
     })
     .catch((error) => {
       if (!fresh() || useItemsStore.getState().selectedItem !== key) return;
       log.error("item detail load failed", toErrorFields(error));
       const failure = message("item.detailLoadFailed");
-      feedback.finish({ tone: "danger", text: failure });
+      feedback?.finish({ tone: "danger", text: failure });
       recordActionFailure("item-detail-load-failed", failure, error);
     });
 }
@@ -921,5 +989,7 @@ function publishReconciliation(
         : requestScroll(anchor, result.anchor.index, align),
     ...(anchor !== current.selectedItem ? { detail: null } : {}),
   });
-  if (anchor !== current.selectedItem) loadAnchorDetail(anchor);
+  // A full relevant refresh can change paths and other detail while the
+  // logical identity survives. Light, unchanged window ticks skip this read.
+  loadAnchorDetail(anchor, forceScroll || anchor !== current.selectedItem ? "foreground" : "background");
 }

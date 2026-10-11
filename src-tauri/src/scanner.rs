@@ -511,29 +511,41 @@ pub fn forget_unconfigured_roots(
     // unavailable root however differently it resolves (a mapped network
     // drive, a symlinked folder); a root recorded before that is kept while
     // any configured root cannot be resolved, since nothing proves which
-    // configured root produced it. A configured root that resolves is judged
-    // by its settled spelling alone.
+    // configured root produced it. A resolved configured root is judged by
+    // its settled spelling or proven directory identity, never by case-folding.
     let mut keep: Vec<String> = Vec::new();
     let mut unresolved: Vec<&str> = Vec::new();
+    let mut unresolved_spellings: Vec<String> = Vec::new();
     for dir in configured {
-        keep.push(dir.clone());
-        // An absent Windows root cannot be canonicalized, but its ordinary
-        // configured spelling still maps deterministically to the verbatim
-        // spelling scan_dirs uses. Keep both so an unplugged drive is never
-        // mistaken for a removed source and destructively forgotten.
-        keep.push(
-            crate::winpath::for_fs(Path::new(dir))
-                .to_string_lossy()
-                .to_string(),
-        );
         match settled_root(conn, Path::new(dir)) {
             Ok(settled) => keep.push(settled.to_string_lossy().to_string()),
-            Err(_) => unresolved.push(dir),
+            Err(_) => {
+                unresolved.push(dir);
+                unresolved_spellings.push(dir.clone());
+                // An absent Windows root still has a deterministic verbatim
+                // spelling. Offline receipts retain conservative alias matching.
+                unresolved_spellings.push(
+                    crate::winpath::for_fs(Path::new(dir))
+                        .to_string_lossy()
+                        .to_string(),
+                );
+            }
         }
     }
+    // Earlier/direct walks may have recorded an absolute alias such as /var
+    // instead of its canonical /private/var spelling. Preserve a proven same
+    // directory, while distinct case-only siblings have different identities.
+    let keep_identities: Vec<_> = keep
+        .iter()
+        .filter_map(|root| crate::file_identity::FileIdentity::from_path(Path::new(root)).ok())
+        .collect();
     let same = |left: &str, right: &str| left == right || left.to_lowercase() == right.to_lowercase();
     let still_configured = |root: &str, configured_root: Option<&str>| {
-        keep.iter().any(|spelling| same(spelling, root))
+        keep.iter().any(|spelling| spelling == root)
+            || (!keep_identities.is_empty()
+                && crate::file_identity::FileIdentity::from_path(Path::new(root))
+                    .is_ok_and(|identity| keep_identities.contains(&identity)))
+            || unresolved_spellings.iter().any(|spelling| same(spelling, root))
             || match configured_root {
                 Some(configured_root) => unresolved.iter().any(|dir| same(dir, configured_root)),
                 None => !unresolved.is_empty(),
@@ -542,7 +554,7 @@ pub fn forget_unconfigured_roots(
 
     // A root still configured as its own source keeps its rows even when it
     // sits inside a root being forgotten here (e.g. the user removes a parent
-    // folder but kept a subfolder of it configured separately): the LIKE
+    // folder but kept a subfolder of it configured separately): the path
     // prefix below would otherwise sweep up that nested source's paths along
     // with the parent's, deleting evidence and rows for a folder the user
     // never asked to stop tracking.
@@ -553,24 +565,28 @@ pub fn forget_unconfigured_roots(
         .collect();
 
     let mut forgotten = 0u64;
-    for (root, configured_root) in recorded {
-        if still_configured(&root, configured_root.as_deref()) {
+    for (root, _) in recorded {
+        if kept_roots.contains(&root) {
             continue;
         }
         let nested_kept_roots: Vec<&String> = kept_roots
             .iter()
-            .filter(|kept| directory_belongs_to_root(kept, &root) && kept.as_str() != root)
+            .filter(|kept| Path::new(kept).starts_with(Path::new(&root)) && kept.as_str() != root)
             .collect();
         // `?1` is always the forgotten root's own prefix; `?2`, `?3`, ... are
         // any nested still-configured roots, bound (never interpolated) like
         // every other path value in this function.
-        let mut abs_path_params: Vec<String> = vec![like_prefix(&root)];
-        let mut exclude_nested_kept = String::new();
+        // Settled paths share their root's spelling and separators. Compare a
+        // literal separator-terminated prefix under binary collation: SQLite's
+        // default LIKE folds ASCII case and can sweep up a different directory.
+        // The identical scope owns touched hashes, evidence and all path writes.
+        let mut abs_path_params: Vec<String> = vec![ensure_trailing_separator(&root)];
+        let mut path_scope = "substr(abs_path, 1, length(?1)) = ?1 COLLATE BINARY".to_string();
         for kept in &nested_kept_roots {
-            abs_path_params.push(like_prefix(kept));
-            exclude_nested_kept.push_str(&format!(
-                " AND abs_path NOT LIKE ?{} ESCAPE '!'",
-                abs_path_params.len()
+            abs_path_params.push(ensure_trailing_separator(kept));
+            let param = abs_path_params.len();
+            path_scope.push_str(&format!(
+                " AND substr(abs_path, 1, length(?{param})) <> ?{param} COLLATE BINARY"
             ));
         }
         // Evidence, companions, paths, orphan contents and scan_dirs all
@@ -585,10 +601,12 @@ pub fn forget_unconfigured_roots(
             conn,
             |tx| {
                 tx.execute(
-                    "INSERT OR IGNORE INTO batch_touched_hashes \
-                     SELECT DISTINCT content_hash FROM paths \
-                     WHERE abs_path LIKE ?1 ESCAPE '!' AND content_hash IS NOT NULL",
-                    [like_prefix(&root)],
+                    &format!(
+                        "INSERT OR IGNORE INTO batch_touched_hashes \
+                         SELECT DISTINCT content_hash FROM paths \
+                         WHERE {path_scope} AND content_hash IS NOT NULL"
+                    ),
+                    rusqlite::params_from_iter(abs_path_params.iter()),
                 )
                 .map_err(|e| e.to_string())?;
                 Ok(())
@@ -598,7 +616,7 @@ pub fn forget_unconfigured_roots(
                 tx.execute(
                     &format!(
                         "DELETE FROM evidence WHERE path_id IN \
-                         (SELECT id FROM paths WHERE abs_path LIKE ?1 ESCAPE '!'{exclude_nested_kept})"
+                         (SELECT id FROM paths WHERE {path_scope})"
                     ),
                     rusqlite::params_from_iter(abs_path_params.iter()),
                 )
@@ -606,16 +624,14 @@ pub fn forget_unconfigured_roots(
                 tx.execute(
                     &format!(
                         "UPDATE paths SET companion_of = NULL \
-                         WHERE abs_path LIKE ?1 ESCAPE '!' AND companion_of IS NOT NULL{exclude_nested_kept}"
+                         WHERE {path_scope} AND companion_of IS NOT NULL"
                     ),
                     rusqlite::params_from_iter(abs_path_params.iter()),
                 )
                 .map_err(|e| e.to_string())?;
                 removed = tx
                     .execute(
-                        &format!(
-                            "DELETE FROM paths WHERE abs_path LIKE ?1 ESCAPE '!'{exclude_nested_kept}"
-                        ),
+                        &format!("DELETE FROM paths WHERE {path_scope}"),
                         rusqlite::params_from_iter(abs_path_params.iter()),
                     )
                     .map_err(|e| e.to_string())?;

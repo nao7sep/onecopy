@@ -15,11 +15,17 @@
 export interface RequestSeq {
   /** Stamps a new request and returns its freshness check. */
   begin: () => () => boolean;
+  /** Observes the current request without superseding it. */
+  capture: () => () => boolean;
 }
 
 export function requestSeq(): RequestSeq {
   let current = 0;
   return {
+    capture: () => {
+      const seq = current;
+      return () => seq === current;
+    },
     begin: () => {
       current += 1;
       const seq = current;

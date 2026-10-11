@@ -69,8 +69,10 @@ function Harness() {
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
+  useMainFeedbackStore.setState({ entries: {} });
   usePreviewStore.setState({ follow: false, placement: null, current: null });
   mockSectionItems(() => [ITEM]);
+  mockCommand("get_item_detail", () => null);
   mockCommand("set_window_fullscreen", () => null);
   mockCommand("set_spread_fullscreen", () => null);
   setCurrentMonitor({

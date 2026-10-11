@@ -506,6 +506,44 @@ describe("request ownership", () => {
 // freshness guard (items-store.ts) checks the CURRENT anchor identity when
 // its response arrives, not just request order.
 describe("stale detail ordering", () => {
+  it.each([2, 1])("refreshes surviving selected detail when its copies change to %s", async (copies) => {
+    let copyPaths = copies === 1 ? ["/photos/a.jpg", "/backup/a.jpg"] : ["/photos/a.jpg"];
+    let rows = [item(1, { copyCount: copyPaths.length })];
+    mockSection(() => rows);
+    mockCommand("get_item_detail", () => ({ fileName: "a.jpg", kind: "image", copyCount: copyPaths.length, copyPaths }));
+    await useItemsStore.getState().select(SECTION);
+    await vi.waitFor(() => expect(useItemsStore.getState().detail?.copyPaths).toEqual(copyPaths));
+    const marks = useItemsStore.getState().selectedKeys;
+    copyPaths = copies === 2 ? ["/photos/a.jpg", "/backup/a.jpg"] : ["/backup/a.jpg"];
+    rows = [item(1, { copyCount: copies, dirPaths: copies === 2 ? ["/photos", "/backup"] : ["/backup"] })];
+    useItemsStore.setState({ scrollRequest: null });
+
+    await useItemsStore.getState().refresh();
+    await vi.waitFor(() => expect(useItemsStore.getState().detail?.copyPaths).toEqual(copyPaths));
+
+    expect(useItemsStore.getState().detail?.copyCount).toBe(copies);
+    expect(useItemsStore.getState().items[0].copyCount).toBe(copies);
+    expect(useItemsStore.getState().selectedKeys).toEqual(marks);
+    expect(useItemsStore.getState().scrollRequest).toBeNull();
+  });
+
+  it("does not publish a refresh detail after a newer selection loads", async () => {
+    mockSection([item(1), item(2)]);
+    await useItemsStore.getState().select(SECTION);
+    let resolveOld!: (detail: unknown) => void;
+    mockCommand("get_item_detail", ({ hash }) => hash === "h1"
+      ? new Promise((resolve) => { resolveOld = resolve; })
+      : { fileName: "new.jpg", kind: "image" });
+    await useItemsStore.getState().refresh();
+    useItemsStore.getState().selectItem("h2", "nearest", 1);
+    await vi.waitFor(() => expect(useItemsStore.getState().detail?.fileName).toBe("new.jpg"));
+    expect(resolveOld).toBeTypeOf("function");
+    resolveOld({ fileName: "obsolete.jpg", kind: "image" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(useItemsStore.getState().detail?.fileName).toBe("new.jpg");
+  });
+
   it("discards a detail response for an anchor Main has already left", async () => {
     mockSection([item(1), item(2)]);
     await useItemsStore.getState().select(SECTION);
@@ -534,7 +572,269 @@ describe("stale detail ordering", () => {
   });
 });
 
+describe("refresh reconciliation owns the captured selection intent", () => {
+  it.each([
+    ["range", "gestureFirst", "success"], ["range", "refreshFirst", "success"],
+    ["all", "gestureFirst", "success"], ["all", "refreshFirst", "success"],
+    ["range", "gestureFirst", "error"], ["all", "refreshFirst", "error"],
+  ] as const)("retains a delayed %s gesture when a later refresh settles %s after obsolete %s", async (gesture, settlement, outcome) => {
+    const initial = [item(1), item(2), item(3), item(4)];
+    let rows = initial;
+    mockSection(() => rows);
+    await useItemsStore.getState().select(SECTION);
+    useItemsStore.getState().selectItem("h2", "nearest", 1);
+    let releaseMembers!: (members: unknown) => void;
+    mockCommand("get_section_range", () => new Promise((resolve) => { releaseMembers = resolve; }));
+    const gestureWork = gesture === "range"
+      ? useItemsStore.getState().rangeSelect("h4", 3)
+      : useItemsStore.getState().selectAll();
+    rows = [item(9, { resolvedUtcMs: 0 }), ...initial];
+    await useItemsStore.getState().refresh();
+    const orderTwo = rows;
+    const reads: Array<{ snapshot: SectionItem[]; resolve: (rows: SectionItem[]) => void; reject: (error: Error) => void }> = [];
+    mockSection(() => new Promise((resolve, reject) => { reads.push({ snapshot: rows, resolve, reject }); }));
+    const chosen = gesture === "range" ? initial.slice(1) : initial;
+    releaseMembers(chosen.map((row) => ({ hash: row.hash, pathId: row.pathId, index: initial.indexOf(row) })));
+    await vi.waitFor(() => expect(reads).toHaveLength(1));
+    rows = [item(8, { resolvedUtcMs: -1000 }), ...orderTwo];
+    const refreshWork = useItemsStore.getState().refresh();
+    await vi.waitFor(() => expect(reads).toHaveLength(2));
+    if (settlement === "refreshFirst") {
+      reads[1].resolve(reads[1].snapshot);
+      await refreshWork;
+    }
+    if (outcome === "error") reads[0].reject(new Error("obsolete gesture read failed"));
+    else reads[0].resolve(reads[0].snapshot);
+    await vi.waitFor(() => expect(reads).toHaveLength(3));
+    reads[2].resolve(reads[2].snapshot);
+    await gestureWork;
+    if (settlement === "gestureFirst") reads[1].resolve(reads[1].snapshot);
+    await refreshWork;
+
+    const state = useItemsStore.getState();
+    const expectedPositions = new Map(chosen.map((row) => [row.hash!, initial.indexOf(row) + 2]));
+    const anchor = gesture === "range" ? "h4" : "h2";
+    const anchorIndex = gesture === "range" ? 5 : 3;
+    expect(state.selectedKeys).toEqual(new Set(chosen.map((row) => row.hash!)));
+    expect(state.selectedPositions).toEqual(expectedPositions);
+    expect(state.rangeBasePositions).toEqual(gesture === "range" ? new Map([["h2", 3]]) : expectedPositions);
+    expect(state.rangeOrigin).toBe("h2");
+    expect(state.rangeOriginPosition).toBe(3);
+    expect(state.selectedItem).toBe(anchor);
+    expect(state.currentContext?.index).toBe(anchorIndex);
+    expect(state.currentContext?.before).toEqual(rows.slice(0, anchorIndex).reverse().map((row) => row.hash));
+    expect(state.scrollRequest).toMatchObject({ key: anchor, index: anchorIndex, align: "nearest" });
+    expect(state.orderToken).toBe(rows.map((row) => row.hash).join(","));
+    expect(state.loadError).toBeNull();
+    expect(invokeCalls.filter((call) => call.command === "get_section_range")).toHaveLength(1);
+    expect(invokeCalls.filter((call) => call.command === "record_recent_notification")).toHaveLength(0);
+  });
+
+  it("lets a newer click supersede the retried gesture after a routine refresh supersedes its first read", async () => {
+    const initial = [item(1), item(2), item(3), item(4)];
+    let rows = initial;
+    mockSection(() => rows);
+    await useItemsStore.getState().select(SECTION);
+    useItemsStore.getState().selectItem("h2", "nearest", 1);
+    let releaseMembers!: (members: unknown) => void;
+    mockCommand("get_section_range", () => new Promise((resolve) => { releaseMembers = resolve; }));
+    const gestureWork = useItemsStore.getState().rangeSelect("h4", 3);
+    rows = [item(9, { resolvedUtcMs: 0 }), ...initial];
+    await useItemsStore.getState().refresh();
+    const reads: Array<(rows: SectionItem[]) => void> = [];
+    mockSection(() => new Promise((resolve) => { reads.push(resolve); }));
+    releaseMembers(initial.slice(1).map((row) => ({ hash: row.hash, pathId: row.pathId, index: initial.indexOf(row) })));
+    await vi.waitFor(() => expect(reads).toHaveLength(1));
+    const refreshWork = useItemsStore.getState().refresh();
+    await vi.waitFor(() => expect(reads).toHaveLength(2));
+    reads[1](rows);
+    await refreshWork;
+    reads[0](rows);
+    await vi.waitFor(() => expect(reads).toHaveLength(3));
+    useItemsStore.getState().selectItem("h1", "nearest", 1);
+    const latest = useItemsStore.getState();
+    reads[2](rows);
+    await gestureWork;
+    const state = useItemsStore.getState();
+    expect(state.selectedKeys).toEqual(new Set(["h1"]));
+    expect(state.selectedPositions).toEqual(new Map([["h1", 1]]));
+    expect(state.rangeBasePositions).toEqual(latest.rangeBasePositions);
+    expect(state.rangeOrigin).toBe("h1");
+    expect(state.rangeOriginPosition).toBe(1);
+    expect(state.currentContext).toEqual(latest.currentContext);
+    expect(state.scrollRequest).toEqual(latest.scrollRequest);
+    expect(reads).toHaveLength(3);
+  });
+
+  it.each(["range", "all"] as const)("reconciles delayed %s members after a newer order is already published", async (gesture) => {
+    const initial = [item(1), item(2), item(3), item(4)];
+    let rows = initial;
+    mockSection(() => rows);
+    await useItemsStore.getState().select(SECTION);
+    useItemsStore.getState().selectItem("h2", "nearest", 1);
+    let release!: (members: unknown) => void;
+    mockCommand("get_section_range", () => new Promise((resolve) => { release = resolve; }));
+    const pending = gesture === "range"
+      ? useItemsStore.getState().rangeSelect("h4", 3)
+      : useItemsStore.getState().selectAll();
+    rows = [item(9, { resolvedUtcMs: 0 }), ...initial];
+    await useItemsStore.getState().refresh();
+    const currentOrder = useItemsStore.getState().orderToken;
+    const chosen = gesture === "range" ? initial.slice(1) : initial;
+    release(chosen.map((row) => ({ hash: row.hash, pathId: row.pathId, index: initial.indexOf(row) })));
+    await pending;
+
+    const state = useItemsStore.getState();
+    const anchor = gesture === "range" ? "h4" : "h2";
+    const anchorIndex = gesture === "range" ? 4 : 2;
+    const expectedPositions = new Map(chosen.map((row) => [row.hash!, initial.indexOf(row) + 1]));
+    expect(state.selectedKeys).toEqual(new Set(chosen.map((row) => row.hash!)));
+    expect(state.selectedPositions).toEqual(expectedPositions);
+    expect(state.rangeBasePositions).toEqual(gesture === "range" ? new Map([["h2", 2]]) : expectedPositions);
+    expect(state.rangeBase).toEqual(new Set(state.rangeBasePositions.keys()));
+    expect(state.rangeOrigin).toBe("h2");
+    expect(state.rangeOriginPosition).toBe(2);
+    expect(state.selectedItem).toBe(anchor);
+    expect(state.currentContext?.index).toBe(anchorIndex);
+    expect(state.currentContext?.before).toEqual(rows.slice(0, anchorIndex).reverse().map((row) => row.hash));
+    expect(state.currentContext?.after).toEqual(rows.slice(anchorIndex + 1).map((row) => row.hash));
+    expect(state.scrollRequest).toMatchObject({ key: anchor, index: anchorIndex, align: "nearest" });
+    expect(state.orderToken).toBe(currentOrder);
+    expect(invokeCalls.filter((call) => call.command === "get_section_range")).toHaveLength(1);
+  });
+
+  it.each(["range", "all"] as const)("lets a newer click supersede a delayed %s identity reconciliation", async (gesture) => {
+    const initial = [item(1), item(2), item(3), item(4)];
+    let rows = initial;
+    mockSection(() => rows);
+    await useItemsStore.getState().select(SECTION);
+    useItemsStore.getState().selectItem("h2", "nearest", 1);
+    let releaseMembers!: (members: unknown) => void;
+    mockCommand("get_section_range", () => new Promise((resolve) => { releaseMembers = resolve; }));
+    const pending = gesture === "range"
+      ? useItemsStore.getState().rangeSelect("h4", 3)
+      : useItemsStore.getState().selectAll();
+    rows = [item(9, { resolvedUtcMs: 0 }), ...initial];
+    await useItemsStore.getState().refresh();
+    let releaseReconciliation!: (rows: SectionItem[]) => void;
+    mockSection(() => new Promise((resolve) => { releaseReconciliation = resolve; }));
+    const chosen = gesture === "range" ? initial.slice(1) : initial;
+    releaseMembers(chosen.map((row) => ({ hash: row.hash, pathId: row.pathId, index: initial.indexOf(row) })));
+    await vi.waitFor(() => expect(releaseReconciliation).toBeTypeOf("function"));
+    useItemsStore.getState().selectItem("h1", "nearest", 1);
+    const latest = useItemsStore.getState();
+    releaseReconciliation(rows);
+    await pending;
+    const state = useItemsStore.getState();
+    expect(state.selectedItem).toBe("h1");
+    expect(state.selectedPositions).toEqual(new Map([["h1", 1]]));
+    expect(state.rangeBasePositions).toEqual(new Map([["h1", 1]]));
+    expect(state.rangeOrigin).toBe("h1");
+    expect(state.rangeOriginPosition).toBe(1);
+    expect(state.currentContext).toEqual(latest.currentContext);
+    expect(state.scrollRequest).toEqual(latest.scrollRequest);
+  });
+
+  it("observes a pending range without cancelling its selection intent", async () => {
+    mockSection([item(1), item(2), item(3)]);
+    await useItemsStore.getState().select(SECTION);
+    let release!: (members: unknown) => void;
+    mockCommand("get_section_range", () => new Promise((resolve) => { release = resolve; }));
+    const range = useItemsStore.getState().rangeSelect("h3", 2);
+    await useItemsStore.getState().refresh();
+    release([1, 2, 3].map((pathId, index) => ({ hash: `h${pathId}`, pathId, index })));
+    await range;
+    expect(useItemsStore.getState().selectedItem).toBe("h3");
+    expect(useItemsStore.getState().selectedKeys).toEqual(new Set(["h1", "h2", "h3"]));
+    expect(useItemsStore.getState().rangeOrigin).toBe("h1");
+  });
+
+  it.each(["select", "toggle", "all", "range"] as const)("reconciles the latest %s intent under the changed order", async (action) => {
+    const initial = [item(1), item(2), item(3), item(4)];
+    mockSection(initial);
+    await useItemsStore.getState().select(SECTION);
+    if (action === "range") useItemsStore.getState().selectItem("h2", "nearest", 1);
+    let release!: (rows: SectionItem[]) => void;
+    let reads = 0;
+    const changed = [item(9, { resolvedUtcMs: 0 }), ...initial];
+    mockSection(() => ++reads === 1 ? new Promise((resolve) => { release = resolve; })
+      : action === "range" && reads === 2 ? initial : changed);
+    const refresh = useItemsStore.getState().refresh();
+    if (action === "select") useItemsStore.getState().selectItem("h3", "nearest", 2);
+    else if (action === "toggle") useItemsStore.getState().toggleItem("h3", 2);
+    else if (action === "all") await useItemsStore.getState().selectAll();
+    else await useItemsStore.getState().rangeSelect("h4", 3);
+    const latest = useItemsStore.getState();
+    const selected = new Set(latest.selectedKeys);
+    const base = new Set(latest.rangeBase);
+    const anchor = latest.selectedItem;
+    release(changed);
+    await refresh;
+    const state = useItemsStore.getState();
+    expect(state.selectedItem).toBe(anchor);
+    expect(state.selectedKeys).toEqual(selected);
+    expect(state.rangeBase).toEqual(base);
+    expect(state.rangeOrigin).toBe(latest.rangeOrigin);
+    for (const key of selected) {
+      expect(state.selectedPositions.get(key)).toBe(changed.findIndex((row) => row.hash === key));
+    }
+    for (const key of base) {
+      expect(state.rangeBasePositions.get(key)).toBe(changed.findIndex((row) => row.hash === key));
+    }
+    expect(state.rangeOriginPosition).toBe(changed.findIndex((row) => row.hash === latest.rangeOrigin));
+    expect(state.items.map((row) => row.hash)).toEqual(changed.map((row) => row.hash));
+    expect(state.scrollRequest).toBeNull();
+  });
+
+  it("recovers a newer anchor that vanished instead of restoring the older anchor", async () => {
+    const initial = [item(1), item(2), item(3), item(4)];
+    mockSection(initial);
+    await useItemsStore.getState().select(SECTION);
+    const changed = [item(9, { resolvedUtcMs: 0 }), item(1), item(2), item(4)];
+    let release!: (rows: SectionItem[]) => void;
+    let reads = 0;
+    mockSection(() => ++reads === 1 ? new Promise((resolve) => { release = resolve; }) : changed);
+    const refresh = useItemsStore.getState().refresh();
+    useItemsStore.getState().selectItem("h3", "nearest", 2);
+    release(changed);
+    await refresh;
+    expect(useItemsStore.getState().selectedItem).toBe("h4");
+    expect(useItemsStore.getState().selectedPositions).toEqual(new Map([["h4", 3]]));
+    expect(useItemsStore.getState().scrollRequest?.key).toBe("h4");
+  });
+
+  it("does not publish an old failure after selection changes", async () => {
+    const rows = [item(1), item(2)];
+    mockSection(rows);
+    await useItemsStore.getState().select(SECTION);
+    let reject!: (error: Error) => void;
+    let reads = 0;
+    mockSection(() => ++reads === 1 ? new Promise((_, fail) => { reject = fail; }) : rows);
+    const refresh = useItemsStore.getState().refresh();
+    useItemsStore.getState().selectItem("h2", "nearest", 1);
+    reject(new Error("old read failed"));
+    await refresh;
+    expect(useItemsStore.getState().selectedItem).toBe("h2");
+    expect(useItemsStore.getState().loadError).toBeNull();
+    expect(invokeCalls.filter((call) => call.command === "record_recent_notification")).toHaveLength(0);
+  });
+});
+
 describe("refreshWindow", () => {
+  it("reloads selected detail only when the selected row changes", async () => {
+    let rows = [item(1), item(2)];
+    mockSection(() => rows);
+    await useItemsStore.getState().select(SECTION);
+    invokeCalls.length = 0;
+    await useItemsStore.getState().refreshWindow();
+    rows = [item(1), item(2, { copyCount: 2 })];
+    await useItemsStore.getState().refreshWindow();
+    expect(invokeCalls.filter((call) => call.command === "get_item_detail")).toHaveLength(0);
+    rows = [item(1, { copyCount: 2 }), rows[1]];
+    await useItemsStore.getState().refreshWindow();
+    expect(invokeCalls.filter((call) => call.command === "get_item_detail")).toHaveLength(1);
+  });
+
   it("reloads only the window while the section order is unchanged", async () => {
     const rows = Array.from({ length: 8 }, (_, index) => item(index + 1));
     mockSection(rows);
