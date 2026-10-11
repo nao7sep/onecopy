@@ -3,6 +3,201 @@ use crate::scan_runtime::ShareRank;
 use std::sync::mpsc;
 use std::thread;
 
+#[derive(Clone, Copy, Debug)]
+enum CancelBoundary {
+    Foreground,
+    Requested,
+    Exclusive,
+    PauseClass,
+    Shutdown,
+}
+
+fn cancellation_keeps_its_selected_native_owner(boundary: CancelBoundary) {
+    let _serial = crate::scan_runtime::serial_test();
+    let (ready, started) = mpsc::channel();
+    let (retire, retiring) = mpsc::channel();
+    let (native_dropped, native_gone) = mpsc::channel();
+    let owner = thread::spawn(move || {
+        let active = ActiveGuard::begin(None, WorkClass::VideoTranscripts)
+            .unwrap()
+            .unwrap();
+        set_hash(active.id, "selected");
+        let native = crate::transcription::claim().unwrap();
+        ready.send(()).unwrap();
+        retiring.recv().unwrap();
+        drop(native);
+        native_dropped.send(()).unwrap();
+        drop(active);
+    });
+    started.recv_timeout(Duration::from_secs(2)).unwrap();
+
+    let (at_signal, selected) = mpsc::channel();
+    let (resume_signal, resume) = mpsc::channel();
+    let (request_ready, requested) = mpsc::channel();
+    let (check_request, check_requested) = mpsc::channel();
+    let canceller = thread::spawn(move || {
+        CANCEL_SIGNAL_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                at_signal.send(()).unwrap();
+                resume.recv().unwrap();
+            }));
+        });
+        match boundary {
+            CancelBoundary::Foreground => preempt_automatic(),
+            CancelBoundary::Requested => {
+                let _active =
+                    requested_heavy(None, WorkClass::AudioTranscripts, "unrelated").unwrap();
+                let _native = crate::transcription::claim().unwrap();
+                request_ready.send(()).unwrap();
+                check_requested.recv().unwrap();
+                return crate::transcription::is_cancelled();
+            }
+            CancelBoundary::Exclusive => {
+                let _claim = exclusive_claim(
+                    None,
+                    &["selected".to_string()],
+                    ClaimPolicy::Mutation,
+                    &|| false,
+                )
+                .unwrap();
+            }
+            CancelBoundary::PauseClass => {
+                pause(None, Some(WorkClass::VideoTranscripts.id()), true).unwrap()
+            }
+            CancelBoundary::Shutdown => shutdown(None),
+        }
+        false
+    });
+    selected.recv_timeout(Duration::from_secs(2)).unwrap();
+    // This is the actual ownership boundary, not a wall-clock inference:
+    // replacement must acquire this lock before admitting the next job.
+    let held = matches!(
+        RUNTIME.0.try_lock(),
+        Err(std::sync::TryLockError::WouldBlock)
+    );
+    retire.send(()).unwrap();
+    native_gone.recv_timeout(Duration::from_secs(2)).unwrap();
+
+    let (successor_ready, successor_started) = mpsc::channel();
+    let (observe, observing) = mpsc::channel();
+    let successor = if matches!(boundary, CancelBoundary::Requested) {
+        None
+    } else {
+        Some(thread::spawn(move || {
+            let _active = requested_heavy(None, WorkClass::AudioTranscripts, "unrelated").unwrap();
+            let _native = crate::transcription::claim().unwrap();
+            successor_ready.send(()).unwrap();
+            observing.recv().unwrap();
+            crate::transcription::is_cancelled()
+        }))
+    };
+    // With the original gap, finish replacing the owner before permitting
+    // its stale signal. The fixed path keeps replacement behind RUNTIME.
+    if !held && successor.is_some() {
+        successor_started
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+    }
+    resume_signal.send(()).unwrap();
+    owner.join().unwrap();
+    let inherited_signal = if let Some(successor) = successor {
+        let _ = canceller.join().unwrap();
+        if held {
+            successor_started
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap();
+        }
+        observe.send(()).unwrap();
+        successor.join().unwrap()
+    } else {
+        requested.recv_timeout(Duration::from_secs(2)).unwrap();
+        check_request.send(()).unwrap();
+        canceller.join().unwrap()
+    };
+    RUNTIME.0.lock().unwrap().paused_classes = 0;
+    assert!(
+        !inherited_signal,
+        "{boundary:?} cancelled an unrelated successor"
+    );
+    assert!(
+        held,
+        "{boundary:?} released its selected owner before the native signal"
+    );
+    assert!(RUNTIME.0.lock().unwrap().heavy.is_none());
+}
+
+#[test]
+fn foreground_signal_keeps_its_selected_native_owner() {
+    cancellation_keeps_its_selected_native_owner(CancelBoundary::Foreground);
+}
+
+#[test]
+fn requested_signal_keeps_its_selected_native_owner() {
+    cancellation_keeps_its_selected_native_owner(CancelBoundary::Requested);
+}
+
+#[test]
+fn exclusive_signal_cannot_cancel_an_unrelated_successor() {
+    cancellation_keeps_its_selected_native_owner(CancelBoundary::Exclusive);
+}
+
+#[test]
+fn class_pause_signal_cannot_cancel_another_transcription_class() {
+    cancellation_keeps_its_selected_native_owner(CancelBoundary::PauseClass);
+}
+
+#[test]
+fn shutdown_signal_keeps_its_selected_native_owner() {
+    cancellation_keeps_its_selected_native_owner(CancelBoundary::Shutdown);
+}
+
+#[test]
+fn lifecycle_signals_cancel_the_selected_native_transcription() {
+    let _serial = crate::scan_runtime::serial_test();
+    for boundary in [
+        CancelBoundary::Foreground,
+        CancelBoundary::Requested,
+        CancelBoundary::Exclusive,
+        CancelBoundary::PauseClass,
+        CancelBoundary::Shutdown,
+    ] {
+        let active = ActiveGuard::begin(None, WorkClass::VideoTranscripts)
+            .unwrap()
+            .unwrap();
+        set_hash(active.id, "selected");
+        let native = crate::transcription::claim().unwrap();
+        let canceller = thread::spawn(move || match boundary {
+            CancelBoundary::Foreground => preempt_automatic(),
+            CancelBoundary::Requested => {
+                let _active = requested_heavy(None, WorkClass::AudioTranscripts, "next").unwrap();
+            }
+            CancelBoundary::Exclusive => {
+                let _claim = exclusive_claim(
+                    None,
+                    &["selected".to_string()],
+                    ClaimPolicy::Mutation,
+                    &|| false,
+                )
+                .unwrap();
+            }
+            CancelBoundary::PauseClass => {
+                pause(None, Some(WorkClass::VideoTranscripts.id()), true).unwrap()
+            }
+            CancelBoundary::Shutdown => shutdown(None),
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !crate::transcription::is_cancelled() && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        let signalled = crate::transcription::is_cancelled();
+        drop(native);
+        drop(active);
+        canceller.join().unwrap();
+        RUNTIME.0.lock().unwrap().paused_classes = 0;
+        assert!(signalled, "{boundary:?} never cancelled its selected native claim");
+    }
+}
+
 fn job(class: WorkClass, manual: bool) -> Job {
     Job {
         id: 1,

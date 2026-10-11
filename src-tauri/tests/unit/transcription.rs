@@ -2,6 +2,7 @@ use super::*;
 
 #[test]
 fn cancellation_that_owns_the_claim_boundary_prevents_publication() {
+    let _serial = crate::scan_runtime::serial_test();
     let claim = claim().unwrap();
     assert!(request_cancel());
     let published = std::cell::Cell::new(false);

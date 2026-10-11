@@ -404,68 +404,119 @@ struct PoolState {
     queue: VecDeque<Job>,
     idle: usize,
     live: usize,
+    #[cfg(test)]
+    closed: bool,
 }
 
-static POOL: LazyLock<Pool> = LazyLock::new(|| Pool {
-    state: Mutex::new(PoolState {
-        queue: VecDeque::new(),
-        idle: 0,
-        live: 0,
-    }),
-    ready: Condvar::new(),
+static POOL: LazyLock<Arc<Pool>> = LazyLock::new(|| {
+    Arc::new(Pool {
+        state: Mutex::new(PoolState {
+            queue: VecDeque::new(),
+            idle: 0,
+            live: 0,
+            #[cfg(test)]
+            closed: false,
+        }),
+        ready: Condvar::new(),
+    })
 });
 
 thread_local! {
     static ON_WORKER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    #[cfg(test)]
+    static TEST_POOL: std::cell::RefCell<Option<Arc<Pool>>> = const { std::cell::RefCell::new(None) };
+    #[cfg(test)]
+    static TEST_SPAWN_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    #[cfg(test)]
+    static TEST_SPAWN_ATTEMPT: std::cell::RefCell<Option<mpsc::Sender<()>>> = const { std::cell::RefCell::new(None) };
 }
 
 fn on_worker() -> bool {
     ON_WORKER.with(std::cell::Cell::get)
 }
 
-fn pool_state() -> MutexGuard<'static, PoolState> {
-    POOL.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+impl Pool {
+    fn state(&self) -> MutexGuard<'_, PoolState> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn spawn(self: &Arc<Self>, number: usize) -> io::Result<std::thread::JoinHandle<()>> {
+        #[cfg(test)]
+        if TEST_SPAWN_FAILURE.with(std::cell::Cell::get) {
+            TEST_SPAWN_ATTEMPT.with(|attempt| {
+                if let Some(attempt) = attempt.borrow().as_ref() {
+                    let _ = attempt.send(());
+                }
+            });
+            return Err(io::Error::other("injected volume worker spawn failure"));
+        }
+        let pool = self.clone();
+        std::thread::Builder::new()
+            .name(format!("onecopy-volume-io-{number}"))
+            .spawn(move || worker_loop(pool))
+    }
+
+    fn submit(self: &Arc<Self>, job: Job) -> io::Result<()> {
+        let mut state = self.state();
+        // Admission and worker availability are one decision. No worker can
+        // take this job while a failed expansion is being classified.
+        let expansion_failure = if state.idle < state.queue.len() + 1 {
+            match self.spawn(state.live + 1) {
+                Ok(_) => {
+                    state.live += 1;
+                    None
+                }
+                Err(error) if state.live == 0 => return Err(error),
+                Err(error) => Some(error),
+            }
+        } else {
+            None
+        };
+        state.queue.push_back(job);
+        self.ready.notify_one();
+        drop(state);
+        if let Some(error) = expansion_failure {
+            // An existing worker still owns the admitted job. Its caller
+            // waits for settlement (or an honest unknown timeout), rather
+            // than receiving a known failure for work that can run later.
+            crate::logging::warn(
+                "volume worker expansion failed; existing workers retain queued work",
+                serde_json::json!({ "error": error.to_string(), "kind": format!("{:?}", error.kind()), "osError": error.raw_os_error() }),
+            );
+        }
+        Ok(())
+    }
 }
 
 fn submit(job: Job) -> io::Result<()> {
-    let mut state = pool_state();
-    state.queue.push_back(job);
-    if state.idle >= state.queue.len() {
-        POOL.ready.notify_one();
-        return Ok(());
+    #[cfg(test)]
+    if let Some(pool) = TEST_POOL.with(|pool| pool.borrow().clone()) {
+        return pool.submit(job);
     }
-    state.live += 1;
-    let number = state.live;
-    drop(state);
-    let spawned = std::thread::Builder::new()
-        .name(format!("onecopy-volume-io-{number}"))
-        .spawn(worker_loop);
-    if let Err(error) = spawned {
-        let mut state = pool_state();
-        state.live -= 1;
-        // The job stays queued for a live worker if there is one; with none,
-        // take it back so the caller fails instead of waiting for nothing.
-        if state.live == 0 {
-            state.queue.pop_back();
-        }
-        return Err(error);
-    }
-    Ok(())
+    POOL.submit(job)
 }
 
-fn worker_loop() {
+fn worker_loop(pool: Arc<Pool>) {
     ON_WORKER.with(|flag| flag.set(true));
-    let mut state = pool_state();
+    let mut state = pool.state();
     loop {
         if let Some(job) = state.queue.pop_front() {
             drop(state);
             // A panicking call must not take the worker's bookkeeping down.
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
-            state = pool_state();
+            state = pool.state();
             continue;
         }
+        #[cfg(test)]
+        if state.closed {
+            state.live -= 1;
+            pool.ready.notify_all();
+            return;
+        }
         state.idle += 1;
-        let (next, timeout) = POOL
+        let (next, timeout) = pool
             .ready
             .wait_timeout(state, WORKER_IDLE)
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1495,3 +1546,7 @@ impl Drop for FakeStallingVolume {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/volume_io.rs"]
+mod tests;

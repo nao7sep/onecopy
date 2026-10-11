@@ -268,6 +268,8 @@ static POISON_ISSUE_REPORTED: std::sync::atomic::AtomicBool =
 
 thread_local! {
     static CURRENT_JOB: Cell<Option<u64>> = const { Cell::new(None) };
+    #[cfg(test)]
+    static CANCEL_SIGNAL_HOOK: std::cell::RefCell<Option<Box<dyn FnMut()>>> = const { std::cell::RefCell::new(None) };
 }
 
 fn lock(app: Option<&AppHandle>) -> Result<MutexGuard<'static, RuntimeState>, String> {
@@ -277,7 +279,16 @@ fn lock(app: Option<&AppHandle>) -> Result<MutexGuard<'static, RuntimeState>, St
     })
 }
 
-fn request_active_cancel(class: WorkClass) {
+/// Retain RUNTIME through the native signal so its selected owner cannot be
+/// replaced. Lock order is RUNTIME, then the transcription/face registry;
+/// native registry holders release it before querying runtime ownership.
+fn request_active_cancel(_owner: &RuntimeState, class: WorkClass) {
+    #[cfg(test)]
+    CANCEL_SIGNAL_HOOK.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().as_mut() {
+            hook();
+        }
+    });
     if class.is_transcription() {
         crate::transcription::request_cancel();
     } else if class == WorkClass::Faces {
@@ -304,7 +315,8 @@ pub fn cancel_active_transcription() -> bool {
             job.stop = true;
             // Keep the process-global signal tied to the runtime owner selected
             // above; a queued transcription cannot take over between the two.
-            request_active_cancel(job.class);
+            let class = job.class;
+            request_active_cancel(&runtime, class);
             true
         }
         Err(_) => {
@@ -537,8 +549,8 @@ fn requested_heavy(
     if let Some(job) = runtime.heavy.as_mut().filter(|job| !job.manual) {
         job.stop = true;
         let class = job.class;
+        request_active_cancel(&runtime, class);
         drop(runtime);
-        request_active_cancel(class);
         emit(app);
         runtime = lock(app)?;
     }
@@ -628,11 +640,11 @@ fn exclusive_claim(
         }
     }
     runtime.claim = Some(claim);
+    for class in kick {
+        request_active_cancel(&runtime, class);
+    }
     drop(runtime);
     let guard = ExclusiveGuard { app: app.cloned() };
-    for class in kick {
-        request_active_cancel(class);
-    }
     emit(app);
     let deadline = (policy == ClaimPolicy::ExternalOpen).then(|| Instant::now() + REQUESTED_WAIT);
     loop {
@@ -674,15 +686,10 @@ pub(crate) fn exclusive() -> bool {
 /// of at its next poll. Background index owners never call it: heavy work
 /// lets them in while it computes outside its share.
 pub(crate) fn preempt_automatic() {
-    let class = RUNTIME.0.lock().ok().and_then(|runtime| {
-        runtime
-            .heavy
-            .as_ref()
-            .filter(|job| !job.manual)
-            .map(|job| job.class)
-    });
-    if let Some(class) = class {
-        request_active_cancel(class);
+    if let Ok(runtime) = RUNTIME.0.lock() {
+        if let Some(job) = runtime.heavy.as_ref().filter(|job| !job.manual) {
+            request_active_cancel(&runtime, job.class);
+        }
     }
 }
 
@@ -743,22 +750,22 @@ pub(crate) fn on_behalf_of_current_job(
 /// work receives its existing class-specific cancellation signal; queued
 /// manual requests wake and settle as cancellations.
 pub fn begin_shutdown(app: &AppHandle) {
-    let heavy = match RUNTIME.0.lock() {
+    shutdown(Some(app));
+}
+
+fn shutdown(app: Option<&AppHandle>) {
+    match RUNTIME.0.lock() {
         Ok(mut runtime) => {
             for job in runtime.jobs_mut() {
                 job.stop = true;
             }
-            RUNTIME.1.notify_all();
-            runtime.heavy.as_ref().map(|job| job.class)
+            if let Some(job) = runtime.heavy.as_ref() {
+                request_active_cancel(&runtime, job.class);
+            }
         }
-        Err(_) => {
-            report_poison_once(Some(app));
-            None
-        }
-    };
-    if let Some(class) = heavy {
-        request_active_cancel(class);
+        Err(_) => report_poison_once(app),
     }
+    RUNTIME.1.notify_all();
 }
 
 pub(crate) fn shutting_down() -> bool {
@@ -769,22 +776,28 @@ pub(crate) fn shutting_down() -> bool {
 /// until Resume or the next launch and is never saved: required work stays
 /// visibly incomplete and resumable, never a disabled feature.
 pub fn set_paused(app: &AppHandle, class: Option<&str>, paused: bool) -> Result<(), String> {
+    pause(Some(app), class, paused)
+}
+
+fn pause(app: Option<&AppHandle>, class: Option<&str>, paused: bool) -> Result<(), String> {
     if shutting_down() {
         return Err(crate::scanner::CANCELLED.to_string());
     }
-    let heavy = {
-        let mut runtime = lock(Some(app))?;
+    {
+        let mut runtime = lock(app)?;
         runtime.paused_classes = changed_pause_classes(runtime.paused_classes, class, paused)?;
-        RUNTIME.1.notify_all();
-        runtime.heavy.as_ref().map(|job| job.class)
-    };
-
-    if paused {
-        if let Some(active) = heavy.filter(|active| class.is_none() || class == Some(active.id())) {
-            request_active_cancel(active);
+        if paused {
+            if let Some(job) = runtime
+                .heavy
+                .as_ref()
+                .filter(|job| class.is_none() || class == Some(job.class.id()))
+            {
+                request_active_cancel(&runtime, job.class);
+            }
         }
     }
-    emit_state_changed(app);
+    RUNTIME.1.notify_all();
+    emit(app);
     Ok(())
 }
 
