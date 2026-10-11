@@ -242,6 +242,8 @@ describe("the preview window", () => {
 
 describe("a comparison window", () => {
   const broadcast: ComparisonBroadcast = {
+    sessionId: 1,
+    revision: 1,
     displayAspects: [16 / 9, 16 / 9],
     capacities: [4, 4],
     chunks: [
@@ -308,6 +310,28 @@ describe("a comparison window", () => {
     expect(
       emitCalls.filter((call) => call.event === "comparison://key"),
     ).toHaveLength(1);
+    expect(emitCalls.find((call) => call.event === "comparison://key")?.payload)
+      .toMatchObject({ sessionId: broadcast.sessionId, revision: broadcast.revision, key: "0" });
+  });
+
+  it("keeps the latest rendered projection and sends its authority with card input", async () => {
+    const view = render(<ComparisonWindow slice={1} />);
+    await act(async () => {});
+    const current: ComparisonBroadcast = {
+      ...broadcast, sessionId: 2, revision: 3,
+      chunks: [[], [{ ...broadcast.chunks[1]![0]!, member: {
+        ...broadcast.chunks[1]![0]!.member, hash: "latest", fileName: "latest.jpg",
+      } }]],
+    };
+    await act(async () => fireEvent("comparison://state", current));
+    await act(async () => fireEvent("comparison://state", { ...broadcast, revision: 4 }));
+    await act(async () => fireEvent("comparison://state", { ...broadcast, sessionId: 2, revision: 2 }));
+    expect(view.container.textContent).toContain("latest.jpg");
+    expect(view.container.textContent).not.toContain("a.jpg");
+    await act(async () => view.getByRole("button", { name: "Keep latest.jpg" }).click());
+    expect(emitCalls).toContainEqual({ event: "comparison://select", payload: {
+      sessionId: 2, revision: 3, hash: "latest", slotIndex: 0, mode: "toggle",
+    } });
   });
 
   it("announced readiness after listening, so the reply can be heard", async () => {

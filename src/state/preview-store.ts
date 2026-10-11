@@ -210,12 +210,17 @@ async function ensurePreviewWindow(config: Record<string, unknown>): Promise<voi
   previewWindowOpen = true;
 }
 
-export async function restorePreviewAfterComparison(): Promise<void> {
+export async function restorePreviewAfterComparison(current: () => boolean = () => true): Promise<void> {
   const { follow, placement } = usePreviewStore.getState();
   if (!follow || placement !== "window") return;
+  const request = surfaceRequest;
+  const ownsRestore = () => current() && request === surfaceRequest &&
+    usePreviewStore.getState().follow && usePreviewStore.getState().placement === "window";
+  if (!ownsRestore()) return;
   try {
-    await frontPreviewWindow();
+    await frontPreviewWindow(ownsRestore);
   } catch (error) {
+    if (!ownsRestore()) return;
     publishPreviewFailure(
       "preview-restore-failed",
       message("preview.restoreFailed"),
@@ -237,10 +242,12 @@ async function raisePulse(window: WebviewWindow): Promise<void> {
  * No focus call in either direction — the old focus-the-preview-then-
  * refocus-main dance raised MAIN over an overlapping preview and made Space
  * look dead. */
-async function frontPreviewWindow(): Promise<void> {
+async function frontPreviewWindow(current: () => boolean = () => true): Promise<void> {
   const existing = await WebviewWindow.getByLabel("preview");
+  if (!current()) return;
   if (existing === null) throw new Error("The Preview window is unavailable.");
   await existing.show();
+  if (!current()) return;
   await raisePulse(existing);
 }
 

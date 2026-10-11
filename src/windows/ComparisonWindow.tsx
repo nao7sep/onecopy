@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n/I18nContext";
 import { emit } from "@tauri-apps/api/event";
 import { isComposingEvent } from "../hooks/useComposing";
@@ -24,9 +24,14 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
     fileName: string;
   } | null>(null);
   const stateRef = useRef(state);
-  stateRef.current = state;
+  // Key forwarding follows the committed view, including while a newer
+  // React render is waiting to replace what the user can currently see.
+  useLayoutEffect(() => { stateRef.current = state; }, [state]);
   useComparisonLayout(itemArea, (state?.chunks[slice]?.length ?? 0) > 0, (aspect) => {
-    void emit("comparison://layout", { slice, aspect }).catch(reportWindowCall("comparison layout"));
+    const projection = stateRef.current;
+    if (projection === null) return;
+    void emit("comparison://layout", { slice, aspect, sessionId: projection.sessionId, revision: projection.revision })
+      .catch(reportWindowCall("comparison layout"));
   });
 
   useEffect(() => {
@@ -35,7 +40,11 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
     const unlisten = listenThenAnnounce<ComparisonBroadcast>(
       "comparison://state",
       "comparison://ready",
-      setState,
+      (incoming) => setState((current) => {
+        if (current !== null && (incoming.sessionId < current.sessionId ||
+          (incoming.sessionId === current.sessionId && incoming.revision < current.revision))) return current;
+        return incoming;
+      }),
     );
     const onKeyDown = (event: KeyboardEvent) => {
       if (
@@ -48,15 +57,19 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
       ) {
         return;
       }
+      const projection = stateRef.current;
+      if (projection === null) return;
       const visibleCount =
-        stateRef.current?.chunks.reduce(
+        projection.chunks.reduce(
           (count, chunk) => count + chunk.length,
           0,
-        ) ?? 0;
+        );
       if (!comparisonKeyIsRoutable(event, visibleCount)) return;
       event.preventDefault();
       event.stopPropagation();
       void emit("comparison://key", {
+        sessionId: projection.sessionId,
+        revision: projection.revision,
         key: event.key,
         repeat: event.repeat,
         shiftKey: event.shiftKey,
@@ -121,6 +134,9 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
               onSelect={(mode) => {
                 itemArea.current?.focus();
                 void emit("comparison://select", {
+                  sessionId: state!.sessionId,
+                  revision: state!.revision,
+                  hash: slot.member.hash,
                   slotIndex: offset + index,
                   mode,
                 }).catch(reportWindowCall("comparison card selection"));

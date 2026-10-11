@@ -101,7 +101,7 @@ interface ItemsState {
   refresh: () => Promise<void>;
   refreshWindow: () => Promise<void>;
   applyDerivedItem: (previousHash: string, item: SectionItem) => void;
-  selectAfterFamily: (recovery: AnchorContext | null) => Promise<void>;
+  selectAfterFamily: (recovery: AnchorContext | null, current?: () => boolean) => Promise<void>;
 }
 
 const sectionLoad = requestSeq();
@@ -690,7 +690,8 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     if (selectedItem === current) loadAnchorDetail(current, "background");
   },
 
-  selectAfterFamily: async (recovery) => {
+  selectAfterFamily: async (recovery, current = () => true) => {
+    if (!current()) return;
     if (get().selected === null || recovery === null) {
       get().selectItem(null);
       return;
@@ -703,7 +704,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       "center",
       { anchor: "__comparison-family-boundary__", context: recovery },
       true,
-      ownsIntent,
+      () => ownsIntent() && current(),
     );
   },
 }));

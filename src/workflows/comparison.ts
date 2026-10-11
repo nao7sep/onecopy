@@ -10,12 +10,14 @@ import { focusWhileActive, log, toErrorFields } from "../repositories";
 import { useAppStore } from "../state/app-store";
 import {
   broadcastComparison,
+  comparisonProjectionIsCurrent,
   recoverComparisonDisplay,
   slotIndexForKey,
   useComparisonStore,
   visibleMembers,
   type ComparisonCommitResult,
   type ComparisonOpenResult,
+  type ComparisonProjection,
 } from "../state/comparison-store";
 import { useIssuesStore } from "../state/issues-store";
 import { useItemsStore } from "../state/items-store";
@@ -35,8 +37,10 @@ import {
 } from "../repositories/activity";
 import { configNumber, confirmsTrashDelete } from "../models/config";
 import { isHashKey } from "../models/items";
+import { requestSeq } from "../state/request-seq";
 
-let mainRecoveryAfterFamily: AnchorContext | null = null;
+const comparisonOpening = requestSeq();
+let mainRecoveryAfterFamily: { sessionId: number; context: AnchorContext | null } | null = null;
 
 function appConfig(): Record<string, unknown> {
   return useAppStore.getState().appData?.config ?? {};
@@ -58,13 +62,15 @@ async function refreshLibrary(): Promise<void> {
   ]);
 }
 
-async function restoreMainFocus(): Promise<void> {
+async function restoreMainFocus(current: () => boolean = () => true): Promise<void> {
   await focusWhileActive("main");
+  if (!current()) return;
   document.getElementById("main-item-area")?.focus();
 }
 
-async function focusComparison(): Promise<void> {
+async function focusComparison(current: () => boolean): Promise<void> {
   await focusWhileActive("main");
+  if (!current()) return;
   document.getElementById("comparison-item-area")?.focus();
 }
 
@@ -72,11 +78,13 @@ async function focusComparison(): Promise<void> {
  * is cancelled; only a completed decision moves Main's anchor. */
 async function applyResult(
   result: ComparisonCommitResult | null,
+  sessionId: number,
 ): Promise<void> {
   if (result === null) return;
-  // Unscoped: a decision is one user action whose targets came from Main,
-  // and Main's selection recovery below reads the refreshed order.
+  const current = () => useComparisonStore.getState().sessionId === sessionId;
+  // The durable result refreshes the library even if its session was replaced.
   await Promise.all([refreshLibrary(), useIssuesStore.getState().load()]);
+  if (!current()) return;
   if (result.kind === "failed") {
     await reconcileComparisonMembership();
     return;
@@ -85,16 +93,22 @@ async function applyResult(
     await reconcileComparisonMembership();
     return;
   }
-  await useItemsStore.getState().selectAfterFamily(mainRecoveryAfterFamily);
+  const recovery = mainRecoveryAfterFamily?.sessionId === sessionId
+    ? mainRecoveryAfterFamily.context : null;
   mainRecoveryAfterFamily = null;
-  await restorePreviewAfterComparison();
-  await restoreMainFocus();
+  await useItemsStore.getState().selectAfterFamily(recovery, current);
+  if (!current()) return;
+  await restorePreviewAfterComparison(current);
+  if (!current()) return;
+  await restoreMainFocus(current);
 }
 
 export async function openComparison(
   hash: string,
   entryAnchor: string | null = hash,
 ): Promise<ComparisonOpenResult> {
+  const fresh = comparisonOpening.begin();
+  let openedSessionId: number | null = null;
   const result = await useComparisonStore
     .getState()
     .openGroup(
@@ -102,11 +116,20 @@ export async function openComparison(
       entryAnchor,
       maximumImages(),
       appConfig(),
+      (sessionId) => { openedSessionId = sessionId; },
     );
+  if (openedSessionId === null && (!fresh() || result === "opened")) return result;
+  const sessionId = openedSessionId ?? useComparisonStore.getState().sessionId;
+  // A rejected later open attempt does not retire this admitted session.
+  // Only an actual replacement (or closing, for preparation) does.
+  const current = () => useComparisonStore.getState().sessionId === sessionId;
   if (result === "opened") {
+    const ownsOpenSession = () => current() && useComparisonStore.getState().open;
+    if (!ownsOpenSession()) return result;
     // Where Main lands after this session; never an earlier session's spot.
-    mainRecoveryAfterFamily = null;
-    await focusComparison();
+    mainRecoveryAfterFamily = { sessionId, context: null };
+    await focusComparison(ownsOpenSession);
+    if (!ownsOpenSession()) return result;
     const items = useItemsStore.getState();
     const section = items.selected;
     const hashes = useComparisonStore.getState().originalMemberHashes;
@@ -121,20 +144,26 @@ export async function openComparison(
             memberHashes: hashes,
           },
         );
-        mainRecoveryAfterFamily = anchorContextFromPayload(context);
+        if (!ownsOpenSession()) return result;
+        mainRecoveryAfterFamily = { sessionId, context: anchorContextFromPayload(context) };
       } catch (error) {
+        if (!ownsOpenSession()) return result;
         log.error("comparison return position failed", toErrorFields(error));
         await useComparisonStore.getState().close();
-        await restorePreviewAfterComparison();
-        await restoreMainFocus();
+        if (!current()) return "failed";
+        await restorePreviewAfterComparison(current);
+        if (!current()) return "failed";
+        await restoreMainFocus(current);
+        if (!current()) return "failed";
         recordInterfaceFailure(message("comparison.prepareFailed"), error);
         return "failed";
       }
     }
   }
   if (result === "failed") {
-    await restorePreviewAfterComparison();
-    await restoreMainFocus();
+    await restorePreviewAfterComparison(current);
+    if (!current()) return result;
+    await restoreMainFocus(current);
   }
   return result;
 }
@@ -233,10 +262,16 @@ export async function closeComparison(): Promise<void> {
     await useMutationStore.getState().cancel();
     return;
   }
+  comparisonOpening.begin();
+  const sessionId = useComparisonStore.getState().sessionId;
+  const current = () => useComparisonStore.getState().sessionId === sessionId;
   await useComparisonStore.getState().close();
   await refreshLibrary();
-  await restorePreviewAfterComparison();
-  await restoreMainFocus();
+  if (!current()) return;
+  await restorePreviewAfterComparison(current);
+  if (!current()) return;
+  await restoreMainFocus(current);
+  if (!current()) return;
   recordActivity({
     kind: "closed",
     owner: "comparison",
@@ -259,31 +294,31 @@ export async function decideComparisonPage(
     return;
   }
   await applyResult(
-    await useComparisonStore
-      .getState()
-      .requestPageDecision(permanent, trashAll),
+    await state.requestPageDecision(permanent, trashAll),
+    state.sessionId,
   );
 }
 
 export async function deleteComparisonSelection(
   permanent: boolean,
 ): Promise<void> {
+  const state = useComparisonStore.getState();
   await applyResult(
-    await useComparisonStore
-      .getState()
-      .requestSelectionDelete(permanent, configConfirmsTrash()),
+    await state.requestSelectionDelete(permanent, configConfirmsTrash()),
+    state.sessionId,
   );
 }
 
 export async function confirmComparisonAction(): Promise<void> {
-  await applyResult(await useComparisonStore.getState().confirmPendingAction());
+  const state = useComparisonStore.getState();
+  await applyResult(await state.confirmPendingAction(), state.sessionId);
 }
 
 export async function retryComparisonFailure(): Promise<void> {
+  const state = useComparisonStore.getState();
   await applyResult(
-    await useComparisonStore
-      .getState()
-      .retryFailure(configConfirmsTrash()),
+    await state.retryFailure(configConfirmsTrash()),
+    state.sessionId,
   );
 }
 
@@ -291,20 +326,24 @@ export async function reconcileComparisonMembership(): Promise<void> {
   const store = useComparisonStore.getState();
   if (!store.open || store.busy) return;
   const sessionId = store.sessionId;
+  const ownsSession = () => useComparisonStore.getState().sessionId === sessionId;
   const requested = store.members.map((member) => member.hash);
   try {
     const live = await invoke<string[]>("comparison_live_hashes", {
       hashes: requested,
     });
     const current = useComparisonStore.getState();
-    if (!current.open || current.busy || current.sessionId !== sessionId) return;
+    if (!ownsSession() || !current.open || current.busy) return;
     const stillOpen = await current.reconcileLiveMembers(live);
-    if (!stillOpen) {
+    if (!stillOpen && ownsSession()) {
       await refreshLibrary();
-      await restorePreviewAfterComparison();
-      await restoreMainFocus();
+      if (!ownsSession()) return;
+      await restorePreviewAfterComparison(ownsSession);
+      if (!ownsSession()) return;
+      await restoreMainFocus(ownsSession);
     }
   } catch (error) {
+    if (!ownsSession()) return;
     log.warn("comparison membership refresh failed", toErrorFields(error));
     recordInterfaceFailure(message("comparison.membershipRefreshFailed"), error);
     useComparisonStore.setState({
@@ -446,10 +485,14 @@ export function handleComparisonKey(event: {
 const installEvents = createEventInstaller(
   async (listeners) => {
     if (getCurrentWindow().label !== "main") return;
-    await listeners.listen<{ slice: number; aspect: number }>("comparison://layout", (event) => {
-      useComparisonStore.getState().setDisplayAspect(event.payload.slice, event.payload.aspect);
+    await listeners.listen<ComparisonProjection & { slice: number; aspect: number }>("comparison://layout", (event) => {
+      const store = useComparisonStore.getState();
+      // Geometry belongs to the physical display in this session, and does
+      // not become stale merely because its keep marks changed meanwhile.
+      if (!store.open || event.payload.sessionId !== store.sessionId) return;
+      store.setDisplayAspect(event.payload.slice, event.payload.aspect);
     });
-    await listeners.listen<{
+    await listeners.listen<ComparisonProjection & {
       key: string;
       repeat?: boolean;
       shiftKey?: boolean;
@@ -457,14 +500,17 @@ const installEvents = createEventInstaller(
       ctrlKey?: boolean;
       altKey?: boolean;
     }>("comparison://key", (event) => {
+      if (!comparisonProjectionIsCurrent(event.payload)) return;
       handleComparisonKey(event.payload);
     });
-    await listeners.listen<{
+    await listeners.listen<ComparisonProjection & {
       slotIndex: number;
+      hash: string;
       mode: "activate" | "toggle" | "range";
     }>("comparison://select", (event) => {
       const store = useComparisonStore.getState();
-      if (!store.open || store.busy || hasOpenModal()) return;
+      if (!comparisonProjectionIsCurrent(event.payload) || store.busy || hasOpenModal()) return;
+      if (visibleMembers(store)[event.payload.slotIndex]?.hash !== event.payload.hash) return;
       store.selectSlot(event.payload.slotIndex, event.payload.mode);
     });
     await listeners.listen("comparison://ready", () => {

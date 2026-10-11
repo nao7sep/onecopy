@@ -46,7 +46,12 @@ export interface ComparisonSlotState {
   anchor: boolean;
 }
 
-export interface ComparisonBroadcast {
+export interface ComparisonProjection {
+  sessionId: number;
+  revision: number;
+}
+
+export interface ComparisonBroadcast extends ComparisonProjection {
   chunks: ComparisonSlotState[][];
   capacities: number[];
   page: number;
@@ -90,6 +95,7 @@ interface ComparisonState extends ComparisonDecisionDraft {
     entryAnchor?: string | null,
     maximumImages?: number,
     config?: Record<string, unknown>,
+    onOpened?: (sessionId: number) => void,
   ) => Promise<ComparisonOpenResult>;
   selectSlot: (slotIndex: number, mode: ComparisonCardInteraction) => void;
   setDisplayAspect: (slice: number, aspect: number) => void;
@@ -126,6 +132,12 @@ export type ComparisonCommitResult =
 type MonitorList = Awaited<ReturnType<typeof availableMonitors>>;
 
 let sessionOtherMonitors: MonitorList = [];
+let projectionRevision = 0;
+
+export function comparisonProjectionIsCurrent(projection: ComparisonProjection): boolean {
+  const state = useComparisonStore.getState();
+  return state.open && projection.sessionId === state.sessionId && projection.revision === projectionRevision;
+}
 
 function decisionDraftFrom(state: ComparisonState): ComparisonDecisionDraft {
   return {
@@ -254,6 +266,8 @@ export function broadcastComparison(): void {
     state.displayAspects,
   );
   const payload: ComparisonBroadcast = {
+    sessionId: state.sessionId,
+    revision: projectionRevision,
     chunks: comparisonChunks(state),
     capacities: state.capacities,
     page: state.page,
@@ -262,7 +276,7 @@ export function broadcastComparison(): void {
     portraitDominant: state.portraitDominant,
     displayAspects: state.displayAspects,
   };
-  void emit("comparison://state", payload);
+  void emit("comparison://state", payload).catch(reportWindowCall("comparison state broadcast"));
 }
 
 function pageForAnchor(
@@ -467,7 +481,6 @@ function synchronizeSpread(previousSpreadCount: number): void {
   const state = useComparisonStore.getState();
   if (!state.open) return;
   const needed = state.spreadCount;
-  broadcastComparison();
   void queueComparisonLifecycle(async () => {
     await showSpread(sessionOtherMonitors.slice(0, needed));
     if (previousSpreadCount > needed) {
@@ -498,7 +511,6 @@ function recoverDisplays(failedSpreadIndex: number): Promise<void> {
     ...viewPatch(provisional),
     message: message("comparison.displayLostRearranged"),
   });
-  broadcastComparison();
   const needed = useComparisonStore.getState().spreadCount;
   return queueComparisonLifecycle(async () => {
     await closeSpread(1, previousSpreadCount);
@@ -560,8 +572,10 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
     entryAnchor = hash,
     maximumImages = 16,
     config = {},
+    onOpened,
   ) => {
     const fresh = groupLoad.begin();
+    let openedSessionId: number | null = null;
     try {
       const [members, displays] = await Promise.all([
         invoke<GroupMember[]>("get_similar_group", { hash }),
@@ -572,7 +586,6 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
         log.warn("similar group has fewer than two live members", { hash });
         return "unavailable";
       }
-      sessionOtherMonitors = displays.others;
       const displayCount = displays.others.length + 1;
       const displayAspects = [
         displays.hostAspect,
@@ -609,8 +622,10 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
       );
       await queueComparisonLifecycle(async () => {
         if (!fresh()) return;
+        const sessionId = get().sessionId + 1;
+        sessionOtherMonitors = displays.others;
         set({
-          sessionId: get().sessionId + 1,
+          sessionId,
           open: true,
           maximumImages: boundedMaximum,
           displayCount,
@@ -622,7 +637,10 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
           failure: null,
           ...next,
         });
-        broadcastComparison();
+        openedSessionId = sessionId;
+        // Tell the caller which session it admitted before window effects
+        // wait; a later unavailable attempt must not revoke this live owner.
+        onOpened?.(sessionId);
         await hidePreviewWindowForComparison();
         await setComparisonFullscreen(true);
         await showSpread(sessionOtherMonitors.slice(0, get().spreadCount));
@@ -630,13 +648,18 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
       });
       return "opened";
     } catch (error) {
-      if (!fresh()) return "opened";
       const state = get();
+      // Freshness owns only the read before admission. An unavailable later
+      // attempt cannot suppress this still-current session's window failure.
+      if (openedSessionId === null ? !fresh() :
+        state.sessionId !== openedSessionId || !state.open) return "opened";
       if (state.open) {
         const spreadCount = state.spreadCount;
         set(closedComparisonState());
-        await queueComparisonLifecycle(() => teardownComparison(spreadCount));
+        await queueComparisonLifecycle(() => get().sessionId === state.sessionId
+          ? teardownComparison(spreadCount) : Promise.resolve());
       }
+      if (openedSessionId !== null && get().sessionId !== openedSessionId) return "failed";
       log.error("comparison open failed", toErrorFields(error));
       recordInterfaceFailure(message("comparison.openFailed"), error);
       return "failed";
@@ -665,7 +688,6 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
       ...updateComparisonDraft(decisionDraftFrom(state), visible, member.hash, mode),
       message: null,
     });
-    broadcastComparison();
   },
 
   moveActive: (direction, extend) => {
@@ -692,7 +714,6 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
       ),
       message: null,
     });
-    broadcastComparison();
   },
 
   activateBound: (bound, extend) => {
@@ -710,7 +731,6 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
       ),
       message: null,
     });
-    broadcastComparison();
   },
 
   markAll: () => {
@@ -734,7 +754,6 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
       rangeBase: visibleKeepMarks(selected, visible),
       message: null,
     });
-    broadcastComparison();
   },
 
   nextPage: () => movePage(set, get, 1),
@@ -833,6 +852,21 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
     await queueComparisonLifecycle(() => teardownComparison(spreadCount));
   },
 }));
+
+// The store owns projection admission as well as publication. Invalidating
+// here is synchronous with every authoritative state change, including the
+// interval before window effects and any explicit ready announcement.
+const projectionFields = [
+  "sessionId", "open", "members", "page", "maximumImages", "displayCount",
+  "displayAspects", "capacities", "portraitDominant", "selected", "anchors",
+  "anchor", "rangeOrigin", "rangeBase", "busy", "pendingAction", "failure",
+] as const satisfies readonly (keyof ComparisonState)[];
+
+useComparisonStore.subscribe((state, previous) => {
+  if (!projectionFields.some((field) => state[field] !== previous[field])) return;
+  projectionRevision += 1;
+  broadcastComparison();
+});
 
 function movePage(
   set: (partial: Partial<ComparisonState>) => void,
