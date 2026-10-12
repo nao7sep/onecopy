@@ -266,7 +266,7 @@ export default function Sidebar({ counts }: { counts: SectionCounts | null }) {
                 isBranch ? (isOpen ? "rotate-90 text-ink-muted" : "text-ink-muted") : "invisible"
               }`}
             />
-            <span className="min-w-0 flex-1 truncate">{rowLabel(row, t)}</span>
+            <span className="min-w-0 flex-1 break-words">{rowLabel(row, t)}</span>
             <span className="shrink-0 text-xs tabular-nums text-ink-muted">
               {empty ? "" : number(rowCount(row))}
             </span>

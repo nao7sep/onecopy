@@ -157,7 +157,7 @@ function ScreensSection() {
                   describePosition(monitor, ordered) ?? t("settings.display"),
               })}
             </span>
-            <span className="block truncate text-xs text-ink-muted">
+            <span className="block break-words text-xs text-ink-muted">
               {/* The pixel counts are passed as text: a resolution carries no
                   thousands separator. */}
               {t("settings.screenDetail", {

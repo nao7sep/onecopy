@@ -547,10 +547,7 @@ function AudioSurface({
   return (
     <div className="flex h-full min-h-0 w-full flex-col justify-center gap-5 p-4">
       <div className="flex shrink-0 flex-col items-center gap-3">
-        <p
-          className="max-w-full truncate text-sm text-ink"
-          title={detail.fileName}
-        >
+        <p className="max-w-full break-words text-center text-sm text-ink">
           {detail.fileName}
         </p>
         {/* Keyed by src so playback state never carries across files. */}

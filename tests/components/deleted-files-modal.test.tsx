@@ -111,6 +111,27 @@ describe("Deleted files browse", () => {
     expect(changed.getAttribute("aria-disabled")).toBe("true");
   });
 
+  it("shows the active row's full name, folder and facts under the list", async () => {
+    const longFolder = `trips/${"summer-holiday-".repeat(8)}album`;
+    const longName = `${"sunset-over-the-harbour-".repeat(4)}final.jpg`;
+    mockCommands({
+      trash_entries: () => ({
+        ...LISTING,
+        entries: [entry({ id: `20260927-utc/${longName}`, originalRelative: `${longFolder}/${longName}`, status: "changed" })],
+      }),
+    });
+    render(<DeletedFilesModal location={LOCATION} onClose={() => {}} />);
+    await act(async () => {});
+    expect(document.querySelector("[data-active-row-detail]")).toBeNull();
+    await act(async () => fire.focus(list()));
+    const detail = document.querySelector("[data-active-row-detail]") as HTMLElement;
+    expect([...detail.children].map((line) => line.textContent)).toEqual([
+      longName,
+      longFolder,
+      "1 copy · Changed since it was deleted",
+    ]);
+  });
+
   it("says how many record lines a newer OneCopy wrote and left as they are", async () => {
     mockCommands({ trash_entries: () => ({ ...LISTING, newerLines: 3 }) });
     render(<DeletedFilesModal location={LOCATION} onClose={() => {}} />);

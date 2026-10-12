@@ -320,6 +320,31 @@ function DeletedFilesBrowser({
     return null;
   };
 
+  /** A row's text in full. The row cuts it to its fixed height; the active
+   * row's detail line under the list shows all of it (text-cleanup-conventions,
+   * a shortened value has a direct keyboard and pointer path to its whole). */
+  const rowText = (row: Exclude<BrowseRow, { type: "day" }>) => {
+    const entries = row.type === "group" ? row.group.entries : [row.entry];
+    const reason = reasonOf(entries);
+    const representative = row.type === "group" ? row.group.representative : row.entry;
+    const folder = entryFolder(representative);
+    const folderLabel = folder === "" ? t("deletedFiles.topFolder") : folder;
+    const facts =
+      row.type === "group"
+        ? [
+            t("deletedFiles.copies", { count: row.group.mains }),
+            row.group.companions > 0 ? t("deletedFiles.companions", { count: row.group.companions }) : null,
+            kindLabel(row.group),
+            reason,
+          ]
+        : [row.entry.role === "companion" ? t("deletedFiles.companionRole") : null, reason];
+    return {
+      name: entryName(representative),
+      folderLabel,
+      facts: facts.filter((part) => part !== null).join(" · "),
+    };
+  };
+
   const renderRow = (row: BrowseRow, index: number) => {
     const style = { height: ROW_HEIGHT };
     if (row.type === "day") {
@@ -344,19 +369,13 @@ function DeletedFilesBrowser({
       !checked &&
       row.group.entries.some((entry) => selected.has(entry.id));
     const Check = checked ? SquareCheck : partial ? SquareMinus : Square;
-    const reason = reasonOf(entries);
+    const { name, folderLabel, facts } = rowText(row);
     const base = `flex cursor-default items-center gap-2 rounded-md px-2 ${
       active ? `bg-surface-muted ${listFocused ? "ring-2 ring-inset ring-primary-ring" : ""}` : ""
     } ${restorable ? "" : "opacity-60"}`;
     if (row.type === "group") {
       const { group } = row;
       const Chevron = row.expanded ? ChevronDown : ChevronRight;
-      const folder = entryFolder(group.representative);
-      const counts = [
-        t("deletedFiles.copies", { count: group.mains }),
-        group.companions > 0 ? t("deletedFiles.companions", { count: group.companions }) : null,
-        kindLabel(group),
-      ].filter((part) => part !== null);
       return (
         <div
           key={row.key}
@@ -386,16 +405,10 @@ function DeletedFilesBrowser({
           <Check size={16} aria-hidden="true" className="shrink-0 text-ink-muted" />
           <span className="min-w-0 flex-1">
             <span className="flex items-baseline gap-2">
-              <span className="truncate text-sm text-ink-strong" title={entryName(group.representative)}>
-                {entryName(group.representative)}
-              </span>
-              <span className="truncate text-xs text-ink-muted" title={folder}>
-                {folder === "" ? t("deletedFiles.topFolder") : folder}
-              </span>
+              <span className="truncate text-sm text-ink-strong">{name}</span>
+              <span className="truncate text-xs text-ink-muted">{folderLabel}</span>
             </span>
-            <span className="block truncate text-xs text-ink-muted">
-              {reason === null ? counts.join(" · ") : `${counts.join(" · ")} · ${reason}`}
-            </span>
+            <span className="block truncate text-xs text-ink-muted">{facts}</span>
           </span>
           <span className="shrink-0 text-right text-xs tabular-nums text-ink-muted">
             <span className="block">{dateTime(new Date(group.deletedAtUtc))}</span>
@@ -405,7 +418,6 @@ function DeletedFilesBrowser({
       );
     }
     const { entry } = row;
-    const folder = entryFolder(entry);
     return (
       <div
         key={row.key}
@@ -422,15 +434,9 @@ function DeletedFilesBrowser({
       >
         <Check size={16} aria-hidden="true" className="shrink-0 text-ink-muted" />
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm text-ink" title={entryName(entry)}>{entryName(entry)}</span>
-          <span className="block truncate text-xs text-ink-muted" title={folder}>
-            {[
-              folder === "" ? t("deletedFiles.topFolder") : folder,
-              entry.role === "companion" ? t("deletedFiles.companionRole") : null,
-              reason,
-            ]
-              .filter((part) => part !== null)
-              .join(" · ")}
+          <span className="block truncate text-sm text-ink">{name}</span>
+          <span className="block truncate text-xs text-ink-muted">
+            {facts === "" ? folderLabel : `${folderLabel} · ${facts}`}
           </span>
         </span>
         <span className="shrink-0 text-xs tabular-nums text-ink-muted">
@@ -569,9 +575,23 @@ function DeletedFilesBrowser({
           </>
         )}
       </div>
+      {activeRow === null || activeRow.type === "day" ? null : (
+        <ActiveRowDetail {...rowText(activeRow)} />
+      )}
       {footnotes.length === 0 ? null : (
         <p className="mt-2 text-xs text-ink-muted">{footnotes.join(" ")}</p>
       )}
     </ModalShell>
+  );
+}
+
+/** The active row's text in full, wrapping, under the fixed-height list. */
+function ActiveRowDetail({ name, folderLabel, facts }: { name: string; folderLabel: string; facts: string }) {
+  return (
+    <div data-active-row-detail className="mt-2 select-text break-all text-xs text-ink-muted">
+      <p className="text-sm text-ink">{name}</p>
+      <p>{folderLabel}</p>
+      {facts === "" ? null : <p>{facts}</p>}
+    </div>
   );
 }

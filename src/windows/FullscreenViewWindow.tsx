@@ -111,7 +111,7 @@ export default function FullscreenViewWindow() {
           stays reachable by keyboard (Tab reaches it, focus-within keeps it
           shown) without permanently overlaying the media beneath it. */}
       <header className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 bg-black/65 px-3 py-2 opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-        <span className="min-w-0 flex-1 truncate text-sm" title={item.fileName}>
+        <span className="min-w-0 flex-1 break-words text-sm">
           {item.fileName}
         </span>
         <span className="text-xs tabular-nums text-white/70">

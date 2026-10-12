@@ -267,10 +267,7 @@ export default function TextOrAttributesSurface({
   return (
     <div className="flex h-full min-h-0 w-full flex-col gap-2 p-3">
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
-        <span
-          className="min-w-0 truncate text-sm text-ink"
-          title={detail.fileName}
-        >
+        <span className="min-w-0 break-words text-sm text-ink">
           {detail.fileName}
         </span>
         <span className="flex items-center gap-2">

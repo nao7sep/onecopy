@@ -160,23 +160,19 @@ const LINK_TONES: Record<LinkTone, string> = {
 
 /** A button that reads as a link: a status-bar count, an inline "show" in a
  * sentence, a transcript timestamp. Hover underlines it and a press thickens
- * the underline. It fits its words and ellipsizes when its row runs out of
- * room; `wrap` lets a long value such as a path break across lines instead. */
+ * the underline. It fits its words and wraps when its row runs out of room,
+ * since a shortened label would need another way to read it whole. */
 export function LinkButton({
   tone = "muted",
-  wrap = false,
   className = "",
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
   tone?: LinkTone;
-  wrap?: boolean;
 }) {
   return (
     <button
       {...props}
-      className={`rounded-sm text-left underline-offset-2 enabled:hover:underline enabled:active:underline enabled:active:decoration-2 ${MOTION} ${LINK_TONES[tone]} ${
-        wrap ? "break-words" : "min-w-0 max-w-full truncate"
-      } ${DISABLED_FADE} ${className}`}
+      className={`rounded-sm text-left underline-offset-2 enabled:hover:underline enabled:active:underline enabled:active:decoration-2 ${MOTION} ${LINK_TONES[tone]} min-w-0 break-words ${DISABLED_FADE} ${className}`}
     />
   );
 }

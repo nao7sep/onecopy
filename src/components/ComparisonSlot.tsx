@@ -173,7 +173,7 @@ export default function ComparisonSlot({
       </div>
       <figcaption className="mt-1 shrink-0 text-xs text-ink-muted">
         <span className="flex justify-between gap-2">
-          <span className="truncate text-ink" title={member.fileName}>
+          <span className="min-w-0 break-words text-ink">
             {member.fileName}
           </span>
           <span className="flex shrink-0 gap-2">

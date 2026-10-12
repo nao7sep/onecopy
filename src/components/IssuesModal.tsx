@@ -117,7 +117,7 @@ export default function IssuesModal({ open, onClose }: {
                 ><X size={14} /></IconButton>
               </div>
               {/* A path reads as a link in its sentence, always underlined. */}
-              {row.path ? <LinkButton tone="primary" wrap className="mt-2 block select-text break-all underline decoration-primary/40 enabled:hover:decoration-primary"
+              {row.path ? <LinkButton tone="primary" className="mt-2 block select-text break-all underline decoration-primary/40 enabled:hover:decoration-primary"
                 title={t("issues.revealInMain")} onClick={() => void reveal(row.path!)}>{row.path}</LinkButton> : null}
               {modelIssueLabel(row.kind) !== null ? (
                 <h3 className="mt-2 font-semibold text-ink-strong">{t(modelIssueLabel(row.kind)!)}</h3>

@@ -573,7 +573,7 @@ export function RecordsWindow({ initialListWidth }: { initialListWidth: number }
                       listRef.current?.focus();
                     }}
                   >
-                    <div className="flex min-w-0 items-center gap-2 text-xs text-ink-muted">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-ink-muted">
                       <span className="tabular-nums">{formatTime(rowTime, record.time)}</span>
                       <LevelPill level={record.level} />
                       {record.kind === "log" ? null : <KindPill kind={record.kind} />}
@@ -645,7 +645,7 @@ function LevelPill({ level }: { level: RecordLevel }) {
 function KindPill({ kind }: { kind: RecordKind }) {
   const { t } = useI18n();
   return (
-    <span className="min-w-0 truncate rounded-full bg-surface-muted px-1.5 text-xs leading-5 text-ink-muted">
+    <span className="rounded-full bg-surface-muted px-1.5 text-xs leading-5 text-ink-muted">
       {t(KIND_LABELS[kind])}
     </span>
   );
