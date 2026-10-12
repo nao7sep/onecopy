@@ -58,10 +58,10 @@ const VARIANTS: Record<Variant, string> = {
 // text is 12px: the result's own line sets that height, so the action takes a
 // size of its own rather than being squeezed by the banner it sits in.
 const SIZES: Record<Size, string> = {
-  xs: "min-h-6 rounded-md px-2 py-1 text-xs",
-  toolbar: "min-h-7 rounded-md px-2.5 py-1 text-xs",
-  sm: "min-h-8 rounded-lg px-3 py-1 text-sm",
-  md: "min-h-9 rounded-lg px-4 py-1.5 text-sm",
+  xs: "h-6 rounded-md px-2 text-xs",
+  toolbar: "h-7 rounded-md px-2.5 text-xs",
+  sm: "h-8 rounded-lg px-3 text-sm",
+  md: "h-9 rounded-lg px-4 text-sm",
 };
 
 // `transition-colors` at 75ms, never `transition-all`: the press must land
@@ -90,12 +90,9 @@ export default function Button({
   return (
     <button
       {...props}
-      // A caption stays on one line whenever it fits its row: the button
-      // fits its label and never shrinks. Only a label wider than the whole
-      // row wraps inside the button, which grows taller from its minimum
-      // height instead of running past the row's edge
-      // (modal-dialog-conventions, footer layout).
-      className={`inline-flex max-w-full shrink-0 items-center justify-center gap-1.5 whitespace-normal text-center font-medium ${MOTION} ${SIZES[size]} ${
+      // A caption stays whole: the button fits its label rather than
+      // wrapping it.
+      className={`inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap font-medium ${MOTION} ${SIZES[size]} ${
         selected ? `${SELECTED} ${DISABLED_FADE}` : VARIANTS[variant]
       } ${className}`}
     />

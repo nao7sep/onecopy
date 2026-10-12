@@ -62,7 +62,7 @@ export default function AboutModal({
         <p className="mt-2 text-sm text-ink">
           {t("about.description")}
         </p>
-        <div className="mt-4 flex flex-wrap gap-2">
+        <div className="mt-4 flex gap-2">
           <Button onClick={() => void openProjectPage("repository", REPO_URL, "about.githubOpenFailed")}>GitHub</Button>
           <Button onClick={() => void openProjectPage("issues", `${REPO_URL}/issues`, "about.issuesOpenFailed")}>{t("about.reportIssue")}</Button>
         </div>

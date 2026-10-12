@@ -144,9 +144,9 @@ function ScreensSection() {
       {ordered.map((monitor, index) => (
         <div
           key={monitorKey(monitor)}
-          className="mb-1 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border px-3 py-2 text-sm"
+          className="mb-1 flex items-center justify-between gap-2 rounded-lg border border-border px-3 py-2 text-sm"
         >
-          <span className="min-w-0 flex-1 basis-40">
+          <span className="min-w-0 flex-1">
             {/* The POSITION leads, because a matched pair reports the same
                 name and the same resolution — where it sits is the only fact
                 that maps onto the desk. */}
@@ -172,7 +172,7 @@ function ScreensSection() {
               row it would read as one of those rather than as a move. The
               words are also the accessible name, so nothing has to be kept in
               step with a label nobody can see. */}
-          <span className="ml-auto flex flex-wrap justify-end gap-2">
+          <span className="flex gap-2">
             <Button disabled={index === 0} onClick={() => move(index, -1)}>
               {t("settings.moveUp")}
             </Button>

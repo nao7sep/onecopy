@@ -104,7 +104,7 @@ describe("modal result growth", () => {
     expect(alert.className).not.toContain("items-start");
     // The action's height is its own `xs` role, never imposed by the banner.
     const retry = screen.getByRole("button", { name: "Retry" });
-    expect(retry.className).toContain("min-h-6");
+    expect(retry.className).toContain("h-6");
     expect(retry.parentElement?.className).not.toContain("[&>button]");
   });
 });

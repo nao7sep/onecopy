@@ -59,7 +59,7 @@ export default function StartupFailureScreen() {
             {t("app.revealLogsFailed")}
           </OperationResult>
         ) : null}
-        <div className="mt-6 flex flex-wrap justify-end gap-2">
+        <div className="mt-6 flex justify-end gap-2">
           <Button onClick={openLogFolder}>{t("app.revealLogs")}</Button>
           <Button type="button" variant="primary" size="md" onClick={quit} autoFocus>
             {t("startup.quit")}
