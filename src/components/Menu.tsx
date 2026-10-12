@@ -306,7 +306,7 @@ export function Menu({
                 // highlighted item reads as a rounded row inside the popover
                 // rather than a bar across it; the items' corners sit inside
                 // the panel's larger one.
-                className="fixed z-40 w-max max-w-[calc(100vw-1rem)] min-w-[min(14rem,calc(100vw-1rem))] overflow-auto rounded-xl border border-border bg-surface p-1 shadow-xl"
+                className="fixed z-40 max-w-[calc(100vw-1rem)] min-w-[min(14rem,calc(100vw-1rem))] overflow-auto rounded-xl border border-border bg-surface p-1 shadow-xl"
                 onFocus={(event) => {
                   if (event.target instanceof HTMLElement && items().includes(event.target)) {
                     activeItem.current = event.target;
@@ -340,10 +340,8 @@ export function MenuItem({
       tabIndex={-1}
       disabled={disabled}
       // App.css owns the independent hover and keyboard treatments. The
-      // keyboard mark is inset so the popup's scrolling cannot clip it. The
-      // panel takes its widest label up to the viewport, and only a label
-      // wider than that wraps; a menu label is never cut.
-      className="oc-menu-item flex w-full items-center break-words rounded-md px-2.5 py-1.5 text-left text-sm text-ink outline-none transition-colors motion-reduce:transition-none disabled:opacity-50"
+      // keyboard mark is inset so the popup's scrolling cannot clip it.
+      className="oc-menu-item flex w-full items-center whitespace-nowrap rounded-md px-2.5 py-1.5 text-left text-sm text-ink outline-none transition-colors motion-reduce:transition-none disabled:opacity-50"
       onClick={() => {
         // Close first (focus back on the trigger), then act — an action that
         // opens a modal then owns focus from a stable base.
