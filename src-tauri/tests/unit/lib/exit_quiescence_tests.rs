@@ -1,21 +1,32 @@
 use super::{await_other_joins_with_deadline, run_exit, spawn_thread, ExitSequence};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+// The real subprocess kill would also end subprocesses that parallel tests
+// own, so these sequences count calls instead.
+fn no_kill() {}
 
 #[test]
 fn a_signal_before_the_deadline_finishes_without_killing_anything() {
     let (tx, rx) = std::sync::mpsc::channel::<bool>();
     tx.send(true).unwrap();
-    assert!(await_other_joins_with_deadline(rx, Duration::from_secs(5)));
+    assert!(await_other_joins_with_deadline(rx, Duration::from_secs(5), || {
+        panic!("nothing is killed before the deadline")
+    }));
 }
 
 // Quitting must not wait past its deadline for a job that never reaches its
 // own cancellation point.
 #[test]
 fn no_signal_by_the_deadline_gives_up_waiting() {
+    static KILLS: AtomicUsize = AtomicUsize::new(0);
     let (_tx, rx) = std::sync::mpsc::channel::<bool>();
     let started = Instant::now();
-    assert!(!await_other_joins_with_deadline(rx, Duration::from_millis(50)));
+    assert!(!await_other_joins_with_deadline(rx, Duration::from_millis(50), || {
+        KILLS.fetch_add(1, Ordering::SeqCst);
+    }));
+    assert_eq!(KILLS.load(Ordering::SeqCst), 1, "outstanding subprocesses are ended at the deadline");
     assert!(
         started.elapsed() < Duration::from_secs(2),
         "must give up at the deadline, not hang"
@@ -44,6 +55,7 @@ fn sequence(steps: &Steps, join_workers: Box<dyn FnOnce() + Send>, mutation: Dur
             report: Arc::new(move |error| {
                 report_steps.lock().unwrap().push(format!("reported: {error}"));
             }),
+            kill_subprocesses: no_kill,
         },
         exited_rx,
     )
@@ -92,6 +104,7 @@ fn a_mutation_that_never_reaches_a_safe_point_still_lets_exit_complete() {
             let _ = exited_tx.send(());
         }),
         report: Arc::new(|_| {}),
+        kill_subprocesses: no_kill,
     };
     let started = Instant::now();
     run_exit(sequence, spawn_thread, Duration::from_secs(5));
@@ -144,6 +157,7 @@ fn unsuccessful_worker_quiescence_does_not_count_as_a_clean_exit() {
         wait_for_mutation: Box::new(|| Ok(crate::mutation_runtime::IdleWait::Idle)),
         exit: Box::new(move |clean| { clean_tx.send(clean).unwrap(); tx.send(()).unwrap(); }),
         report: Arc::new(|_| {}),
+        kill_subprocesses: no_kill,
     };
     run_exit(sequence, spawn_thread, Duration::from_secs(1));
     rx.recv_timeout(Duration::from_secs(2)).unwrap();

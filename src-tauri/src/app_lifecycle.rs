@@ -205,6 +205,7 @@ pub(crate) fn quiesce(app: &AppHandle) {
                     &error,
                 );
             }),
+            kill_subprocesses: crate::subprocess::kill_all_running,
         },
         spawn_thread,
         EXIT_JOIN_DEADLINE,
@@ -253,6 +254,10 @@ struct ExitSequence {
     wait_for_mutation: Box<dyn FnOnce() -> Result<crate::mutation_runtime::IdleWait, String> + Send>,
     exit: Box<dyn FnOnce(bool) + Send>,
     report: Arc<dyn Fn(String) + Send + Sync>,
+    /// Ends every outstanding subprocess when a deadline passes. The app
+    /// passes `subprocess::kill_all_running`; tests pass their own, because
+    /// the real one also ends subprocesses that parallel tests own.
+    kill_subprocesses: fn(),
 }
 
 type Spawn = fn(&'static str, Box<dyn FnOnce() + Send>) -> std::io::Result<()>;
@@ -302,6 +307,7 @@ fn finish_exit(sequence: ExitSequence, spawn: Spawn, deadline: Duration) {
         wait_for_mutation,
         exit,
         report,
+        kill_subprocesses,
     } = sequence;
     let (done_tx, done_rx) = mpsc::channel::<bool>();
     let joins = spawn(
@@ -312,10 +318,10 @@ fn finish_exit(sequence: ExitSequence, spawn: Spawn, deadline: Duration) {
         }),
     );
     let joined = match joins {
-        Ok(()) => await_other_joins_with_deadline(done_rx, deadline),
+        Ok(()) => await_other_joins_with_deadline(done_rx, deadline, kill_subprocesses),
         Err(error) => {
             report(format!("could not start the exit joins: {error}"));
-            crate::subprocess::kill_all_running();
+            kill_subprocesses();
             false
         }
     };
@@ -326,7 +332,7 @@ fn finish_exit(sequence: ExitSequence, spawn: Spawn, deadline: Duration) {
                 "mutation quiescence exceeded its deadline; giving up on the current file operation",
                 json!({ "deadline_secs": MUTATION_QUIESCE_DEADLINE.as_secs() }),
             );
-            crate::subprocess::kill_all_running();
+            kill_subprocesses();
             false
         }
         Err(error) => { report(error); false },
@@ -338,7 +344,11 @@ fn finish_exit(sequence: ExitSequence, spawn: Spawn, deadline: Duration) {
 /// If the deadline passes first, kills every managed-tool subprocess still
 /// running (W-L1) and stops waiting for those joins. Returns whether the
 /// joins finished in time.
-fn await_other_joins_with_deadline(rx: mpsc::Receiver<bool>, deadline: Duration) -> bool {
+fn await_other_joins_with_deadline(
+    rx: mpsc::Receiver<bool>,
+    deadline: Duration,
+    kill_subprocesses: fn(),
+) -> bool {
     if let Ok(joined) = rx.recv_timeout(deadline) {
         return joined;
     }
@@ -346,7 +356,7 @@ fn await_other_joins_with_deadline(rx: mpsc::Receiver<bool>, deadline: Duration)
         "exit joins exceeded their deadline; killing outstanding subprocesses",
         json!({ "deadline_secs": deadline.as_secs() }),
     );
-    crate::subprocess::kill_all_running();
+    kill_subprocesses();
     false
 }
 
