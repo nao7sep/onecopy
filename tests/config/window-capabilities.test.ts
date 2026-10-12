@@ -95,16 +95,37 @@ describe("durable window-state boundary", () => {
     expect(cargoManifest).not.toContain("tauri-plugin-window-state");
   });
 
-  it("keeps live Moved/Resized handling in memory, not on disk", () => {
-    // Moved/Resized may keep the in-memory normal rectangle current (so a
-    // resize just before close is not lost), but only CloseRequested may
-    // write to disk. A save on every move would reintroduce the debounced
-    // polling that tauri-plugin-window-state was replaced to avoid.
-    const movedResizedArm = placement.slice(
-      placement.indexOf("WindowEvent::Moved"),
-      placement.indexOf("_ => {}", placement.indexOf("WindowEvent::Moved")),
+  function normalObservationArm(source: string): string {
+    const arm = source.match(/WindowEvent::Moved\(_\) \| WindowEvent::Resized\(_\) => ([\s\S]*?)\n\s*WindowEvent::CloseRequested/);
+    if (!arm) throw new Error("normal placement observations are not wired");
+    return arm[1]!;
+  }
+
+  it("keeps the latest normal rectangle for every placed window without writing on move or resize", () => {
+    // Close cannot recover the preceding normal rectangle after maximization.
+    // Require the actual observation arm, rather than checking an empty slice
+    // when no handler exists. Persistence remains owned by clean exit.
+    const movedResizedArm = normalObservationArm(placement);
+    expect(movedResizedArm).toContain('"main" => observe_normal(window, main_state)');
+    expect(movedResizedArm).toContain('"preview" => observe_normal(window, preview_state)');
+    expect(movedResizedArm).toContain("crate::records_window::LABEL => observe_normal(window, records_state)");
+    expect(movedResizedArm).not.toMatch(/storage::save|\bsave(?:_preview|_records)?\(/);
+    const observer = placement.slice(
+      placement.indexOf("fn observe_normal("),
+      placement.indexOf("pub(crate) fn on_window_event("),
     );
-    expect(movedResizedArm).not.toMatch(/storage::save|\bsave\(|\bsave_preview\(/);
+    expect(observer).toContain("current_rectangle(window)?");
+    expect(observer).toContain("closing_state_for(");
+    expect(observer).toContain("placement_after_observation(*current, observed)");
+    expect(observer).not.toMatch(/storage::save|\bsave(?:_preview|_records)?\(|logging::info/);
+  });
+
+  it("rejects a missing move or resize observation arm", () => {
+    for (const event of ["WindowEvent::Moved", "WindowEvent::Resized"]) {
+      expect(() => normalObservationArm(placement.replaceAll(event, "MissingEvent"))).toThrow(
+        "normal placement observations are not wired",
+      );
+    }
   });
 
   it("creates Main hidden only for native setup", () => {

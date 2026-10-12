@@ -46,6 +46,20 @@ pub fn placement_after_close(
     }
 }
 
+fn placement_after_observation(
+    previous: Option<Placement>,
+    observed: ClosingState,
+) -> Option<Placement> {
+    match observed {
+        ClosingState::Normal(normal) => Some(Placement {
+            normal,
+            // Close capture owns the final display mode.
+            maximized: previous.is_some_and(|placement| placement.maximized),
+        }),
+        ClosingState::Maximized | ClosingState::Transient => previous,
+    }
+}
+
 pub fn frame_fills_work_area(frame: NormalRectangle, work_area: NormalRectangle) -> bool {
     frame.x.abs_diff(work_area.x) <= 2
         && frame.y.abs_diff(work_area.y) <= 2
@@ -142,9 +156,34 @@ fn is_maximized(window: &Window<Wry>) -> tauri::Result<bool> {
     }))
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+fn is_maximized(window: &Window<Wry>) -> tauri::Result<bool> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::IsZoomed;
+
+    let hwnd = window.hwnd()?;
+    // SAFETY: Tauri owns this live HWND. Query native state because tao sends
+    // Moved before WM_SIZE updates its cached maximized flag on Windows.
+    Ok(unsafe { IsZoomed(hwnd.0) } != 0)
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 fn is_maximized(window: &Window<Wry>) -> tauri::Result<bool> {
     window.is_maximized()
+}
+
+#[cfg(windows)]
+fn is_minimized(window: &Window<Wry>) -> tauri::Result<bool> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::IsIconic;
+
+    let hwnd = window.hwnd()?;
+    // SAFETY: Tauri owns this live HWND; native state also covers minimization
+    // that was not delivered through tao's WM_SYSCOMMAND cache update.
+    Ok(unsafe { IsIconic(hwnd.0) } != 0)
+}
+
+#[cfg(not(windows))]
+fn is_minimized(window: &Window<Wry>) -> tauri::Result<bool> {
+    window.is_minimized()
 }
 
 fn usable(window: &Window<Wry>, rectangle: NormalRectangle) -> tauri::Result<bool> {
@@ -342,7 +381,7 @@ fn capture_with_mode(
     remember_maximized: bool,
 ) {
     let closing = (|| -> tauri::Result<ClosingState> {
-        let minimized = window.is_minimized()?;
+        let minimized = is_minimized(window)?;
         let fullscreen_reported = window.is_fullscreen()?;
         let presentation_registered = fullscreen::is_fullscreen(window.label());
         let maximized = is_maximized(window)?;
@@ -371,13 +410,36 @@ fn capture_with_mode(
     }
 }
 
-/// Placement is sampled only when a window closes and when the app exits,
-/// never from move or resize events (window-conventions, "Placement
-/// implementation"): all native facts are read together at that moment. A
-/// window closed by `destroy()` sends no close request, so Preview closes
-/// through `close_preview_window`, which samples first. Accepted under the
-/// convention: on Windows, restoring, resizing, maximizing and closing loses
-/// that resize, since only the maximized state is observed at close.
+fn observe_normal(window: &Window<Wry>, state: &PlacementState) {
+    let observed = (|| -> tauri::Result<ClosingState> {
+        let minimized = is_minimized(window)?;
+        let fullscreen_reported = window.is_fullscreen()?;
+        let presentation_registered = fullscreen::is_fullscreen(window.label());
+        let maximized = is_maximized(window)?;
+        let rectangle = current_rectangle(window)?;
+        Ok(closing_state_for(
+            minimized,
+            fullscreen_reported,
+            presentation_registered,
+            maximized,
+            rectangle,
+        ))
+    })();
+    match observed {
+        Ok(observed) => match state.lock() {
+            Ok(mut current) => *current = placement_after_observation(*current, observed),
+            Err(error) => warn("window placement lock is unavailable", error),
+        },
+        Err(error) => warn("normal window placement could not be observed", error),
+    }
+}
+
+/// Keep a complete normal rectangle in memory so maximizing after a move or
+/// resize cannot lose it. Native facts are sampled together on the event
+/// thread; separate event payloads must not be merged into a rectangle.
+/// Minimized, fullscreen and Comparison frames never replace normal geometry.
+/// Close and exit capture choose the final mode; only clean exit saves it.
+/// Preview's destroy-based close command still samples before destruction.
 pub(crate) fn on_window_event(
     window: &Window<Wry>,
     event: &WindowEvent,
@@ -385,13 +447,20 @@ pub(crate) fn on_window_event(
     preview_state: &PlacementState,
     records_state: &PlacementState,
 ) {
-    if let WindowEvent::CloseRequested { .. } = event {
-        match window.label() {
+    match event {
+        WindowEvent::Moved(_) | WindowEvent::Resized(_) => match window.label() {
+            "main" => observe_normal(window, main_state),
+            "preview" => observe_normal(window, preview_state),
+            crate::records_window::LABEL => observe_normal(window, records_state),
+            _ => {}
+        },
+        WindowEvent::CloseRequested { .. } => match window.label() {
             "main" => capture(window, main_state),
             "preview" => capture_preview(window, preview_state),
             crate::records_window::LABEL => capture(window, records_state),
             _ => {}
-        }
+        },
+        _ => {}
     }
 }
 
@@ -440,5 +509,104 @@ pub(crate) fn save_preview(state: &PlacementState) {
         logging::info("window placement saved", serde_json::json!({
             "window": "preview", "placement": placement,
         }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        closing_state_for, placement_after_close, placement_after_observation, ClosingState,
+        NormalRectangle, Placement,
+    };
+
+    const OLD: NormalRectangle = NormalRectangle {
+        x: 10,
+        y: 20,
+        width: 800,
+        height: 600,
+    };
+    const LATEST: NormalRectangle = NormalRectangle {
+        x: -900,
+        y: 70,
+        width: 1000,
+        height: 750,
+    };
+
+    #[test]
+    fn moved_and_resized_normal_frame_survives_a_later_maximized_close() {
+        let observed = placement_after_observation(
+            Some(Placement {
+                normal: OLD,
+                maximized: false,
+            }),
+            closing_state_for(false, false, false, false, LATEST),
+        );
+        // Windows Main/Records and Preview retain maximization; macOS
+        // Main/Records reopen normal. Both must restore the latest rectangle.
+        for remember_maximized in [true, false] {
+            assert_eq!(
+                placement_after_close(observed, ClosingState::Maximized, remember_maximized),
+                Some(Placement {
+                    normal: LATEST,
+                    maximized: remember_maximized,
+                }),
+            );
+        }
+    }
+
+    #[test]
+    fn normal_observation_replaces_all_four_fields_without_selecting_the_final_mode() {
+        let previous = Some(Placement {
+            normal: OLD,
+            maximized: true,
+        });
+        let observed = placement_after_observation(previous, ClosingState::Normal(LATEST));
+        assert_eq!(
+            observed,
+            Some(Placement {
+                normal: LATEST,
+                maximized: true,
+            }),
+        );
+        assert_eq!(
+            placement_after_close(observed, ClosingState::Normal(LATEST), true),
+            Some(Placement {
+                normal: LATEST,
+                maximized: false,
+            }),
+        );
+    }
+
+    #[test]
+    fn non_normal_observations_preserve_the_whole_previous_placement() {
+        for previous in [
+            None,
+            Some(Placement {
+                normal: OLD,
+                maximized: true,
+            }),
+        ] {
+            for (minimized, fullscreen, comparison, maximized) in [
+                (true, false, false, false),
+                (false, true, false, false),
+                (false, false, true, false),
+                (false, false, false, true),
+            ] {
+                let observed =
+                    closing_state_for(minimized, fullscreen, comparison, maximized, LATEST);
+                assert_eq!(placement_after_observation(previous, observed), previous);
+            }
+        }
+    }
+
+    #[test]
+    fn a_normal_observation_can_seed_a_window_without_saved_placement() {
+        assert_eq!(
+            placement_after_observation(None, ClosingState::Normal(LATEST)),
+            Some(Placement {
+                normal: LATEST,
+                maximized: false,
+            }),
+        );
     }
 }
