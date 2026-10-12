@@ -108,7 +108,7 @@ describe("the presence gate", () => {
     expect(hasOpenModal()).toBe(false);
     expect(view.container.textContent).toContain("keeps indexed items and cached previews visible");
     fireEvent.click(view.getByRole("button", { name: "Check source folders" }));
-    fireEvent.click(view.getByRole("button", { name: "Settings…" }));
+    fireEvent.click(view.getByRole("button", { name: "Settings" }));
     expect(recheck).toHaveBeenCalledOnce();
     expect(reconfigure).toHaveBeenCalledOnce();
   });

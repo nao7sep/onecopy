@@ -152,7 +152,7 @@ describe("what the status bar shows", () => {
         },
       },
     }, t, number, percent);
-    expect(status.text).toBe("Waiting for background work to finish its current step…");
+    expect(status.text).toBe("Waiting for background work to finish its current step");
   });
 
   it("shows the truthful final operation accounting until it is dismissed", () => {

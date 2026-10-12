@@ -740,7 +740,7 @@ describe("shared video presentation", () => {
   });
 });
 
-describe("Install ffmpeg… on a picture only ffmpeg can prepare", () => {
+describe("Install ffmpeg on a picture only ffmpeg can prepare", () => {
   const HEIC_DETAIL = { ...IMAGE_DETAIL, fileName: "family.heic" };
   const FFMPEG_MISSING = managedToolsFixture("macos").map((entry) =>
     entry.id === "ffmpeg" ? { ...entry, status: "not-installed" as const } : entry,
@@ -771,29 +771,29 @@ describe("Install ffmpeg… on a picture only ffmpeg can prepare", () => {
     useBinariesStore.setState({ entries: FFMPEG_MISSING });
     await failHeic("preview-split");
 
-    fireEvent.click(screen.getByRole("button", { name: "Install ffmpeg…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Install ffmpeg" }));
     expect(useAppShellStore.getState().utilitySurface).toBe("backgroundWork");
   });
 
   it("offers nothing once ffmpeg is installed, or for a format ffmpeg would not make showable", async () => {
     useBinariesStore.setState({ entries: managedToolsFixture("macos") });
     await failHeic("preview-split");
-    expect(screen.queryByRole("button", { name: "Install ffmpeg…" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Install ffmpeg" })).toBeNull();
     cleanup();
 
     useBinariesStore.setState({ entries: FFMPEG_MISSING });
     await failHeic("preview-split", { ...IMAGE_DETAIL, fileName: "broken.jpg" });
-    expect(screen.queryByRole("button", { name: "Install ffmpeg…" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Install ffmpeg" })).toBeNull();
   });
 
   it("keeps the words alone in windows that cannot open Main's Background work & tools", async () => {
     useBinariesStore.setState({ entries: FFMPEG_MISSING });
     await failHeic("preview-window");
-    expect(screen.queryByRole("button", { name: "Install ffmpeg…" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Install ffmpeg" })).toBeNull();
     cleanup();
 
     await failHeic("fullscreen-view");
-    expect(screen.queryByRole("button", { name: "Install ffmpeg…" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Install ffmpeg" })).toBeNull();
   });
 
   it("is not offered beside a video that cannot play, since ffmpeg does not make it play", () => {
@@ -803,6 +803,6 @@ describe("Install ffmpeg… on a picture only ffmpeg can prepare", () => {
     Object.defineProperty(video, "error", { value: { code: 4, message: "unsupported" } });
     fireEvent.error(video);
 
-    expect(screen.queryByRole("button", { name: "Install ffmpeg…" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Install ffmpeg" })).toBeNull();
   });
 });

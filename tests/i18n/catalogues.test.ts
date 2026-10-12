@@ -137,6 +137,9 @@ const SAME_AS_ENGLISH: Partial<Record<Language, readonly string[]>> = {
 const LITERAL_HIDDEN =
   /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u00A0\u00AD\u2007\u200B-\u200F\u2028\u2029\u202A-\u202F\u2060\u2066-\u2069\uFEFF]/gu;
 
+// Languages whose typography puts a no-break space before an ellipsis.
+const SPACED_ELLIPSIS: readonly Language[] = ["de"];
+
 function forms(entry: Entry): string[] {
   return typeof entry === "string" ? [entry] : Object.values(entry);
 }
@@ -215,6 +218,31 @@ describe("catalogues", () => {
       ),
     );
     expect(literal).toEqual([]);
+  });
+
+  // localization-conventions, Ellipsis: one U+2026, never three periods, and
+  // a translation carries it exactly when English does. German spaces it with
+  // a no-break space, as Duden does; every other language attaches it.
+  it.each(LANGUAGES)("%s writes each ellipsis as one character with its language's spacing", (language) => {
+    const spaced = SPACED_ELLIPSIS.includes(language);
+    for (const [key, entry] of Object.entries(catalogues[language])) {
+      for (const text of forms(entry)) {
+        expect(text.includes("..."), `${key}: ${text}`).toBe(false);
+        for (const match of text.matchAll(/(.)?…/gu)) {
+          const before = match[1] ?? "";
+          if (spaced) expect(before, `${key}: ${text}`).toBe("\u00a0");
+          else expect(/\s/u.test(before), `${key}: ${text}`).toBe(false);
+        }
+      }
+    }
+  });
+
+  it.each(translations)("%s has an ellipsis exactly where English does", (language) => {
+    const mismatched = Object.keys(english).filter((key) => {
+      const expected = forms(english[key]).some((text) => text.includes("…"));
+      return forms(catalogues[language][key] ?? "").some((text) => text.includes("…") !== expected);
+    });
+    expect(mismatched).toEqual([]);
   });
 
   it("names every language differently, in its own words", () => {

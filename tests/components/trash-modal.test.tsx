@@ -71,7 +71,7 @@ describe("the trash modal", () => {
     await act(async () => {});
     const row = view.getAllByRole("listitem")[0];
     const empty = view.getAllByRole("button", { name: "Empty" });
-    const browse = view.getAllByRole("button", { name: "Browse…" });
+    const browse = view.getAllByRole("button", { name: "Browse" });
     const rendered = row.textContent;
     const canBrowse = !browse[0].hasAttribute("disabled");
     await act(async () => empty[0].click());
@@ -332,7 +332,7 @@ describe("browsing a root", () => {
     render(<TrashModal open onClose={() => {}} />);
     await act(async () => {});
     expect(document.body.textContent).toContain("Unavailable — this folder is not connected right now");
-    const browse = [...document.querySelectorAll("button")].filter((b) => b.textContent === "Browse…");
+    const browse = [...document.querySelectorAll("button")].filter((b) => b.textContent === "Browse");
     expect(browse).toHaveLength(2);
     expect(browse[1].hasAttribute("disabled")).toBe(true);
     await act(async () => browse[0].click());

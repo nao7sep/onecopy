@@ -48,7 +48,7 @@ describe("the issues modal", () => {
     mockCommands({ get_issues: () => ({ total: 1, rows: [row(1, { kind: "source-unavailable", path: "/source", messageKey: "source.unavailable", message: "" })] }) });
     render(<IssuesModal open onClose={() => {}} />);
     expect(await screen.findByRole("button", { name: "Check source folders" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Settings…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(useAppShellStore.getState().utilitySurface).toBe("settings");
     expect(invokeCalls.some((call) => call.command.includes("dismiss"))).toBe(false);
   });

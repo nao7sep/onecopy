@@ -86,8 +86,8 @@ describe("the title band", () => {
     useAppStore.setState({ appData: { ...READY_APP_DATA, debugEnabled } });
     const view = renderReadyApp();
     fireEvent.click(view.getByRole("button", { name: "Open menu" }));
-    expect(view.queryByText("Activity trace…")).toBeNull();
-    for (const name of ["Records…", "Issues…", "Background work & tools…"]) {
+    expect(view.queryByText("Activity trace")).toBeNull();
+    for (const name of ["Records", "Issues", "Background work & tools"]) {
       expect(view.getByRole("menuitem", { name })).toBeTruthy();
     }
   });
@@ -99,7 +99,7 @@ describe("the title band", () => {
     expect(view.queryByText("Reveal logs folder")).toBeNull();
 
     await act(async () => {
-      fireEvent.click(view.getByText("Records…"));
+      fireEvent.click(view.getByText("Records"));
     });
 
     expect(invokeCalls.filter((call) => call.command === "open_records_window")).toHaveLength(1);

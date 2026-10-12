@@ -171,7 +171,7 @@ export default function PreviewWindow() {
       <footer className="flex shrink-0 justify-between border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
         <span className="flex min-w-0 items-center gap-2">
           <span className="truncate" title={shown.detail?.fileName ?? ""}>
-            {shown.detail?.fileName ?? "…"}
+            {shown.detail?.fileName ?? ""}
           </span>
           {(shown.selectedCount ?? 0) > 1 ? (
             <span className="shrink-0">

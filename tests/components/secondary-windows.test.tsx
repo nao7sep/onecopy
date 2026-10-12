@@ -275,7 +275,7 @@ describe("a comparison window", () => {
 
   it("mounts without throwing and waits", () => {
     const view = render(<ComparisonWindow slice={1} />);
-    expect(view.container.textContent).toContain("Waiting for the comparison…");
+    expect(view.container.textContent).toContain("Waiting for the comparison");
   });
 
   it("renders its slice when the state broadcast arrives", async () => {

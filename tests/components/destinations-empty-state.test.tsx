@@ -86,8 +86,8 @@ describe("destination folder states", () => {
   it("distinguishes normal and permanent Move with concise buttons and an edge-to-edge divider", () => {
     useDestinationsStore.setState({ roots: ["/dest"], activePath: "/dest" });
     const view = render(<DestinationsTab />);
-    expect(view.getByRole("button", { name: "Move 1 here…" })).toBeTruthy();
-    const permanent = view.getByRole("button", { name: "Move 1 permanently…" });
+    expect(view.getByRole("button", { name: "Move 1 here" })).toBeTruthy();
+    const permanent = view.getByRole("button", { name: "Move 1 permanently" });
     expect(permanent.className.split(" ")).toContain("bg-danger-surface");
     const actions = permanent.parentElement!.parentElement!;
     expect(actions.className).toContain("-mx-3");
