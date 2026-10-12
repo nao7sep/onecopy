@@ -151,7 +151,7 @@ fn extract_frame(
         return Err(format!(
             "frame extraction failed at {seconds}s for {}: {}",
             src.display(),
-            run.stderr_tail()
+            run.stderr_text()
         ));
     }
     if !staged_jpg.is_file() { // data root

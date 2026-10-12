@@ -148,7 +148,7 @@ pub fn extract_pcm(ffmpeg: &Path, media: &Path, temp_dir: &Path) -> Result<Vec<f
         if no_audio_output(&run.stderr) {
             return Ok(Vec::new());
         }
-        return Err(format!("audio extraction failed: {}", run.stderr_tail()));
+        return Err(format!("audio extraction failed: {}", run.stderr_text()));
     }
     let bytes = std::fs::metadata(&staged)
         .map_err(|error| format!("audio extraction produced no PCM: {error}"))?

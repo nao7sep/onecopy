@@ -102,3 +102,10 @@ fn cancelling_a_tool_ends_what_it_started() {
         std::thread::sleep(Duration::from_millis(20));
     }
 }
+
+#[test]
+fn an_error_carries_the_whole_of_stderr() {
+    let stderr = format!("first line\n{}\nlast line", "x".repeat(10_000));
+    let run = Run { status_ok: false, stdout: Vec::new(), stderr: format!("  {stderr}\n") };
+    assert_eq!(run.stderr_text(), stderr);
+}

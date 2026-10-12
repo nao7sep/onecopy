@@ -169,7 +169,7 @@ fn decode_via_ffmpeg_bounded(
         // this one file, not carrying an ffmpeg essay into a DB column.
         return Err(format!(
             "ffmpeg could not decode this format: {}",
-            run.stderr_tail()
+            run.stderr_text()
         ));
     }
     crate::resource_limits::decode_bytes(&run.stdout)
@@ -484,7 +484,7 @@ fn convert_full_resolution(ffmpeg: &Path, src: &Path, output: &Path) -> Result<(
     if !run.status_ok || !written {
         return Err(format!(
             "ffmpeg could not decode this format: {}",
-            run.stderr_tail()
+            run.stderr_text()
         ));
     }
     Ok(())

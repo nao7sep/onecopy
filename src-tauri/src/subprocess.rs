@@ -32,8 +32,6 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// No output at all for this long means stuck, not slow.
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// How much recent stderr an error carries.
-pub const TAIL_BYTES: usize = 2000;
 pub const STDOUT_BYTES: usize = 1024 * 1024;
 pub const STDERR_BYTES: usize = 1024 * 1024;
 
@@ -174,19 +172,12 @@ pub struct Run {
 }
 
 impl Run {
-    /// The last `TAIL_BYTES` of stderr, for an error message.
-    pub fn stderr_tail(&self) -> String {
-        let s = self.stderr.trim();
-        if s.len() <= TAIL_BYTES {
-            return s.to_string();
-        }
-        // Cut on a char boundary — stderr is arbitrary bytes lossily decoded.
-        let start = s
-            .char_indices()
-            .nth(s.chars().count().saturating_sub(TAIL_BYTES))
-            .map(|(i, _)| i)
-            .unwrap_or(0);
-        format!("…{}", &s[start..])
+    /// The whole of stderr, trimmed, for an error message. It is never cut:
+    /// errors reach Issues and Records, and only their display may shorten
+    /// them (text-cleanup-conventions, truncation is display-only).
+    /// `STDERR_BYTES` already bounds what a run can capture.
+    pub fn stderr_text(&self) -> String {
+        self.stderr.trim().to_string()
     }
 }
 
@@ -426,11 +417,11 @@ fn run_bounded_idle_output(
         Ok(status_ok) => Ok(Run { status_ok, stdout, stderr }),
         Err(reason) => {
             let run = Run { status_ok: false, stdout, stderr };
-            let tail = run.stderr_tail();
-            Err(if tail.is_empty() {
+            let detail = run.stderr_text();
+            Err(if detail.is_empty() {
                 reason
             } else {
-                format!("{reason}: {tail}")
+                format!("{reason}: {detail}")
             })
         }
     }
