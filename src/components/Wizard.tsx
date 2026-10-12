@@ -135,7 +135,7 @@ function WizardContent() {
                 ))}
               </Select>
             </div>
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               {leading}
               <Button variant="primary" onClick={() => setStep(2)}>
                 {t("wizard.next")}
@@ -168,7 +168,7 @@ function WizardContent() {
               <Plus size={14} />
               {t("settings.addDirectory")}
             </Button>
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               {leading}
               <Button variant="primary" disabled={dirs.length === 0} onClick={() => setStep(3)}>
                 {t("wizard.next")}
@@ -202,7 +202,7 @@ function WizardContent() {
                 ))}
               </Select>
             </div>
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               {leading}
               <Button
                 variant="primary"
@@ -247,7 +247,7 @@ function WizardContent() {
                 />
               </Row>
             ))}
-            <div className="mt-6 flex items-center justify-between">
+            <div className="mt-6 flex flex-wrap items-center justify-between gap-2">
               {leading}
               <Button
                 variant="primary"
