@@ -306,7 +306,7 @@ function ActionBar() {
       >
         {leafName(activePath)}
       </p>
-      <p className="mb-2 truncate text-[11px] text-ink-muted" title={activePath}>
+      <p className="mb-2 break-all text-[11px] text-ink-muted">
         {activePath}
       </p>
       <div className="flex flex-wrap items-center gap-2">

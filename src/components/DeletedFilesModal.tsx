@@ -386,8 +386,10 @@ function DeletedFilesBrowser({
           <Check size={16} aria-hidden="true" className="shrink-0 text-ink-muted" />
           <span className="min-w-0 flex-1">
             <span className="flex items-baseline gap-2">
-              <span className="truncate text-sm text-ink-strong">{entryName(group.representative)}</span>
-              <span className="truncate text-xs text-ink-muted">
+              <span className="truncate text-sm text-ink-strong" title={entryName(group.representative)}>
+                {entryName(group.representative)}
+              </span>
+              <span className="truncate text-xs text-ink-muted" title={folder}>
                 {folder === "" ? t("deletedFiles.topFolder") : folder}
               </span>
             </span>
@@ -420,8 +422,8 @@ function DeletedFilesBrowser({
       >
         <Check size={16} aria-hidden="true" className="shrink-0 text-ink-muted" />
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm text-ink">{entryName(entry)}</span>
-          <span className="block truncate text-xs text-ink-muted">
+          <span className="block truncate text-sm text-ink" title={entryName(entry)}>{entryName(entry)}</span>
+          <span className="block truncate text-xs text-ink-muted" title={folder}>
             {[
               folder === "" ? t("deletedFiles.topFolder") : folder,
               entry.role === "companion" ? t("deletedFiles.companionRole") : null,
