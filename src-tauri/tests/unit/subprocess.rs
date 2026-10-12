@@ -1,11 +1,11 @@
 use super::*;
 
 #[test]
-#[serial_test::serial(subprocess_registry)]
 fn a_contended_registry_cannot_block_the_force_exit_signal() {
-    let held = RUNNING.lock().unwrap();
+    static REGISTRY: Mutex<Vec<Arc<Mutex<OwnedProcess>>>> = Mutex::new(Vec::new());
+    let held = REGISTRY.lock().unwrap();
     let (done, finished) = std::sync::mpsc::channel();
-    let worker = std::thread::spawn(move || { signal_all_running_for_exit(); done.send(()).unwrap(); });
+    let worker = std::thread::spawn(move || { signal_for_exit(&REGISTRY); done.send(()).unwrap(); });
     let returned = finished.recv_timeout(Duration::from_secs(2)).is_ok();
     drop(held);
     worker.join().unwrap();
@@ -14,7 +14,6 @@ fn a_contended_registry_cannot_block_the_force_exit_signal() {
 
 #[cfg(unix)]
 #[test]
-#[serial_test::serial(subprocess_registry)]
 fn a_deadline_signal_ends_the_live_group_and_leaves_reaping_to_its_owner() {
     struct OwnedChild(Arc<Mutex<OwnedProcess>>);
     impl Drop for OwnedChild {
@@ -26,8 +25,8 @@ fn a_deadline_signal_ends_the_live_group_and_leaves_reaping_to_its_owner() {
     let mut command = Command::new("sleep");
     command.arg("60").process_group(0);
     let owner = OwnedChild(Arc::new(Mutex::new(OwnedProcess::new(command.spawn().unwrap()))));
-    let _registration = register_running(owner.0.clone());
-    signal_all_running_for_exit();
+    let registry = Mutex::new(vec![owner.0.clone()]);
+    signal_for_exit(&registry);
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         if lock_child(&owner.0).try_wait().unwrap().is_some() { break; }
@@ -63,7 +62,6 @@ fn alive(pid: u32) -> bool {
 }
 
 #[test]
-#[serial_test::serial(subprocess_registry)]
 fn cancelling_a_tool_ends_what_it_started() {
     let dir = tempfile::tempdir().unwrap();
     let pid_file = dir.path().join("grandchild.pid");

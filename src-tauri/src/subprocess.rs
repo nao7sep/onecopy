@@ -139,7 +139,14 @@ pub fn kill_all_running() {
 /// registry lock, child lock, child reap, or diagnostic: the ordinary owners
 /// still reap; a held owner must not extend the aggregate quit deadline.
 pub(crate) fn signal_all_running_for_exit() {
-    let running = match RUNNING.try_lock() {
+    signal_for_exit(&RUNNING);
+}
+
+/// `signal_all_running_for_exit` over a given registry, so tests can signal a
+/// registry of their own: signalling the process-wide one would also kill
+/// subprocesses that tests running in parallel own.
+fn signal_for_exit(registry: &Mutex<Vec<Arc<Mutex<OwnedProcess>>>>) {
+    let running = match registry.try_lock() {
         Ok(running) => running,
         Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
         Err(std::sync::TryLockError::WouldBlock) => return,
