@@ -524,7 +524,7 @@ export default function DestinationsTab() {
           onCancel={() => useDestinationsStore.getState().cancelPendingMove()}
         />
       ) : null}
-      <div className="mb-2 flex items-center justify-between">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
         <h2 className="text-sm font-semibold text-ink-strong">{t("destinations.title")}</h2>
         <Button size="toolbar" onClick={() => void addDestinationRoot()}>
           {t("destinations.addRoot")}

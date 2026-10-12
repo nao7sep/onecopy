@@ -90,7 +90,7 @@ export function Select({
     <span className="relative inline-flex min-w-0 max-w-full">
       <select
         {...props}
-        className={`${CONTROL} ${SIZES[size]} appearance-none border-control-edge ${size === "toolbar" ? "pr-6" : "pr-7"} ${className}`}
+        className={`${CONTROL} ${SIZES[size]} appearance-none text-ellipsis border-control-edge ${size === "toolbar" ? "pr-6" : "pr-7"} ${className}`}
       />
       <ChevronDown
         aria-hidden="true"
