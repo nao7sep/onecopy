@@ -9,7 +9,7 @@
 /// ordinary exit path quiesces mutations before the process ends.
 pub const SAFE_QUIT_MENU_ID: &str = "onecopy.safe-quit";
 
-/// The macOS app-menu Settings… item (R8-04): native menu items cannot call
+/// The macOS app-menu Settings item (R8-04): native menu items cannot call
 /// into the webview directly, so lib.rs's on_menu_event handler emits
 /// "menu://open-settings" to Main, which owns the actual Settings surface —
 /// the same target the webview's own Cmd+, shortcut already opens.

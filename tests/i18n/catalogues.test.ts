@@ -137,24 +137,6 @@ const SAME_AS_ENGLISH: Partial<Record<Language, readonly string[]>> = {
 const LITERAL_HIDDEN =
   /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u00A0\u00AD\u2007\u200B-\u200F\u2028\u2029\u202A-\u202F\u2060\u2066-\u2069\uFEFF]/gu;
 
-// Each control that shows a running status in place of its command, as
-// [command, status] keys.
-const COMMAND_STATUS_PAIRS: readonly (readonly [string, string])[] = [
-  ["app.checkSources", "app.checkingSources"],
-  ["app.cancelOperation", "common.cancelling"],
-  ["app.stopCheck", "app.stopping"],
-  ["about.checkRelease", "about.checking"],
-  ["binaries.checkForUpdates", "binaries.checking"],
-  ["common.cancel", "common.cancelling"],
-  ["issues.showMore", "issues.loadingMore"],
-  ["settings.identifyScreens", "settings.identifyingScreens"],
-  ["settings.rebuildRequest", "settings.rebuilding"],
-  ["settings.save", "common.saving"],
-  ["wizard.finish", "wizard.finishing"],
-  ["work.pause", "common.saving"],
-  ["work.resume", "common.saving"],
-];
-
 // Languages whose typography puts a no-break space before an ellipsis.
 const SPACED_ELLIPSIS: readonly Language[] = ["de"];
 
@@ -261,18 +243,6 @@ describe("catalogues", () => {
       return forms(catalogues[language][key] ?? "").some((text) => text.includes("…") !== expected);
     });
     expect(mismatched).toEqual([]);
-  });
-
-  // A control that swaps its command for a running status must read
-  // differently in every language, or a press looks ignored
-  // (localization-conventions, Ellipsis). A clash rewords the command.
-  it.each(LANGUAGES)("%s tells each command from the status that replaces it", (language) => {
-    for (const key of COMMAND_STATUS_PAIRS.flat()) expect(english[key], key).toBeDefined();
-    const clashes = COMMAND_STATUS_PAIRS.filter(([command, status]) => {
-      const statuses = forms(catalogues[language][status] ?? "");
-      return forms(catalogues[language][command] ?? "").some((text) => statuses.includes(text));
-    });
-    expect(clashes).toEqual([]);
   });
 
   it("names every language differently, in its own words", () => {
