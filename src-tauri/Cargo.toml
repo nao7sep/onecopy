@@ -79,12 +79,12 @@ name = "heavy_test_suite"
 path = "tests/suites/heavy.rs"
 
 [build-dependencies]
-tauri-build = { version = "2.6", features = [] }
+tauri-build = { version = "2.7", features = [] }
 
 [dependencies]
-tauri = { version = "2.11", features = [] }
-tauri-plugin-opener = "2.5"
-tauri-plugin-dialog = "2.7"
+tauri = { version = "2.12", features = [] }
+tauri-plugin-opener = "2.7"
+tauri-plugin-dialog = "2.8"
 # Native message box for the narrower failure where Tauri cannot construct its
 # runtime and no application-owned webview exists. rfd is what the dialog
 # plugin uses underneath; Windows common controls preserve the labelled Quit.
@@ -94,7 +94,7 @@ rfd = { version = "0.17", features = ["common-controls-v6"] }
 sys-locale = "0.3.2"
 # The home directory before Tauri's path resolver exists, so the interface
 # language can be read before the app is built.
-dirs = "6.0"
+dirs = "7.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 semver = "1.0"
@@ -111,8 +111,8 @@ getrandom = "0.4"
 # rule).
 rusqlite = { version = "0.40", features = ["bundled", "collation", "backup"] }
 kamadak-exif = "0.6.1"
-nom-exif = "3.6.2"
-blake3 = "1.8.6"
+nom-exif = "3.8.0"
+blake3 = "1.8.7"
 walkdir = "2.5.0"
 chrono = "0.4.45"
 chrono-tz = "0.10.4"
@@ -122,13 +122,13 @@ image = { version = "0.25.10", default-features = false, features = [
 # OneCopy uses libwebp's raw RGBA encoder rather than webp's DynamicImage
 # adapters, so its optional image-crate feature would only widen the graph.
 webp = { version = "0.3.1", default-features = false }
-keepawake = "0.6.0"
+keepawake = "0.6.1"
 # Streaming managed-artifact downloads need separate per-read idleness and a
 # size-scaled whole-operation deadline; the previous ureq path exposed only a
 # whole-body timeout.
-reqwest = { version = "0.13.4", default-features = false, features = ["native-tls"] }
-tokio = { version = "1.53.1", features = ["rt", "time", "net", "macros", "fs", "io-util", "sync"] }
-zip = "8.6.0"
+reqwest = { version = "0.13.5", default-features = false, features = ["native-tls"] }
+tokio = { version = "1.53.2", features = ["rt", "time", "net", "macros", "fs", "io-util", "sync"] }
+zip = "9.0.0"
 notify = "8.2.0"
 # The production large-v3-turbo fixture is 3.9x faster in a release build on
 # Apple Silicon through whisper.cpp's Metal backend. Other platforms keep the
@@ -136,7 +136,7 @@ notify = "8.2.0"
 # accelerator.
 whisper-rs = "0.16.0"
 ndarray = "0.17.2"
-encoding_rs = "0.8.35"
+encoding_rs = "0.8.42"
 chardetng = "1.0.0"
 # APFS and HFS+ normalize filenames (to a variant close to NFD) when
 # comparing and storing them, so destination name comparison on macOS must
@@ -241,10 +241,10 @@ opt-level = 2
 # Serializes the tests that share the process-global backup-store singleton
 # (`static STORE` in backup_store.rs); unrelated tests still parallelize.
 serial_test = { version = "4", default-features = false }
-tempfile = "3.24"
+tempfile = "3.27"
 # A paused tokio clock, so a test of a fixed request timeout advances time
 # instead of waiting it out.
-tokio = { version = "1.53.1", features = ["test-util"] }
+tokio = { version = "1.53.2", features = ["test-util"] }
 # Connection limits and hooks let tests exercise engine limits and force
 # competing writes at the statement boundary without timing-dependent races.
 rusqlite = { version = "0.40", features = ["limits", "hooks"] }

@@ -168,6 +168,44 @@ fn hashing_and_extraction_stop_when_cancelled() {
 }
 
 #[test]
+fn extraction_takes_the_one_named_executable_and_refuses_ambiguous_archives() {
+    let dir = tempfile::tempdir().unwrap();
+    let write_archive = |name: &str, entries: &[(&str, &[u8])]| {
+        let path = dir.path().join(name);
+        let mut archive = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        for (entry, bytes) in entries {
+            archive
+                .start_file(*entry, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            archive.write_all(bytes).unwrap();
+        }
+        archive.finish().unwrap();
+        path
+    };
+    let cancelled = AtomicBool::new(false);
+    let deadline = OperationDeadline::for_check();
+    let staged = dir.path().join("ffmpeg.staged");
+
+    let nested = write_archive(
+        "nested.zip",
+        &[("build/bin/ffmpeg", b"binary bytes"), ("build/bin/ffprobe", b"other")],
+    );
+    extract_ffmpeg(&nested, &staged, "ffmpeg", &cancelled, &deadline).unwrap();
+    assert_eq!(std::fs::read(&staged).unwrap(), b"binary bytes");
+
+    let ambiguous = write_archive("two.zip", &[("a/ffmpeg", b"one"), ("b/ffmpeg", b"two")]);
+    assert_eq!(
+        extract_ffmpeg(&ambiguous, &staged, "ffmpeg", &cancelled, &deadline).unwrap_err(),
+        "archive holds 2 candidates for ffmpeg"
+    );
+    let missing = write_archive("none.zip", &[("bin/ffprobe", b"other")]);
+    assert_eq!(
+        extract_ffmpeg(&missing, &staged, "ffmpeg", &cancelled, &deadline).unwrap_err(),
+        "archive holds no ffmpeg"
+    );
+}
+
+#[test]
 fn hashing_reports_stable_byte_progress_through_completion() {
     let dir = tempfile::Builder::new()
         .prefix("onecopy-acquisition-hash-progress-")

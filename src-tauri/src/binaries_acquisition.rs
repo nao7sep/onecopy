@@ -521,10 +521,16 @@ pub(crate) fn extract_ffmpeg(
 ) -> Result<(), String> {
     let file = std::fs::File::open(archive_path).map_err(|e| e.to_string())?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
-    let matches: Vec<String> = archive
+    // An entry name that does not decode makes the whole archive unreadable
+    // rather than being skipped: the archive is a pinned download.
+    let names = archive
         .file_names()
+        .map(|name| name.map(|name| name.into_owned()))
+        .collect::<Result<Vec<String>, _>>()
+        .map_err(|e| e.to_string())?;
+    let matches: Vec<String> = names
+        .into_iter()
         .filter(|name| name.rsplit(['/', '\\']).next() == Some(wanted) && !name.ends_with('/'))
-        .map(String::from)
         .collect();
     let inner = match matches.as_slice() {
         [one] => one.clone(),
