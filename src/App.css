@@ -293,6 +293,20 @@ body.row-resizing * {
   outline-offset: -3px;
 }
 
+/* Pointer entry focuses an eligible menu command but starts visually quiet.
+   Keyboard use reveals its target without hover changing focus. This rule
+   follows hover in the cascade and keeps the mark when both states coincide. */
+.oc-menu-item:enabled:hover {
+  background-color: var(--surface-muted);
+}
+.oc-menu-item:enabled:active {
+  background-color: var(--surface-pressed);
+}
+[role="menu"][data-keyboard-navigation="true"] .oc-menu-item:focus {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
 /* One focus treatment for every control (interface-styling-conventions): a
    ring 1px clear of the edge that follows the control's corners, so a focused
    control keeps the footprint of the one beside it. It replaces the

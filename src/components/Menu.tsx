@@ -6,7 +6,8 @@
 // modal stack fixed elsewhere).
 //
 // Contract: the trigger is the single tab stop; opening moves focus to the
-// first item; Up/Down/Home/End move (wrapping, the menu behavior); type-ahead
+// first eligible item (last for ArrowUp opening); Up/Down/Home/End move
+// (wrapping, the menu behavior); type-ahead
 // jumps by label; Enter/Space activate; Escape closes and returns focus to
 // the trigger; Tab closes (a menu is navigated with arrows, never Tab);
 // outside mousedown closes WITHOUT refocusing (a pointer interaction).
@@ -59,7 +60,8 @@ export function Menu({
     ref: React.RefCallback<HTMLButtonElement>;
     "aria-haspopup": "menu";
     "aria-expanded": boolean;
-    onClick: () => void;
+    onClick: (event: React.MouseEvent<HTMLButtonElement>) => void;
+    onKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>) => void;
   }) => React.ReactNode;
   /** Which trigger edge the panel's matching edge sticks to. */
   align?: "start" | "end";
@@ -67,19 +69,26 @@ export function Menu({
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
+  // One local presentation flag: hover never changes it or the target.
+  const [keyboardNavigation, setKeyboardNavigation] = useState(false);
   /** Viewport-owned coordinates for the portalled panel. */
   const [position, setPosition] = useState<MenuPosition>();
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
+  const activeItem = useRef<HTMLElement | null>(null);
+  const openAtEnd = useRef(false);
 
   const items = () =>
     Array.from(
-      panelRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [],
+      panelRef.current?.querySelectorAll<HTMLElement>(
+        '[role="menuitem"]:not(:disabled):not([aria-disabled="true"])',
+      ) ?? [],
     );
 
   const close = (refocus: boolean) => {
     setOpen(false);
+    activeItem.current = null;
     if (refocus) triggerRef.current?.focus();
   };
 
@@ -132,6 +141,17 @@ export function Menu({
     if (open) placePanel();
   });
 
+  // Positioning makes the popup visible before it can receive focus. Both
+  // layout passes settle before paint: navigation is ready immediately, not
+  // deferred to a frame that the user's first arrow could overtake.
+  useLayoutEffect(() => {
+    if (!open || position === undefined || activeItem.current !== null) return;
+    const list = items();
+    const initial = (openAtEnd.current ? list[list.length - 1] : list[0]) ?? null;
+    activeItem.current = initial;
+    (initial ?? panelRef.current)?.focus();
+  }, [open, position]);
+
   useEffect(() => {
     if (!open) return;
     const viewport = window.visualViewport;
@@ -151,7 +171,6 @@ export function Menu({
 
   useEffect(() => {
     if (!open) return;
-    const raf = requestAnimationFrame(() => items()[0]?.focus());
     const onOutside = (event: MouseEvent) => {
       // The panel is portalled, so "outside" means outside BOTH the trigger
       // wrap and the panel — the two no longer share a DOM subtree.
@@ -162,18 +181,18 @@ export function Menu({
         panelRef.current !== null &&
         !panelRef.current.contains(target)
       ) {
-        setOpen(false); // pointer interaction: no focus restore
+        close(false); // pointer interaction: no focus restore
       }
     };
     document.addEventListener("mousedown", onOutside);
     return () => {
-      cancelAnimationFrame(raf);
       document.removeEventListener("mousedown", onOutside);
     };
   }, [open]);
 
   const onPanelKeyDown = (event: React.KeyboardEvent) => {
     if (isComposingEvent(event)) return;
+    setKeyboardNavigation(true);
     // An open menu owns the keyboard for the keys it actually claims below. It
     // is a composite, not a modal (its Escape deliberately stays out of the
     // modal stack), so the main window's command layer is still live behind
@@ -183,10 +202,12 @@ export function Menu({
     // reach the global command layer instead of being silently swallowed here
     // (R8-02) — stopPropagation only runs once a branch below claims the key.
     const list = items();
-    const current = list.indexOf(document.activeElement as HTMLElement);
+    const current = Math.max(0, list.indexOf(activeItem.current as HTMLElement));
     const focusAt = (index: number) => {
+      if (list.length === 0) return;
       const wrapped = (index + list.length) % list.length;
-      list[wrapped]?.focus();
+      activeItem.current = list[wrapped] ?? null;
+      activeItem.current?.focus();
     };
     if (event.key === "ArrowDown") {
       event.preventDefault();
@@ -210,7 +231,7 @@ export function Menu({
       close(true);
     } else if (event.key === "Tab") {
       event.stopPropagation();
-      setOpen(false);
+      close(false);
     } else if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       event.stopPropagation();
@@ -224,16 +245,33 @@ export function Menu({
         const candidate = list[(current + step + list.length) % list.length];
         if (candidate?.textContent?.trim().toLowerCase().startsWith(typed)) {
           event.stopPropagation();
-          candidate.focus();
+          focusAt((current + step) % list.length);
           break;
         }
       }
     }
   };
 
-  const openAtTrigger = () => {
+  const openMenu = (keyboard: boolean, atEnd = false) => {
+    activeItem.current = null;
+    openAtEnd.current = atEnd;
+    setKeyboardNavigation(keyboard);
     setPosition(undefined);
-    setOpen((current) => !current);
+    setOpen(true);
+  };
+
+  const openAtTrigger = (event: React.MouseEvent<HTMLButtonElement>) => {
+    if (open) close(false);
+    else openMenu(event.detail === 0);
+  };
+
+  const onTriggerKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (open || isComposingEvent(event)) return;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      event.stopPropagation();
+      openMenu(true, event.key === "ArrowUp");
+    }
   };
 
   return (
@@ -245,6 +283,7 @@ export function Menu({
         "aria-haspopup": "menu",
         "aria-expanded": open,
         onClick: openAtTrigger,
+        onKeyDown: onTriggerKeyDown,
       })}
       {/* PORTALLED to the body: the panel used to be absolutely positioned
           inside its column, whose overflow-hidden clipped it — the menu
@@ -256,7 +295,9 @@ export function Menu({
               <div
                 ref={panelRef}
                 role="menu"
+                tabIndex={-1}
                 aria-label={ariaLabel}
+                data-keyboard-navigation={keyboardNavigation}
                 style={{
                   ...position,
                   visibility: position === undefined ? "hidden" : "visible",
@@ -266,6 +307,11 @@ export function Menu({
                 // rather than a bar across it; the items' corners sit inside
                 // the panel's larger one.
                 className="fixed z-40 max-w-[calc(100vw-1rem)] min-w-[min(14rem,calc(100vw-1rem))] overflow-auto rounded-xl border border-border bg-surface p-1 shadow-xl"
+                onFocus={(event) => {
+                  if (event.target instanceof HTMLElement && items().includes(event.target)) {
+                    activeItem.current = event.target;
+                  }
+                }}
                 onKeyDown={onPanelKeyDown}
               >
                 {children}
@@ -293,11 +339,9 @@ export function MenuItem({
       role="menuitem"
       tabIndex={-1}
       disabled={disabled}
-      // A flat item: keyboard focus shows as its background fill, not a ring
-      // — clip-safe inside the rounded panel (composite-control conventions)
-      // — and a press steps that fill once more. The item fills the panel's
-      // inner width, which is what a menu row is.
-      className="flex w-full items-center whitespace-nowrap rounded-md px-2.5 py-1.5 text-left text-sm text-ink outline-none transition-colors motion-reduce:transition-none enabled:hover:bg-surface-muted focus:bg-surface-muted enabled:active:bg-surface-pressed disabled:opacity-50"
+      // App.css owns the independent hover and keyboard treatments. The
+      // keyboard mark is inset so the popup's scrolling cannot clip it.
+      className="oc-menu-item flex w-full items-center whitespace-nowrap rounded-md px-2.5 py-1.5 text-left text-sm text-ink outline-none transition-colors motion-reduce:transition-none disabled:opacity-50"
       onClick={() => {
         // Close first (focus back on the trigger), then act — an action that
         // opens a modal then owns focus from a stable base.
