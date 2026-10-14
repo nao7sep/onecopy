@@ -159,6 +159,9 @@ async function ensurePreviewWindow(config: Record<string, unknown>): Promise<voi
   }
   // Prepare while hidden and unfocused. Raising must not activate Main over
   // an overlapping Preview; the temporary raise pulse preserves command focus.
+  // Unlike other windows opened on request (window-conventions), Preview
+  // appears above Main without becoming key: it follows Main's selection, so
+  // the keys that change that selection stay with Main.
   const window = new WebviewWindow("preview", {
     url: "index.html?view=preview",
     // The definitive title follows the language boot read (window-appearance.ts);

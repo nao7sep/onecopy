@@ -98,6 +98,7 @@ export function shortcutColumns(): ShortcutGroup[][] {
         [mod + "+A", "shortcuts.appSelectAll"],
         [mod + "+R", "shortcuts.appRecheckSection"],
         [mod + "+Comma", "settings.title"],
+        [mod + "+W", "nativeMenu.closeWindow"],
         [mod + "+Slash / Question", "shortcuts.appShortcuts"],
         [mod + "+Equal/Plus/Semicolon", "app.zoomIn"],
         [mod + "+Minus", "app.zoomOut"],

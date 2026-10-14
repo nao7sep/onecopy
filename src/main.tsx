@@ -13,6 +13,7 @@ import QuitSaveModal from "./components/QuitSaveModal";
 import { cancelQuitDecision, installQuitWorkflow } from "./workflows/quit";
 import { closeComparisonAfterMainRendererFailure } from "./state/comparison-store";
 import { installWindowActivity } from "./repositories/window-activity";
+import { installCloseWindowShortcut } from "./workflows/close-window-shortcut";
 
 const App = lazy(() => import("./App"));
 const PreviewWindow = lazy(() => import("./windows/PreviewWindow"));
@@ -45,6 +46,9 @@ window.addEventListener("contextmenu", (event) => {
 
 // Every window's focus ring quiets while that window is inactive.
 installWindowActivity();
+
+// Every window closes with Cmd/Ctrl+W, the way its close button would.
+installCloseWindowShortcut();
 
 // Global last-resort handlers — catch anything that slips past React's error
 // handling and record it before the page can tear down.
