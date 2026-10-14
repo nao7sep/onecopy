@@ -489,6 +489,7 @@
   "common.dismiss": "Schließen",
   "common.dismissResult": "Ergebnis schließen",
   "common.countMore": { "one": "{count} weitere", "other": "{count} weitere" },
+  "common.fullText": "Vollständiger Text",
   "common.kind": "Art",
   "common.name": "Name",
   "common.size": "Größe",

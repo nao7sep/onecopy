@@ -489,6 +489,7 @@
   "common.dismiss": "Dispensar",
   "common.dismissResult": "Dispensar o resultado",
   "common.countMore": { "one": "mais {count}", "many": "mais {count}", "other": "mais {count}" },
+  "common.fullText": "Texto completo",
   "common.kind": "Tipo",
   "common.name": "Nome",
   "common.size": "Tamanho",

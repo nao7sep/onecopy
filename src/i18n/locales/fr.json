@@ -489,6 +489,7 @@
   "common.dismiss": "Fermer",
   "common.dismissResult": "Fermer le résultat",
   "common.countMore": { "one": "{count} autre", "many": "{count} autres", "other": "{count} autres" },
+  "common.fullText": "Texte complet",
   "common.kind": "Type",
   "common.name": "Nom",
   "common.size": "Taille",

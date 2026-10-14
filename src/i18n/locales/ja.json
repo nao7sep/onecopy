@@ -489,6 +489,7 @@
   "common.dismiss": "閉じる",
   "common.dismissResult": "結果を閉じる",
   "common.countMore": { "other": "ほか {count} 件" },
+  "common.fullText": "全文",
   "common.kind": "種類",
   "common.name": "名前",
   "common.size": "サイズ",

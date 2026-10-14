@@ -489,6 +489,7 @@
   "common.dismiss": "Dismiss",
   "common.dismissResult": "Dismiss result",
   "common.countMore": { "one": "{count} more", "other": "{count} more" },
+  "common.fullText": "Full text",
   "common.kind": "Kind",
   "common.name": "Name",
   "common.size": "Size",

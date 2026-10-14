@@ -2,6 +2,7 @@ import { X } from "lucide-react";
 import type { ReactNode } from "react";
 import { useI18n } from "../../i18n/I18nContext";
 import { IconButton } from "./Button";
+import BoundedText from "./BoundedText";
 
 export type OperationResultLevel = "error" | "warning" | "info";
 
@@ -42,9 +43,9 @@ export default function OperationResult({
       {/* Text to be read: never shortened, so a long one (a tool's recorded
           error) wraps whole and scrolls inside this height limit rather than
           growing the surface it sits in. */}
-      <div className="max-h-32 min-w-0 flex-1 overflow-y-auto break-words">
+      <BoundedText className="max-h-32 min-w-0 flex-1 break-words">
         {children}
-      </div>
+      </BoundedText>
       {actions !== undefined ? (
         <div className="-my-1 flex min-h-6 shrink-0 items-center gap-2">
           {actions}

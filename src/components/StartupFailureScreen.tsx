@@ -6,6 +6,7 @@ import { log, reportWindowCall, toErrorFields } from "../repositories";
 import { useAppStore } from "../state/app-store";
 import Button from "./ui/Button";
 import OperationResult from "./ui/OperationResult";
+import BoundedText from "./ui/BoundedText";
 
 /** The application-owned terminal bootstrap state. The webview is healthy, but
  * backend work is gated off because required application data is not. The
@@ -47,14 +48,16 @@ export default function StartupFailureScreen() {
         {newerStores.length > 0 ? (
           // Each store's path is read whole; the list scrolls inside a
           // height limit so the actions below stay in view.
-          <ul className="mt-3 max-h-64 space-y-2 overflow-y-auto">
-            {newerStores.map((store) => (
-              <li key={store.path} className="rounded-lg border border-border p-3">
-                <p className="text-sm font-semibold text-ink-strong">{store.file}</p>
-                <p className="mt-1 break-all text-xs text-ink-muted">{store.path}</p>
-              </li>
-            ))}
-          </ul>
+          <BoundedText className="mt-3 max-h-64">
+            <ul className="space-y-2">
+              {newerStores.map((store) => (
+                <li key={store.path} className="rounded-lg border border-border p-3">
+                  <p className="text-sm font-semibold text-ink-strong">{store.file}</p>
+                  <p className="mt-1 break-all text-xs text-ink-muted">{store.path}</p>
+                </li>
+              ))}
+            </ul>
+          </BoundedText>
         ) : null}
         {openLogsFailed ? (
           <OperationResult level="error" className="mt-3 text-sm">

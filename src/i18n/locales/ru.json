@@ -489,6 +489,7 @@
   "common.dismiss": "Закрыть",
   "common.dismissResult": "Закрыть результат",
   "common.countMore": { "one": "ещё {count}", "few": "ещё {count}", "many": "ещё {count}", "other": "ещё {count}" },
+  "common.fullText": "Полный текст",
   "common.kind": "Тип",
   "common.name": "Имя",
   "common.size": "Размер",

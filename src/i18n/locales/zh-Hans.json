@@ -489,6 +489,7 @@
   "common.dismiss": "关闭",
   "common.dismissResult": "关闭结果",
   "common.countMore": { "other": "另外 {count} 个" },
+  "common.fullText": "全文",
   "common.kind": "类型",
   "common.name": "名称",
   "common.size": "大小",

@@ -2,6 +2,7 @@ import { useBlockingSurface } from "../hooks/useBlockingSurface";
 import { useI18n } from "../i18n/I18nContext";
 import Button from "./ui/Button";
 import IdentifyingText from "./ui/IdentifyingText";
+import BoundedText from "./ui/BoundedText";
 
 // Missing roots and substituted roots have different safety meanings. An
 // absent root is an availability problem: Main stays usable and the source
@@ -31,13 +32,15 @@ export function MissingSourcesNotice({
           <p className="mt-0.5 text-ink-muted">{t("source.missingBody")}</p>
           {/* A banner names each folder on one line, keeping its final
               segment; a cut path opens whole on Enter, a click or a tap. */}
-          <ul className="mt-2 max-h-20 overflow-y-auto text-xs text-ink">
-            {missing.map((path) => (
-              <li key={path}>
-                <IdentifyingText value={path} path />
-              </li>
-            ))}
-          </ul>
+          <BoundedText className="mt-2 max-h-20 text-xs text-ink">
+            <ul>
+              {missing.map((path) => (
+                <li key={path}>
+                  <IdentifyingText value={path} path />
+                </li>
+              ))}
+            </ul>
+          </BoundedText>
         </div>
         <div className="flex shrink-0 gap-2">
           <Button onClick={onReconfigure}>
@@ -79,16 +82,18 @@ export function SubstitutedSourceGate({
           {t(unknown ? "source.substitutedCheckFailedBody" : "source.substitutedBody")}
         </p>
         {unknown ? null : (
-          <ul className="mb-4 max-h-64 overflow-y-auto">
-            {substituted.map((path) => (
-              <li
-                key={path}
-                className="mb-1.5 break-all rounded-lg bg-danger-surface px-3 py-2 text-sm leading-relaxed text-danger"
-              >
-                {path}
-              </li>
-            ))}
-          </ul>
+          <BoundedText className="mb-4 max-h-64">
+            <ul>
+              {substituted.map((path) => (
+                <li
+                  key={path}
+                  className="mb-1.5 break-all rounded-lg bg-danger-surface px-3 py-2 text-sm leading-relaxed text-danger"
+                >
+                  {path}
+                </li>
+              ))}
+            </ul>
+          </BoundedText>
         )}
         <div className="flex justify-end gap-2">
           <Button size="md" onClick={onReconfigure}>

@@ -489,6 +489,7 @@
   "common.dismiss": "닫기",
   "common.dismissResult": "결과 닫기",
   "common.countMore": { "other": "{count}개 더" },
+  "common.fullText": "전체 텍스트",
   "common.kind": "종류",
   "common.name": "이름",
   "common.size": "크기",

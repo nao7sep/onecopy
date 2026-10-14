@@ -11,6 +11,7 @@ import { useDisplayZone } from "../hooks/useDisplayZone";
 import ModalShell from "./ModalShell";
 import Button, { IconButton, LinkButton } from "./ui/Button";
 import OperationResult from "./ui/OperationResult";
+import BoundedText from "./ui/BoundedText";
 import { revealInMain } from "../workflows/reveal-in-main";
 import { useI18n } from "../i18n/I18nContext";
 import type { MessageKey } from "../i18n/catalogues";
@@ -128,9 +129,9 @@ export default function IssuesModal({ open, onClose }: {
                   recorded when that says something the sentence does not. An
                   older row's recorded text is its sentence, so both scroll
                   inside a height limit. */}
-              <div className="mt-1.5 max-h-48 select-text overflow-y-auto break-words leading-relaxed text-ink-muted">
+              <BoundedText className="mt-1.5 max-h-48 select-text break-words leading-relaxed text-ink-muted">
                 {noticeSentence(row, text)}
-              </div>
+              </BoundedText>
               {modelIssueLabel(row.kind) !== null ? (
                 <Button className="mt-2" onClick={() => useAppShellStore.getState().openUtility("backgroundWork")}>
                   {t("app.openBackgroundWork")}
@@ -148,9 +149,9 @@ export default function IssuesModal({ open, onClose }: {
                   scrolls inside its own height limit, so one entry never
                   pushes the rest of the list away. */}
               {recordedDetail(row) !== null ? (
-                <div className="mt-1 max-h-48 select-text overflow-y-auto break-words text-xs leading-relaxed text-ink-muted opacity-80">
+                <BoundedText className="mt-1 max-h-48 select-text break-words text-xs leading-relaxed text-ink-muted opacity-80">
                   {recordedDetail(row)}
-                </div>
+                </BoundedText>
               ) : null}
             </li>
           ))}

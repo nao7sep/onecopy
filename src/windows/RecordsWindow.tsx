@@ -51,6 +51,7 @@ import {
 import { isComposingEvent } from "../hooks/useComposing";
 import { useDisplayZone } from "../hooks/useDisplayZone";
 import OperationResult from "../components/ui/OperationResult";
+import BoundedText from "../components/ui/BoundedText";
 import { Select, TextInput } from "../components/ui/Field";
 import {
   RECORDS_LIST_WIDTH,
@@ -756,7 +757,9 @@ function RecordDetailView({
       <div className="flex shrink-0 items-start justify-between gap-3 border-b border-border px-4 py-3">
         {/* The opened record's title in full — a log line's title is its
             whole message — wrapping inside a height limit that scrolls. */}
-        <h2 className="max-h-24 min-w-0 select-text overflow-y-auto break-words text-sm font-semibold text-ink-strong">{record.title}</h2>
+        <BoundedText className="max-h-24 min-w-0 select-text">
+          <h2 className="break-words text-sm font-semibold text-ink-strong">{record.title}</h2>
+        </BoundedText>
         <div className="flex shrink-0 items-center gap-2 pt-px">
           <LevelPill level={record.level} />
           <KindPill kind={record.kind} />

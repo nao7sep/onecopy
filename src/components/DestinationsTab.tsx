@@ -21,6 +21,7 @@ import Button, { IconButton } from "./ui/Button";
 import { TextInput } from "./ui/Field";
 import IdentifyingText from "./ui/IdentifyingText";
 import NameList from "./ui/NameList";
+import BoundedText from "./ui/BoundedText";
 import DestinationConflictModal from "./DestinationConflictModal";
 import { useItemsStore } from "../state/items-store";
 import { useI18n } from "../i18n/I18nContext";
@@ -589,7 +590,7 @@ export default function DestinationsTab() {
         >
           {/* Text to be read: whole, and scrolling inside its own height
               limit rather than pushing the tree out of the pane. */}
-          <span className="max-h-32 min-w-0 flex-1 select-text overflow-y-auto break-words">
+          <BoundedText className="max-h-32 min-w-0 flex-1 select-text break-words">
             {rich("destinations.resultLine", {
               facts: result.facts.map((fact, index) => (
                 <Fragment key={index}>
@@ -598,7 +599,7 @@ export default function DestinationsTab() {
                 </Fragment>
               )),
             })}
-          </span>
+          </BoundedText>
           <IconButton
             size="sm"
             tone="current"
