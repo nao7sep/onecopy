@@ -21,32 +21,33 @@ fn source_and_destination_symlink_aliases_cannot_bypass_containment() {
     assert!(!directory_is_within(&outside, &source_alias).unwrap());
 }
 
-#[cfg(windows)]
-#[test]
-fn source_and_destination_junction_aliases_cannot_bypass_containment() {
-    let junction = |link: &std::path::Path, target: &std::path::Path| {
-        let output = std::process::Command::new("cmd")
-            .args(["/C", "mklink", "/J"])
-            .arg(link)
-            .arg(target)
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "mklink /J failed: {}", String::from_utf8_lossy(&output.stderr));
-    };
-    let dir = tempfile::tempdir().unwrap();
-    let source = dir.path().join("source");
-    let child = source.join("nested");
-    let source_alias = dir.path().join("source-alias");
-    let child_alias = dir.path().join("child-alias");
-    let outside = dir.path().join("outside");
-    std::fs::create_dir_all(&child).unwrap();
-    std::fs::create_dir_all(&outside).unwrap();
-    junction(&source_alias, &source);
-    junction(&child_alias, &child);
+windows_test! {
+    "Windows only: junctions",
+    fn source_and_destination_junction_aliases_cannot_bypass_containment() {
+        let junction = |link: &std::path::Path, target: &std::path::Path| {
+            let output = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "mklink /J failed: {}", String::from_utf8_lossy(&output.stderr));
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        let child = source.join("nested");
+        let source_alias = dir.path().join("source-alias");
+        let child_alias = dir.path().join("child-alias");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&child).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        junction(&source_alias, &source);
+        junction(&child_alias, &child);
 
-    assert!(directory_is_within(&child_alias, &source).unwrap());
-    assert!(directory_is_within(&child, &source_alias).unwrap());
-    assert!(!directory_is_within(&outside, &source_alias).unwrap());
+        assert!(directory_is_within(&child_alias, &source).unwrap());
+        assert!(directory_is_within(&child, &source_alias).unwrap());
+        assert!(!directory_is_within(&outside, &source_alias).unwrap());
+    }
 }
 
 #[test]

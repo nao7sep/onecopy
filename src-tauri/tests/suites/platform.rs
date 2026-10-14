@@ -1,3 +1,6 @@
+#[macro_use]
+#[path = "../support/windows_test.rs"]
+mod windows_test;
 #[path = "../ai_acceleration_tests.rs"]
 mod ai_acceleration_tests;
 #[path = "../ai_dependencies_tests.rs"]
@@ -12,6 +15,8 @@ mod dependencies_tests;
 mod file_identity_tests;
 #[path = "../fs_publish_tests.rs"]
 mod fs_publish_tests;
+#[path = "../file_names_tests.rs"]
+mod file_names_tests;
 #[path = "../i18n_tests.rs"]
 mod i18n_tests;
 #[path = "../presence_tests.rs"]

@@ -17,6 +17,16 @@ fn macos_speculative_pages_are_not_available_twice() {
     assert_eq!(super::macos_reclaimable_pages(&statistics), 17);
 }
 
+// Unmeasurable memory pauses every model and PCM gate, so the native query
+// must answer on each platform that ships.
+#[cfg(any(target_os = "macos", windows))]
+#[test]
+fn the_host_reports_its_available_memory() {
+    let available = super::available_memory_bytes().expect("available memory is measurable");
+    assert!(available > 0);
+    assert!(super::require_available(1, "A test").is_ok());
+}
+
 #[test]
 fn active_image_work_leaves_cpu_headroom() {
     let abundant = Some(IMAGE_CONCURRENCY_HEADROOM + 64 * IMAGE_JOB_RESERVATION);

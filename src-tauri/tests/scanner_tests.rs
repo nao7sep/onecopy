@@ -2711,31 +2711,32 @@ fn the_system_time_zone_follows_the_computer_and_a_chosen_one_stays() {
     assert_eq!(chosen.resolution.default_timezone, chrono_tz::Pacific::Auckland);
 }
 
-#[cfg(windows)]
-#[test]
-fn the_walk_does_not_follow_a_junction() {
-    // A junction to a folder inside the same root would index every file
-    // under it twice, as two copies of itself.
-    let f = fixture("walk-junction");
-    let photos = f.root.join("photos");
-    std::fs::create_dir_all(&photos).unwrap();
-    std::fs::write(photos.join("a.jpg"), b"one photo").unwrap();
-    let junction = f.root.join("again");
-    let made = std::process::Command::new("cmd")
-        .args(["/C", "mklink", "/J"])
-        .arg(&junction)
-        .arg(&photos)
-        .status()
-        .unwrap();
-    assert!(made.success(), "mklink /J failed");
+windows_test! {
+    "Windows only: junctions",
+    fn the_walk_does_not_follow_a_junction() {
+        // A junction to a folder inside the same root would index every file
+        // under it twice, as two copies of itself.
+        let f = fixture("walk-junction");
+        let photos = f.root.join("photos");
+        std::fs::create_dir_all(&photos).unwrap();
+        std::fs::write(photos.join("a.jpg"), b"one photo").unwrap();
+        let junction = f.root.join("again");
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&photos)
+            .status()
+            .unwrap();
+        assert!(made.success(), "mklink /J failed");
 
-    walk_root(&f.conn, &f.root, &lists()).unwrap();
+        walk_root(&f.conn, &f.root, &lists()).unwrap();
 
-    assert_eq!(
-        count(&f.conn, "SELECT COUNT(*) FROM paths WHERE missing = 0"),
-        1,
-        "only the real file is indexed, not its view through the junction"
-    );
+        assert_eq!(
+            count(&f.conn, "SELECT COUNT(*) FROM paths WHERE missing = 0"),
+            1,
+            "only the real file is indexed, not its view through the junction"
+        );
+    }
 }
 
 /// Sets FILE_ATTRIBUTE_OFFLINE, what a sync client's online-only placeholder
@@ -2768,77 +2769,79 @@ impl Drop for OfflineAttribute {
     }
 }
 
-#[cfg(windows)]
-#[test]
-fn an_online_only_file_is_not_indexed_and_its_source_folder_says_so() {
-    // Reading an online-only file downloads it, so the walk leaves it unread.
-    let f = fixture("online-only");
-    let cloud = f.root.join("cloud.jpg");
-    std::fs::write(&cloud, b"contents kept by a sync service").unwrap();
-    std::fs::write(f.root.join("local.jpg"), b"contents on this computer").unwrap();
-    let offline = OfflineAttribute::set(&cloud);
-    let live = |name: &str| -> i64 {
-        f.conn
-            .query_row(
-                "SELECT COUNT(*) FROM paths WHERE file_name = ?1 AND missing = 0",
-                [name],
-                |row| row.get(0),
-            )
-            .unwrap()
-    };
-    // `walk_root` names the root as given as the configured root.
-    let configured = f.root.to_string_lossy().into_owned();
-    let notices = || -> i64 {
-        f.conn
-            .query_row(
-                "SELECT COUNT(*) FROM active_issues WHERE kind = ?1 AND path = ?2",
-                rusqlite::params![ONLINE_ONLY_SKIPPED, configured],
-                |row| row.get(0),
-            )
-            .unwrap()
-    };
+windows_test! {
+    "Windows only: the offline file attribute",
+    fn an_online_only_file_is_not_indexed_and_its_source_folder_says_so() {
+        // Reading an online-only file downloads it, so the walk leaves it unread.
+        let f = fixture("online-only");
+        let cloud = f.root.join("cloud.jpg");
+        std::fs::write(&cloud, b"contents kept by a sync service").unwrap();
+        std::fs::write(f.root.join("local.jpg"), b"contents on this computer").unwrap();
+        let offline = OfflineAttribute::set(&cloud);
+        let live = |name: &str| -> i64 {
+            f.conn
+                .query_row(
+                    "SELECT COUNT(*) FROM paths WHERE file_name = ?1 AND missing = 0",
+                    [name],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        // `walk_root` names the root as given as the configured root.
+        let configured = f.root.to_string_lossy().into_owned();
+        let notices = || -> i64 {
+            f.conn
+                .query_row(
+                    "SELECT COUNT(*) FROM active_issues WHERE kind = ?1 AND path = ?2",
+                    rusqlite::params![ONLINE_ONLY_SKIPPED, configured],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
 
-    let stats = walk_root(&f.conn, &f.root, &lists()).unwrap();
-    assert_eq!(stats.online_only, 1);
-    assert_eq!(live("local.jpg"), 1);
-    assert_eq!(live("cloud.jpg"), 0, "an online-only file has no live row");
-    assert_eq!(notices(), 1, "the source folder says how many were not read");
+        let stats = walk_root(&f.conn, &f.root, &lists()).unwrap();
+        assert_eq!(stats.online_only, 1);
+        assert_eq!(live("local.jpg"), 1);
+        assert_eq!(live("cloud.jpg"), 0, "an online-only file has no live row");
+        assert_eq!(notices(), 1, "the source folder says how many were not read");
 
-    // Once the file is on this computer, the next complete walk indexes it
-    // and closes the notice.
-    drop(offline);
-    let stats = walk_root(&f.conn, &f.root, &lists()).unwrap();
-    assert_eq!(stats.online_only, 0);
-    assert_eq!(live("cloud.jpg"), 1);
-    assert_eq!(notices(), 0);
+        // Once the file is on this computer, the next complete walk indexes it
+        // and closes the notice.
+        drop(offline);
+        let stats = walk_root(&f.conn, &f.root, &lists()).unwrap();
+        assert_eq!(stats.online_only, 0);
+        assert_eq!(live("cloud.jpg"), 1);
+        assert_eq!(notices(), 0);
+    }
 }
 
-#[cfg(windows)]
-#[test]
-fn drive_letter_case_never_forks_a_source_root() {
-    // `c:\photos` and `C:\photos` name one folder: settling either spelling
-    // finds the same root, so a re-typed configuration re-walks the same rows.
-    let f = fixture("drive-letter-case");
-    std::fs::write(f.root.join("a.jpg"), b"one photo").unwrap();
-    let canonical = std::fs::canonicalize(&f.root).unwrap();
-    let plain = onecopy_lib::winpath::for_display(&canonical.to_string_lossy()).into_owned();
-    let (drive, rest) = plain.split_at(1);
-    let upper = std::path::PathBuf::from(format!("{}{rest}", drive.to_uppercase()));
-    let lower = std::path::PathBuf::from(format!("{}{rest}", drive.to_lowercase()));
+windows_test! {
+    "Windows only: drive letters",
+    fn drive_letter_case_never_forks_a_source_root() {
+        // `c:\photos` and `C:\photos` name one folder: settling either spelling
+        // finds the same root, so a re-typed configuration re-walks the same rows.
+        let f = fixture("drive-letter-case");
+        std::fs::write(f.root.join("a.jpg"), b"one photo").unwrap();
+        let canonical = std::fs::canonicalize(&f.root).unwrap();
+        let plain = onecopy_lib::winpath::for_display(&canonical.to_string_lossy()).into_owned();
+        let (drive, rest) = plain.split_at(1);
+        let upper = std::path::PathBuf::from(format!("{}{rest}", drive.to_uppercase()));
+        let lower = std::path::PathBuf::from(format!("{}{rest}", drive.to_lowercase()));
 
-    let settled = settled_root(&f.conn, &upper).unwrap();
-    assert_eq!(walk_root(&f.conn, &settled, &lists()).unwrap().added, 1);
-    assert_eq!(settled_root(&f.conn, &lower).unwrap(), settled);
-    let again = walk_root(&f.conn, &settled_root(&f.conn, &lower).unwrap(), &lists()).unwrap();
-    assert_eq!((again.added, again.unchanged), (0, 1));
-    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM scan_dirs"), 1);
-    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths"), 1);
+        let settled = settled_root(&f.conn, &upper).unwrap();
+        assert_eq!(walk_root(&f.conn, &settled, &lists()).unwrap().added, 1);
+        assert_eq!(settled_root(&f.conn, &lower).unwrap(), settled);
+        let again = walk_root(&f.conn, &settled_root(&f.conn, &lower).unwrap(), &lists()).unwrap();
+        assert_eq!((again.added, again.unchanged), (0, 1));
+        assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM scan_dirs"), 1);
+        assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths"), 1);
 
-    // A whole drive configured either way is one root as well.
-    assert_eq!(
-        settled_root(&f.conn, std::path::Path::new(&format!("{}:\\", drive.to_lowercase()))).unwrap(),
-        settled_root(&f.conn, std::path::Path::new(&format!("{}:\\", drive.to_uppercase()))).unwrap()
-    );
+        // A whole drive configured either way is one root as well.
+        assert_eq!(
+            settled_root(&f.conn, std::path::Path::new(&format!("{}:\\", drive.to_lowercase()))).unwrap(),
+            settled_root(&f.conn, std::path::Path::new(&format!("{}:\\", drive.to_uppercase()))).unwrap()
+        );
+    }
 }
 
 #[test]

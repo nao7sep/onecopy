@@ -117,3 +117,32 @@ fn catalogue_text_with_fills_in_a_second_placeholder() {
         "Application logs, when there are any, are in /tmp/onecopy/logs.",
     );
 }
+
+// AppKit takes its own language from the defaults' argument domain. The
+// override has to reach a real defaults lookup and keep whatever the launch
+// arguments already put in that domain.
+#[cfg(target_os = "macos")]
+#[test]
+fn appkit_reads_the_interface_language_and_the_launch_arguments_survive() {
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::{NSArgumentDomain, NSDictionary, NSString, NSUserDefaults};
+
+    let defaults = NSUserDefaults::standardUserDefaults();
+    // SAFETY: NSArgumentDomain is a constant NSString that Foundation defines.
+    let domain_name = unsafe { NSArgumentDomain };
+    let argument = NSString::from_str("OneCopyTestArgument");
+    let value = NSString::from_str("kept");
+    let value: &AnyObject = value.as_ref();
+    let launch_arguments = NSDictionary::from_slices(&[&*argument], &[value]);
+    // SAFETY: NSString keys mapped to a property-list value.
+    unsafe { defaults.setVolatileDomain_forName(&launch_arguments, domain_name) };
+
+    onecopy_lib::i18n::align_appkit("ja");
+
+    let languages = defaults
+        .stringArrayForKey(&NSString::from_str("AppleLanguages"))
+        .expect("AppleLanguages is set");
+    let languages: Vec<String> = languages.to_vec().iter().map(|language| language.to_string()).collect();
+    assert_eq!(languages, ["ja"]);
+    assert_eq!(defaults.stringForKey(&argument).map(|kept| kept.to_string()).as_deref(), Some("kept"));
+}

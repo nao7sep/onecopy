@@ -1,3 +1,6 @@
+#[macro_use]
+#[path = "../support/windows_test.rs"]
+mod windows_test;
 #[path = "../face_tests.rs"]
 mod face_tests;
 #[path = "../media_protocol_tests.rs"]

@@ -194,6 +194,23 @@ fn iou_and_softmax_hold_their_edges() {
     assert!(face::softmax(&[1000.0, 999.0]).iter().all(|p| p.is_finite()));
 }
 
+// On Windows ONNX Runtime is loaded from the managed file, never searched
+// for: without that file, or given a path the loader would search for, face
+// scoring refuses instead of loading whatever runtime the system offers.
+windows_test! {
+    "Windows only: ONNX Runtime is loaded from a managed file only on Windows",
+    fn face_scoring_refuses_a_runtime_that_is_missing_or_not_an_absolute_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let model = dir.path().join("unused.onnx");
+        let missing = face::FaceScorer::load(None, &model, &model).err().expect("no runtime is refused");
+        assert!(missing.contains("runtime is not installed"), "{missing}");
+        let relative = face::FaceScorer::load(Some(std::path::Path::new("onnxruntime.dll")), &model, &model)
+            .err()
+            .expect("a searched-for runtime is refused");
+        assert!(relative.contains("not absolute"), "{relative}");
+    }
+}
+
 #[cfg(not(windows))]
 #[test]
 fn corrupt_face_models_fail_as_a_dependency_before_any_media_receipt() {

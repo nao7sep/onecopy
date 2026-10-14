@@ -61,6 +61,43 @@ fn alive(pid: u32) -> bool {
     }
 }
 
+// Windows has no process group to signal: the deadline signal ends the job
+// that holds the tool, and with it every process the tool started.
+windows_test! {
+    "Windows only: job objects",
+    fn a_deadline_signal_ends_the_whole_job_and_leaves_reaping_to_its_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("grandchild.pid");
+        let mut command = Command::new("powershell");
+        command.args([
+            "-NoProfile",
+            "-Command",
+            &format!(
+                "$p = Start-Process -FilePath ping -ArgumentList '-n','60','127.0.0.1' -PassThru -WindowStyle Hidden; \
+                 Set-Content -LiteralPath '{}' -Value $p.Id; Start-Sleep -Seconds 60",
+                pid_file.display()
+            ),
+        ]);
+        // Dropping the owner closes the job, which ends anything a failed
+        // assertion leaves running.
+        let owner = Arc::new(Mutex::new(OwnedProcess::new(command.spawn().unwrap())));
+        let started = Instant::now();
+        let grandchild = loop {
+            let recorded = std::fs::read_to_string(&pid_file).ok().and_then(|text| text.trim().parse::<u32>().ok());
+            if let Some(pid) = recorded { break pid; }
+            assert!(started.elapsed() < Duration::from_secs(30), "the tool never recorded the process it started");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let registry = Mutex::new(vec![owner.clone()]);
+        signal_for_exit(&registry);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while alive(grandchild) || lock_child(&owner).try_wait().unwrap().is_none() {
+            assert!(Instant::now() < deadline, "the deadline signal left part of the tool's tree running");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
 #[test]
 fn cancelling_a_tool_ends_what_it_started() {
     let dir = tempfile::tempdir().unwrap();

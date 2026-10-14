@@ -3,6 +3,12 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::menu::{OPEN_SETTINGS_MENU_ID, SAFE_QUIT_MENU_ID};
 
+// Before every module: unit tests below use it.
+#[cfg(test)]
+#[macro_use]
+#[path = "../tests/support/windows_test.rs"]
+mod windows_test;
+
 pub mod activity;
 mod sqlite;
 pub mod ai_acceleration;

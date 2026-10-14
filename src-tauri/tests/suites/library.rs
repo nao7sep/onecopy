@@ -1,3 +1,6 @@
+#[macro_use]
+#[path = "../support/windows_test.rs"]
+mod windows_test;
 #[path = "../activity_tests.rs"]
 mod activity_tests;
 #[path = "../derived_state_tests.rs"]

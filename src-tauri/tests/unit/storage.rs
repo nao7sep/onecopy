@@ -108,31 +108,32 @@ fn publication_failure_preserves_the_obstruction_and_removes_the_owned_stage() {
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
 }
 
-#[test]
-#[cfg(windows)]
-fn readonly_replacement_stages_are_cleaned_on_admission_and_publication_failure() {
-    for refusal in [false, true] {
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("state.json");
-        std::fs::write(&target, b"original").unwrap();
-        let mut permissions = std::fs::metadata(&target).unwrap().permissions();
-        permissions.set_readonly(true);
-        std::fs::set_permissions(&target, permissions).unwrap();
+windows_test! {
+    "Windows only: the read-only file attribute blocks replacement only on Windows",
+    fn readonly_replacement_stages_are_cleaned_on_admission_and_publication_failure() {
+        for refusal in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let target = dir.path().join("state.json");
+            std::fs::write(&target, b"original").unwrap();
+            let mut permissions = std::fs::metadata(&target).unwrap().permissions();
+            permissions.set_readonly(true);
+            std::fs::set_permissions(&target, permissions).unwrap();
 
-        let error = write_atomic_inner(&target, b"replacement", false, || {
-            let stage = std::fs::read_dir(dir.path()).unwrap().map(|entry| entry.unwrap().path())
-                .find(|path| path.extension().is_some_and(|ext| ext == "tmp")).unwrap();
-            assert!(std::fs::metadata(stage).unwrap().permissions().readonly());
-            if refusal { Err("primary admission failure".to_string()) } else { Ok(()) }
-        }).unwrap_err();
+            let error = write_atomic_inner(&target, b"replacement", false, || {
+                let stage = std::fs::read_dir(dir.path()).unwrap().map(|entry| entry.unwrap().path())
+                    .find(|path| path.extension().is_some_and(|ext| ext == "tmp")).unwrap();
+                assert!(std::fs::metadata(stage).unwrap().permissions().readonly());
+                if refusal { Err("primary admission failure".to_string()) } else { Ok(()) }
+            }).unwrap_err();
 
-        if refusal { assert_eq!(error, "primary admission failure"); }
-        assert_eq!(std::fs::read(&target).unwrap(), b"original");
-        assert!(std::fs::metadata(&target).unwrap().permissions().readonly());
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
-        let mut permissions = std::fs::metadata(&target).unwrap().permissions();
-        permissions.set_readonly(false);
-        std::fs::set_permissions(&target, permissions).unwrap();
+            if refusal { assert_eq!(error, "primary admission failure"); }
+            assert_eq!(std::fs::read(&target).unwrap(), b"original");
+            assert!(std::fs::metadata(&target).unwrap().permissions().readonly());
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+            let mut permissions = std::fs::metadata(&target).unwrap().permissions();
+            permissions.set_readonly(false);
+            std::fs::set_permissions(&target, permissions).unwrap();
+        }
     }
 }
 

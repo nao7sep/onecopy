@@ -560,26 +560,27 @@ fn a_folder_that_became_a_link_is_refused_and_never_followed() {
     assert_eq!(f.issue_keys(), [("restore-error".to_string(), "notice.restoreFolderBlocked".to_string())]);
 }
 
-#[cfg(windows)]
-#[test]
-fn a_folder_that_became_a_junction_is_refused_and_never_followed() {
-    // 3, with the link Windows makes without privilege.
-    let f = fixture("junction", false);
-    let id = f.deleted("album/a.jpg", b"a", "i1", TrashRole::Main);
-    let elsewhere = f.dir.path().join("elsewhere");
-    std::fs::create_dir(&elsewhere).unwrap();
-    std::fs::remove_dir(f.root.join("album")).unwrap();
-    let made = std::process::Command::new("cmd")
-        .args(["/C", "mklink", "/J"])
-        .arg(f.root.join("album"))
-        .arg(&elsewhere)
-        .output()
-        .unwrap();
-    assert!(made.status.success(), "mklink /J failed: {}", String::from_utf8_lossy(&made.stderr));
-    let outcome = f.restore(&[id]);
-    assert_eq!(outcome.failed, 1);
-    assert!(std::fs::read_dir(&elsewhere).unwrap().next().is_none(), "nothing went through the junction");
-    assert_eq!(f.issue_keys(), [("restore-error".to_string(), "notice.restoreFolderBlocked".to_string())]);
+windows_test! {
+    "Windows only: junctions",
+    fn a_folder_that_became_a_junction_is_refused_and_never_followed() {
+        // 3, with the link Windows makes without privilege.
+        let f = fixture("junction", false);
+        let id = f.deleted("album/a.jpg", b"a", "i1", TrashRole::Main);
+        let elsewhere = f.dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::fs::remove_dir(f.root.join("album")).unwrap();
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(f.root.join("album"))
+            .arg(&elsewhere)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "mklink /J failed: {}", String::from_utf8_lossy(&made.stderr));
+        let outcome = f.restore(&[id]);
+        assert_eq!(outcome.failed, 1);
+        assert!(std::fs::read_dir(&elsewhere).unwrap().next().is_none(), "nothing went through the junction");
+        assert_eq!(f.issue_keys(), [("restore-error".to_string(), "notice.restoreFolderBlocked".to_string())]);
+    }
 }
 
 #[test]

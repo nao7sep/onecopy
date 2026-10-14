@@ -8,6 +8,13 @@ use onecopy_lib::binaries::{BinaryFacts, BinaryStatus};
 use onecopy_lib::binaries_manager::*;
 use onecopy_lib::paths::MODELS_DIR_NAME;
 
+/// The Windows face-scoring runtime's registry entry, on any platform:
+/// `spec_of` offers it only on Windows, but its presence rule is not
+/// platform code.
+fn windows_runtime() -> &'static DependencySpec {
+    DEPENDENCIES.iter().find(|spec| spec.id == "onnxruntime-win-x64").unwrap()
+}
+
 fn home(label: &str) -> tempfile::TempDir {
     tempfile::Builder::new()
         .prefix(&format!("onecopy-deps-{label}-"))
@@ -71,9 +78,11 @@ fn the_registry_carries_ffmpeg_and_the_whisper_model() {
     assert_eq!(pinned.sha256.len(), 64);
     assert!(pinned.bytes > 1_000_000_000, "large-v3-turbo is ~1.6 GB");
 
-    #[cfg(windows)]
+    // The face-scoring runtime is offered only where ONNX Runtime is loaded
+    // from a managed file; its registration is the same everywhere.
+    assert_eq!(spec_of("onnxruntime-win-x64").is_some(), cfg!(windows));
     {
-        let runtime = spec_of("onnxruntime-win-x64").expect("Windows runtime is registered");
+        let runtime = windows_runtime();
         assert_eq!(runtime.kind, DependencyKind::Runtime);
         let pin = runtime.pinned.as_ref().expect("runtime carries a pin");
         let extracted = pin.extracted.as_ref().expect("runtime is extracted from NuGet");
@@ -166,11 +175,10 @@ fn a_models_presence_check_is_size_exact() {
     assert_eq!(state.status, BinaryStatus::NotInstalled);
 }
 
-#[cfg(windows)]
 #[test]
 fn the_runtime_presence_check_uses_the_extracted_dll_size() {
     let dir = home("runtime-size");
-    let spec = spec_of("onnxruntime-win-x64").unwrap();
+    let spec = windows_runtime();
     let pin = spec.pinned.as_ref().unwrap();
     let target = installed_path(dir.path(), spec);
     std::fs::create_dir_all(target.parent().unwrap()).unwrap();
@@ -264,10 +272,7 @@ fn installed_paths_split_binaries_from_models() {
     assert!(model.starts_with(dir.path().join(MODELS_DIR_NAME)));
     assert_ne!(ffmpeg, model);
 
-    #[cfg(windows)]
-    {
-        let runtime = installed_path(dir.path(), spec_of("onnxruntime-win-x64").unwrap());
-        assert!(runtime.starts_with(dir.path().join(BIN_DIR_NAME)));
-        assert_eq!(runtime.file_name().unwrap(), "onnxruntime.dll");
-    }
+    let runtime = installed_path(dir.path(), windows_runtime());
+    assert!(runtime.starts_with(dir.path().join(BIN_DIR_NAME)));
+    assert_eq!(runtime.file_name().unwrap(), "onnxruntime.dll");
 }

@@ -79,22 +79,37 @@ afterEach(() => {
   vi.resetModules();
 });
 
-describe("the platform word", () => {
-  // tests/setup.ts stubs navigator.platform = "" for the node environment, and
-  // no spec overrode it — so isApplePlatform was permanently false suite-wide
-  // and primaryModWord(), the ONE platform-dependent export, had no test.
-  it("reads Cmd on Apple platforms", async () => {
-    vi.stubGlobal("navigator", { platform: "MacIntel", userAgent: "" });
+describe("the platform-bound exports", () => {
+  // tests/setup.ts stubs navigator.platform = "" for the node environment, so
+  // without a stub of their own these read the non-Apple answer suite-wide.
+  async function onPlatform(platform: string) {
+    vi.stubGlobal("navigator", { platform, userAgent: "" });
     vi.resetModules();
-    const { primaryModWord } = await import("../../src/utils/shortcuts");
+    return import("../../src/utils/shortcuts");
+  }
+
+  it("reads Cmd and Finder on Apple platforms", async () => {
+    const { primaryModWord, fileManagerWord } = await onPlatform("MacIntel");
     expect(primaryModWord()).toBe("Cmd");
+    expect(fileManagerWord()).toBe("Finder");
   });
 
-  it("reads Ctrl elsewhere", async () => {
-    vi.stubGlobal("navigator", { platform: "Win32", userAgent: "" });
-    vi.resetModules();
-    const { primaryModWord } = await import("../../src/utils/shortcuts");
+  it("reads Ctrl and Explorer elsewhere", async () => {
+    const { primaryModWord, fileManagerWord } = await onPlatform("Win32");
     expect(primaryModWord()).toBe("Ctrl");
+    expect(fileManagerWord()).toBe("Explorer");
+  });
+
+  it("leaves Ctrl to the macOS text system and keeps the Cmd chord", async () => {
+    const { shadowsMacTextEditing } = await onPlatform("MacIntel");
+    expect(shadowsMacTextEditing(key({ key: "a", ctrlKey: true }))).toBe(true);
+    expect(shadowsMacTextEditing(key({ key: "a", metaKey: true }))).toBe(false);
+    expect(shadowsMacTextEditing(key({ key: "a", metaKey: true, ctrlKey: true }))).toBe(false);
+  });
+
+  it("never stands Ctrl down off macOS, where it is the command modifier", async () => {
+    const { shadowsMacTextEditing } = await onPlatform("Win32");
+    expect(shadowsMacTextEditing(key({ key: "a", ctrlKey: true }))).toBe(false);
   });
 });
 

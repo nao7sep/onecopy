@@ -22,7 +22,9 @@ describe("the Rust integration harness inventory", () => {
     const included = suitePaths.flatMap((path) =>
       captures(
         readFileSync(join(crateRoot, path), "utf8"),
-        /^#\[path = "\.\.\/([^\"]+\.rs)"\]$/gm,
+        // Root modules only: shared support under tests/support/ is
+        // included by several suites on purpose.
+        /^#\[path = "\.\.\/([^\"/]+\.rs)"\]$/gm,
       ),
     );
     const standalone = captures(

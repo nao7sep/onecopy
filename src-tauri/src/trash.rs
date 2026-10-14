@@ -819,6 +819,12 @@ pub enum UnfitPath {
 /// lossy replacement character, never through deleted-file storage, and on
 /// Windows never a component Windows would read as a separator or a drive.
 pub fn relative_components(relative: &str) -> Result<Vec<&str>, UnfitPath> {
+    components_under(relative, cfg!(windows))
+}
+
+/// `relative_components` with Windows' name rules chosen by the caller, so
+/// either system's rules can be proven on the other.
+fn components_under(relative: &str, windows_names: bool) -> Result<Vec<&str>, UnfitPath> {
     if relative.contains('\u{FFFD}') || relative.contains('\0') {
         return Err(UnfitPath::Unrepresentable);
     }
@@ -827,7 +833,7 @@ pub fn relative_components(relative: &str) -> Result<Vec<&str>, UnfitPath> {
         if component.is_empty() || *component == "." || *component == ".." {
             return Err(UnfitPath::Unrepresentable);
         }
-        if cfg!(windows) && component.contains(['\\', ':']) {
+        if windows_names && component.contains(['\\', ':']) {
             return Err(UnfitPath::Unrepresentable);
         }
     }
@@ -993,7 +999,8 @@ fn folder_of(relative: &str) -> &str {
 
 #[cfg(test)]
 // EXCEPTION to tests-folder conventions: the callback is a private
-// exact-boundary seam and must not widen the shipped Trash API.
+// exact-boundary seam, and the platform-chosen name rules a private helper;
+// neither may widen the shipped Trash API.
 #[path = "../tests/unit/trash.rs"]
 mod boundary_tests;
 

@@ -56,28 +56,29 @@ fn measurement_uses_the_walks_filesystem_spelling_and_keeps_its_ui_owner() {
     assert_eq!(std::fs::read_dir(&ui_root).unwrap().count(), 0);
 }
 
-#[cfg(windows)]
-#[test]
-fn ordinary_windows_root_can_be_measured_and_emptied() {
-    let (_dir, source, _) = measured_fixture();
-    let ordinary_source =
-        PathBuf::from(crate::winpath::for_display(source.to_str().unwrap()).as_ref());
-    let row = overview(std::slice::from_ref(&ordinary_source)).remove(0);
-    let ordinary_root = ordinary_source.join(TRASH_DIR_NAME);
-    assert_eq!(row.root, ordinary_root.to_string_lossy());
-    assert_eq!((row.files, row.bytes), (2, 1000));
-    assert!(row.measurement_error.is_none());
-    assert!(!row.plan_token.is_empty());
-    let emptied = empty_root_with_progress(
-        &ordinary_root,
-        &row.plan_token,
-        &AtomicBool::new(false),
-        &|_| {},
-        &|_, _| Ok(()),
-    )
-    .unwrap();
-    assert!(!emptied.plan_changed);
-    assert_eq!(std::fs::read_dir(&ordinary_root).unwrap().count(), 0);
+windows_test! {
+    "Windows only: the verbatim long-path spelling exists only on Windows",
+    fn ordinary_windows_root_can_be_measured_and_emptied() {
+        let (_dir, source, _) = measured_fixture();
+        let ordinary_source =
+            PathBuf::from(crate::winpath::for_display(source.to_str().unwrap()).as_ref());
+        let row = overview(std::slice::from_ref(&ordinary_source)).remove(0);
+        let ordinary_root = ordinary_source.join(TRASH_DIR_NAME);
+        assert_eq!(row.root, ordinary_root.to_string_lossy());
+        assert_eq!((row.files, row.bytes), (2, 1000));
+        assert!(row.measurement_error.is_none());
+        assert!(!row.plan_token.is_empty());
+        let emptied = empty_root_with_progress(
+            &ordinary_root,
+            &row.plan_token,
+            &AtomicBool::new(false),
+            &|_| {},
+            &|_, _| Ok(()),
+        )
+        .unwrap();
+        assert!(!emptied.plan_changed);
+        assert_eq!(std::fs::read_dir(&ordinary_root).unwrap().count(), 0);
+    }
 }
 
 #[test]
@@ -505,4 +506,13 @@ fn a_stop_between_the_manifest_line_and_the_move_lists_nothing_and_keeps_the_sou
     let listing = read_day(&day).unwrap();
     assert!(listing.records.is_empty());
     assert_eq!(listing.restored, 0);
+}
+
+#[test]
+fn separators_and_drives_are_unrepresentable_only_under_windows_name_rules() {
+    for relative in [r"trips\a.jpg", "trips/c:a.jpg", "C:/a.jpg", "trips/a.jpg:stream"] {
+        assert_eq!(components_under(relative, true), Err(UnfitPath::Unrepresentable), "{relative}");
+        assert!(components_under(relative, false).is_ok(), "{relative}");
+    }
+    assert_eq!(components_under("trips/a.jpg", true).unwrap(), ["trips", "a.jpg"]);
 }

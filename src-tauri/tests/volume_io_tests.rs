@@ -281,6 +281,21 @@ fn each_configured_root_is_its_own_drive_wherever_it_is_mounted() {
     assert_ne!(on_share, volume_io::lane_name(&home.join("elsewhere.jpg")));
 }
 
+// A drive is one lane however a path spells it: in either letter case, behind
+// the long-path prefix, and for a share whatever case its server and name
+// are typed in.
+windows_test! {
+    "Windows only: drive letters and shares parse only on Windows",
+    fn every_spelling_of_one_drive_or_share_shares_its_lane() {
+        let lane = |path: &str| volume_io::lane_name(Path::new(path));
+        assert_eq!(lane(r"q:\photos\a.jpg"), lane(r"Q:\other\b.jpg"));
+        assert_eq!(lane(r"q:\photos\a.jpg"), lane(r"\\?\Q:\photos\a.jpg"));
+        assert_ne!(lane(r"q:\photos\a.jpg"), lane(r"r:\photos\a.jpg"));
+        assert_eq!(lane(r"\\Server\Share\a.jpg"), lane(r"\\?\UNC\server\share\b.jpg"));
+        assert_ne!(lane(r"\\server\share\a.jpg"), lane(r"\\server\other\a.jpg"));
+    }
+}
+
 /// Walk entries carry a root's resolved spelling; they stay on the root's
 /// lane instead of falling back to the startup disk.
 #[cfg(unix)]

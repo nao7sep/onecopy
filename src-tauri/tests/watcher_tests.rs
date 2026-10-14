@@ -257,26 +257,27 @@ fn an_unreadable_directory_never_turns_known_files_into_missing_rows() {
     assert_eq!(state, (0, 0), "success retires the current condition");
 }
 
-#[cfg(windows)]
-#[test]
-fn restat_uses_the_same_windows_spelling_as_a_full_scan() {
-    let dir = tempfile::Builder::new()
-        .prefix("onecopy-watch-winpath-")
-        .tempdir()
-        .unwrap();
-    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
-    let root = dir.path().join("watched");
-    std::fs::create_dir_all(&root).unwrap();
-    std::fs::write(root.join("new.jpg"), b"fresh").unwrap();
+windows_test! {
+    "Windows only: the verbatim long-path spelling exists only on Windows",
+    fn restat_uses_the_same_windows_spelling_as_a_full_scan() {
+        let dir = tempfile::Builder::new()
+            .prefix("onecopy-watch-winpath-")
+            .tempdir()
+            .unwrap();
+        let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+        let root = dir.path().join("watched");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("new.jpg"), b"fresh").unwrap();
 
-    let stored_root = onecopy_lib::winpath::for_fs(&root).into_owned();
-    onecopy_lib::scanner::walk_root(&conn, &stored_root, &lists()).unwrap();
-    assert_eq!(restat_dir(&conn, &root, &lists(), &[root.to_string_lossy().into_owned()], &no_data_root()).unwrap(), 0);
+        let stored_root = onecopy_lib::winpath::for_fs(&root).into_owned();
+        onecopy_lib::scanner::walk_root(&conn, &stored_root, &lists()).unwrap();
+        assert_eq!(restat_dir(&conn, &root, &lists(), &[root.to_string_lossy().into_owned()], &no_data_root()).unwrap(), 0);
 
-    let rows: i64 = conn
-        .query_row("SELECT COUNT(*) FROM paths", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(rows, 1, "the watcher must not fork the full-scan row");
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM paths", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "the watcher must not fork the full-scan row");
+    }
 }
 
 #[test]

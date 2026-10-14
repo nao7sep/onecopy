@@ -573,41 +573,42 @@ fn stills_needing_ffmpeg_wait_for_it_instead_of_failing() {
     assert_eq!((again.derived, again.blocked_no_ffmpeg), (0, 0));
 }
 
-#[cfg(windows)]
-#[test]
-fn windows_native_decode_limit_waits_for_ffmpeg_instead_of_failing_the_file() {
-    let dir = tempfile::Builder::new()
-        .prefix("onecopy-windows-decode-limit-")
-        .tempdir()
+windows_test! {
+    "Windows only: the lower native decode ceiling is Windows'",
+    fn windows_native_decode_limit_waits_for_ffmpeg_instead_of_failing_the_file() {
+        let dir = tempfile::Builder::new()
+            .prefix("onecopy-windows-decode-limit-")
+            .tempdir()
+            .unwrap();
+        let source = gradient_jpeg(dir.path(), "over-native-boundary.jpg", 1664, 1664);
+        let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+        let cache = CachePaths::new(dir.path().join("cache"));
+        conn.execute_batch(&format!(
+            "INSERT INTO contents (hash, byte_size, kind) VALUES ('large01', 1, 'image');
+             INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash)
+               VALUES ('{}', '{}', 'over-native-boundary.jpg', 'image', 'large01');",
+            source.display(),
+            dir.path().display(),
+        ))
         .unwrap();
-    let source = gradient_jpeg(dir.path(), "over-native-boundary.jpg", 1664, 1664);
-    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
-    let cache = CachePaths::new(dir.path().join("cache"));
-    conn.execute_batch(&format!(
-        "INSERT INTO contents (hash, byte_size, kind) VALUES ('large01', 1, 'image');
-         INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash)
-           VALUES ('{}', '{}', 'over-native-boundary.jpg', 'image', 'large01');",
-        source.display(),
-        dir.path().display(),
-    ))
-    .unwrap();
 
-    let stats = derive_images_pending(&conn, &cache, 320, 1600, None, None).unwrap();
-    assert_eq!((stats.derived, stats.failed, stats.blocked_no_ffmpeg), (0, 0, 1));
-    assert_eq!(
-        conn.query_row(
-            "SELECT derive_outcome FROM contents WHERE hash = 'large01'",
-            [],
-            |row| row.get::<_, String>(0),
-        )
-        .unwrap(),
-        NEEDS_FFMPEG,
-    );
-    assert_eq!(
-        conn.query_row("SELECT COUNT(*) FROM active_issues", [], |row| row.get::<_, i64>(0))
+        let stats = derive_images_pending(&conn, &cache, 320, 1600, None, None).unwrap();
+        assert_eq!((stats.derived, stats.failed, stats.blocked_no_ffmpeg), (0, 0, 1));
+        assert_eq!(
+            conn.query_row(
+                "SELECT derive_outcome FROM contents WHERE hash = 'large01'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
             .unwrap(),
-        0,
-    );
+            NEEDS_FFMPEG,
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM active_issues", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0,
+        );
+    }
 }
 
 #[test]
