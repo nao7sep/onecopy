@@ -249,8 +249,7 @@ export default function ComparisonView({
 
       {busy || mutationResult !== null || exitQuiescing ? (
         <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
-          {/* One line, like Main's status bar; a cut line opens whole on
-              Enter, a click or a tap. */}
+          {/* One line, like Main's status bar. */}
           <IdentifyingText
             className="flex-1"
             value={exitQuiescing

@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import {
   useDestinationsStore,
   type DestinationFact,
@@ -20,11 +20,11 @@ import { useDestinationReceiver } from "./DestinationDragProvider";
 import Button, { IconButton } from "./ui/Button";
 import { TextInput } from "./ui/Field";
 import IdentifyingText from "./ui/IdentifyingText";
-import NameList from "./ui/NameList";
 import BoundedText from "./ui/BoundedText";
 import DestinationConflictModal from "./DestinationConflictModal";
 import { useItemsStore } from "../state/items-store";
 import { useI18n } from "../i18n/I18nContext";
+import type { Translator } from "../i18n/translate";
 import { hasOpenModal } from "../utils/modalStack";
 import { useComparisonStore } from "../state/comparison-store";
 import { useFullscreenViewStore } from "../state/fullscreen-view-store";
@@ -216,12 +216,12 @@ function RootRow({ root, isOpen }: { root: string; isOpen: boolean }) {
             keeping its final segment. Only here: a root is where truncation
             actually hurt (the path IS its identity), while hundreds of
             subfolder rows doubling in height would halve the visible tree.
-            The action bar shows the active row's path whole on request. */}
+            The action bar names the active row's path again. */}
         <span className="min-w-0 flex-1" title={root}>
           <span className="block truncate font-medium text-ink-strong">
             {leafName(root)}
           </span>
-          <IdentifyingText value={root} path reveal={false} className="text-[11px] text-ink-muted" />
+          <IdentifyingText value={root} path className="text-[11px] text-ink-muted" />
         </span>
       </div>
       {isOpen ? (
@@ -298,12 +298,9 @@ function ActionBar() {
   return (
     <div className="-mx-3 mt-3 shrink-0 border-t border-border px-3 pt-3">
       {/* This is the exact destination a Move/Copy button below commits
-          against, so its full identity must reach a keyboard, touch or
-          screen-reader user, not only a mouse hover (R8-05): the second line
-          keeps the path's final segment and, when cut, opens the whole path
-          on Enter or a tap; the header's accessible name is the path even
-          where the visible leaf name alone would suffice. A Move's
-          confirmation then names the destination in full. */}
+          against (R8-05): the second line keeps the path's final segment,
+          its tooltip and the header's accessible name carry the whole path,
+          and a Move's confirmation names the destination in full. */}
       <p
         className="mb-0.5 truncate text-sm font-medium text-ink-strong"
         aria-label={activePath}
@@ -416,7 +413,8 @@ export default function DestinationsTab() {
   const activePath = useDestinationsStore((s) => s.activePath);
   const setActive = useDestinationsStore((s) => s.setActive);
   const toggleExpand = useDestinationsStore((s) => s.toggleExpand);
-  const { t, text, rich } = useI18n();
+  const i18n = useI18n();
+  const { t, text } = i18n;
 
   // Folders created OUTSIDE the app (Finder, Explorer) appear when the pane
   // mounts and whenever the app window regains focus — the exact moment a
@@ -591,13 +589,8 @@ export default function DestinationsTab() {
           {/* Text to be read: whole, and scrolling inside its own height
               limit rather than pushing the tree out of the pane. */}
           <BoundedText className="max-h-32 min-w-0 flex-1 select-text break-words">
-            {rich("destinations.resultLine", {
-              facts: result.facts.map((fact, index) => (
-                <Fragment key={index}>
-                  {index > 0 ? " · " : null}
-                  <ResultFact fact={fact} />
-                </Fragment>
-              )),
+            {t("destinations.resultLine", {
+              facts: result.facts.map((fact) => factText(fact, i18n)).join(" · "),
             })}
           </BoundedText>
           <IconButton
@@ -621,17 +614,18 @@ export default function DestinationsTab() {
   );
 }
 
-/** One fact of the result line; a fact about several files names a few of
- * them and counts the rest, whose complete list the count opens. */
-function ResultFact({ fact }: { fact: DestinationFact }) {
-  const { text, rich } = useI18n();
-  if (fact.paths === undefined) return <>{text(fact)}</>;
-  const values: Record<string, ReactNode> = {};
-  for (const [name, value] of Object.entries(fact.values ?? {})) {
-    values[name] = typeof value === "object" ? text(value) : value;
-  }
-  values.names = <NameList values={fact.paths} path />;
-  return <>{rich(fact.key, values)}</>;
+/** How many files a fact names before it counts the rest. */
+export const NAMED_FILES = 3;
+
+/** One fact of the result line. A fact about several files names the first
+ * few by their file names (a path shortened to its final segment) and counts
+ * the rest (interface-styling-conventions, "A message names a few values"). */
+export function factText(fact: DestinationFact, { text, t, list }: Translator): string {
+  if (fact.paths === undefined) return text(fact);
+  const rest = fact.paths.length - NAMED_FILES;
+  const named = fact.paths.slice(0, NAMED_FILES).map((path) => leafName(path));
+  const names = list(rest > 0 ? [...named, t("common.countMore", { count: rest })] : named);
+  return text({ key: fact.key, values: { ...fact.values, names } });
 }
 
 /** The drop's Move/Copy question (Phase 33). Dropping used to read modifier

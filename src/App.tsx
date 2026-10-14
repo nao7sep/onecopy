@@ -482,11 +482,10 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
       {/* The status bar: standing state always, transient conditions on top.
           What it says is decided by `statusLine`, which is where the priority
           order and the "never blank" rule live. The line takes what the links
-          leave and is cut first; the links are captions kept whole, and only
-          a bar too narrow for all of them moves whole links onto a row. */}
+          leave and is cut first; the links are captions kept whole. */}
       <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-border bg-surface px-3 py-1 text-xs">
         <MainStatusLine />
-        <span className="flex min-w-0 shrink flex-wrap items-center justify-end gap-x-3 gap-y-1">
+        <span className="flex min-w-0 shrink items-center gap-3">
           <PlaybackControls />
           {!mutationRunning && mutationResult !== null && !exitQuiescing ? (
             <MutationResultActions
@@ -594,13 +593,12 @@ function MainStatusLine() {
       }`}
       title={status.title ?? status.text}
       // The visible line keeps the bar one line high: past its width it ends
-      // with an ellipsis and opens whole on Enter, a click or a tap. The hover
-      // title and the accessible name carry the longer explanation where a
-      // status has one (R8-09).
+      // with an ellipsis. The hover title and the accessible name carry the
+      // longer explanation where a status has one (R8-09).
       aria-label={status.title ?? status.text}
       role={status.announce === true ? (status.tone === "danger" ? "alert" : "status") : undefined}
     >
-      <IdentifyingText value={status.text} />
+      <IdentifyingText value={status.text} title={status.title ?? status.text} />
     </span>
   );
 }

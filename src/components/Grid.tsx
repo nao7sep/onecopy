@@ -444,9 +444,8 @@ function ListRow({
       <span
         className="min-w-0 text-left text-xs text-ink-muted"
         style={columnStyle("folders", widths)}
-        title={item.dirPaths.join("\n")}
       >
-        <IdentifyingText value={item.dirPaths.join(" · ")} path reveal={false} />
+        <IdentifyingText value={item.dirPaths.join(" · ")} path title={item.dirPaths.join("\n")} />
       </span>
     </div>
   );

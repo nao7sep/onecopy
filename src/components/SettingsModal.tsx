@@ -159,8 +159,7 @@ function ScreensSection() {
               })}
             </span>
             {/* The pixel counts are passed as text: a resolution carries no
-                thousands separator. One line beside the row's buttons; a cut
-                one opens whole on Enter, a click or a tap. */}
+                thousands separator. One line beside the row's buttons. */}
             <IdentifyingText
               className="text-xs text-ink-muted"
               value={t("settings.screenDetail", {

@@ -548,8 +548,6 @@ function AudioSurface({
   return (
     <div className="flex h-full min-h-0 w-full flex-col justify-center gap-5 p-4">
       <div className="flex shrink-0 flex-col items-center gap-3">
-        {/* One centred line; a cut name opens whole on Enter, a click or
-            a tap. */}
         <IdentifyingText value={detail.fileName} className="w-full text-center text-sm text-ink" />
         {/* Keyed by src so playback state never carries across files. */}
         <audio

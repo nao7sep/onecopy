@@ -407,7 +407,7 @@ function DeletedFilesBrowser({
           <span className="min-w-0 flex-1">
             <span className="flex items-baseline gap-2">
               <span className="truncate text-sm text-ink-strong">{name}</span>
-              <IdentifyingText value={folderLabel} path reveal={false} className="text-xs text-ink-muted" />
+              <IdentifyingText value={folderLabel} path className="text-xs text-ink-muted" />
             </span>
             <span className="block truncate text-xs text-ink-muted">{facts}</span>
           </span>
@@ -439,7 +439,7 @@ function DeletedFilesBrowser({
           {/* The folder keeps its final segment; the facts after it are cut
               at their end only once the folder is gone. */}
           <span className="flex min-w-0 text-xs text-ink-muted">
-            <IdentifyingText value={folderLabel} path reveal={false} />
+            <IdentifyingText value={folderLabel} path />
             {facts === "" ? null : (
               <span className="max-w-full shrink-0 truncate">{` · ${facts}`}</span>
             )}
@@ -533,8 +533,7 @@ function DeletedFilesBrowser({
           }}
         />
       ) : null}
-      {/* The location names this list; one line keeping its final segment,
-          and a cut one opens whole on Enter, a click or a tap. */}
+      {/* The location names this list: one line keeping its final segment. */}
       <IdentifyingText value={location} path className="mb-2 text-xs text-ink-muted" />
       <TextInput
         type="search"

@@ -231,8 +231,7 @@ export default function TrashModal({
               className="flex items-center gap-3 rounded-lg border border-border px-3 py-2"
             >
               <div className="min-w-0 flex-1">
-                {/* One line per location, keeping its final segment; a cut
-                    one opens whole on Enter, a click or a tap. */}
+                {/* One line per location, keeping its final segment. */}
                 <IdentifyingText value={row.root} path className="text-sm text-ink" />
                 <p className="text-xs tabular-nums text-ink-muted">
                   {!row.available

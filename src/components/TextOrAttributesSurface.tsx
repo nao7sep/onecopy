@@ -269,8 +269,7 @@ export default function TextOrAttributesSurface({
     <div className="flex h-full min-h-0 w-full flex-col gap-2 p-3">
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
         {/* One line that takes what the controls leave: the name never
-            pushes them onto a row of their own. A cut name opens whole on
-            Enter, a click or a tap. */}
+            pushes them onto a row of their own. */}
         <IdentifyingText value={detail.fileName} className="flex-[1_1_8rem] text-sm text-ink" />
         <span className="flex items-center gap-2">
           <label className="flex items-center gap-2 text-xs text-ink-muted">
@@ -424,7 +423,7 @@ function AttributesBodyView({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0 flex-[1_1_16rem]">
             {/* A heading is identifying text; the copies below end with
-                the name, and a cut one opens whole on request. */}
+                the name. */}
             <h2 className="text-base font-medium text-ink">
               <IdentifyingText value={detail.fileName} />
             </h2>

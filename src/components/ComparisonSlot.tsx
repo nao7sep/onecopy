@@ -175,7 +175,7 @@ export default function ComparisonSlot({
       <figcaption className="mt-1 shrink-0 text-xs text-ink-muted">
         <span className="flex justify-between gap-2">
           {/* One line under the image, so a long name never shrinks the
-              picture; a cut name opens whole on Enter, a click or a tap. */}
+              picture. */}
           <IdentifyingText value={member.fileName} className="text-ink" />
           <span className="flex shrink-0 gap-2">
             {/* A score is a best-face confidence/smile hint, not a percentage

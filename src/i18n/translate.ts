@@ -39,9 +39,9 @@ export type Translator = {
   // A calendar day with no time of day (`yyyy-mm-dd`), such as "Sunday,
   // September 27, 2026", formatted without any time-zone shift.
   calendarDay: (day: string) => string;
-  // Names run together the way the language lists them ("a, b, and c"); an
-  // item may be markup (a shortened name, a "12 more" control).
-  list: (items: readonly ReactNode[]) => ReactNode;
+  // Names run together the way the language lists them ("a, b, and c"),
+  // which also joins a few named values to the count of the rest.
+  list: (items: readonly string[]) => string;
 };
 
 export function createTranslator(language: Language, locale: string = language): Translator {
@@ -85,15 +85,13 @@ export function createTranslator(language: Language, locale: string = language):
   }
 
   function rich(key: MessageKey, values: Record<string, ReactNode>): ReactNode {
-    // A numeric count picks the plural form and reads in the locale's digits.
-    const count = typeof values.count === "number" ? { count: values.count } : undefined;
-    const parts = template(key, count).split(PLACEHOLDER);
+    const parts = template(key, undefined).split(PLACEHOLDER);
     // split with a capture group alternates literal text and placeholder names.
-    return parts.map((part, index) => {
-      if (index % 2 === 0) return part;
-      const value = part in values ? values[part] : `{${part}}`;
-      return createElement(Fragment, { key: index }, typeof value === "number" ? numberFormat.format(value) : value);
-    });
+    return parts.map((part, index) =>
+      index % 2 === 0
+        ? part
+        : createElement(Fragment, { key: index }, part in values ? values[part] : `{${part}}`),
+    );
   }
 
   return {
@@ -123,10 +121,6 @@ export function createTranslator(language: Language, locale: string = language):
       const value = new Date(Date.UTC(year, month - 1, date));
       return Number.isNaN(value.getTime()) ? day : calendarDayFormat.format(value);
     },
-    list: (items) =>
-      // Formatted over stand-in indexes, so each element can be markup.
-      listFormat.formatToParts(items.map((_, index) => String(index))).map((part, index) =>
-        createElement(Fragment, { key: index }, part.type === "element" ? items[Number(part.value)] : part.value),
-      ),
+    list: (items) => listFormat.format(items),
   };
 }

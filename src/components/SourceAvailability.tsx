@@ -31,7 +31,7 @@ export function MissingSourcesNotice({
           </h2>
           <p className="mt-0.5 text-ink-muted">{t("source.missingBody")}</p>
           {/* A banner names each folder on one line, keeping its final
-              segment; a cut path opens whole on Enter, a click or a tap. */}
+              segment. */}
           <BoundedText className="mt-2 max-h-20 text-xs text-ink">
             <ul>
               {missing.map((path) => (

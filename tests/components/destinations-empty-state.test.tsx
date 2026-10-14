@@ -213,7 +213,7 @@ describe("destination folder states", () => {
 describe("the destination result", () => {
   const paths = Array.from({ length: 5 }, (_, index) => `/dest/2024/IMG_${index + 1}.jpg`);
 
-  it("names a few files, counts the rest, and opens the complete list", () => {
+  it("names a few files and counts the rest", () => {
     useDestinationsStore.setState({
       result: {
         severity: "error",
@@ -228,17 +228,15 @@ describe("the destination result", () => {
     // Scoped to the pane: an earlier spec's escaped-failure surface stays on the body.
     const result = within(view.container).getByRole("alert");
     expect(result.textContent).toContain(
-      "Could not write /dest/2024/IMG_1.jpg, /dest/2024/IMG_2.jpg, /dest/2024/IMG_3.jpg, and 2 more; originals kept",
+      "Could not write IMG_1.jpg, IMG_2.jpg, IMG_3.jpg, and 2 more; originals kept",
     );
-    // A counted fact keeps its plural form.
-    expect(result.textContent).toContain("5 destination files already exist with different content");
+    expect(result.textContent).toContain(
+      "5 destination files already exist with different content; originals kept: IMG_1.jpg, IMG_2.jpg, IMG_3.jpg, and 2 more",
+    );
     expect(result.textContent).not.toContain("IMG_4.jpg");
+    expect(within(result).queryByRole("button", { name: /more/ })).toBeNull();
     // Text to be read: whole, inside a height limit that scrolls.
     const sentence = result.firstElementChild as HTMLElement;
     expect(sentence.className.split(" ")).toEqual(expect.arrayContaining(["max-h-32", "overflow-y-auto", "break-words"]));
-
-    fireEvent.click(view.getAllByRole("button", { name: "2 more" })[0]);
-    const list = view.getByRole("dialog", { name: "2 more" });
-    expect(Array.from(list.querySelectorAll("li"), (item) => item.textContent)).toEqual(paths);
   });
 });

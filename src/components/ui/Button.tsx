@@ -14,7 +14,7 @@
 // Focus needs nothing here: App.css gives every button the app's one focus
 // ring, 1px clear of the edge, which quiets while the window is inactive.
 
-import type { ButtonHTMLAttributes, ComponentPropsWithRef } from "react";
+import type { ButtonHTMLAttributes } from "react";
 
 type Variant = "primary" | "secondary" | "ghost" | "danger" | "danger-solid";
 type Size = "xs" | "toolbar" | "sm" | "md";
@@ -149,15 +149,13 @@ export function IconButton({
   );
 }
 
-type LinkTone = "muted" | "primary" | "danger" | "warning" | "current";
+type LinkTone = "muted" | "primary" | "danger" | "warning";
 
 const LINK_TONES: Record<LinkTone, string> = {
   muted: "text-ink-muted enabled:hover:text-ink enabled:active:text-ink-strong",
   primary: "text-primary enabled:active:text-primary-hover",
   danger: "text-danger",
   warning: "text-warning",
-  // Inside a sentence that already carries its tone (an operation result).
-  current: "text-current",
 };
 
 /** A button that reads as a link: a status-bar count, an inline "show" in a
@@ -171,7 +169,7 @@ export function LinkButton({
   wrap = false,
   className = "",
   ...props
-}: ComponentPropsWithRef<"button"> & {
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
   tone?: LinkTone;
   wrap?: boolean;
 }) {

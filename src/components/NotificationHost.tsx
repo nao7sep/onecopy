@@ -156,7 +156,7 @@ function Toast({
             <p className="mt-1 line-clamp-2 select-text break-words text-xs opacity-70">{record.message}</p>
           ) : null}
           {record.path ? (
-            <IdentifyingText value={record.path} path reveal={false} className="mt-1 select-text text-xs opacity-70" />
+            <IdentifyingText value={record.path} path className="mt-1 select-text text-xs opacity-70" />
           ) : null}
         </div>
         <IconButton

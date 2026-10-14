@@ -4,7 +4,7 @@
 // of an ✕, and an ✕ belongs beside the thing it removes, not on a line of its
 // own. The path takes the remaining width on one line, keeping its final
 // segment and losing its middle (interface-styling-conventions, "Identifying
-// text is shortened"); a cut path opens whole on Enter, a click or a tap.
+// text is shortened"), with the whole path in its tooltip.
 //
 // Shared by the setup wizard and the Settings modal so the two lists cannot
 // drift apart.
