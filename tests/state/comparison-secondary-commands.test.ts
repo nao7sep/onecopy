@@ -8,7 +8,7 @@ import { useIssuesStore } from "../../src/state/issues-store";
 import { useAppStore } from "../../src/state/app-store";
 import { restorePreviewAfterComparison, usePreviewStore } from "../../src/state/preview-store";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { closeComparison, decideComparisonPage, installComparisonEventWiring, openComparison, requestComparisonFromMain } from "../../src/workflows/comparison";
+import { closeComparison, comparisonAppKey, decideComparisonPage, installComparisonEventWiring, openComparison, requestComparisonFromMain } from "../../src/workflows/comparison";
 import { createdWindows, emitCalls, fireEvent, invokeCalls, mockCommands, resetTauriMocks, setCurrentMonitor, setMonitors } from "../mocks/tauri";
 
 function members(count = 8): GroupMember[] {
@@ -335,4 +335,39 @@ it("a replaced Comparison session's Preview restore does not take focus from the
   finishShow();
   await older;
   expect(preview.setFocus).not.toHaveBeenCalled();
+});
+
+// Every Comparison window handles the app's shortcuts the same way, whichever
+// has focus (window-conventions): a secondary display hands them to Main,
+// which replays the key to its own handlers.
+it("names the app shortcuts a Comparison window hands to Main", () => {
+  const key = (init: KeyboardEventInit) => new KeyboardEvent("keydown", init);
+  expect(comparisonAppKey(key({ key: "/", metaKey: true }))).toBe("dialog");
+  expect(comparisonAppKey(key({ key: ",", ctrlKey: true }))).toBe("dialog");
+  expect(comparisonAppKey(key({ key: "=", metaKey: true }))).toBe("zoom");
+  expect(comparisonAppKey(key({ key: "0", ctrlKey: true }))).toBe("zoom");
+  expect(comparisonAppKey(key({ key: "Enter" }))).toBeNull();
+  expect(comparisonAppKey(key({ key: "w", metaKey: true }))).toBeNull();
+});
+
+it("replays a secondary display's app shortcut in Main, focusing Main only for a dialog", async () => {
+  const replayed: KeyboardEvent[] = [];
+  const record = (event: KeyboardEvent) => replayed.push(event);
+  window.addEventListener("keydown", record);
+  try {
+    const { sessionId, revision } = renderedProjection();
+    invokeCalls.length = 0;
+    fireEvent("comparison://app-key", { sessionId, revision, key: "=", code: "Equal", shiftKey: false, metaKey: true, ctrlKey: false, altKey: false });
+    await vi.waitFor(() => expect(replayed).toHaveLength(1));
+    expect(replayed[0]).toMatchObject({ key: "=", metaKey: true });
+    expect(invokeCalls.filter((call) => call.command === "focus_window_while_active")).toEqual([]);
+    fireEvent("comparison://app-key", { sessionId, revision: revision + 1, key: "/", code: "Slash", shiftKey: false, metaKey: true, ctrlKey: false, altKey: false });
+    await vi.waitFor(() => expect(replayed).toHaveLength(2));
+    expect(invokeCalls.filter((call) => call.command === "focus_window_while_active").map((call) => call.args.label)).toEqual(["main"]);
+    fireEvent("comparison://app-key", { sessionId: sessionId - 1, revision, key: "/", code: "Slash", shiftKey: false, metaKey: true, ctrlKey: false, altKey: false });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(replayed).toHaveLength(2);
+  } finally {
+    window.removeEventListener("keydown", record);
+  }
 });

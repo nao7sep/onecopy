@@ -10,7 +10,7 @@ import { type ComparisonBroadcast } from "../state/comparison-store";
 import { gridFor } from "../models/comparisonSession";
 import { hasOpenModal } from "../utils/modalStack";
 import RevealCopiesModal from "../components/RevealCopiesModal";
-import { comparisonKeyIsRoutable } from "../workflows/comparison";
+import { comparisonAppKey, comparisonKeyIsRoutable, type ComparisonAppKey } from "../workflows/comparison";
 
 // Secondary displays render one contiguous part of the current page. The main
 // window remains the sole owner of selection and file operations.
@@ -59,6 +59,22 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
       }
       const projection = stateRef.current;
       if (projection === null) return;
+      if (comparisonAppKey(event) !== null) {
+        event.preventDefault();
+        event.stopPropagation();
+        const forwarded: ComparisonAppKey = {
+          sessionId: projection.sessionId,
+          revision: projection.revision,
+          key: event.key,
+          code: event.code,
+          shiftKey: event.shiftKey,
+          metaKey: event.metaKey,
+          ctrlKey: event.ctrlKey,
+          altKey: event.altKey,
+        };
+        void emit("comparison://app-key", forwarded).catch(reportWindowCall("comparison key forwarding"));
+        return;
+      }
       const visibleCount =
         projection.chunks.reduce(
           (count, chunk) => count + chunk.length,

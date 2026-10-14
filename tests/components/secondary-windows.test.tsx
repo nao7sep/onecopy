@@ -314,6 +314,27 @@ describe("a comparison window", () => {
       .toMatchObject({ sessionId: broadcast.sessionId, revision: broadcast.revision, key: "0" });
   });
 
+  it("hands the app's shortcuts to Main, as Main would handle them there", async () => {
+    render(<ComparisonWindow slice={1} />);
+    await act(async () => {});
+    await act(async () => {
+      fireEvent("comparison://state", broadcast);
+    });
+
+    const zoom = new KeyboardEvent("keydown", { key: "=", metaKey: true, cancelable: true });
+    window.dispatchEvent(zoom);
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: ",", ctrlKey: true }));
+    await act(async () => {});
+
+    expect(zoom.defaultPrevented).toBe(true);
+    expect(emitCalls.filter((call) => call.event === "comparison://app-key").map((call) => call.payload))
+      .toMatchObject([
+        { sessionId: broadcast.sessionId, key: "=", metaKey: true },
+        { sessionId: broadcast.sessionId, key: ",", ctrlKey: true },
+      ]);
+    expect(emitCalls.filter((call) => call.event === "comparison://key")).toHaveLength(0);
+  });
+
   it("keeps the latest rendered projection and sends its authority with card input", async () => {
     const view = render(<ComparisonWindow slice={1} />);
     await act(async () => {});

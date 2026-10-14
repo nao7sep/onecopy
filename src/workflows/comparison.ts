@@ -6,7 +6,7 @@ import {
 } from "../models/mainSelection";
 import type { SectionRecoveryContextPayload } from "../models/items";
 import { visibleKeepMarks } from "../models/comparisonSession";
-import { focusWhileActive, log, toErrorFields } from "../repositories";
+import { focusWhileActive, log, reportWindowCall, toErrorFields } from "../repositories";
 import { useAppStore } from "../state/app-store";
 import {
   broadcastComparison,
@@ -38,6 +38,8 @@ import {
 import { configNumber, confirmsTrashDelete } from "../models/config";
 import { isHashKey } from "../models/items";
 import { requestSeq } from "../state/request-seq";
+import { isHelpShortcut, isSettingsShortcut } from "../utils/shortcuts";
+import { isZoomIn, isZoomOut, isZoomReset } from "../utils/zoom";
 
 const comparisonOpening = requestSeq();
 let mainRecoveryAfterFamily: { sessionId: number; context: AnchorContext | null } | null = null;
@@ -391,6 +393,26 @@ export function comparisonKeyIsRoutable(event: {
   );
 }
 
+/** The app shortcuts that work in Comparison besides its own keys: the
+ * shortcuts list and Settings, which open in Main, and zoom, which scales
+ * Main. Every Comparison window hands them to Main (`comparison://app-key`),
+ * so they do the same thing whichever window has focus (window-conventions). */
+export function comparisonAppKey(event: KeyboardEvent): "dialog" | "zoom" | null {
+  if (isHelpShortcut(event) || isSettingsShortcut(event)) return "dialog";
+  if (isZoomIn(event) || isZoomOut(event) || isZoomReset(event)) return "zoom";
+  return null;
+}
+
+/** The forwarded key as Main's own shortcut handlers receive it. */
+export type ComparisonAppKey = ComparisonProjection & {
+  key: string;
+  code: string;
+  shiftKey: boolean;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  altKey: boolean;
+};
+
 export function handleComparisonKey(event: {
   key: string;
   repeat?: boolean;
@@ -502,6 +524,19 @@ const installEvents = createEventInstaller(
     }>("comparison://key", (event) => {
       if (!comparisonProjectionIsCurrent(event.payload)) return;
       handleComparisonKey(event.payload);
+    });
+    // Replayed as the key itself, so Main's own shortcut handlers act on it
+    // exactly as if it had been pressed in Main; a dialog needs Main's focus.
+    await listeners.listen<ComparisonAppKey>("comparison://app-key", async (event) => {
+      // A newer keep mark does not outdate a zoom or a dialog; another session does.
+      const store = useComparisonStore.getState();
+      if (!store.open || event.payload.sessionId !== store.sessionId) return;
+      const { key, code, shiftKey, metaKey, ctrlKey, altKey } = event.payload;
+      const replay = new KeyboardEvent("keydown", { key, code, shiftKey, metaKey, ctrlKey, altKey, bubbles: true, cancelable: true });
+      if (comparisonAppKey(replay) === "dialog") {
+        await focusWhileActive("main").catch(reportWindowCall("main focus"));
+      }
+      window.dispatchEvent(replay);
     });
     await listeners.listen<ComparisonProjection & {
       slotIndex: number;
