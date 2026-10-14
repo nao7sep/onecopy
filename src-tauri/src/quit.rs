@@ -6,17 +6,81 @@ use tauri::{AppHandle, Emitter, Manager};
 use serde_json::json;
 
 const SAVE_WAIT: Duration = Duration::from_millis(1500);
-static SESSION_ENDING: AtomicBool = AtomicBool::new(false);
-static SESSION_COMMITTED: AtomicBool = AtomicBool::new(false);
-static SAVED: (Mutex<(u64, bool)>, Condvar) = (Mutex::new((0, false)), Condvar::new());
+
+/// The OS session-end handshake with Main's required save. One save request
+/// per session end; an acknowledgement releases only its own request; a
+/// committed session end is final, so a later cancellation cannot undo it.
+struct SessionEnd {
+    ending: AtomicBool,
+    committed: AtomicBool,
+    saved: Mutex<(u64, bool)>,
+    changed: Condvar,
+}
+
+impl SessionEnd {
+    const fn new() -> Self {
+        Self {
+            ending: AtomicBool::new(false),
+            committed: AtomicBool::new(false),
+            saved: Mutex::new((0, false)),
+            changed: Condvar::new(),
+        }
+    }
+
+    fn ending(&self) -> bool {
+        self.ending.load(Ordering::SeqCst)
+    }
+
+    /// Asks for the required save once per session end. `deliver` hands the
+    /// request id to Main and returns false when nothing can answer it, which
+    /// releases the wait at once instead of spending the OS's allowance.
+    fn prepare(&self, deliver: impl FnOnce(u64) -> bool) {
+        if self.ending.swap(true, Ordering::SeqCst) { return; }
+        let id = {
+            let mut saved = self.saved.lock().unwrap_or_else(|p| p.into_inner());
+            saved.0 += 1;
+            saved.1 = false;
+            saved.0
+        };
+        if !deliver(id) { self.saved(id); }
+    }
+
+    fn saved(&self, id: u64) {
+        let mut saved = self.saved.lock().unwrap_or_else(|p| p.into_inner());
+        if saved.0 != id { return; }
+        saved.1 = true;
+        self.changed.notify_all();
+    }
+
+    /// Whether this caller is the first to commit, and so owns the exit.
+    fn commit(&self) -> bool {
+        !self.committed.swap(true, Ordering::SeqCst)
+    }
+
+    fn wait_saved(&self, limit: Duration) {
+        let saved = self.saved.lock().unwrap_or_else(|p| p.into_inner());
+        let _ = self.changed.wait_timeout_while(saved, limit, |saved| !saved.1).unwrap_or_else(|p| p.into_inner());
+    }
+
+    /// Withdraws a tentative session end. False once it was committed.
+    #[cfg(any(windows, test))]
+    fn cancel(&self) -> bool {
+        if self.committed.load(Ordering::SeqCst) { return false; }
+        self.saved.lock().unwrap_or_else(|p| p.into_inner()).0 += 1;
+        self.ending.store(false, Ordering::SeqCst);
+        true
+    }
+}
+
+static SESSION: SessionEnd = SessionEnd::new();
 
 /// Whether the OS is ending the session, which skips optional exit work.
 pub(crate) fn session_ending() -> bool {
-    SESSION_ENDING.load(Ordering::SeqCst)
+    SESSION.ending()
 }
 
 pub(crate) fn request_quit(app: &AppHandle) {
-    if SESSION_ENDING.load(Ordering::SeqCst) || crate::app_lifecycle::shutting_down() { return; }
+    if SESSION.ending() || crate::app_lifecycle::shutting_down() { return; }
     if app.get_webview_window("main").is_none() {
         // No renderer owns pending work: Main's ordinary close is intercepted
         // and saves before shutdown; do not recreate the workspace to quit.
@@ -27,37 +91,30 @@ pub(crate) fn request_quit(app: &AppHandle) {
 }
 
 fn prepare_session_end(app: &AppHandle) {
-    if SESSION_ENDING.swap(true, Ordering::SeqCst) { return; }
-    let id = {
-        let mut saved = SAVED.0.lock().unwrap_or_else(|p| p.into_inner());
-        saved.0 += 1;
-        saved.1 = false;
-        saved.0
-    };
-    if app.get_webview_window("main").is_none() {
-        session_end_saved(id);
-    } else if let Err(error) = app.emit_to("main", "app://session-ending", id) {
-        crate::logging::warn("session-end save delivery failed", json!({ "error": error.to_string() }));
-        session_end_saved(id);
-    }
+    SESSION.prepare(|id| {
+        if app.get_webview_window("main").is_none() { return false; }
+        match app.emit_to("main", "app://session-ending", id) {
+            Ok(()) => true,
+            Err(error) => {
+                crate::logging::warn("session-end save delivery failed", json!({ "error": error.to_string() }));
+                false
+            },
+        }
+    });
 }
 
 pub(crate) fn session_end_saved(id: u64) {
-    let mut saved = SAVED.0.lock().unwrap_or_else(|p| p.into_inner());
-    if saved.0 != id { return; }
-    saved.1 = true;
-    SAVED.1.notify_all();
+    SESSION.saved(id);
 }
 
 fn commit_session_end(app: &AppHandle) {
     crate::app_lifecycle::start_exit_deadline(crate::app_lifecycle::SESSION_EXIT_DEADLINE);
     prepare_session_end(app);
-    if SESSION_COMMITTED.swap(true, Ordering::SeqCst) { return; }
+    if !SESSION.commit() { return; }
     let app = app.clone();
     let fallback = app.clone();
     if std::thread::Builder::new().name("onecopy-session-end".into()).spawn(move || {
-        let saved = SAVED.0.lock().unwrap_or_else(|p| p.into_inner());
-        let _ = SAVED.1.wait_timeout_while(saved, SAVE_WAIT, |saved| !saved.1).unwrap_or_else(|p| p.into_inner());
+        SESSION.wait_saved(SAVE_WAIT);
         crate::app_lifecycle::quiesce(&app);
     }).is_err() {
         crate::app_lifecycle::quiesce(&fallback);
@@ -66,10 +123,9 @@ fn commit_session_end(app: &AppHandle) {
 
 #[cfg(windows)]
 fn cancel_session_end(app: &AppHandle) {
-    if SESSION_COMMITTED.load(Ordering::SeqCst) { return; }
-    SAVED.0.lock().unwrap_or_else(|p| p.into_inner()).0 += 1;
-    SESSION_ENDING.store(false, Ordering::SeqCst);
-    let _ = app.emit_to("main", "app://session-end-cancelled", ());
+    if SESSION.cancel() {
+        let _ = app.emit_to("main", "app://session-end-cancelled", ());
+    }
 }
 
 pub(crate) fn install(app: &AppHandle) {
@@ -95,9 +151,52 @@ pub(crate) fn finish_session_end(app: &AppHandle) {
     let _ = app;
 }
 
+/// AppKit's `NSApplicationTerminateReply` values.
 #[cfg(any(target_os = "macos", test))]
-fn session_quit(event: Option<u32>, has_reason: bool) -> bool {
-    event == Some(u32::from_be_bytes(*b"quit")) && has_reason
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminateReply {
+    Cancel = 0,
+    Now = 1,
+    Later = 2,
+}
+
+/// The answer to `applicationShouldTerminate:`. A quit Apple event carrying a
+/// session reason ('why?': logout, restart, shutdown) is the OS ending the
+/// session: never cancelled, answered later once the save and cleanup settle.
+/// Any other terminate (Dock Quit, Cmd+Q from AppKit) is cancelled while the
+/// ordinary quit asks Main, unless the exit sequence is already ready.
+#[cfg(any(target_os = "macos", test))]
+fn terminate_reply(exit_ready: bool, event: Option<u32>, has_reason: bool) -> TerminateReply {
+    if exit_ready { return TerminateReply::Now; }
+    if event == Some(u32::from_be_bytes(*b"quit")) && has_reason { TerminateReply::Later } else { TerminateReply::Cancel }
+}
+
+/// WinUser.h's session-end messages, kept here so the decision below is
+/// testable on every platform.
+#[cfg(any(windows, test))]
+const WM_QUERYENDSESSION: u32 = 0x0011;
+#[cfg(any(windows, test))]
+const WM_ENDSESSION: u32 = 0x0016;
+
+#[cfg(any(windows, test))]
+#[derive(Debug, PartialEq, Eq)]
+enum SessionMessage {
+    /// Windows asks whether the session may end; always allowed.
+    Query,
+    /// Another app vetoed, so the session goes on.
+    Cancelled,
+    /// The session ends once this message returns.
+    Ending,
+}
+
+#[cfg(any(windows, test))]
+fn session_message(message: u32, wparam: usize) -> Option<SessionMessage> {
+    match message {
+        WM_QUERYENDSESSION => Some(SessionMessage::Query),
+        WM_ENDSESSION if wparam == 0 => Some(SessionMessage::Cancelled),
+        WM_ENDSESSION => Some(SessionMessage::Ending),
+        _ => None,
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -139,15 +238,16 @@ mod macos {
                 (Some(event_id), !attribute.is_null() || !parameter.is_null())
             }
         };
-        if crate::app_lifecycle::exit_ready() { return 1; }
-        if session_quit(event_id, reason) {
-            AWAIT_REPLY.store(true, Ordering::SeqCst);
-            commit_session_end(app);
-            2 // NSTerminateLater; reply once cleanup settles.
-        } else {
-            request_quit(app);
-            0 // NSTerminateCancel while the user save/decision is pending.
+        let reply = terminate_reply(crate::app_lifecycle::exit_ready(), event_id, reason);
+        match reply {
+            TerminateReply::Now => {},
+            TerminateReply::Later => {
+                AWAIT_REPLY.store(true, Ordering::SeqCst);
+                commit_session_end(app);
+            },
+            TerminateReply::Cancel => request_quit(app),
         }
+        reply as usize
     }
 
     pub(super) fn finish(app: &AppHandle) {
@@ -167,45 +267,60 @@ mod macos {
 mod windows {
     use super::*;
     use std::{sync::OnceLock, time::Instant};
-    use windows_sys::Win32::{Foundation::{HWND, LPARAM, LRESULT, WPARAM}, UI::{Shell::{SetWindowSubclass, RemoveWindowSubclass, DefSubclassProc}, WindowsAndMessaging::{DispatchMessageW, MsgWaitForMultipleObjects, PeekMessageW, PostQuitMessage, TranslateMessage, MSG, PM_REMOVE, QS_ALLINPUT, WM_ENDSESSION, WM_NCDESTROY, WM_QUERYENDSESSION, WM_QUIT}}};
+    use windows_sys::{core::BOOL, Win32::{Foundation::{HWND, LPARAM, LRESULT, WPARAM}, System::Threading::GetCurrentThreadId, UI::{Shell::{SetWindowSubclass, RemoveWindowSubclass, DefSubclassProc}, WindowsAndMessaging::{DispatchMessageW, EnumThreadWindows, MsgWaitForMultipleObjects, PeekMessageW, PostQuitMessage, TranslateMessage, MSG, PM_REMOVE, QS_ALLINPUT, WM_NCDESTROY, WM_QUIT}}}};
     static APP: OnceLock<AppHandle> = OnceLock::new();
-    const ID: usize = 0x4f4351;
+    pub(super) const ID: usize = 0x4f4351;
 
     pub(super) fn install(app: &AppHandle) {
         APP.get_or_init(|| app.clone());
-        for window in app.webview_windows().values() {
-            install_window(&window.as_ref().window());
+        subclass_thread_windows();
+    }
+
+    /// Hooks every top-level window of the calling thread. Windows sends the
+    /// session-end messages to each of them, and tao's hidden event-target
+    /// window answers `WM_ENDSESSION` by exiting the process at once; hooked,
+    /// it reaches tao only after the required save and cleanup settle.
+    pub(super) fn subclass_thread_windows() {
+        unsafe extern "system" fn each(hwnd: HWND, _: LPARAM) -> BOOL {
+            subclass(hwnd);
+            1
         }
+        // SAFETY: enumerates this thread's own windows; the callback only
+        // subclasses each one on this, its owning, thread.
+        unsafe { EnumThreadWindows(GetCurrentThreadId(), Some(each), 0) };
     }
 
     pub(super) fn install_window(window: &tauri::Window) {
         APP.get_or_init(|| window.app_handle().clone());
         match window.hwnd() {
-            Ok(hwnd) => {
-                // SAFETY: live HWND belongs to this setup/page-load thread;
-                // reinstalling the same callback and ID updates that subclass.
-                if unsafe { SetWindowSubclass(hwnd.0, Some(on_message), ID, 0) } == 0 {
-                    crate::logging::warn("quit hook not installed", json!({}));
-                }
-            },
+            Ok(hwnd) => subclass(hwnd.0),
             Err(error) => crate::logging::warn("quit hook not installed", json!({ "error": error.to_string() })),
         }
     }
 
-    unsafe extern "system" fn on_message(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, _: usize, _: usize) -> LRESULT {
+    fn subclass(hwnd: HWND) {
+        // SAFETY: live HWND belongs to this setup/page-load thread;
+        // reinstalling the same callback and ID updates that subclass.
+        if unsafe { SetWindowSubclass(hwnd, Some(on_message), ID, 0) } == 0 {
+            crate::logging::warn("quit hook not installed", json!({}));
+        }
+    }
+
+    pub(super) unsafe extern "system" fn on_message(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, _: usize, _: usize) -> LRESULT {
         if let Some(app) = APP.get() {
-            if message == WM_QUERYENDSESSION {
+            match session_message(message, wparam) {
                 // Tentative: do not close mutation admission or arm a forced
-                // exit until Windows confirms ENDSESSION(TRUE).
-                prepare_session_end(app);
-                return 1;
-            }
-            if message == WM_ENDSESSION {
-                if wparam == 0 { cancel_session_end(app); }
-                else {
+                // exit until Windows confirms ENDSESSION(TRUE). Never a veto.
+                Some(SessionMessage::Query) => {
+                    prepare_session_end(app);
+                    return 1;
+                },
+                Some(SessionMessage::Cancelled) => cancel_session_end(app),
+                Some(SessionMessage::Ending) => {
                     commit_session_end(app);
                     pump_until_exit();
-                }
+                },
+                None => {},
             }
         }
         // SAFETY: normal subclass forwarding; remove our callback at the

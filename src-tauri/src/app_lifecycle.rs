@@ -87,7 +87,9 @@ const MUTATION_QUIESCE_DEADLINE: Duration = Duration::from_secs(30);
 // two seconds. The watchdog includes shutdown setup and the Tauri Exit tail;
 // no diagnostic or cleanup can prevent it from exiting the process.
 const EXIT_TOTAL_DEADLINE: Duration = Duration::from_secs(42);
-pub(crate) const SESSION_EXIT_DEADLINE: Duration = Duration::from_secs(5);
+// The OS ending the session: under the five seconds Windows gives an app to
+// answer the end of a session before it shows the app as blocking shutdown.
+pub(crate) const SESSION_EXIT_DEADLINE: Duration = Duration::from_secs(4);
 const BACKUP_DRAIN_DEADLINE: Duration = Duration::from_millis(500);
 
 struct ExitBudget {

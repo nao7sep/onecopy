@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { flushConfigForShutdown, resetConfigWritesForTests, useAppStore, retainStatePatch } from "../../src/state/app-store";
 import { setSoundEnabled, setPlaybackVolume } from "../../src/workflows/playback";
 import { cancelQuitDecision, cancelSessionEnd, endSession, installQuitWorkflow, requestQuit, useQuitDiscardStore, useQuitSaveStore } from "../../src/workflows/quit";
@@ -7,6 +7,8 @@ import { useAppShellStore } from "../../src/state/app-shell-store";
 import { effectiveConfig } from "../helpers/config";
 import { fireEvent, invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
+// The native events reach listeners installed once, as at launch.
+beforeAll(installQuitWorkflow);
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
   resetConfigWritesForTests();
@@ -28,7 +30,6 @@ async function settle() { for (let i = 0; i < 20; i++) await Promise.resolve(); 
 function exits() { return invokeCalls.filter((call) => call.command === "request_app_exit"); }
 
 it("native requests join one save and exit despite an optional state failure", async () => {
-  await installQuitWorkflow();
   setPlaybackVolume(0.4);
   retainStatePatch({ zoom: 1.2 });
   mockCommands({ patch_state: () => Promise.reject(new Error("layout cannot be saved")) });
@@ -39,6 +40,19 @@ it("native requests join one save and exit despite an optional state failure", a
   expect(invokeCalls.filter((call) => call.command === "save_config")).toHaveLength(1);
   expect(exits()).toHaveLength(1);
   expect(useQuitSaveStore.getState().choose).toBeNull();
+});
+
+it("native session-end events save, report that save by id and, once cancelled, let quit work again", async () => {
+  setPlaybackVolume(0.4);
+  fireEvent("app://session-ending", 7);
+  await settle();
+  expect(invokeCalls.find((call) => call.command === "session_end_saved")?.args).toEqual({ id: 7 });
+  expect(invokeCalls.filter((call) => call.command === "save_config")).toHaveLength(1);
+  await requestQuit();
+  expect(exits()).toHaveLength(0);
+  fireEvent("app://session-end-cancelled", null);
+  await requestQuit();
+  expect(exits()).toHaveLength(1);
 });
 
 it("failed required save cancels exit and Retry saves later edits", async () => {
