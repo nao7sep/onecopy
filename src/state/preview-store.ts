@@ -157,11 +157,8 @@ async function ensurePreviewWindow(config: Record<string, unknown>): Promise<voi
     previewWindowOpen = true;
     return;
   }
-  // Prepare while hidden and unfocused. Raising must not activate Main over
-  // an overlapping Preview; the temporary raise pulse preserves command focus.
-  // Unlike other windows opened on request (window-conventions), Preview
-  // appears above Main without becoming key: it follows Main's selection, so
-  // the keys that change that selection stay with Main.
+  // Prepared while hidden and unfocused; frontPreviewWindow shows it and
+  // gives it focus once it is placed.
   const window = new WebviewWindow("preview", {
     url: "index.html?view=preview",
     // The definitive title follows the language boot read (window-appearance.ts);
@@ -232,26 +229,17 @@ export async function restorePreviewAfterComparison(current: () => boolean = () 
   }
 }
 
-/** Raise WITHOUT stealing: a topmost pulse leaves the window above the main
- * window (Windows' documented TOPMOST→NOTOPMOST front placement; macOS keeps
- * the front ordering after the level drop) while the keyboard never moves —
- * and unlike a standing always-on-top, it floats over no other app. */
-async function raisePulse(window: WebviewWindow): Promise<void> {
-  await window.setAlwaysOnTop(true).catch(reportWindowCall("preview setAlwaysOnTop"));
-  await window.setAlwaysOnTop(false).catch(reportWindowCall("preview setAlwaysOnTop"));
-}
-
-/** Reveals an already-existing preview window: show, then the raise pulse.
- * No focus call in either direction — the old focus-the-preview-then-
- * refocus-main dance raised MAIN over an overlapping preview and made Space
- * look dead. */
+/** Reveals the preview window above Main and gives it focus, like Quick Look
+ * (developer decision; window-conventions). The window forwards the selection
+ * keys to Main (`preview://key`), which changes the selection it follows, and
+ * closing it returns focus to Main (`close_preview_window`). */
 async function frontPreviewWindow(current: () => boolean = () => true): Promise<void> {
   const existing = await WebviewWindow.getByLabel("preview");
   if (!current()) return;
   if (existing === null) throw new Error("The Preview window is unavailable.");
   await existing.show();
   if (!current()) return;
-  await raisePulse(existing);
+  await existing.setFocus().catch(reportWindowCall("preview focus"));
 }
 
 /** Rust samples the window's placement and then destroys it, since a

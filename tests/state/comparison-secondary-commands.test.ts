@@ -212,7 +212,7 @@ it("reports an admitted session's window failure after a newer Main attempt is u
   expect(invokeCalls.filter((call) => call.command === "record_interface_failure").map((call) => call.args.messageKey)).toEqual(["comparison.openFailed"]);
   expect(invokeCalls.filter((call) => call.command === "set_window_fullscreen").map((call) => call.args.enable)).toEqual([true, false]);
   expect(preview.show).toHaveBeenCalledOnce();
-  expect(vi.mocked(preview.setAlwaysOnTop).mock.calls).toEqual([[true], [false]]);
+  expect(preview.setFocus).toHaveBeenCalledOnce();
 });
 
 it.each(["closed", "replaced"] as const)("keeps the replacement session when the %s session's window setup fails", async (retirement) => {
@@ -321,18 +321,18 @@ it("still reports current Main and Preview recovery failures", async () => {
   expect(usePreviewStore.getState().error?.key).toBe("preview.restoreFailed");
 });
 
-it("always drops Preview's topmost pulse even after its Comparison session is replaced", async () => {
+it("a replaced Comparison session's Preview restore does not take focus from the newer session", async () => {
   const preview = new WebviewWindow("preview");
   usePreviewStore.setState({ follow: true, placement: "window" });
   mockCommands({ get_similar_group: () => members(2) });
   await openComparison("h0");
-  let finishPulse!: () => void;
-  vi.mocked(preview.setAlwaysOnTop).mockImplementationOnce(() => new Promise<void>((resolve) => { finishPulse = resolve; }));
+  let finishShow!: () => void;
+  vi.mocked(preview.show).mockImplementationOnce(() => new Promise<void>((resolve) => { finishShow = resolve; }));
   useComparisonStore.getState().markAll();
   const older = decideComparisonPage(false);
-  await vi.waitFor(() => expect(finishPulse).toBeDefined());
+  await vi.waitFor(() => expect(finishShow).toBeDefined());
   await openComparison("h0");
-  finishPulse();
+  finishShow();
   await older;
-  expect(vi.mocked(preview.setAlwaysOnTop).mock.calls).toEqual([[true], [false]]);
+  expect(preview.setFocus).not.toHaveBeenCalled();
 });

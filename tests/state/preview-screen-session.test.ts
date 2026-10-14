@@ -75,10 +75,11 @@ it.each([1, 3])("places Preview before showing with %i available screens", async
   expect(first.setSize).not.toHaveBeenCalled();
   expect(first.maximize).not.toHaveBeenCalled();
   expect(createdWindows[0].options).toMatchObject({ visible: false, focus: false });
+  // Shown once placed, then focused like Quick Look; Main is not focused.
   expect(setFocus).not.toHaveBeenCalled();
-  expect(first.setAlwaysOnTop.mock.calls).toEqual([[true], [false]]);
+  expect(first.setFocus).toHaveBeenCalledOnce();
   expect(first.show.mock.invocationCallOrder[0])
-    .toBeLessThan(first.setAlwaysOnTop.mock.invocationCallOrder[0]);
+    .toBeLessThan(first.setFocus.mock.invocationCallOrder[0]);
 
   usePreviewStore.getState().close();
   await settle(open());

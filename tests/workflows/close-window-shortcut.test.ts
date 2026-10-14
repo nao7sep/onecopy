@@ -48,3 +48,18 @@ it("names Cmd/Ctrl+W only", () => {
   expect(isCloseWindowShortcut({ key: "w", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false } as KeyboardEvent)).toBe(true);
   expect(isCloseWindowShortcut({ key: "q", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false } as KeyboardEvent)).toBe(false);
 });
+
+it("in the Preview window, Cmd/Ctrl+W asks only that window to close, never Main", async () => {
+  const { close, getCurrentWindow, setCurrentWindowLabel } = await import("../mocks/tauri");
+  setCurrentWindowLabel("preview");
+  close.mockClear();
+  getCurrentWindow.mockClear();
+  try {
+    uninstall = installCloseWindowShortcut();
+    press({ key: "w", metaKey: true });
+    expect(getCurrentWindow.mock.results.map((result) => (result.value as { label: string }).label)).toEqual(["preview"]);
+    expect(close).toHaveBeenCalledOnce();
+  } finally {
+    setCurrentWindowLabel("main");
+  }
+});

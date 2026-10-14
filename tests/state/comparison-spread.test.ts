@@ -4,7 +4,7 @@
 // sentence in the language the document declares, so this spec needs a document
 // even though the subject is not the interface.
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { openComparison } from "../../src/workflows/comparison";
 import { useItemsStore } from "../../src/state/items-store";
 import {
@@ -127,7 +127,7 @@ describe("opening Comparison across displays", () => {
 
   // Comparison covers every display it uses, and a following preview window
   // would only show the same images behind it.
-  it("hides the preview window for the session and brings it back after, without taking focus", async () => {
+  it("hides the preview window for the session and brings it back after, focused as when it opened", async () => {
     const preview = new WebviewWindow("preview");
     usePreviewStore.setState({ follow: true, placement: "window" });
     setMonitors(THREE_SCREENS.slice(0, 1));
@@ -140,7 +140,9 @@ describe("opening Comparison across displays", () => {
     await useComparisonStore.getState().close();
     await restorePreviewAfterComparison();
     expect(preview.show).toHaveBeenCalledOnce();
-    expect(preview.setFocus).not.toHaveBeenCalled();
+    expect(preview.setFocus).toHaveBeenCalledOnce();
+    expect(vi.mocked(preview.show).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(preview.setFocus).mock.invocationCallOrder[0]);
     usePreviewStore.setState({ follow: false, placement: null });
   });
 

@@ -1009,7 +1009,21 @@ fn close_preview_window(
         return Ok(());
     };
     window_placement::capture_preview(&window.as_ref().window(), &state.0);
-    window.destroy().map_err(|error| error.to_string())
+    // Closing the Preview the user is looking at hands the keyboard back to
+    // Main, the window it was opened from (window-conventions).
+    let looking = window.is_focused().unwrap_or(false);
+    window.destroy().map_err(|error| error.to_string())?;
+    if looking {
+        if let Some(main) = app.get_webview_window("main") {
+            if let Err(error) = main.set_focus() {
+                logging::warn(
+                    "focusing Main after the Preview closed failed",
+                    json!({ "error": { "message": error.to_string() } }),
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 
