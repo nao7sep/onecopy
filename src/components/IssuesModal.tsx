@@ -116,15 +116,19 @@ export default function IssuesModal({ open, onClose }: {
                   onClick={() => void dismiss(row.id)}
                 ><X size={14} /></IconButton>
               </div>
-              {/* A path reads as a link in its sentence, always underlined. */}
-              {row.path ? <LinkButton tone="primary" className="mt-2 block select-text break-all underline decoration-primary/40 enabled:hover:decoration-primary"
+              {/* A path reads as a link in its sentence, always underlined.
+                  Issues is where a notice is read in full, so its path, its
+                  sentence and the recorded detail are kept whole. */}
+              {row.path ? <LinkButton tone="primary" wrap className="mt-2 block select-text underline decoration-primary/40 enabled:hover:decoration-primary"
                 title={t("issues.revealInMain")} onClick={() => void reveal(row.path!)}>{row.path}</LinkButton> : null}
               {modelIssueLabel(row.kind) !== null ? (
                 <h3 className="mt-2 font-semibold text-ink-strong">{t(modelIssueLabel(row.kind)!)}</h3>
               ) : null}
               {/* The condition in the reader's language, then what the core
-                  recorded when that says something the sentence does not. */}
-              <div className="mt-1.5 select-text break-words leading-relaxed text-ink-muted">
+                  recorded when that says something the sentence does not. An
+                  older row's recorded text is its sentence, so both scroll
+                  inside a height limit. */}
+              <div className="mt-1.5 max-h-48 select-text overflow-y-auto break-words leading-relaxed text-ink-muted">
                 {noticeSentence(row, text)}
               </div>
               {modelIssueLabel(row.kind) !== null ? (
@@ -140,8 +144,11 @@ export default function IssuesModal({ open, onClose }: {
               {row.kind === "source-unavailable" ? (
                 <Button className="ml-2 mt-2" onClick={() => useAppShellStore.getState().openUtility("settings")}>{t("app.settings")}</Button>
               ) : null}
+              {/* A tool's whole error output can be long: it wraps in full and
+                  scrolls inside its own height limit, so one entry never
+                  pushes the rest of the list away. */}
               {recordedDetail(row) !== null ? (
-                <div className="mt-1 select-text break-words text-xs leading-relaxed text-ink-muted opacity-80">
+                <div className="mt-1 max-h-48 select-text overflow-y-auto break-words text-xs leading-relaxed text-ink-muted opacity-80">
                   {recordedDetail(row)}
                 </div>
               ) : null}

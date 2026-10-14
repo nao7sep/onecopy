@@ -488,6 +488,7 @@
   "confirm.hint": "Left／Right または Tab: 選択 · Enter: 決定 · Escape: キャンセル",
   "common.dismiss": "閉じる",
   "common.dismissResult": "結果を閉じる",
+  "common.countMore": { "other": "ほか {count} 件" },
   "common.kind": "種類",
   "common.name": "名前",
   "common.size": "サイズ",

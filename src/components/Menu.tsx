@@ -32,6 +32,12 @@ const MenuCloseContext = createContext<() => void>(() => {});
 
 const VIEWPORT_GAP = 8;
 const TRIGGER_GAP = 4;
+// The menu's narrow cap (composite-control conventions): as wide as its
+// longest command up to here. Every command fits under it in the longest
+// language — "Volver a ejecutar el asistente de configuración" measured about
+// 300px of label in the macOS UI font, and Segoe UI runs a little wider — so
+// only a viewport narrower than the cap cuts a label, with an ellipsis.
+const MENU_MAX_WIDTH = 384;
 
 interface MenuPosition {
   top: number;
@@ -101,7 +107,7 @@ export function Menu({
     const panelRect = panel.getBoundingClientRect();
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
-    const maxWidth = Math.max(0, viewportWidth - VIEWPORT_GAP * 2);
+    const maxWidth = Math.max(0, Math.min(MENU_MAX_WIDTH, viewportWidth - VIEWPORT_GAP * 2));
     const maxFullHeight = Math.max(0, viewportHeight - VIEWPORT_GAP * 2);
     const visibleWidth = Math.min(panelRect.width, maxWidth);
     const intrinsicHeight = panel.scrollHeight;
@@ -305,8 +311,9 @@ export function Menu({
                 // The panel's padding insets every item from its edge, so a
                 // highlighted item reads as a rounded row inside the popover
                 // rather than a bar across it; the items' corners sit inside
-                // the panel's larger one.
-                className="fixed z-40 max-w-[calc(100vw-1rem)] min-w-[min(14rem,calc(100vw-1rem))] overflow-auto rounded-xl border border-border bg-surface p-1 shadow-xl"
+                // the panel's larger one. It scrolls only vertically: a label
+                // past the cap ends with an ellipsis instead.
+                className="fixed z-40 max-w-[min(24rem,calc(100vw-1rem))] min-w-[min(14rem,calc(100vw-1rem))] overflow-y-auto overflow-x-hidden rounded-xl border border-border bg-surface p-1 shadow-xl"
                 onFocus={(event) => {
                   if (event.target instanceof HTMLElement && items().includes(event.target)) {
                     activeItem.current = event.target;
@@ -340,7 +347,8 @@ export function MenuItem({
       tabIndex={-1}
       disabled={disabled}
       // App.css owns the independent hover and keyboard treatments. The
-      // keyboard mark is inset so the popup's scrolling cannot clip it.
+      // keyboard mark is inset so the popup's scrolling cannot clip it. The
+      // label never wraps; past the menu's cap it ends with an ellipsis.
       className="oc-menu-item flex w-full items-center whitespace-nowrap rounded-md px-2.5 py-1.5 text-left text-sm text-ink outline-none transition-colors motion-reduce:transition-none disabled:opacity-50"
       onClick={() => {
         // Close first (focus back on the trigger), then act — an action that
@@ -349,7 +357,7 @@ export function MenuItem({
         onSelect();
       }}
     >
-      {children}
+      <span className="min-w-0 truncate">{children}</span>
     </button>
   );
 }

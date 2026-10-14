@@ -1,3 +1,5 @@
+import { Fragment, createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { createTranslator, message } from "../../src/i18n/translate";
 
@@ -24,7 +26,10 @@ describe("createTranslator", () => {
     const german = createTranslator("de", "de-DE");
     expect(german.number(1234567)).toBe("1.234.567");
     expect(german.percent(0.25)).toBe("25\u00a0%");
-    expect(german.list(["a", "b", "c"])).toBe("a, b und c");
+    expect(renderToStaticMarkup(createElement(Fragment, null, german.list(["a", "b", "c"])))).toBe("a, b und c");
+    // An element may be markup, kept where the language puts it.
+    expect(renderToStaticMarkup(createElement(Fragment, null, german.list(["a", createElement("b", null, "2 weitere")]))))
+      .toBe("a und <b>2 weitere</b>");
   });
 
   it("formats an instant in the zone it is given", () => {

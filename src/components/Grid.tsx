@@ -53,6 +53,7 @@ import { hasOpenModal } from "../utils/modalStack";
 import { isEditableTarget } from "../utils/shortcuts";
 import { configFlag } from "../models/config";
 import { gridNavigationTarget } from "../models/gridNavigation";
+import IdentifyingText from "./ui/IdentifyingText";
 
 // Tile geometry used for column measurement (w-40 = 160px, gap-3 = 12px).
 const TILE_WIDTH = 160;
@@ -437,15 +438,15 @@ function ListRow({
         {item.resolvedUtcMs !== null ? formatLocalMinute(item.resolvedUtcMs, dateTime) : "—"}
       </span>
       {/* EVERY copy's folder, sorted (Phase 33) — one row per merged binary,
-          so a single folder was an arbitrary pick. dir="rtl" keeps the deep
-          end visible — the tail distinguishes folders, not the shared root. */}
+          so a single folder was an arbitrary pick. Cut as a path, so the
+          deep end stays visible: the tail distinguishes folders, not the
+          shared root. The Details pane lists every copy whole. */}
       <span
-        dir="rtl"
-        className="truncate text-left text-xs text-ink-muted"
+        className="min-w-0 text-left text-xs text-ink-muted"
         style={columnStyle("folders", widths)}
         title={item.dirPaths.join("\n")}
       >
-        {item.dirPaths.join(" · ")}
+        <IdentifyingText value={item.dirPaths.join(" · ")} path reveal={false} />
       </span>
     </div>
   );

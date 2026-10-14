@@ -636,7 +636,7 @@ function summaryText(record: RecordSummary, text: (message: Message) => string):
 function LevelPill({ level }: { level: RecordLevel }) {
   const { t } = useI18n();
   return (
-    <span className={`shrink-0 rounded-full px-1.5 text-xs leading-5 ${LEVEL_TONES[level]}`}>
+    <span className={`shrink-0 whitespace-nowrap rounded-full px-1.5 text-xs leading-5 ${LEVEL_TONES[level]}`}>
       {t(LEVEL_LABELS[level])}
     </span>
   );
@@ -645,7 +645,8 @@ function LevelPill({ level }: { level: RecordLevel }) {
 function KindPill({ kind }: { kind: RecordKind }) {
   const { t } = useI18n();
   return (
-    <span className="rounded-full bg-surface-muted px-1.5 text-xs leading-5 text-ink-muted">
+    // A chip's label stays whole on one line; the row wraps the whole chip.
+    <span className="whitespace-nowrap rounded-full bg-surface-muted px-1.5 text-xs leading-5 text-ink-muted">
       {t(KIND_LABELS[kind])}
     </span>
   );
@@ -753,7 +754,9 @@ function RecordDetailView({
   return (
     <>
       <div className="flex shrink-0 items-start justify-between gap-3 border-b border-border px-4 py-3">
-        <h2 className="min-w-0 select-text break-words text-sm font-semibold text-ink-strong">{record.title}</h2>
+        {/* The opened record's title in full — a log line's title is its
+            whole message — wrapping inside a height limit that scrolls. */}
+        <h2 className="max-h-24 min-w-0 select-text overflow-y-auto break-words text-sm font-semibold text-ink-strong">{record.title}</h2>
         <div className="flex shrink-0 items-center gap-2 pt-px">
           <LevelPill level={record.level} />
           <KindPill kind={record.kind} />

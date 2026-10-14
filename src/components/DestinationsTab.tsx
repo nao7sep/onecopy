@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState, type ReactNode } from "react";
 import {
   useDestinationsStore,
+  type DestinationFact,
   type DirEntry,
 } from "../state/destinations-store";
 import { useComposing, isComposingKeyboardEvent, isComposingEvent } from "../hooks/useComposing";
@@ -18,6 +19,8 @@ import type { PendingDestinationDrop } from "../models/destinationTransfer";
 import { useDestinationReceiver } from "./DestinationDragProvider";
 import Button, { IconButton } from "./ui/Button";
 import { TextInput } from "./ui/Field";
+import IdentifyingText from "./ui/IdentifyingText";
+import NameList from "./ui/NameList";
 import DestinationConflictModal from "./DestinationConflictModal";
 import { useItemsStore } from "../state/items-store";
 import { useI18n } from "../i18n/I18nContext";
@@ -208,17 +211,16 @@ function RootRow({ root, isOpen }: { root: string; isOpen: boolean }) {
         >
           {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
         </button>
-        {/* Roots get TWO lines — name, then the full path in muted small
-            text. Only here: a root is where truncation actually hurt (the
-            path IS its identity), while hundreds of subfolder rows doubling
-            in height would halve the visible tree. */}
-        <span className="min-w-0 flex-1">
+        {/* Roots get TWO lines — name, then the path in muted small text,
+            keeping its final segment. Only here: a root is where truncation
+            actually hurt (the path IS its identity), while hundreds of
+            subfolder rows doubling in height would halve the visible tree.
+            The action bar shows the active row's path whole on request. */}
+        <span className="min-w-0 flex-1" title={root}>
           <span className="block truncate font-medium text-ink-strong">
             {leafName(root)}
           </span>
-          <span className="block truncate text-[11px] text-ink-muted" title={root}>
-            {root}
-          </span>
+          <IdentifyingText value={root} path reveal={false} className="text-[11px] text-ink-muted" />
         </span>
       </div>
       {isOpen ? (
@@ -295,10 +297,12 @@ function ActionBar() {
   return (
     <div className="-mx-3 mt-3 shrink-0 border-t border-border px-3 pt-3">
       {/* This is the exact destination a Move/Copy button below commits
-          against, so its full identity must reach a keyboard or
+          against, so its full identity must reach a keyboard, touch or
           screen-reader user, not only a mouse hover (R8-05): the second line
-          always shows the complete path, and the header's accessible name is
-          the path even where the visible leaf name alone would suffice. */}
+          keeps the path's final segment and, when cut, opens the whole path
+          on Enter or a tap; the header's accessible name is the path even
+          where the visible leaf name alone would suffice. A Move's
+          confirmation then names the destination in full. */}
       <p
         className="mb-0.5 truncate text-sm font-medium text-ink-strong"
         aria-label={activePath}
@@ -306,9 +310,7 @@ function ActionBar() {
       >
         {leafName(activePath)}
       </p>
-      <p className="mb-2 break-all text-[11px] text-ink-muted">
-        {activePath}
-      </p>
+      <IdentifyingText value={activePath} path className="mb-2 text-[11px] text-ink-muted" />
       <div className="flex flex-wrap items-center gap-2">
         <Button
           variant="primary"
@@ -413,7 +415,7 @@ export default function DestinationsTab() {
   const activePath = useDestinationsStore((s) => s.activePath);
   const setActive = useDestinationsStore((s) => s.setActive);
   const toggleExpand = useDestinationsStore((s) => s.toggleExpand);
-  const { t, text } = useI18n();
+  const { t, text, rich } = useI18n();
 
   // Folders created OUTSIDE the app (Finder, Explorer) appear when the pane
   // mounts and whenever the app window regains focus — the exact moment a
@@ -585,9 +587,16 @@ export default function DestinationsTab() {
                 : "border-border bg-surface-muted text-ink"
           }`}
         >
-          <span className="min-w-0 flex-1 break-words">
-            {t("destinations.resultLine", {
-              facts: result.facts.map(text).join(" · "),
+          {/* Text to be read: whole, and scrolling inside its own height
+              limit rather than pushing the tree out of the pane. */}
+          <span className="max-h-32 min-w-0 flex-1 select-text overflow-y-auto break-words">
+            {rich("destinations.resultLine", {
+              facts: result.facts.map((fact, index) => (
+                <Fragment key={index}>
+                  {index > 0 ? " · " : null}
+                  <ResultFact fact={fact} />
+                </Fragment>
+              )),
             })}
           </span>
           <IconButton
@@ -609,6 +618,19 @@ export default function DestinationsTab() {
       ) : null}
     </div>
   );
+}
+
+/** One fact of the result line; a fact about several files names a few of
+ * them and counts the rest, whose complete list the count opens. */
+function ResultFact({ fact }: { fact: DestinationFact }) {
+  const { text, rich } = useI18n();
+  if (fact.paths === undefined) return <>{text(fact)}</>;
+  const values: Record<string, ReactNode> = {};
+  for (const [name, value] of Object.entries(fact.values ?? {})) {
+    values[name] = typeof value === "object" ? text(value) : value;
+  }
+  values.names = <NameList values={fact.paths} path />;
+  return <>{rich(fact.key, values)}</>;
 }
 
 /** The drop's Move/Copy question (Phase 33). Dropping used to read modifier

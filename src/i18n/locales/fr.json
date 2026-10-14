@@ -488,6 +488,7 @@
   "confirm.hint": "Left/Right ou Tab\u00a0: choisir · Enter\u00a0: valider le choix · Escape\u00a0: annuler",
   "common.dismiss": "Fermer",
   "common.dismissResult": "Fermer le résultat",
+  "common.countMore": { "one": "{count} autre", "many": "{count} autres", "other": "{count} autres" },
   "common.kind": "Type",
   "common.name": "Nom",
   "common.size": "Taille",

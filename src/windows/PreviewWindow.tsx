@@ -13,6 +13,7 @@ import { message, type Message } from "../i18n/translate";
 import { log, toErrorFields } from "../repositories";
 import { recordActionFailure } from "../state/notifications-store";
 import OperationResult from "../components/ui/OperationResult";
+import IdentifyingText from "../components/ui/IdentifyingText";
 import { useSecondaryPreviewFeatures } from "../hooks/useSecondaryPreviewFeatures";
 
 // The separate Preview window renders the shared PreviewSurface
@@ -168,11 +169,11 @@ export default function PreviewWindow() {
       {/* The window shows only the anchor, so the footer names it and, with
           more than one selected, says how many: Delete here acts on all of
           them, as in Main. */}
-      <footer className="flex shrink-0 justify-between border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
-        <span className="flex min-w-0 items-center gap-2">
-          <span className="min-w-0 break-words">
-            {shown.detail?.fileName ?? ""}
-          </span>
+      <footer className="flex shrink-0 justify-between gap-3 border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
+        {/* The name takes what the hint leaves, on one line; a cut name
+            opens whole on Enter, a click or a tap. */}
+        <span className="flex min-w-0 flex-1 items-center gap-2">
+          <IdentifyingText value={shown.detail?.fileName ?? ""} />
           {(shown.selectedCount ?? 0) > 1 ? (
             <span className="shrink-0">
               {t("preview.selectedCount", { count: shown.selectedCount ?? 0 })}

@@ -40,6 +40,7 @@ import TextOrAttributesSurface from "./TextOrAttributesSurface";
 import { openInDefaultApp } from "../workflows/external-open";
 import Button, { IconButton } from "./ui/Button";
 import OperationResult from "./ui/OperationResult";
+import IdentifyingText from "./ui/IdentifyingText";
 import { recordActionFailure } from "../state/notifications-store";
 import { configFlag } from "../models/config";
 import { ffmpegEntry, useBinariesStore } from "../state/binaries-store";
@@ -547,9 +548,9 @@ function AudioSurface({
   return (
     <div className="flex h-full min-h-0 w-full flex-col justify-center gap-5 p-4">
       <div className="flex shrink-0 flex-col items-center gap-3">
-        <p className="max-w-full break-words text-center text-sm text-ink">
-          {detail.fileName}
-        </p>
+        {/* One centred line; a cut name opens whole on Enter, a click or
+            a tap. */}
+        <IdentifyingText value={detail.fileName} className="w-full text-center text-sm text-ink" />
         {/* Keyed by src so playback state never carries across files. */}
         <audio
           ref={playback.ref}

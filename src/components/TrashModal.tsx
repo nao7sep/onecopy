@@ -10,6 +10,7 @@ import DeletedFilesModal from "./DeletedFilesModal";
 import Button from "./ui/Button";
 import { recordActionFailure } from "../state/notifications-store";
 import OperationResult from "./ui/OperationResult";
+import IdentifyingText from "./ui/IdentifyingText";
 import { useI18n } from "../i18n/I18nContext";
 import { message, type Message } from "../i18n/translate";
 
@@ -230,7 +231,9 @@ export default function TrashModal({
               className="flex items-center gap-3 rounded-lg border border-border px-3 py-2"
             >
               <div className="min-w-0 flex-1">
-                <p className="select-text break-all text-sm text-ink">{row.root}</p>
+                {/* One line per location, keeping its final segment; a cut
+                    one opens whole on Enter, a click or a tap. */}
+                <IdentifyingText value={row.root} path className="text-sm text-ink" />
                 <p className="text-xs tabular-nums text-ink-muted">
                   {!row.available
                     ? t("trash.unavailable")

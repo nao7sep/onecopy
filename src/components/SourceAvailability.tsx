@@ -1,6 +1,7 @@
 import { useBlockingSurface } from "../hooks/useBlockingSurface";
 import { useI18n } from "../i18n/I18nContext";
 import Button from "./ui/Button";
+import IdentifyingText from "./ui/IdentifyingText";
 
 // Missing roots and substituted roots have different safety meanings. An
 // absent root is an availability problem: Main stays usable and the source
@@ -28,10 +29,12 @@ export function MissingSourcesNotice({
             {t("source.missingTitle")}
           </h2>
           <p className="mt-0.5 text-ink-muted">{t("source.missingBody")}</p>
+          {/* A banner names each folder on one line, keeping its final
+              segment; a cut path opens whole on Enter, a click or a tap. */}
           <ul className="mt-2 max-h-20 overflow-y-auto text-xs text-ink">
             {missing.map((path) => (
-              <li key={path} className="break-all">
-                {path}
+              <li key={path}>
+                <IdentifyingText value={path} path />
               </li>
             ))}
           </ul>

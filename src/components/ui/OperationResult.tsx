@@ -39,7 +39,10 @@ export default function OperationResult({
       aria-atomic="true"
       className={`flex min-w-0 ${alignment} gap-2 rounded-lg border px-2.5 py-2 text-xs ${tone} ${className}`}
     >
-      <div className="min-w-0 flex-1 break-words">
+      {/* Text to be read: never shortened, so a long one (a tool's recorded
+          error) wraps whole and scrolls inside this height limit rather than
+          growing the surface it sits in. */}
+      <div className="max-h-32 min-w-0 flex-1 overflow-y-auto break-words">
         {children}
       </div>
       {actions !== undefined ? (

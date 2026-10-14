@@ -22,12 +22,18 @@ export interface DirEntry {
   isEmpty: boolean;
 }
 
+/** One fact of a destination outcome. A fact about several files also keeps
+ * their paths: its `names` value is the whole list as text, and the receiver
+ * names a few of `paths` and counts the rest in its place
+ * (interface-styling-conventions, "A message names a few values"). */
+export type DestinationFact = Message & { paths?: readonly string[] };
+
 export interface DestinationResult {
   severity: "info" | "warning" | "error";
   /** The facts this outcome reports, each a whole translated unit. The receiver
    * joins and terminates them at render, so the sentence follows a language
    * change after the operation has finished. */
-  facts: Message[];
+  facts: DestinationFact[];
   /** Identifies the receiver action whose committed outcome this describes.
    * A successful retry clears only a result with the same operation key. */
   operationKey: string;

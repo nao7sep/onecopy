@@ -14,7 +14,7 @@
 // Focus needs nothing here: App.css gives every button the app's one focus
 // ring, 1px clear of the edge, which quiets while the window is inactive.
 
-import type { ButtonHTMLAttributes } from "react";
+import type { ButtonHTMLAttributes, ComponentPropsWithRef } from "react";
 
 type Variant = "primary" | "secondary" | "ghost" | "danger" | "danger-solid";
 type Size = "xs" | "toolbar" | "sm" | "md";
@@ -149,30 +149,36 @@ export function IconButton({
   );
 }
 
-type LinkTone = "muted" | "primary" | "danger" | "warning";
+type LinkTone = "muted" | "primary" | "danger" | "warning" | "current";
 
 const LINK_TONES: Record<LinkTone, string> = {
   muted: "text-ink-muted enabled:hover:text-ink enabled:active:text-ink-strong",
   primary: "text-primary enabled:active:text-primary-hover",
   danger: "text-danger",
   warning: "text-warning",
+  // Inside a sentence that already carries its tone (an operation result).
+  current: "text-current",
 };
 
 /** A button that reads as a link: a status-bar count, an inline "show" in a
  * sentence, a transcript timestamp. Hover underlines it and a press thickens
- * the underline. It fits its words and wraps when its row runs out of room,
- * since a shortened label would need another way to read it whole. */
+ * the underline. Its words are a control caption, so they stay whole on one
+ * line (interface-styling-conventions, "Control captions stay whole"); a row
+ * that runs out of room moves the whole link instead. A link whose words are
+ * a value to be read in full — an Issue's path — wraps instead. */
 export function LinkButton({
   tone = "muted",
+  wrap = false,
   className = "",
   ...props
-}: ButtonHTMLAttributes<HTMLButtonElement> & {
+}: ComponentPropsWithRef<"button"> & {
   tone?: LinkTone;
+  wrap?: boolean;
 }) {
   return (
     <button
       {...props}
-      className={`rounded-sm text-left underline-offset-2 enabled:hover:underline enabled:active:underline enabled:active:decoration-2 ${MOTION} ${LINK_TONES[tone]} min-w-0 break-words ${DISABLED_FADE} ${className}`}
+      className={`rounded-sm text-left underline-offset-2 enabled:hover:underline enabled:active:underline enabled:active:decoration-2 ${MOTION} ${LINK_TONES[tone]} ${wrap ? "min-w-0 break-all" : "whitespace-nowrap"} ${DISABLED_FADE} ${className}`}
     />
   );
 }

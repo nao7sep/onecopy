@@ -488,6 +488,7 @@
   "confirm.hint": "Left/Right 또는 Tab: 선택 · Enter: 선택 확정 · Escape: 취소",
   "common.dismiss": "닫기",
   "common.dismissResult": "결과 닫기",
+  "common.countMore": { "other": "{count}개 더" },
   "common.kind": "종류",
   "common.name": "이름",
   "common.size": "크기",

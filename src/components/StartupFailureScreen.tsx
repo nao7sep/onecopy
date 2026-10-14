@@ -45,7 +45,9 @@ export default function StartupFailureScreen() {
           {newerStores.length > 0 ? t("startup.newerBody") : t("startup.blockedBody")}
         </p>
         {newerStores.length > 0 ? (
-          <ul className="mt-3 space-y-2">
+          // Each store's path is read whole; the list scrolls inside a
+          // height limit so the actions below stay in view.
+          <ul className="mt-3 max-h-64 space-y-2 overflow-y-auto">
             {newerStores.map((store) => (
               <li key={store.path} className="rounded-lg border border-border p-3">
                 <p className="text-sm font-semibold text-ink-strong">{store.file}</p>

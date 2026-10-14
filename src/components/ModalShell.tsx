@@ -10,7 +10,8 @@
 //   the IME's to cancel, never the modal's to close.
 // - Background scroll is locked while any modal is open (reference-counted).
 // - The body is the sole scroller inside a bounded height, so a 500%-zoomed
-//   window still shows the header and footer.
+//   window still shows the header and footer; text to be read inside it
+//   (a prompt, the value being confirmed) wraps whole and scrolls there.
 // - The footer carries the labelled dismiss beside the primary action; the
 //   header ✕ is the supplementary affordance.
 
@@ -82,9 +83,13 @@ export default function ModalShell({
             hideTitle ? "justify-end" : "justify-between border-b border-control-edge"
           }`}
         >
+          {/* A title is identifying text: one line, ended with an ellipsis
+              when a name it carries runs long. Every such title names
+              something its body shows whole (a copy's paths, a drop's
+              destination). */}
           <h1
             id={titleId}
-            className={hideTitle ? "sr-only" : "text-base font-semibold tracking-tight text-ink-strong"}
+            className={hideTitle ? "sr-only" : "min-w-0 truncate text-base font-semibold tracking-tight text-ink-strong"}
           >
             {title}
           </h1>

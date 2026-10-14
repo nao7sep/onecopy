@@ -24,6 +24,7 @@ import { useSyncedWarning } from "../hooks/useSyncedWarning";
 import RevealCopiesModal from "./RevealCopiesModal";
 import Button, { LinkButton } from "./ui/Button";
 import OperationResult from "./ui/OperationResult";
+import IdentifyingText from "./ui/IdentifyingText";
 import MutationResultActions from "./MutationResultActions";
 
 function interactiveTarget(target: EventTarget | null): boolean {
@@ -248,15 +249,18 @@ export default function ComparisonView({
 
       {busy || mutationResult !== null || exitQuiescing ? (
         <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-border bg-surface px-3 py-1 text-xs text-ink-muted">
-          <span>
-            {exitQuiescing
+          {/* One line, like Main's status bar; a cut line opens whole on
+              Enter, a click or a tap. */}
+          <IdentifyingText
+            className="flex-1"
+            value={exitQuiescing
               ? t("status.exiting")
               : mutationProgress !== null
                 ? mutationProgressLine(mutationProgress, mutationCancelling, t, number)
                 : mutationResult !== null
                   ? mutationResultLine(mutationResult, t)
                   : t("comparison.preparingOperation")}
-          </span>
+          />
           {mutationProgress !== null && !exitQuiescing ? (
             <LinkButton
               disabled={mutationCancelling}

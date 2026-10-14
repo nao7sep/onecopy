@@ -22,6 +22,7 @@ import ModalShell from "./ModalShell";
 import ConfirmModal from "./ConfirmModal";
 import RebuildIndexModal from "./RebuildIndexModal";
 import DirectoryRow from "./DirectoryRow";
+import IdentifyingText from "./ui/IdentifyingText";
 import Button from "./ui/Button";
 import { Row, Select, TextInput, Toggle } from "./ui/Field";
 import { Plus } from "lucide-react";
@@ -157,15 +158,17 @@ function ScreensSection() {
                   describePosition(monitor, ordered) ?? t("settings.display"),
               })}
             </span>
-            <span className="block break-words text-xs text-ink-muted">
-              {/* The pixel counts are passed as text: a resolution carries no
-                  thousands separator. */}
-              {t("settings.screenDetail", {
+            {/* The pixel counts are passed as text: a resolution carries no
+                thousands separator. One line beside the row's buttons; a cut
+                one opens whole on Enter, a click or a tap. */}
+            <IdentifyingText
+              className="text-xs text-ink-muted"
+              value={t("settings.screenDetail", {
                 name: monitor.name ?? t("settings.display"),
                 width: String(monitor.size.width),
                 height: String(monitor.size.height),
               })}
-            </span>
+            />
           </span>
           {/* The words, not a chevron: OneCopy spends that glyph on sort
               direction in the grid and on disclosure in Destinations, so on a

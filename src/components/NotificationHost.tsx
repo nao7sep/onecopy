@@ -17,6 +17,7 @@ import { log, toErrorFields } from "../repositories";
 import { useReleaseCheckStore } from "../state/release-check-store";
 import Button, { IconButton } from "./ui/Button";
 import OperationResult from "./ui/OperationResult";
+import IdentifyingText from "./ui/IdentifyingText";
 import { configNumber } from "../models/config";
 
 function ReleaseNotice() {
@@ -144,15 +145,18 @@ function Toast({
         <div className="min-w-0 flex-1">
           {/* The condition's own sentence, in the current interface
               language; real detail the sentence cannot restate (a system
-              error) appears as recorded, right after it (R5.5 D-L12). */}
-          <p className="select-text break-words text-sm">
+              error) appears as recorded, right after it (R5.5 D-L12). A
+              notice is a compact surface, so it shows a summary of each —
+              a few lines, the path on one — and Issues and Records, where
+              every notice is recorded, show them whole. */}
+          <p className="line-clamp-3 select-text break-words text-sm">
             {noticeSentence(record, text)}
           </p>
           {record.messageKey != null && record.message.trim() !== "" ? (
-            <p className="mt-1 select-text break-words text-xs opacity-70">{record.message}</p>
+            <p className="mt-1 line-clamp-2 select-text break-words text-xs opacity-70">{record.message}</p>
           ) : null}
           {record.path ? (
-            <p className="mt-1 select-text break-all text-xs opacity-70">{record.path}</p>
+            <IdentifyingText value={record.path} path reveal={false} className="mt-1 select-text text-xs opacity-70" />
           ) : null}
         </div>
         <IconButton

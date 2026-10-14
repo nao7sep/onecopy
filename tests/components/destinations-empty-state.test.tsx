@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { act, cleanup, fireEvent, render } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import DestinationsTab from "../../src/components/DestinationsTab";
 import { useDestinationsStore } from "../../src/state/destinations-store";
@@ -9,6 +9,7 @@ import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 import { pushModal, resetModalStack } from "../../src/utils/modalStack";
 import { useComparisonStore } from "../../src/state/comparison-store";
 import { useFullscreenViewStore } from "../../src/state/fullscreen-view-store";
+import { message } from "../../src/i18n/translate";
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
@@ -92,7 +93,7 @@ describe("destination folder states", () => {
     const actions = permanent.parentElement!.parentElement!;
     expect(actions.className).toContain("-mx-3");
     expect(actions.className).toContain("pt-3");
-    expect(actions.querySelectorAll("p")[1]?.className).toContain("mb-2");
+    expect(actions.querySelector("p")?.nextElementSibling?.className).toContain("mb-2");
     expect(invokeCalls.some((call) => call.command === "move_items_out")).toBe(false);
   });
 
@@ -206,5 +207,38 @@ describe("destination folder states", () => {
     expect(
       invokeCalls.filter(({ command }) => command === "move_items_out"),
     ).toHaveLength(0);
+  });
+});
+
+describe("the destination result", () => {
+  const paths = Array.from({ length: 5 }, (_, index) => `/dest/2024/IMG_${index + 1}.jpg`);
+
+  it("names a few files, counts the rest, and opens the complete list", () => {
+    useDestinationsStore.setState({
+      result: {
+        severity: "error",
+        operationKey: "op",
+        facts: [
+          { ...message("destinations.factUndelivered", { names: paths.join(", ") }), paths },
+          { ...message("destinations.factConflicts", { count: 5, names: paths.join(", ") }), paths },
+        ],
+      },
+    });
+    const view = render(<DestinationsTab />);
+    // Scoped to the pane: an earlier spec's escaped-failure surface stays on the body.
+    const result = within(view.container).getByRole("alert");
+    expect(result.textContent).toContain(
+      "Could not write /dest/2024/IMG_1.jpg, /dest/2024/IMG_2.jpg, /dest/2024/IMG_3.jpg, and 2 more; originals kept",
+    );
+    // A counted fact keeps its plural form.
+    expect(result.textContent).toContain("5 destination files already exist with different content");
+    expect(result.textContent).not.toContain("IMG_4.jpg");
+    // Text to be read: whole, inside a height limit that scrolls.
+    const sentence = result.firstElementChild as HTMLElement;
+    expect(sentence.className.split(" ")).toEqual(expect.arrayContaining(["max-h-32", "overflow-y-auto", "break-words"]));
+
+    fireEvent.click(view.getAllByRole("button", { name: "2 more" })[0]);
+    const list = view.getByRole("dialog", { name: "2 more" });
+    expect(Array.from(list.querySelectorAll("li"), (item) => item.textContent)).toEqual(paths);
   });
 });

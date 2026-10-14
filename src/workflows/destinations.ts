@@ -4,10 +4,11 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { message, type Message } from "../i18n/translate";
+import { message, type MessageValues } from "../i18n/translate";
+import type { MessageKey } from "../i18n/catalogues";
 import { log, toErrorFields } from "../repositories";
 import { useAppStore } from "../state/app-store";
-import { useDestinationsStore } from "../state/destinations-store";
+import { useDestinationsStore, type DestinationFact } from "../state/destinations-store";
 import { useIssuesStore } from "../state/issues-store";
 import { useItemsStore } from "../state/items-store";
 import { useSectionsStore } from "../state/sections-store";
@@ -293,7 +294,11 @@ async function executeMoveBatch(
     }
     operationCompleted = true;
     changedSections = outcome.sections;
-    const facts: Message[] = [];
+    const facts: DestinationFact[] = [];
+    const naming = (key: MessageKey, paths: readonly string[], values: MessageValues = {}): DestinationFact => ({
+      ...message(key, { ...values, names: paths.join(", ") }),
+      paths,
+    });
     const hasCommittedNonSuccess =
       outcome.skippedIdentical > 0 ||
       outcome.postAction.failedFiles > 0 ||
@@ -328,26 +333,21 @@ async function executeMoveBatch(
     }
     if (outcome.conflicts.length > 0) {
       facts.push(
-        message("destinations.factConflicts", {
+        naming("destinations.factConflicts", outcome.conflicts, {
           count: outcome.conflicts.length,
-          names: outcome.conflicts.join(", "),
         }),
       );
     }
     if (outcome.undelivered.length > 0) {
-      facts.push(
-        message("destinations.factUndelivered", {
-          names: outcome.undelivered.join(", "),
-        }),
-      );
+      facts.push(naming("destinations.factUndelivered", outcome.undelivered));
     }
     if (outcome.differentCompanions.length > 0) {
       facts.push(
-        message(
+        naming(
           mode === "copy"
             ? "destinations.factCompanionsNotCopied"
             : "destinations.factCompanionsKept",
-          { names: outcome.differentCompanions.join(", ") },
+          outcome.differentCompanions,
         ),
       );
     }

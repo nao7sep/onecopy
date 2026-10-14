@@ -51,6 +51,7 @@ import RestoreReviewModal from "./RestoreReviewModal";
 import Button from "./ui/Button";
 import { TextInput } from "./ui/Field";
 import OperationResult from "./ui/OperationResult";
+import IdentifyingText from "./ui/IdentifyingText";
 
 const ROW_HEIGHT = 48;
 /** Stands in for the viewport before layout has measured it. */
@@ -406,7 +407,7 @@ function DeletedFilesBrowser({
           <span className="min-w-0 flex-1">
             <span className="flex items-baseline gap-2">
               <span className="truncate text-sm text-ink-strong">{name}</span>
-              <span className="truncate text-xs text-ink-muted">{folderLabel}</span>
+              <IdentifyingText value={folderLabel} path reveal={false} className="text-xs text-ink-muted" />
             </span>
             <span className="block truncate text-xs text-ink-muted">{facts}</span>
           </span>
@@ -435,8 +436,13 @@ function DeletedFilesBrowser({
         <Check size={16} aria-hidden="true" className="shrink-0 text-ink-muted" />
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm text-ink">{name}</span>
-          <span className="block truncate text-xs text-ink-muted">
-            {facts === "" ? folderLabel : `${folderLabel} · ${facts}`}
+          {/* The folder keeps its final segment; the facts after it are cut
+              at their end only once the folder is gone. */}
+          <span className="flex min-w-0 text-xs text-ink-muted">
+            <IdentifyingText value={folderLabel} path reveal={false} />
+            {facts === "" ? null : (
+              <span className="max-w-full shrink-0 truncate">{` · ${facts}`}</span>
+            )}
           </span>
         </span>
         <span className="shrink-0 text-xs tabular-nums text-ink-muted">
@@ -527,7 +533,9 @@ function DeletedFilesBrowser({
           }}
         />
       ) : null}
-      <p className="mb-2 select-text break-all text-xs text-ink-muted">{location}</p>
+      {/* The location names this list; one line keeping its final segment,
+          and a cut one opens whole on Enter, a click or a tap. */}
+      <IdentifyingText value={location} path className="mb-2 text-xs text-ink-muted" />
       <TextInput
         type="search"
         value={query}

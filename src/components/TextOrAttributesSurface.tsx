@@ -21,6 +21,7 @@ import Button, { IconButton } from "./ui/Button";
 import { Select } from "./ui/Field";
 import { openInDefaultApp, revealInFileManager } from "../workflows/external-open";
 import OperationResult from "./ui/OperationResult";
+import IdentifyingText from "./ui/IdentifyingText";
 import { recordActionFailure } from "../state/notifications-store";
 
 interface TextBody {
@@ -267,9 +268,10 @@ export default function TextOrAttributesSurface({
   return (
     <div className="flex h-full min-h-0 w-full flex-col gap-2 p-3">
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
-        <span className="min-w-0 break-words text-sm text-ink">
-          {detail.fileName}
-        </span>
+        {/* One line that takes what the controls leave: the name never
+            pushes them onto a row of their own. A cut name opens whole on
+            Enter, a click or a tap. */}
+        <IdentifyingText value={detail.fileName} className="flex-[1_1_8rem] text-sm text-ink" />
         <span className="flex items-center gap-2">
           <label className="flex items-center gap-2 text-xs text-ink-muted">
             {t("textPreview.encoding")}
@@ -421,8 +423,10 @@ function AttributesBodyView({
       <div className="mx-auto max-w-3xl">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0 flex-[1_1_16rem]">
-            <h2 className="break-all text-base font-medium text-ink">
-              {detail.fileName}
+            {/* A heading is identifying text; the copies below end with
+                the name, and a cut one opens whole on request. */}
+            <h2 className="text-base font-medium text-ink">
+              <IdentifyingText value={detail.fileName} />
             </h2>
             <p className="mt-1 text-sm text-ink-muted">{reason}</p>
           </div>

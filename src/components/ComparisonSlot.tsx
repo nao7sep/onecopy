@@ -10,6 +10,7 @@ import { openInDefaultApp } from "../workflows/external-open";
 import { log, toErrorFields } from "../repositories";
 import FaceRating from "./FaceRating";
 import OperationResult from "./ui/OperationResult";
+import IdentifyingText from "./ui/IdentifyingText";
 import Button, { IconButton } from "./ui/Button";
 import { configFlag } from "../models/config";
 
@@ -173,9 +174,9 @@ export default function ComparisonSlot({
       </div>
       <figcaption className="mt-1 shrink-0 text-xs text-ink-muted">
         <span className="flex justify-between gap-2">
-          <span className="min-w-0 break-words text-ink">
-            {member.fileName}
-          </span>
+          {/* One line under the image, so a long name never shrinks the
+              picture; a cut name opens whole on Enter, a click or a tap. */}
+          <IdentifyingText value={member.fileName} className="text-ink" />
           <span className="flex shrink-0 gap-2">
             {/* A score is a best-face confidence/smile hint, not a percentage
                 rating. Zero/no-face and unscored stay quiet. */}

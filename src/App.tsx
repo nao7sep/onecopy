@@ -65,6 +65,7 @@ import { reportActionFailure } from "./state/notifications-store";
 import { bootstrapApplication } from "./workflows/app-lifecycle";
 import { useAppShellStore } from "./state/app-shell-store";
 import Button, { IconButton, LinkButton } from "./components/ui/Button";
+import IdentifyingText from "./components/ui/IdentifyingText";
 
 function ZoomOutIcon() {
   return <Minus aria-hidden="true" className="inline-block h-[1em] w-[1em]" />;
@@ -480,10 +481,12 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
       </div>
       {/* The status bar: standing state always, transient conditions on top.
           What it says is decided by `statusLine`, which is where the priority
-          order and the "never blank" rule live. */}
+          order and the "never blank" rule live. The line takes what the links
+          leave and is cut first; the links are captions kept whole, and only
+          a bar too narrow for all of them moves whole links onto a row. */}
       <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-border bg-surface px-3 py-1 text-xs">
         <MainStatusLine />
-        <span className="flex min-w-0 shrink items-center gap-3">
+        <span className="flex min-w-0 shrink flex-wrap items-center justify-end gap-x-3 gap-y-1">
           <PlaybackControls />
           {!mutationRunning && mutationResult !== null && !exitQuiescing ? (
             <MutationResultActions
@@ -582,7 +585,7 @@ function MainStatusLine() {
   );
   return (
     <span
-      className={`min-w-0 break-words ${
+      className={`min-w-0 flex-1 ${
         status.tone === "danger"
           ? "text-danger"
           : status.tone === "warning"
@@ -590,13 +593,14 @@ function MainStatusLine() {
             : "text-ink-muted"
       }`}
       title={status.title ?? status.text}
-      // The visible line wraps rather than clipping at narrow widths; the
-      // hover title and the accessible name carry the longer explanation
-      // where a status has one (R8-09).
+      // The visible line keeps the bar one line high: past its width it ends
+      // with an ellipsis and opens whole on Enter, a click or a tap. The hover
+      // title and the accessible name carry the longer explanation where a
+      // status has one (R8-09).
       aria-label={status.title ?? status.text}
       role={status.announce === true ? (status.tone === "danger" ? "alert" : "status") : undefined}
     >
-      {status.text}
+      <IdentifyingText value={status.text} />
     </span>
   );
 }

@@ -194,7 +194,9 @@ describe("the shared menu viewport boundary", () => {
       expect(menu.style.top).toBe("8px");
       expect(menu.style.maxWidth).toBe("284px");
       expect(menu.style.maxHeight).toBe("384px");
-      expect(menu.className).toContain("overflow-auto");
+      // It scrolls only vertically: a label past the cap ends with an
+      // ellipsis instead of scrolling the menu sideways.
+      expect(menu.className.split(" ")).toEqual(expect.arrayContaining(["overflow-y-auto", "overflow-x-hidden"]));
 
       triggerRect = rect({ top: 40, left: 430, width: 26, height: 20 });
       intrinsicHeight = 500;
@@ -204,7 +206,8 @@ describe("the shared menu viewport boundary", () => {
 
       expect(menu.style.left).toBe("196px");
       expect(menu.style.top).toBe("64px");
-      expect(menu.style.maxWidth).toBe("484px");
+      // A wide viewport still caps the menu at its narrow width.
+      expect(menu.style.maxWidth).toBe("384px");
       expect(menu.style.maxHeight).toBe("548px");
     } finally {
       scrollHeight.mockRestore();

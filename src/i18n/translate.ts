@@ -39,8 +39,9 @@ export type Translator = {
   // A calendar day with no time of day (`yyyy-mm-dd`), such as "Sunday,
   // September 27, 2026", formatted without any time-zone shift.
   calendarDay: (day: string) => string;
-  // Names run together the way the language lists them ("a, b, c").
-  list: (items: readonly string[]) => string;
+  // Names run together the way the language lists them ("a, b, and c"); an
+  // item may be markup (a shortened name, a "12 more" control).
+  list: (items: readonly ReactNode[]) => ReactNode;
 };
 
 export function createTranslator(language: Language, locale: string = language): Translator {
@@ -50,7 +51,7 @@ export function createTranslator(language: Language, locale: string = language):
   const dateTimeFormats = new Map<string, Intl.DateTimeFormat>();
   const monthYearFormat = new Intl.DateTimeFormat(locale, { year: "numeric", month: "long", timeZone: "UTC" });
   const calendarDayFormat = new Intl.DateTimeFormat(locale, { dateStyle: "full", timeZone: "UTC" });
-  const listFormat = new Intl.ListFormat(locale, { type: "conjunction", style: "narrow" });
+  const listFormat = new Intl.ListFormat(locale, { type: "conjunction", style: "long" });
   const pluralRules = new Intl.PluralRules(language);
 
   function template(key: MessageKey, values: MessageValues | undefined): string {
@@ -84,13 +85,15 @@ export function createTranslator(language: Language, locale: string = language):
   }
 
   function rich(key: MessageKey, values: Record<string, ReactNode>): ReactNode {
-    const parts = template(key, undefined).split(PLACEHOLDER);
+    // A numeric count picks the plural form and reads in the locale's digits.
+    const count = typeof values.count === "number" ? { count: values.count } : undefined;
+    const parts = template(key, count).split(PLACEHOLDER);
     // split with a capture group alternates literal text and placeholder names.
-    return parts.map((part, index) =>
-      index % 2 === 0
-        ? part
-        : createElement(Fragment, { key: index }, part in values ? values[part] : `{${part}}`),
-    );
+    return parts.map((part, index) => {
+      if (index % 2 === 0) return part;
+      const value = part in values ? values[part] : `{${part}}`;
+      return createElement(Fragment, { key: index }, typeof value === "number" ? numberFormat.format(value) : value);
+    });
   }
 
   return {
@@ -120,6 +123,10 @@ export function createTranslator(language: Language, locale: string = language):
       const value = new Date(Date.UTC(year, month - 1, date));
       return Number.isNaN(value.getTime()) ? day : calendarDayFormat.format(value);
     },
-    list: (items) => listFormat.format(items),
+    list: (items) =>
+      // Formatted over stand-in indexes, so each element can be markup.
+      listFormat.formatToParts(items.map((_, index) => String(index))).map((part, index) =>
+        createElement(Fragment, { key: index }, part.type === "element" ? items[Number(part.value)] : part.value),
+      ),
   };
 }

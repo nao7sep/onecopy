@@ -488,6 +488,7 @@
   "confirm.hint": "Left/Right 或 Tab：选择 · Enter：确认所选 · Escape：取消",
   "common.dismiss": "关闭",
   "common.dismissResult": "关闭结果",
+  "common.countMore": { "other": "另外 {count} 个" },
   "common.kind": "类型",
   "common.name": "名称",
   "common.size": "大小",
