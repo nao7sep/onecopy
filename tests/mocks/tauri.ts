@@ -94,6 +94,9 @@ export const outerSize = vi.fn(async () => ({ width: 1120, height: 640 }));
 export const onResized = vi.fn(async (_handler: unknown) => () => {});
 export const onCloseRequested = vi.fn(async (_handler: unknown) => () => {});
 export const isMaximized = vi.fn(async () => false);
+// The current window's display state, set by `setCurrentWindowShown`.
+export const isMinimized = vi.fn(async () => currentWindowMinimized);
+export const isVisible = vi.fn(async () => currentWindowVisible);
 export const setTheme = vi.fn(async (_theme: "light" | "dark" | null) => {});
 export const setTitle = vi.fn(async (_title: string) => {});
 export const onFocusChanged = vi.fn(async (_handler: unknown) => () => {});
@@ -112,6 +115,8 @@ export const getCurrentWindow = vi.fn(() => ({
   onResized,
   onCloseRequested,
   isMaximized,
+  isMinimized,
+  isVisible,
   setTheme,
   setTitle,
   onFocusChanged,
@@ -230,6 +235,8 @@ export const revealItemInDir = vi.fn(async () => {});
 export const openUrl = vi.fn(async () => {});
 
 let currentWindowLabel = "main";
+let currentWindowMinimized = false;
+let currentWindowVisible = true;
 let monitors: Array<Record<string, unknown>> = [];
 let hostMonitor: Record<string, unknown> | null = null;
 
@@ -486,6 +493,12 @@ export function setCurrentWindowLabel(label: string): void {
   currentWindowLabel = label;
 }
 
+/** Minimizes or hides the current window, as far as its queries report. */
+export function setCurrentWindowShown(state: { minimized?: boolean; visible?: boolean }): void {
+  currentWindowMinimized = state.minimized ?? false;
+  currentWindowVisible = state.visible ?? true;
+}
+
 export function setMonitors(next: Array<Record<string, unknown>>): void {
   monitors = next;
 }
@@ -527,6 +540,8 @@ export function resetTauriMocks(
   onWindowCreated = null;
   nextWindowListenerFailure = null;
   currentWindowLabel = "main";
+  currentWindowMinimized = false;
+  currentWindowVisible = true;
   monitors = [];
   hostMonitor = null;
   for (const spy of [
@@ -544,6 +559,8 @@ export function resetTauriMocks(
     close,
     destroy,
     isMaximized,
+    isMinimized,
+    isVisible,
     onResized,
     onCloseRequested,
     onFocusChanged,

@@ -107,6 +107,42 @@ pub(crate) fn session_end_saved(id: u64) {
     SESSION.saved(id);
 }
 
+/// A quit question shown on its own, owned by no window, for when Main is
+/// minimized or hidden: a question never brings the workspace back to get an
+/// owner (window-conventions, modal-dialog-conventions). Returns the index of
+/// the chosen label; the first label is the safe one, and a dismissed or
+/// failed dialog answers it. The renderer settles the question itself when
+/// the OS ends the session, so this dialog never holds the exit: on macOS it
+/// is a system alert on its own thread, on Windows a task dialog on its own.
+///
+/// rfd directly, as the startup halt uses it: the dialog plugin's
+/// custom-label mapping reports a dismissed or failed dialog as its second
+/// label, so either Return or a failure would choose the destructive answer.
+pub(crate) async fn standalone_question(title: String, body: String, labels: Vec<String>) -> usize {
+    let buttons = match labels.as_slice() {
+        [first, second] => rfd::MessageButtons::OkCancelCustom(first.clone(), second.clone()),
+        [first, second, third] => rfd::MessageButtons::YesNoCancelCustom(first.clone(), second.clone(), third.clone()),
+        _ => return 0,
+    };
+    let answer = rfd::AsyncMessageDialog::new()
+        .set_level(rfd::MessageLevel::Warning)
+        .set_title(title)
+        .set_description(body)
+        .set_buttons(buttons)
+        .show()
+        .await;
+    chosen(&labels, &answer)
+}
+
+/// The first label is the dialog's default button on both platforms, and
+/// anything but a labelled button press answers it.
+fn chosen(labels: &[String], answer: &rfd::MessageDialogResult) -> usize {
+    match answer {
+        rfd::MessageDialogResult::Custom(label) => labels.iter().position(|candidate| candidate == label).unwrap_or(0),
+        _ => 0,
+    }
+}
+
 fn commit_session_end(app: &AppHandle) {
     crate::app_lifecycle::start_exit_deadline(crate::app_lifecycle::SESSION_EXIT_DEADLINE);
     prepare_session_end(app);

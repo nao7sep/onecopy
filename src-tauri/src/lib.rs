@@ -1531,6 +1531,11 @@ fn session_end_saved(id: u64) {
 }
 
 #[tauri::command]
+async fn quit_question(title: String, body: String, labels: Vec<String>) -> usize {
+    quit::standalone_question(title, body, labels).await
+}
+
+#[tauri::command]
 async fn check_github_release(
     app: AppHandle,
     manual: Option<bool>,
@@ -1810,6 +1815,7 @@ pub fn run() {
             records_list_width,
             request_app_exit,
             session_end_saved,
+            quit_question,
             check_github_release
         ])
         .build(tauri::generate_context!());

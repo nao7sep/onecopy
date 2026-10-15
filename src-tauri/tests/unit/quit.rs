@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::{session_message, terminate_reply, SessionEnd, SessionMessage, TerminateReply};
+use super::{chosen, session_message, terminate_reply, SessionEnd, SessionMessage, TerminateReply};
 
 const QUIT: Option<u32> = Some(u32::from_be_bytes(*b"quit"));
 
@@ -100,6 +100,16 @@ fn a_committed_session_end_owns_one_exit_and_cannot_be_cancelled() {
     assert!(!session.commit(), "a later window's WM_ENDSESSION joins the exit already running");
     assert!(!session.cancel());
     assert!(session.ending());
+}
+
+#[test]
+fn a_standalone_question_answers_its_safe_first_label_unless_another_was_pressed() {
+    let labels = ["Keep running".to_string(), "Stop and quit".to_string()];
+    assert_eq!(chosen(&labels, &rfd::MessageDialogResult::Custom("Stop and quit".into())), 1);
+    assert_eq!(chosen(&labels, &rfd::MessageDialogResult::Custom("Keep running".into())), 0);
+    assert_eq!(chosen(&labels, &rfd::MessageDialogResult::Cancel), 0, "Escape, closing or a failed dialog");
+    assert_eq!(chosen(&labels, &rfd::MessageDialogResult::Ok), 0);
+    assert_eq!(chosen(&labels, &rfd::MessageDialogResult::Custom("unknown".into())), 0);
 }
 
 // Tao's hidden event-target window exits the process on WM_ENDSESSION. Every

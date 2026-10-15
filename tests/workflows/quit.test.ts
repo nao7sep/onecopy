@@ -1,11 +1,23 @@
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { flushConfigForShutdown, resetConfigWritesForTests, useAppStore, retainStatePatch } from "../../src/state/app-store";
 import { setSoundEnabled, setPlaybackVolume } from "../../src/workflows/playback";
-import { cancelQuitDecision, cancelSessionEnd, endSession, installQuitWorkflow, requestQuit, useQuitDiscardStore, useQuitSaveStore } from "../../src/workflows/quit";
+import { cancelQuitDecision, cancelSessionEnd, endSession, installQuitWorkflow, requestQuit, useQuitDiscardStore, useQuitRunningWorkStore, useQuitSaveStore } from "../../src/workflows/quit";
+import { useMutationStore } from "../../src/state/mutation-store";
+import { useBinariesStore, type DependencyState } from "../../src/state/binaries-store";
+import { useDerivedWorkStore } from "../../src/state/derived-work-store";
+import { useSectionsStore } from "../../src/state/sections-store";
+import type { MutationKind } from "../../src/models/mutation";
+import { createTranslator } from "../../src/i18n/translate";
+import { useFullscreenViewStore } from "../../src/state/fullscreen-view-store";
+import { closeFullscreenView } from "../../src/workflows/fullscreen-view";
+
+// The fullscreen view's own close path is tested with the view; here it only
+// has to be the one quit takes.
+vi.mock("../../src/workflows/fullscreen-view", () => ({ closeFullscreenView: vi.fn() }));
 import { useSettingsStore } from "../../src/state/settings-store";
 import { useAppShellStore } from "../../src/state/app-shell-store";
 import { effectiveConfig } from "../helpers/config";
-import { fireEvent, invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
+import { fireEvent, invokeCalls, mockCommands, resetTauriMocks, setCurrentWindowShown } from "../mocks/tauri";
 
 // The native events reach listeners installed once, as at launch.
 beforeAll(installQuitWorkflow);
@@ -15,6 +27,9 @@ beforeEach(() => {
   cancelSessionEnd();
   useSettingsStore.setState({ draft: null, opened: null, saving: false });
   useAppShellStore.getState().closeUtility();
+  useMutationStore.setState({ progress: null, cancelling: false });
+  useBinariesStore.setState({ entries: [], installing: {} });
+  useQuitRunningWorkStore.setState({ body: null });
   useAppStore.setState({ appData: { config: { soundEnabled: true, playbackVolume: 0.7 }, state: {}, dataRoot: "/app", debugEnabled: false, quarantines: [] } });
   mockCommands({
     save_config: ({ changes }) => ({ ...useAppStore.getState().appData!.config, ...(changes as object) }),
@@ -285,4 +300,255 @@ it("quit waits for a Settings save in flight and does not ask about it", async (
   await quit;
   expect(exits()).toHaveLength(1);
   expect(useAppStore.getState().appData?.config.defaultTimezone).toBe("Asia/Tokyo");
+});
+
+// Running work the user started (developer decision): a file operation or a
+// managed-tool install asks before quit stops it; the OS path never asks.
+function runOperation(kind: MutationKind = "destination-copy"): void {
+  useMutationStore.setState({ cancelling: false, progress: {
+    operationId: 1, kind, phase: "delivering", itemsDone: 1, itemsTotal: 4, filesDone: 1, filesTotal: 4,
+    bytesDone: 10, bytesTotal: 40, failures: 0, currentFileBytesDone: null, currentFileBytesTotal: null, nextPhase: null,
+  } });
+}
+
+function downloadFfmpeg(): void {
+  useBinariesStore.setState({
+    entries: [{ id: "ffmpeg", label: "ffmpeg" } as DependencyState],
+    installing: { ffmpeg: { operationId: "install-1", cancelling: false, progress: { phase: "download", done: 1, total: 10, nextPhase: null } } },
+  });
+}
+
+const english = createTranslator("en");
+function runningBody(): string {
+  return english.text(useQuitRunningWorkStore.getState().body!);
+}
+
+async function presentedRunningWorkQuestion(): Promise<(stop: boolean) => void> {
+  await settle();
+  const question = useQuitRunningWorkStore.getState();
+  expect(question.standalone).toBe(false);
+  question.presented!();
+  expect(question.choose).not.toBeNull();
+  return question.choose!;
+}
+
+it("asks before stopping a running file operation, and Keep running cancels the quit", async () => {
+  runOperation("destination-move");
+  const quit = requestQuit();
+  const choose = await presentedRunningWorkQuestion();
+  expect(runningBody()).toBe("A move is running.");
+  choose(false);
+  await quit;
+  expect(exits()).toHaveLength(0);
+  expect(useQuitRunningWorkStore.getState().choose).toBeNull();
+  expect(invokeCalls.some((call) => call.command === "quit_question")).toBe(false);
+});
+
+it("Stop and quit exits, and so does an operation that finished while asking", async () => {
+  runOperation();
+  let quit = requestQuit();
+  (await presentedRunningWorkQuestion())(true);
+  await quit;
+  expect(exits()).toHaveLength(1);
+
+  quit = requestQuit();
+  const choose = await presentedRunningWorkQuestion();
+  useMutationStore.setState({ progress: null });
+  choose(true);
+  await quit;
+  expect(exits()).toHaveLength(2);
+});
+
+it("a repeated quit joins the open question", async () => {
+  runOperation();
+  const quit = requestQuit();
+  const choose = await presentedRunningWorkQuestion();
+  expect(requestQuit()).toBe(quit);
+  choose(true);
+  await quit;
+  expect(exits()).toHaveLength(1);
+});
+
+it("names each managed-tool download or install it would stop", async () => {
+  runOperation("restore");
+  downloadFfmpeg();
+  const quit = requestQuit();
+  const choose = await presentedRunningWorkQuestion();
+  expect(runningBody()).toBe("A restore is running.\nffmpeg is being downloaded.");
+  choose(false);
+  await quit;
+  expect(exits()).toHaveLength(0);
+});
+
+it("does not ask about work the user is already cancelling", async () => {
+  runOperation();
+  useMutationStore.setState({ cancelling: true });
+  await requestQuit();
+  expect(exits()).toHaveLength(1);
+  expect(useQuitRunningWorkStore.getState().body).toBeNull();
+});
+
+it("automatic derived work and source checks alone never ask", async () => {
+  useDerivedWorkStore.setState({ snapshot: { workerRunning: true, pausedClasses: [], classes: [],
+    activeItem: { id: "video-transcripts", hash: "h", done: 1, total: 9, stopping: false } } });
+  useSectionsStore.setState((state) => ({ sourceCheck: { ...state.sourceCheck, running: true } }));
+  try {
+    await requestQuit();
+    expect(exits()).toHaveLength(1);
+    expect(useQuitRunningWorkStore.getState().choose).toBeNull();
+  } finally {
+    useDerivedWorkStore.setState({ snapshot: null });
+    useSectionsStore.setState((state) => ({ sourceCheck: { ...state.sourceCheck, running: false } }));
+  }
+});
+
+it("a running-work question that cannot be shown keeps running", async () => {
+  vi.useFakeTimers();
+  runOperation();
+  const quit = requestQuit();
+  await settle();
+  expect(useQuitRunningWorkStore.getState().choose).not.toBeNull();
+  await vi.advanceTimersByTimeAsync(500);
+  await quit;
+  expect(exits()).toHaveLength(0);
+  expect(useQuitRunningWorkStore.getState().choose).toBeNull();
+});
+
+it("the OS ending the session never asks about running work and settles an open question", async () => {
+  runOperation();
+  await endSession(4);
+  expect(useQuitRunningWorkStore.getState().choose).toBeNull();
+  expect(invokeCalls.find((call) => call.command === "session_end_saved")?.args).toEqual({ id: 4 });
+  cancelSessionEnd();
+
+  const quit = requestQuit();
+  await presentedRunningWorkQuestion();
+  await endSession(5);
+  await quit;
+  expect(useQuitRunningWorkStore.getState().choose).toBeNull();
+  expect(exits()).toHaveLength(0);
+});
+
+it("renderer failure cancels the running-work question in Main", async () => {
+  runOperation();
+  const quit = requestQuit();
+  await presentedRunningWorkQuestion();
+  cancelQuitDecision();
+  await quit;
+  expect(exits()).toHaveLength(0);
+});
+
+// No question attaches to a minimized or hidden Main or brings it back: it
+// stands alone as a native dialog, with the safe choice first.
+function standaloneQuestions() {
+  return invokeCalls.filter((call) => call.command === "quit_question").map((call) => call.args);
+}
+
+it("with Main minimized the running-work question stands alone, and Stop and quit exits", async () => {
+  setCurrentWindowShown({ minimized: true });
+  runOperation("delete");
+  mockCommands({ quit_question: () => 1 });
+  await requestQuit();
+  expect(standaloneQuestions()).toEqual([{
+    title: "Stop the running work and quit?",
+    body: "A deletion is running.",
+    labels: ["Keep running", "Stop and quit"],
+  }]);
+  expect(exits()).toHaveLength(1);
+});
+
+it("with Main hidden the Settings discard question stands alone and its safe answer keeps editing", async () => {
+  setCurrentWindowShown({ visible: false });
+  editSettings();
+  let answer!: (index: number) => void;
+  mockCommands({ quit_question: () => new Promise((resolve) => { answer = resolve; }) });
+  const quit = requestQuit();
+  await settle();
+  const question = useQuitDiscardStore.getState();
+  expect(question.standalone).toBe(true);
+  expect(question.presented).toBeNull();
+  cancelQuitDecision();
+  expect(useQuitDiscardStore.getState().choose).not.toBeNull();
+  answer(0);
+  await quit;
+  expect(standaloneQuestions()[0]?.labels).toEqual(["Keep editing", "Discard"]);
+  expect(exits()).toHaveLength(0);
+  expect(useSettingsStore.getState().draft?.defaultTimezone).toBe("Asia/Tokyo");
+});
+
+it("a standalone save question offers Cancel first, then Retry and Quit anyway", async () => {
+  setCurrentWindowShown({ minimized: true });
+  setPlaybackVolume(0.4);
+  mockCommands({ save_config: () => Promise.reject(new Error("disk full")), quit_question: () => 2 });
+  await requestQuit();
+  expect(standaloneQuestions()[0]?.labels).toEqual(["Cancel", "Retry", "Quit anyway"]);
+  expect(exits()).toHaveLength(1);
+  mockCommands({ save_config: ({ changes }) => changes });
+  await flushConfigForShutdown();
+});
+
+it("a standalone dialog that fails keeps running", async () => {
+  setCurrentWindowShown({ minimized: true });
+  runOperation();
+  mockCommands({ quit_question: () => Promise.reject(new Error("no dialog")) });
+  await requestQuit();
+  expect(exits()).toHaveLength(0);
+  expect(useQuitRunningWorkStore.getState().choose).toBeNull();
+});
+
+it("a standalone answer after the OS took over changes nothing", async () => {
+  setCurrentWindowShown({ minimized: true });
+  runOperation();
+  let answer!: (index: number) => void;
+  mockCommands({ quit_question: () => new Promise((resolve) => { answer = resolve; }) });
+  const quit = requestQuit();
+  await settle();
+  await endSession(6);
+  await quit;
+  answer(1);
+  await settle();
+  expect(exits()).toHaveLength(0);
+});
+
+it("closes the fullscreen view the way Escape does before asking in Main, and only to ask", async () => {
+  const viewing = { token: "view-1" } as unknown as NonNullable<ReturnType<typeof useFullscreenViewStore.getState>["session"]>;
+  vi.mocked(closeFullscreenView).mockReset().mockImplementation(async () => { useFullscreenViewStore.setState({ session: null }); });
+  useFullscreenViewStore.setState({ session: viewing });
+  await requestQuit();
+  expect(closeFullscreenView).not.toHaveBeenCalled();
+  expect(exits()).toHaveLength(1);
+
+  runOperation();
+  const quit = requestQuit();
+  await settle();
+  expect(closeFullscreenView).toHaveBeenCalledWith();
+  expect(useFullscreenViewStore.getState().session).toBeNull();
+  (await presentedRunningWorkQuestion())(false);
+  await quit;
+  expect(exits()).toHaveLength(1);
+
+  useFullscreenViewStore.setState({ session: viewing });
+  setCurrentWindowShown({ minimized: true });
+  mockCommands({ quit_question: () => 0 });
+  await requestQuit();
+  expect(closeFullscreenView).toHaveBeenCalledTimes(1);
+  useFullscreenViewStore.setState({ session: null });
+});
+
+it("a quit question in Main during Comparison takes the keyboard to Main, and none is moved when nothing is asked", async () => {
+  const { useComparisonStore } = await import("../../src/state/comparison-store");
+  mockCommands({ focus_window_while_active: () => null });
+  const focuses = () => invokeCalls.filter((call) => call.command === "focus_window_while_active").map((call) => call.args.label);
+  useComparisonStore.setState({ open: true });
+  try {
+    await requestQuit();
+    expect(focuses()).toEqual([]);
+    runOperation();
+    const quit = requestQuit();
+    (await presentedRunningWorkQuestion())(false);
+    await quit;
+    expect(focuses()).toEqual(["main"]);
+  } finally {
+    useComparisonStore.setState({ open: false });
+  }
 });

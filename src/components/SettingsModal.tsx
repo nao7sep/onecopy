@@ -409,6 +409,7 @@ export default function SettingsModal({
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const quitDiscard = useQuitDiscardStore((s) => s.choose);
   const quitDiscardPresented = useQuitDiscardStore((s) => s.presented);
+  const quitDiscardStandalone = useQuitDiscardStore((s) => s.standalone);
   const [confirmRebuild, setConfirmRebuild] = useState(false);
   const [rebuilding, setRebuilding] = useState(false);
   const [textOptions, setTextOptions] = useState<TextPreviewOptions | null>(null);
@@ -485,7 +486,7 @@ export default function SettingsModal({
         </Button>
       }
     >
-      {quitDiscard !== null ? (
+      {quitDiscard !== null && !quitDiscardStandalone ? (
         <ConfirmModal
           title={t("settings.discardTitle")}
           message={t("settings.discardMessage")}

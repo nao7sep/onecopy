@@ -1,4 +1,5 @@
 import type { MessageKey } from "../i18n/catalogues";
+import { message, type MessageValue } from "../i18n/translate";
 
 // The core names its managed tools, AI features and acceleration modes by id;
 // the interface says each one in the reader's language. An id without a key
@@ -33,6 +34,12 @@ function labelled(
 
 export function toolLabel(id: string, label: string, t: (key: MessageKey) => string): string {
   return labelled(TOOL_KEYS, id, label, t);
+}
+
+/** The same name as a message value, for text kept in state. */
+export function toolName(id: string, label: string): MessageValue {
+  const key = TOOL_KEYS[id];
+  return key === undefined ? label : message(key);
 }
 
 export function featureLabel(id: string, label: string, t: (key: MessageKey) => string): string {

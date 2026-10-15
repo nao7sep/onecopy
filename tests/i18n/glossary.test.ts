@@ -108,6 +108,7 @@ const DELETED_FILES_CONCEPT_KEYS = [
   "notice.restoreFolderBlocked",
   "notice.restoreUnplaceable",
   "notice.restoreOutcomeUnknown",
+  "quit.runningEmpty",
 ];
 
 describe("glossary: Deleted files keeps its name", () => {
@@ -148,6 +149,7 @@ const RESTORE_CONCEPT_KEYS = [
   "restoreReview.companionUnpaired",
   "mutation.restoreComplete",
   "mutation.restoreCancelled",
+  "quit.runningRestore",
   "mutation.restoreWithFailures",
   "mutation.restoreStopped",
   "mutation.planningRestore",

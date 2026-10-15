@@ -7,9 +7,10 @@ import Button from "./ui/Button";
 export default function QuitSaveModal() {
   const choose = useQuitSaveStore((state) => state.choose);
   const presented = useQuitSaveStore((state) => state.presented);
+  const standalone = useQuitSaveStore((state) => state.standalone);
   useEffect(() => { presented?.(); }, [presented]);
   const { t } = useI18n();
-  if (choose === null) return null;
+  if (choose === null || standalone) return null;
   return <ModalShell title={t("quit.saveFailedTitle")} onClose={() => choose("cancel")}
     closeLabel={t("common.cancel")} initialFocus="close" footerArrowNavigation
     primaryAction={<><Button onClick={() => choose("retry")}>{t("common.retry")}</Button>

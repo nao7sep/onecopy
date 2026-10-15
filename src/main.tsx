@@ -10,6 +10,7 @@ import { message } from "./i18n/translate";
 import { installMediaUseBoundary } from "./media-use";
 import { presentEscapedFailure, recordInterfaceFailure } from "./utils/failureSurface";
 import QuitSaveModal from "./components/QuitSaveModal";
+import QuitRunningWorkModal from "./components/QuitRunningWorkModal";
 import { cancelQuitDecision, installQuitWorkflow } from "./workflows/quit";
 import { closeComparisonAfterMainRendererFailure } from "./state/comparison-store";
 import { installWindowActivity } from "./repositories/window-activity";
@@ -109,7 +110,7 @@ void Promise.all([installMediaUseBoundary(), installWindowAppearance()])
                 <App />
               )}
             </Suspense>
-            {view === null ? <QuitSaveModal /> : null}
+            {view === null ? <><QuitSaveModal /><QuitRunningWorkModal /></> : null}
           </InterfaceLanguage>
         </RootErrorBoundary>
       </React.StrictMode>,
