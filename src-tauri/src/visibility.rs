@@ -27,20 +27,7 @@ impl Policy {
         };
         let names = match config.get("ignoredFileNames") {
             None => defaults.ignored_file_names,
-            Some(value) => value
-                .as_array()
-                .ok_or("Ignored file names must be a list")?
-                .iter()
-                .map(|value| {
-                    let name = value
-                        .as_str()
-                        .ok_or("Ignored file names must contain text")?;
-                    if name.is_empty() || name.contains(['/', '\\', '\0', '\n', '\r']) {
-                        return Err("Ignored file names must be complete basenames, not paths");
-                    }
-                    Ok(name.to_string())
-                })
-                .collect::<Result<Vec<_>, _>>()?,
+            Some(value) => clean_ignored_file_names(value)?,
         };
         Ok(Self {
             hidden_flags: if boolean("hideDotNames", defaults.hide_dot_names)? {
@@ -64,6 +51,48 @@ impl Policy {
         flags & self.hidden_flags == 0
             && (is_directory || !self.ignored_file_names.contains(&name.to_lowercase()))
     }
+}
+
+/// Whether a trimmed, non-blank item names a file: the whole name a folder
+/// listing gives a file, which is what [`Policy::visible`] compares. A path,
+/// `.` or `..`, or a name holding a NUL or a line break would never match.
+/// Settings marks such a row by the same rule (`src/models/ignoredFileNames.ts`);
+/// both sides read the cases in `tests/fixtures/ignored-file-names.json`.
+pub fn is_file_name(name: &str) -> bool {
+    !matches!(name, "" | "." | "..") && !name.contains(['/', '\\', '\0', '\n', '\r'])
+}
+
+/// The ignored file names as the app holds them: each item trimmed, blank
+/// items dropped, and an item repeated ignoring case, as matching does, kept
+/// once where it first appears. The error names the first item that is not a
+/// file name.
+pub fn clean_ignored_file_names(value: &Value) -> Result<Vec<String>, String> {
+    let mut seen = HashSet::new();
+    let mut names = Vec::new();
+    for item in value.as_array().ok_or("Ignored file names must be a list")? {
+        let name = item.as_str().ok_or("Ignored file names must contain text")?.trim();
+        if name.is_empty() {
+            continue;
+        }
+        if !is_file_name(name) {
+            return Err(format!("{name} is not a file name"));
+        }
+        if seen.insert(name.to_lowercase()) {
+            names.push(name.to_string());
+        }
+    }
+    Ok(names)
+}
+
+/// Whether two lists ignore the same files. Order carries no meaning and
+/// matching ignores case, so the list is compared as a set.
+pub fn same_ignored_file_names(left: &Value, right: &Value) -> bool {
+    let set = |value: &Value| {
+        value.as_array().map(|names| {
+            names.iter().filter_map(Value::as_str).map(str::to_lowercase).collect::<HashSet<_>>()
+        })
+    };
+    set(left) == set(right)
 }
 
 pub fn windows_flags(attributes: u32) -> i64 {

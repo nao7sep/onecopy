@@ -187,6 +187,9 @@ pub fn computer_time_zone() -> chrono_tz::Tz {
 /// gets the computer's current zone pinned at its next save.
 const INTERPRETATION_ZONE: &str = "defaultTimezone";
 
+/// The ignored-file-names set key: a list whose order carries no meaning.
+const IGNORED_FILE_NAMES: &str = "ignoredFileNames";
+
 /// Known set keys and built-ins have one owner: `DefaultConfig`. The one
 /// check on read (config-sets conventions' reading and healing).
 ///
@@ -207,8 +210,8 @@ pub fn effective_config(stored: Option<&JsonValue>) -> JsonValue {
     }
     for (key, builtin) in effective.as_object_mut().expect("defaults are an object") {
         if let Some(value) = stored.and_then(|document| document.get(key)) {
-            if valid_set(key, value, builtin) {
-                *builtin = value.clone();
+            if let Some(value) = held_set(key, value, builtin) {
+                *builtin = value;
             } else {
                 logging::warn(
                     "invalid config set; using built-in",
@@ -218,6 +221,22 @@ pub fn effective_config(stored: Option<&JsonValue>) -> JsonValue {
         }
     }
     effective
+}
+
+/// A stored or saved set as the app holds it, or `None` when it is not valid.
+/// Ignored file names are held cleaned (`visibility::clean_ignored_file_names`),
+/// so a list with an item that is not a file name falls back like any other
+/// invalid set rather than stopping the launch at the visibility policy. The
+/// built-in may stand in for it: the list holds a few typed names, and only a
+/// hand edit or an older build can store one that fails the check.
+fn held_set(key: &str, value: &JsonValue, builtin: &JsonValue) -> Option<JsonValue> {
+    if !valid_set(key, value, builtin) {
+        return None;
+    }
+    if key == IGNORED_FILE_NAMES {
+        return crate::visibility::clean_ignored_file_names(value).ok().map(JsonValue::from);
+    }
+    Some(value.clone())
 }
 
 fn valid_set(key: &str, value: &JsonValue, builtin: &JsonValue) -> bool {
@@ -565,25 +584,33 @@ pub fn save_config(root: &Path, changes: &JsonValue) -> Result<SaveOutcome, Stri
     let builtins = effective_config(None);
     for (key, value) in fields {
         let Some(builtin) = builtins.get(key) else { continue };
-        if !valid_set(key, value, builtin) {
-            return Err(format!("the {key} setting is not valid"));
-        }
-        effective[key] = value.clone();
+        effective[key] = held_set(key, value, builtin).ok_or_else(|| format!("the {key} setting is not valid"))?;
     }
-    let stored = builtins
-        .as_object()
-        .expect("defaults are an object")
-        .iter()
-        .filter(|(key, builtin)| {
-            key.as_str() == INTERPRETATION_ZONE || !same_value(&effective[key.as_str()], builtin)
-        })
-        .map(|(key, _)| (key.clone(), effective[key.as_str()].clone()))
-        .collect::<serde_json::Map<_, _>>();
+    let mut stored = serde_json::Map::new();
+    for (key, builtin) in builtins.as_object().expect("defaults are an object") {
+        if key.as_str() == INTERPRETATION_ZONE || !same_set(key, &effective[key.as_str()], builtin) {
+            stored.insert(key.clone(), effective[key.as_str()].clone());
+        } else {
+            // Held as the built-in it equals, so the settings read the same
+            // now as after the next launch (a reordered list included).
+            effective[key.as_str()] = builtin.clone();
+        }
+    }
     write_json_file(&root.join(CONFIG_FILE_NAME), &JsonValue::Object(stored), formats::CONFIG, true)?;
     *held = Some((root.to_path_buf(), Arc::new(effective.clone())));
     crate::sleep_prevention::configure(&effective);
     register_volume_roots(Some(&effective));
     Ok(SaveOutcome { effective, quarantined })
+}
+
+/// Whether a set equals another as the set means it: ignored file names as a
+/// set of names, every other set by [`same_value`].
+fn same_set(key: &str, left: &JsonValue, right: &JsonValue) -> bool {
+    if key == IGNORED_FILE_NAMES {
+        crate::visibility::same_ignored_file_names(left, right)
+    } else {
+        same_value(left, right)
+    }
 }
 
 /// JSON equality with numbers compared by value, so `1` equals `1.0`.

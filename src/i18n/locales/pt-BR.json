@@ -202,6 +202,8 @@
   "settings.ignoredFileNameField": "Nome de arquivo ignorado {number}",
   "settings.removeIgnoredFileName": "Remover o nome de arquivo ignorado {number}",
   "settings.addFileName": "Adicionar nome de arquivo",
+  "settings.ignoredFileNameInvalid": "{name} não é um nome de arquivo. Um nome de arquivo não pode ser . nem .., nem conter / ou \\.",
+  "settings.resetIgnoredFileNames": "Redefinir os nomes de arquivo ignorados",
   "settings.timestamps": "Datas e horas",
   "settings.defaultTimezone": "Fuso horário para ler datas",
   "settings.timezoneSystem": "Sistema ({zone})",

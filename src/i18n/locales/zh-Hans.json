@@ -202,6 +202,8 @@
   "settings.ignoredFileNameField": "忽略的文件名 {number}",
   "settings.removeIgnoredFileName": "移除忽略的文件名 {number}",
   "settings.addFileName": "添加文件名",
+  "settings.ignoredFileNameInvalid": "{name} 不是文件名。文件名不能是“.”或“..”，也不能包含 / 或 \\。",
+  "settings.resetIgnoredFileNames": "重置忽略的文件名",
   "settings.timestamps": "日期与时间",
   "settings.defaultTimezone": "读取日期所用的时区",
   "settings.timezoneSystem": "跟随系统（{zone}）",

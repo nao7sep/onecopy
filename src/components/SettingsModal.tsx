@@ -36,6 +36,8 @@ import { LANGUAGES, LANGUAGE_NAMES, languageNameIn, normalizeLanguagePreference 
 import { useLanguageStore } from "../state/language-store";
 import { useDisplayZone } from "../hooks/useDisplayZone";
 import { useSystemTheme } from "../hooks/useSystemTheme";
+import { invalidIgnoredFileName } from "../models/ignoredFileNames";
+import { stringArrayField } from "../utils/configProjection";
 
 /** The core's text-preview choices (`text_preview::Options`); the limit
  * keeps the gate itself bounded (C-L2). */
@@ -195,10 +197,11 @@ function ScreensSection() {
 }
 
 // The named Settings modal over the config tunables. Field-level checks only —
-// the store never validates semantics (config-seeding conventions); Save
+// the store never validates semantics (config-sets conventions); Save
 // persists, re-resolves the index from evidence, and refreshes the views.
-// Save requires a dirty AND valid draft; closing with unsaved edits stacks a
-// discard confirmation instead of silently dropping them.
+// Save requires a dirty draft whose ignored-file-name rows all pass their
+// check; closing with unsaved edits stacks a discard confirmation instead of
+// silently dropping them.
 
 // The field never reformats mid-edit (select-all + retype must not snap to
 // the minimum under the caret); parsing and clamping happen on blur only.
@@ -402,6 +405,7 @@ export default function SettingsModal({
   const update = useSettingsStore((s) => s.update);
   const addSourceDir = useSettingsStore((s) => s.addSourceDir);
   const removeSourceDir = useSettingsStore((s) => s.removeSourceDir);
+  const defaults = useSettingsStore((s) => s.defaults);
   const accelerationCapabilities = useSettingsStore(
     (s) => s.accelerationCapabilities,
   );
@@ -454,6 +458,7 @@ export default function SettingsModal({
   if (!open || draft === null) return null;
 
   const dirty = JSON.stringify(draft) !== JSON.stringify(opened);
+  const valid = draft.ignoredFileNames.every((name) => invalidIgnoredFileName(name) === null);
   const requestClose = () => {
     if (dirty) setConfirmDiscard(true);
     else {
@@ -479,7 +484,7 @@ export default function SettingsModal({
       primaryAction={
         <Button
           variant="primary"
-          disabled={saving || !dirty}
+          disabled={saving || !dirty || !valid}
           onClick={() => void saveSettings()}
         >
           {saving ? t("common.saving") : t("settings.save")}
@@ -601,17 +606,35 @@ export default function SettingsModal({
           ) : null}
           <p className="mb-2 mt-3 text-sm">{t("settings.ignoredFileNames")}</p>
           <p className="mb-2 text-xs text-ink-muted">{t("settings.ignoredFileNamesHint")}</p>
+          {/* One row per name. Save trims each row and drops blank ones; a row
+              that is not a file name says so beneath it and holds Save. */}
           <ul className="mb-2 space-y-2">
-            {draft.ignoredFileNames.map((name, index) => (
-              <li key={index} className="flex items-center gap-2">
-                <TextInput className="min-w-0 flex-1" aria-label={t("settings.ignoredFileNameField", { number: index + 1 })} value={name}
-                  onChange={(event) => update({ ignoredFileNames: draft.ignoredFileNames.map((entry, position) => position === index ? event.target.value : entry) })} />
-                <Button aria-label={t("settings.removeIgnoredFileName", { number: index + 1 })}
-                  onClick={() => update({ ignoredFileNames: draft.ignoredFileNames.filter((_, position) => position !== index) })}>{t("common.remove")}</Button>
-              </li>
-            ))}
+            {draft.ignoredFileNames.map((name, index) => {
+              const invalid = invalidIgnoredFileName(name);
+              const errorId = `settings-ignored-file-name-${index}-error`;
+              return (
+                <li key={index}>
+                  <div className="flex items-center gap-2">
+                    <TextInput className="min-w-0 flex-1" aria-label={t("settings.ignoredFileNameField", { number: index + 1 })} value={name}
+                      invalid={invalid !== null} aria-describedby={invalid === null ? undefined : errorId}
+                      onChange={(event) => update({ ignoredFileNames: draft.ignoredFileNames.map((entry, position) => position === index ? event.target.value : entry) })} />
+                    <Button aria-label={t("settings.removeIgnoredFileName", { number: index + 1 })}
+                      onClick={() => update({ ignoredFileNames: draft.ignoredFileNames.filter((_, position) => position !== index) })}>{t("common.remove")}</Button>
+                  </div>
+                  {invalid === null ? null : (
+                    <p id={errorId} className="mt-1 break-words text-xs text-danger">
+                      {t("settings.ignoredFileNameInvalid", { name: invalid })}
+                    </p>
+                  )}
+                </li>
+              );
+            })}
           </ul>
-          <Button onClick={() => update({ ignoredFileNames: [...draft.ignoredFileNames, ""] })}>{t("settings.addFileName")}</Button>
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={() => update({ ignoredFileNames: [...draft.ignoredFileNames, ""] })}>{t("settings.addFileName")}</Button>
+            <Button disabled={defaults === null}
+              onClick={() => update({ ignoredFileNames: stringArrayField(defaults, "ignoredFileNames") })}>{t("settings.resetIgnoredFileNames")}</Button>
+          </div>
 
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             {t("settings.timestamps")}

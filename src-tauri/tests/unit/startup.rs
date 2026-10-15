@@ -16,6 +16,21 @@ fn invalid_index_path_never_yields_worker_admission_state() {
 }
 
 #[test]
+fn a_stored_ignored_name_that_is_not_a_file_name_does_not_stop_the_launch() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = temp.path().join(crate::storage::CONFIG_FILE_NAME);
+    let bytes = br#"{"formatVersion":1,"ignoredFileNames":["local.ini","photos/raw.jpg"],"theme":"dark"}"#;
+    std::fs::write(&config, bytes).unwrap();
+
+    prepare_data(temp.path()).expect("the launch continues on the built-in list");
+
+    let held = crate::storage::config(temp.path()).unwrap();
+    assert_eq!(held["ignoredFileNames"], crate::storage::effective_config(None)["ignoredFileNames"]);
+    assert_eq!(held["theme"], "dark", "the other sets are kept");
+    assert_eq!(std::fs::read(&config).unwrap(), bytes, "the launch writes nothing");
+}
+
+#[test]
 fn blocked_gate_exposes_only_stable_private_safe_copy() {
     let failure = StartupGate::blocked().failure().unwrap();
     assert_eq!(failure.title, "OneCopy could not start safely");

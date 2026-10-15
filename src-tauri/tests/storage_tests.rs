@@ -349,6 +349,34 @@ fn resetting_similarity_removes_the_whole_set_from_the_file() {
 }
 
 #[test]
+#[serial(backup_store, quarantine_journal)]
+fn ignored_file_names_are_saved_trimmed_and_leave_the_file_when_they_equal_the_built_in_as_a_set() {
+    let dir_owner = temp_dir("ignored-names");
+    let dir = dir_owner.path();
+    let path = dir.join(CONFIG_FILE_NAME);
+    let stored = || -> serde_json::Value { serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap() };
+    let saved = save_config(&dir, &serde_json::json!({ "ignoredFileNames": [" .DS_Store ", "", "   ", "local.ini\t"] })).unwrap();
+    assert_eq!(saved.effective["ignoredFileNames"], serde_json::json!([".DS_Store", "local.ini"]));
+    assert_eq!(stored(), saved_file(serde_json::json!({ "ignoredFileNames": [".DS_Store", "local.ini"] })));
+    // Reordered, with stray whitespace, a blank row and a repeat: the built-in.
+    let saved = save_config(&dir, &serde_json::json!({ "ignoredFileNames": ["desktop.ini ", "", " Thumbs.db", ".DS_Store", "thumbs.db"] })).unwrap();
+    assert_eq!(stored(), saved_file(serde_json::json!({})));
+    assert_eq!(saved.effective["ignoredFileNames"], effective_config(None)["ignoredFileNames"]);
+    assert!(save_config(&dir, &serde_json::json!({ "ignoredFileNames": ["ok.txt", ".."] })).is_err());
+    assert_eq!(stored(), saved_file(serde_json::json!({})), "a refused save writes nothing");
+}
+
+#[test]
+fn a_stored_ignored_name_list_is_held_cleaned_or_falls_back_to_the_built_in() {
+    let builtin = effective_config(None)["ignoredFileNames"].clone();
+    let held = |names: serde_json::Value| effective_config(Some(&serde_json::json!({ "ignoredFileNames": names })))["ignoredFileNames"].clone();
+    assert_eq!(held(serde_json::json!([" local.ini ", ""])), serde_json::json!(["local.ini"]));
+    for invalid in [serde_json::json!(["local.ini", "dir/file"]), serde_json::json!(["."]), serde_json::json!("local.ini")] {
+        assert_eq!(held(invalid.clone()), builtin, "{invalid}");
+    }
+}
+
+#[test]
 fn retired_settings_cannot_change_runtime_behavior() {
     let legacy = serde_json::json!({
         "videoAutoplay": false, "audioAutoplay": false, "showFaceStars": false,

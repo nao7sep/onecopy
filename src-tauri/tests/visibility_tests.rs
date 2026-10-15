@@ -37,6 +37,41 @@ fn policy_defaults_empty_list_exact_names_and_native_platform_facts() {
     ] {
         assert!(Policy::from_config(&bad).is_err());
     }
+    let trimmed = Policy::from_config(&json!({"ignoredFileNames": ["  local.ini ", "   "]})).unwrap();
+    assert!(!trimmed.visible("LOCAL.ini", false, 0));
+}
+
+/// The same cases the Settings rows are checked against
+/// (tests/models/ignored-file-names.test.ts), so the two rules cannot drift.
+#[test]
+fn ignored_file_names_follow_the_shared_cases() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/ignored-file-names.json");
+    let cases: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let texts = |key: &str| cases[key].as_array().unwrap().iter().map(|case| case.as_str().unwrap().to_string()).collect::<Vec<_>>();
+    for name in texts("fileNames") {
+        assert!(visibility::is_file_name(&name), "{name:?}");
+        assert_eq!(visibility::clean_ignored_file_names(&json!([name])).unwrap(), [name.clone()]);
+    }
+    for name in texts("notFileNames") {
+        assert!(!visibility::is_file_name(&name), "{name:?}");
+        let error = visibility::clean_ignored_file_names(&json!(["ok.txt", name])).unwrap_err();
+        assert!(error.contains(name.trim()), "the error names the item: {error:?}");
+    }
+    for (row, name) in cases["trimmed"].as_object().unwrap() {
+        assert_eq!(visibility::clean_ignored_file_names(&json!([row])).unwrap(), [name.as_str().unwrap()], "{row:?}");
+    }
+    assert!(visibility::clean_ignored_file_names(&json!(texts("blank"))).unwrap().is_empty());
+}
+
+#[test]
+fn ignored_file_names_are_kept_once_in_order_and_compared_as_a_set() {
+    let cleaned = visibility::clean_ignored_file_names(&json!(["b.txt", " A.txt", "", "a.TXT", "b.txt"])).unwrap();
+    assert_eq!(cleaned, ["b.txt", "A.txt"]);
+    assert!(visibility::same_ignored_file_names(&json!(["b.txt", "A.txt"]), &json!(["a.txt", "B.TXT"])));
+    assert!(!visibility::same_ignored_file_names(&json!(["b.txt"]), &json!(["a.txt", "b.txt"])));
+    // The built-in list is kept in its cleaned form.
+    let builtin = onecopy_lib::storage::DefaultConfig::default().ignored_file_names;
+    assert_eq!(visibility::clean_ignored_file_names(&json!(builtin)).unwrap(), builtin);
 }
 
 // R4.1 finding 2: the ignored-name filter must be case-insensitive at the

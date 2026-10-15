@@ -91,6 +91,37 @@ describe("Settings categories", () => {
     expect(useSettingsStore.getState().draft?.ignoredFileNames).toEqual(["local.ini"]);
   });
 
+  it("marks a row that is not a file name by name and holds Save until it is fixed", () => {
+    render(<SettingsModal open onClose={() => {}} />);
+    const save = screen.getByRole("button", { name: "Save" });
+    fireEvent.click(screen.getByRole("button", { name: "Add file name" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add file name" }));
+    fireEvent.change(screen.getByLabelText("Ignored file name 5"), { target: { value: "   " } });
+    expect((save as HTMLButtonElement).disabled).toBe(false);
+
+    const row = screen.getByLabelText("Ignored file name 4");
+    fireEvent.change(row, { target: { value: " photos/raw.jpg " } });
+    const error = "photos/raw.jpg is not a file name. A file name cannot be . or .. and cannot contain / or \\.";
+    expect(screen.getByText(error).id).toBe(row.getAttribute("aria-describedby"));
+    expect(row.getAttribute("aria-invalid")).toBe("true");
+    expect((save as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.change(row, { target: { value: "raw.jpg" } });
+    expect(screen.queryByText(error)).toBeNull();
+    expect(row.getAttribute("aria-invalid")).toBeNull();
+    expect((save as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("resets the ignored file names to the built-in list in the draft", () => {
+    useSettingsStore.getState().beginEditing(effectiveConfig({ ignoredFileNames: ["local.ini", ".."] }), accelerationCapabilities, DEFAULT_CONFIG);
+    render(<SettingsModal open onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Reset ignored file names" }));
+    expect(useSettingsStore.getState().draft?.ignoredFileNames).toEqual(DEFAULT_CONFIG.ignoredFileNames);
+    expect(useSettingsStore.getState().opened?.ignoredFileNames).toEqual(["local.ini", ".."]);
+    expect(invokeCalls.some((call) => call.command === "save_config")).toBe(false);
+    expect(screen.queryByText(/is not a file name/)).toBeNull();
+  });
+
   it("offers the system attribute option when the backend supports it", async () => {
     mockCommands({ visibility_capabilities: () => ({ hiddenAttributes: true, systemAttributes: true }) });
     render(<SettingsModal open onClose={() => {}} />);

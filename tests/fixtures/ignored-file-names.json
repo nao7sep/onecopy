@@ -1,0 +1,38 @@
+{
+  "fileNames": [
+    ".DS_Store",
+    "Thumbs.db",
+    "desktop.ini",
+    "*.jpg",
+    "my photo.jpg",
+    "...",
+    ".hidden",
+    "\u5199\u771f.jpg",
+    "\ufeffname"
+  ],
+  "notFileNames": [
+    ".",
+    "..",
+    "dir/file",
+    "/",
+    "folder\\file",
+    "a\u0000b",
+    "a\nb",
+    "a\rb"
+  ],
+  "trimmed": {
+    "  .DS_Store  ": ".DS_Store",
+    "\tThumbs.db\n": "Thumbs.db",
+    "\u3000\u5199\u771f.jpg\u3000": "\u5199\u771f.jpg",
+    "\u00a0name\u2028": "name",
+    "\u0085name\u0085": "name",
+    "\ufeffname ": "\ufeffname"
+  },
+  "blank": [
+    "",
+    "   ",
+    "\t",
+    "\u3000",
+    "\u00a0\u0085\u2029"
+  ]
+}

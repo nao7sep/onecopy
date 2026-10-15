@@ -202,6 +202,8 @@
   "settings.ignoredFileNameField": "無視するファイル名 {number}",
   "settings.removeIgnoredFileName": "無視するファイル名 {number} を取り除く",
   "settings.addFileName": "ファイル名を追加",
+  "settings.ignoredFileNameInvalid": "{name} はファイル名ではありません。ファイル名を「.」や「..」にすることはできず、/ や \\ も含められません。",
+  "settings.resetIgnoredFileNames": "無視するファイル名をリセット",
   "settings.timestamps": "日時",
   "settings.defaultTimezone": "日付の読み取りに使うタイムゾーン",
   "settings.timezoneSystem": "システム（{zone}）",

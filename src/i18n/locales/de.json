@@ -202,6 +202,8 @@
   "settings.ignoredFileNameField": "Ignorierter Dateiname {number}",
   "settings.removeIgnoredFileName": "Ignorierten Dateinamen {number} entfernen",
   "settings.addFileName": "Dateinamen hinzufügen",
+  "settings.ignoredFileNameInvalid": "{name} ist kein Dateiname. Ein Dateiname darf nicht . oder .. sein und weder / noch \\ enthalten.",
+  "settings.resetIgnoredFileNames": "Ignorierte Dateinamen zurücksetzen",
   "settings.timestamps": "Zeitstempel",
   "settings.defaultTimezone": "Zeitzone zum Lesen von Datumsangaben",
   "settings.timezoneSystem": "System ({zone})",
