@@ -75,7 +75,6 @@ fn default_config_serializes_with_camel_case_and_expected_defaults() {
         }
     );
     assert_eq!(value["checkSourceFoldersAtLaunch"], serde_json::json!(true));
-    assert_eq!(value["checkGithubReleasesAtLaunch"], serde_json::json!(true));
     assert_eq!(value["uiFontFamily"], serde_json::json!(""));
     assert!(value.get("verifyAfterCopy").is_none());
     assert_eq!(value["maximumImagesInComparison"], serde_json::json!(16));
@@ -382,7 +381,7 @@ fn retired_settings_cannot_change_runtime_behavior() {
         "videoAutoplay": false, "audioAutoplay": false, "showFaceStars": false,
         "previewLongEdgePx": 12, "thumbnailEdgePx": 1, "videoStripSecondsPerFrame": 1,
         "videoStripMinFrames": 100, "videoStripMaxFrames": 100, "goodRangeStartYear": 2020,
-        "textPreviewMaxBytes": 1, "pairingEnabled": false, "destinationConflictRenameStyle": "other",
+        "textPreviewMaxBytes": 1, "checkGithubReleasesAtLaunch": false, "pairingEnabled": false, "destinationConflictRenameStyle": "other",
         "similarity": { "maxGapSeconds": 1, "phashMaxDistance": 99, "phashMaxDistanceBurst": 99, "diameterMultiplier": 99 }
     });
     assert_eq!(effective_config(Some(&legacy)), effective_config(None));

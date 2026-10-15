@@ -8,7 +8,6 @@ import {
   type NotificationRecord,
   useNotificationsStore,
 } from "../../src/state/notifications-store";
-import { useReleaseCheckStore } from "../../src/state/release-check-store";
 import {
   fireEvent as fireBackendEvent,
   invokeCalls,
@@ -42,7 +41,6 @@ beforeEach(() => {
     dismiss_notification: () => true,
   });
   useNotificationsStore.setState({ active: [], dismissing: new Set() });
-  useReleaseCheckStore.setState({ noticeVersion: null, noticeLinkError: null });
 });
 
 afterEach(() => {
@@ -196,29 +194,14 @@ describe("the app-frame notification host", () => {
   });
 
   it("draws notice shadows from the host so the scroll region cannot clip them", () => {
-    useReleaseCheckStore.setState({ noticeVersion: "9.9.9" });
     render(<NotificationHost />);
     act(() => useNotificationsStore.setState({ active: [notice()] }));
 
     const host = document.querySelector("[data-notification-host]") as HTMLElement;
     expect(host.className).toContain("[filter:drop-shadow(");
-    for (const card of document.querySelectorAll("[data-notification], [data-release-notice]")) {
+    for (const card of document.querySelectorAll("[data-notification]")) {
       expect(card.className).not.toMatch(/\bshadow-/);
     }
-  });
-
-  it("keeps the release notice outside the active-notification scroll owner", () => {
-    useReleaseCheckStore.setState({ noticeVersion: "9.9.9" });
-    render(<NotificationHost />);
-    act(() => useNotificationsStore.setState({ active: [notice()] }));
-
-    const release = document.querySelector("[data-release-notice]") as HTMLElement;
-    const region = document.querySelector(
-      "[data-notification-scroll-region]",
-    ) as HTMLElement;
-    expect(release.textContent).toContain("OneCopy 9.9.9 is available.");
-    expect(region.contains(release)).toBe(false);
-    expect(region.textContent).toContain("Couldn’t open the selected file.");
   });
 
   it("clears live notices when the reconstructible library index is rebuilt", async () => {

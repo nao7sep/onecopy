@@ -73,17 +73,6 @@ describe("defaults", () => {
   });
 });
 
-describe("GitHub release preference", () => {
-  it("defaults on and preserves an explicit false value", () => {
-    expect(useSettingsStore.getState().draft?.checkGithubReleasesAtLaunch).toBe(true);
-    useSettingsStore.getState().beginEditing({
-      ...config,
-      checkGithubReleasesAtLaunch: false,
-    });
-    expect(useSettingsStore.getState().draft?.checkGithubReleasesAtLaunch).toBe(false);
-  });
-});
-
 describe("UI font preference", () => {
   it("preserves a saved font stack verbatim", () => {
     useSettingsStore.getState().beginEditing({

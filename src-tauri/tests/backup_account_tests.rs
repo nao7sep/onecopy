@@ -28,14 +28,14 @@ fn durable_text_records_and_dependency_facts_and_volatile_state_do_not() {
     // Volatile state is written atomically but never recorded; config is.
     binaries_manager::save_check_attempt(
         root.path(),
-        binaries_manager::GITHUB_RELEASE_ATTEMPT_KEY,
+        binaries_manager::MANAGED_TOOL_UPDATE_ATTEMPT_KEY,
         "2026-08-22T00:00:00.000Z",
     )
     .unwrap();
     assert_eq!(
         binaries_manager::load_check_attempt(
             root.path(),
-            binaries_manager::GITHUB_RELEASE_ATTEMPT_KEY
+            binaries_manager::MANAGED_TOOL_UPDATE_ATTEMPT_KEY
         )
         .as_deref(),
         Some("2026-08-22T00:00:00.000Z")

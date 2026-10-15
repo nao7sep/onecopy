@@ -47,7 +47,6 @@ export interface SettingsDraft {
   language: LanguagePreference;
   uiFontFamily: string;
   keepAwakeDuringIndexing: boolean;
-  checkGithubReleasesAtLaunch: boolean;
   checkSourceFoldersAtLaunch: boolean;
   confirmTrashDelete: boolean;
   scoreFaces: boolean;
@@ -121,7 +120,6 @@ function draftFrom(
     language: normalizeLanguagePreference(config?.language),
     uiFontFamily: normalizeUiFontPreference(config?.uiFontFamily),
     keepAwakeDuringIndexing: flag("keepAwakeDuringIndexing"),
-    checkGithubReleasesAtLaunch: flag("checkGithubReleasesAtLaunch"),
     checkSourceFoldersAtLaunch: flag("checkSourceFoldersAtLaunch"),
     confirmTrashDelete: confirmsTrashDelete(config),
     scoreFaces: flag("scoreFaces"),

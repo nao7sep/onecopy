@@ -1,7 +1,6 @@
 {
   "aiAcceleration": {},
   "audioTranscriptionEnabled": true,
-  "checkGithubReleasesAtLaunch": true,
   "checkSourceFoldersAtLaunch": true,
   "checkUpdatesAtLaunch": false,
   "confirmTrashDelete": true,

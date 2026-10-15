@@ -97,9 +97,6 @@ pub struct DefaultConfig {
     /// The managed-runtime-dependencies conventions' one update switch:
     /// check installed tools for updates at launch (throttled to ~daily).
     pub check_updates_at_launch: bool,
-    /// Check OneCopy's own public GitHub releases after launch (throttled by
-    /// its distinct app-release attempt timestamp).
-    pub check_github_releases_at_launch: bool,
     /// Run the stat-only configured-source reconciliation after launch.
     pub check_source_folders_at_launch: bool,
     pub keep_awake_during_indexing: bool,
@@ -157,7 +154,6 @@ impl Default for DefaultConfig {
             // only a real user override here, never CSS implementation detail.
             ui_font_family: String::new(),
             check_updates_at_launch: false,
-            check_github_releases_at_launch: true,
             check_source_folders_at_launch: true,
             keep_awake_during_indexing: true,
             sound_enabled: true,
@@ -271,9 +267,6 @@ pub struct LoadedAppData {
     /// actions; the frontend keeps no default table of its own.
     pub config_defaults: JsonValue,
     pub state: Option<JsonValue>,
-    /// The check-attempt timestamps kept in `dependencies.json`
-    /// (see `binaries_manager::load_check_attempts`).
-    pub check_attempts: JsonValue,
     pub data_root: String,
     /// Set by the command layer from logging::debug_enabled(); storage leaves it false.
     pub debug_enabled: bool,
@@ -418,7 +411,6 @@ pub fn load_from_root(root: &Path) -> Result<LoadedAppData, String> {
         config,
         config_defaults: effective_config(None),
         state: state_read.value,
-        check_attempts: crate::binaries_manager::load_check_attempts(root),
         data_root: root.to_string_lossy().into_owned(),
         debug_enabled: false,
         ai_acceleration_capabilities: crate::ai_acceleration::capabilities(None)

@@ -14,53 +14,9 @@ import {
   recordInterfaceFailure,
 } from "../utils/failureSurface";
 import { log, toErrorFields } from "../repositories";
-import { useReleaseCheckStore } from "../state/release-check-store";
-import Button, { IconButton } from "./ui/Button";
-import OperationResult from "./ui/OperationResult";
+import { IconButton } from "./ui/Button";
 import IdentifyingText from "./ui/IdentifyingText";
 import { configNumber } from "../models/config";
-
-function ReleaseNotice() {
-  const { t, text } = useI18n();
-  const version = useReleaseCheckStore((state) => state.noticeVersion);
-  const linkError = useReleaseCheckStore((state) => state.noticeLinkError);
-  const dismiss = useReleaseCheckStore((state) => state.dismissNotice);
-  const openRelease = useReleaseCheckStore((state) => state.openNoticeRelease);
-  if (version === null) return null;
-  return (
-    <section
-      data-release-notice
-      role="status"
-      className="pointer-events-auto w-full rounded-lg border border-border bg-surface p-3 text-ink"
-    >
-      <div className="flex items-start gap-3 text-sm">
-        <div className="min-w-0 flex-1">
-          <p className="select-text break-words text-sm">
-            {t("about.newerAvailable", { version })}
-          </p>
-          <Button className="mt-2" onClick={() => void openRelease()}>
-            {t("about.viewRelease")}
-          </Button>
-        </div>
-        <IconButton
-          size="sm"
-          tone="current"
-          aria-label={t("notice.dismissRelease")}
-          title={t("common.dismiss")}
-          className="oc-first-line-dismiss"
-          onClick={dismiss}
-        >
-          <X size={14} />
-        </IconButton>
-      </div>
-      {linkError !== null ? (
-        <OperationResult level="error" className="mt-2">
-          {text(linkError)}
-        </OperationResult>
-      ) : null}
-    </section>
-  );
-}
 
 function Toast({
   record,
@@ -190,7 +146,6 @@ export default function NotificationHost({
 } = {}) {
   const { t } = useI18n();
   const active = useNotificationsStore((state) => state.active);
-  const releaseVersion = useReleaseCheckStore((state) => state.noticeVersion);
   const configuredSeconds = useAppStore(
     (state) => configNumber(state.appData?.config, "notificationDisplaySeconds") ?? 1,
   );
@@ -205,7 +160,7 @@ export default function NotificationHost({
     });
   }, []);
 
-  if (active.length === 0 && releaseVersion === null) return null;
+  if (active.length === 0) return null;
   // The active notices scroll inside a region that clips its children, which would cut
   // off each card's own shadow. The host draws the shadow from what it renders instead:
   // the shadow-xl elevation as drop-shadows, whose blur is a standard deviation (half a
@@ -215,7 +170,6 @@ export default function NotificationHost({
       data-notification-host
       className="pointer-events-none fixed right-4 top-4 z-[25] flex max-h-[calc(100vh-2rem)] w-[min(420px,calc(100vw-2rem))] flex-col items-stretch gap-2 [filter:drop-shadow(0_20px_12.5px_rgb(0_0_0/0.1))_drop-shadow(0_8px_5px_rgb(0_0_0/0.1))]"
     >
-      <ReleaseNotice />
       {active.length > 0 ? (
         <div
           data-notification-scroll-region

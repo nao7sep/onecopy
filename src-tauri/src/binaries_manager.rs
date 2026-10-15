@@ -355,11 +355,10 @@ pub fn save_facts_for(root: &Path, id: &str, facts: &BinaryFacts) -> Result<(), 
     )
 }
 
-/// The two launch-check throttle timestamps ride in the same facts store, as
-/// top-level strings beside the per-binary entries. They are volatile network
-/// facts like `lastCheckedAtUtc`: re-derivable by simply checking again.
+/// The launch-check throttle timestamp rides in the same facts store, as a
+/// top-level string beside the per-binary entries. It is a volatile network
+/// fact like `lastCheckedAtUtc`: re-derivable by simply checking again.
 pub const MANAGED_TOOL_UPDATE_ATTEMPT_KEY: &str = "managedToolUpdateLastAttemptAtUtc";
-pub const GITHUB_RELEASE_ATTEMPT_KEY: &str = "githubReleaseLastAttemptAtUtc";
 
 /// The recorded attempt timestamp under `key`, when it is a string.
 pub fn load_check_attempt(root: &Path, key: &str) -> Option<String> {
@@ -367,15 +366,6 @@ pub fn load_check_attempt(root: &Path, key: &str) -> Option<String> {
         .get(key)
         .and_then(serde_json::Value::as_str)
         .map(str::to_string)
-}
-
-/// Both attempt timestamps as one document for the frontend's startup load;
-/// an absent one is null.
-pub fn load_check_attempts(root: &Path) -> serde_json::Value {
-    serde_json::json!({
-        MANAGED_TOOL_UPDATE_ATTEMPT_KEY: load_check_attempt(root, MANAGED_TOOL_UPDATE_ATTEMPT_KEY),
-        GITHUB_RELEASE_ATTEMPT_KEY: load_check_attempt(root, GITHUB_RELEASE_ATTEMPT_KEY),
-    })
 }
 
 pub fn save_check_attempt(root: &Path, key: &str, at_utc: &str) -> Result<(), String> {

@@ -9,10 +9,6 @@ import { recordActionFailure } from "../state/notifications-store";
 import ModalShell from "./ModalShell";
 import Button from "./ui/Button";
 import OperationResult from "./ui/OperationResult";
-import {
-  LATEST_RELEASE_PAGE,
-  useReleaseCheckStore,
-} from "../state/release-check-store";
 import { useI18n } from "../i18n/I18nContext";
 import type { MessageKey } from "../i18n/catalogues";
 
@@ -27,13 +23,11 @@ export default function AboutModal({
 }) {
   const { t } = useI18n();
   // Keys, not finished sentences, so the messages follow a language change.
-  const [linkFailures, setLinkFailures] = useState<Partial<Record<"repository" | "issues" | "release", MessageKey>>>({});
-  const linkAttempts = useRef({ repository: 0, issues: 0, release: 0 });
-  const checkingRelease = useReleaseCheckStore((state) => state.checking);
-  const releaseResult = useReleaseCheckStore((state) => state.manualResult);
+  const [linkFailures, setLinkFailures] = useState<Partial<Record<"repository" | "issues", MessageKey>>>({});
+  const linkAttempts = useRef({ repository: 0, issues: 0 });
   if (!open) return null;
 
-  const openProjectPage = async (owner: "repository" | "issues" | "release", url: string, failure: MessageKey) => {
+  const openProjectPage = async (owner: "repository" | "issues", url: string, failure: MessageKey) => {
     const attempt = ++linkAttempts.current[owner];
     try {
       await openUrl(url);
@@ -66,31 +60,6 @@ export default function AboutModal({
           <Button onClick={() => void openProjectPage("repository", REPO_URL, "about.githubOpenFailed")}>GitHub</Button>
           <Button onClick={() => void openProjectPage("issues", `${REPO_URL}/issues`, "about.issuesOpenFailed")}>{t("about.reportIssue")}</Button>
         </div>
-        <div className="mt-3">
-          <Button
-            disabled={checkingRelease}
-            onClick={() => void useReleaseCheckStore.getState().checkManual()}
-          >
-            {checkingRelease ? t("about.checking") : t("about.checkRelease")}
-          </Button>
-        </div>
-        {releaseResult !== null ? (
-          <OperationResult
-            level={releaseResult.status === "failed" ? "error" : "info"}
-            className="mt-3"
-            actions={releaseResult.status === "newer" ? (
-              <Button size="xs" onClick={() => void openProjectPage("release", LATEST_RELEASE_PAGE, "about.releaseOpenFailed")}>
-                {t("about.viewRelease")}
-              </Button>
-            ) : undefined}
-          >
-            {releaseResult.status === "newer"
-              ? t("about.newerAvailable", { version: releaseResult.version })
-              : releaseResult.status === "current"
-                ? t("about.current")
-                : t("about.checkFailed")}
-          </OperationResult>
-        ) : null}
         {linkFailures.repository ? (
           <OperationResult
             level="error"
@@ -117,20 +86,6 @@ export default function AboutModal({
             dismissLabel={t("about.closeIssuesResult")}
           >
             {t(linkFailures.issues)}
-          </OperationResult>
-        ) : null}
-        {linkFailures.release ? (
-          <OperationResult
-            level="error"
-            className="mt-3"
-            onDismiss={() => setLinkFailures((current) => {
-              const next = { ...current };
-              delete next.release;
-              return next;
-            })}
-            dismissLabel={t("about.closeReleaseResult")}
-          >
-            {t(linkFailures.release)}
           </OperationResult>
         ) : null}
         <p className="mt-5 text-xs text-ink-muted">{t("about.copyright")}</p>

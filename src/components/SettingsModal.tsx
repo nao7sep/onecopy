@@ -653,15 +653,6 @@ export default function SettingsModal({
           />
 
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
-            {t("settings.applicationUpdates")}
-          </h2>
-          <CheckField
-            label={t("settings.checkGithubReleases")}
-            checked={draft.checkGithubReleasesAtLaunch}
-            onChange={(v) => update({ checkGithubReleasesAtLaunch: v })}
-          />
-
-          <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             {t("settings.libraryMaintenance")}
           </h2>
           <CheckField

@@ -40,7 +40,6 @@ pub mod file_information_runtime;
 pub mod fs_publish;
 pub mod fs_recovery;
 pub mod fullscreen;
-mod github_release;
 pub mod hashing;
 pub mod index_store;
 pub mod visibility;
@@ -1535,21 +1534,6 @@ async fn quit_question(title: String, body: String, labels: Vec<String>) -> usiz
     quit::standalone_question(title, body, labels).await
 }
 
-#[tauri::command]
-async fn check_github_release(
-    app: AppHandle,
-    manual: Option<bool>,
-) -> Result<github_release::ReleaseCheckOutcome, String> {
-    let result = github_release::check(&app, manual.unwrap_or(false)).await;
-    if let Err(error) = &result {
-        logging::error(
-            "GitHub release check could not start",
-            json!({ "error": { "message": error } }),
-        );
-    }
-    result
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Developer-only `debug` logging: on for a dev build, or when explicitly
@@ -1815,8 +1799,7 @@ pub fn run() {
             records_list_width,
             request_app_exit,
             session_end_saved,
-            quit_question,
-            check_github_release
+            quit_question
         ])
         .build(tauri::generate_context!());
 

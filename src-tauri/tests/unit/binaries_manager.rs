@@ -336,7 +336,7 @@ fn the_facts_store_and_sidecars_carry_their_format_versions() {
         .prefix("onecopy-binmgr-formats-")
         .tempdir()
         .unwrap();
-    save_check_attempt(dir.path(), GITHUB_RELEASE_ATTEMPT_KEY, "2026-10-05T00:00:00.000Z").unwrap();
+    save_check_attempt(dir.path(), MANAGED_TOOL_UPDATE_ATTEMPT_KEY, "2026-10-05T00:00:00.000Z").unwrap();
     std::fs::create_dir_all(dir.path().join(BIN_DIR_NAME)).unwrap();
     write_version_sidecar(dir.path(), "9.0").unwrap();
     let spec = spec_of("ultraface-rfb640").unwrap();
@@ -349,7 +349,7 @@ fn the_facts_store_and_sidecars_carry_their_format_versions() {
     assert_eq!(marker(version_sidecar_path(dir.path())), formats::FFMPEG_VERSION_SIDECAR);
     assert_eq!(marker(model_identity_path(dir.path(), spec)), formats::MODEL_IDENTITY);
     assert_eq!(
-        load_check_attempt(dir.path(), GITHUB_RELEASE_ATTEMPT_KEY).as_deref(),
+        load_check_attempt(dir.path(), MANAGED_TOOL_UPDATE_ATTEMPT_KEY).as_deref(),
         Some("2026-10-05T00:00:00.000Z")
     );
     assert_eq!(load_check_attempt(dir.path(), formats::JSON_KEY), None, "the marker is not a fact");
@@ -363,10 +363,10 @@ fn files_a_newer_onecopy_wrote_read_as_absent_and_are_left_as_they_are() {
         .tempdir()
         .unwrap();
     let facts = dir.path().join(DEPENDENCIES_FILE_NAME);
-    let facts_bytes = br#"{"formatVersion":2,"githubReleaseLastAttemptAtUtc":"2026-10-05T00:00:00.000Z"}"#;
+    let facts_bytes = br#"{"formatVersion":2,"managedToolUpdateLastAttemptAtUtc":"2026-10-05T00:00:00.000Z"}"#;
     std::fs::write(&facts, facts_bytes).unwrap();
-    assert_eq!(load_check_attempt(dir.path(), GITHUB_RELEASE_ATTEMPT_KEY), None);
-    assert!(save_check_attempt(dir.path(), GITHUB_RELEASE_ATTEMPT_KEY, "later").is_err());
+    assert_eq!(load_check_attempt(dir.path(), MANAGED_TOOL_UPDATE_ATTEMPT_KEY), None);
+    assert!(save_check_attempt(dir.path(), MANAGED_TOOL_UPDATE_ATTEMPT_KEY, "later").is_err());
     assert_eq!(std::fs::read(&facts).unwrap(), facts_bytes);
 
     std::fs::create_dir_all(dir.path().join(BIN_DIR_NAME)).unwrap();

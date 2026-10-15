@@ -81,7 +81,7 @@ const FORBIDDEN_BOUNDARY = [
 // Async commands that await their own non-blocking work instead of running a
 // blocking body; everything else async goes through dispatch(). The standalone
 // quit question awaits a dialog that rfd runs on a thread of its own.
-const ASYNC_WITHOUT_DISPATCH = new Set(["check_github_release", "quit_question"]);
+const ASYNC_WITHOUT_DISPATCH = new Set(["quit_question"]);
 
 const DISPATCH_MARKERS = [/\bdispatch\(/, /spawn_blocking\(/];
 
