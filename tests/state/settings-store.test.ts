@@ -46,6 +46,20 @@ describe("playback preferences", () => {
   });
 });
 
+describe("time zones", () => {
+  it("drafts the core's zones as they are, and a missing display zone as System", () => {
+    expect(useSettingsStore.getState().draft).toMatchObject({
+      defaultTimezone: "Asia/Tokyo",
+      displayTimezone: "system",
+    });
+    const { displayTimezone: _omitted, ...partial } = config;
+    useSettingsStore.getState().beginEditing(partial);
+    expect(useSettingsStore.getState().draft?.displayTimezone).toBe("system");
+    useSettingsStore.getState().beginEditing({ ...config, displayTimezone: "Europe/Paris" });
+    expect(useSettingsStore.getState().draft?.displayTimezone).toBe("Europe/Paris");
+  });
+});
+
 describe("defaults", () => {
   it("confirms a single-item Delete by default, as the core's defaults say (R7-07)", () => {
     expect(useSettingsStore.getState().draft?.confirmTrashDelete).toBe(true);

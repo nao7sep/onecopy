@@ -1,17 +1,17 @@
-// The time zones OneCopy offers. A zone is chosen from this list and never
-// typed: the value decides how dates without a zone are read, so a misspelling
-// would silently re-date a library (timestamp-conventions).
+// The time zones OneCopy offers, for both zone settings. A zone is chosen from
+// this list and never typed: the interpretation zone decides how dates without
+// a zone are read, so a misspelling would silently re-date a library
+// (timestamp-conventions, Time zones).
 //
-// It is not a display zone. The built-in is the `system` token, which follows
-// the computer's zone wherever it is used (config-sets-conventions); a chosen
-// zone is saved and stays until the user changes it. The first-run wizard
-// opens on the computer's zone itself, so finishing setup saves a concrete
-// zone, and "System" is offered as a deliberate choice.
+// The interpretation zone's built-in is the computer's zone at first launch,
+// concrete: setup opens on it and saves it, and it stays until the user
+// changes it. The display zone's built-in is System, which follows the
+// computer. Both offer System, named with the zone it resolves to now.
 
 /** The setting's value that follows the computer's zone. */
 export const SYSTEM_TIME_ZONE = "system";
 
-/** The computer's zone now, for the "System" label and the wizard's start. */
+/** The computer's zone now, for the "System" entries and the wizard's start. */
 export function computerTimeZone(): string {
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";

@@ -26,14 +26,16 @@ pub fn save_config(app: &AppHandle, mut changes: Value, report_failure: bool) ->
             } else {
                 None
             };
-            if let Some(value) = changes.get_mut("defaultTimezone") {
-                let name = value
-                    .as_str()
-                    .ok_or("Default timezone must be an IANA timezone name")?;
-                // `system` follows the computer's zone; any other value is a
-                // zone name, stored in its canonical spelling.
-                if name != "system" {
-                    *value = Value::String(resolution::parse_timezone_name(name)?.to_string());
+            for key in ["defaultTimezone", "displayTimezone"] {
+                if let Some(value) = changes.get_mut(key) {
+                    let name = value
+                        .as_str()
+                        .ok_or("A time zone must be an IANA timezone name")?;
+                    // `system` follows the computer's zone; any other value is a
+                    // zone name, stored in its canonical spelling.
+                    if name != resolution::SYSTEM_ZONE {
+                        *value = Value::String(resolution::parse_timezone_name(name)?.to_string());
+                    }
                 }
             }
             if let Some(dirs) = changes.get("sourceDirs").and_then(Value::as_array) {

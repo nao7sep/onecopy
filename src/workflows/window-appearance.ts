@@ -7,6 +7,7 @@ import type { MessageKey } from "../i18n/catalogues";
 import type { Language } from "../i18n/languages";
 import { recordInterfaceFailure } from "../utils/failureSurface";
 import { applyUiFont } from "../utils/uiFont";
+import { applyDisplayZoneSetting } from "../repositories/display-zone";
 import { useLanguageStore } from "../state/language-store";
 import { useWindowPreferencesStore } from "../state/window-preferences-store";
 
@@ -44,6 +45,7 @@ interface AppearancePreferences {
   enlargeSmallImages?: unknown;
   videoTranscriptionEnabled?: unknown;
   audioTranscriptionEnabled?: unknown;
+  displayTimezone?: unknown;
 }
 
 async function readPreferences(): Promise<AppearancePreferences> {
@@ -84,6 +86,7 @@ export const installWindowAppearance = createEventInstaller(async (listeners) =>
       await useLanguageStore.getState().apply(preferences, () => current === request);
       if (current !== request) return;
       applyUiFont(preferences.uiFontFamily);
+      applyDisplayZoneSetting(preferences.displayTimezone);
       applyWindowTitle(useLanguageStore.getState().language);
       useWindowPreferencesStore.getState().apply(preferences);
       succeeded = true;

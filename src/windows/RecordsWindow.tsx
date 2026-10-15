@@ -50,6 +50,7 @@ import {
 } from "../models/records";
 import { isComposingEvent } from "../hooks/useComposing";
 import { useDisplayZone } from "../hooks/useDisplayZone";
+import { displayTimeZone } from "../repositories/display-zone";
 import OperationResult from "../components/ui/OperationResult";
 import BoundedText from "../components/ui/BoundedText";
 import { Select, TextInput } from "../components/ui/Field";
@@ -168,10 +169,10 @@ export function RecordsWindow({ initialListWidth }: { initialListWidth: number }
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const dragCleanup = useRef<(() => void) | null>(null);
 
-  // Times follow the computer's zone, and a change of it.
+  // Times follow the display zone, and a change of it.
   const zone = useDisplayZone();
   const rowTime = useMemo(
-    () => new Intl.DateTimeFormat(locale, { dateStyle: "short", timeStyle: "medium" }),
+    () => new Intl.DateTimeFormat(locale, { dateStyle: "short", timeStyle: "medium", timeZone: displayTimeZone() }),
     // The zone is read by the formatter when it is made.
     [locale, zone],
   );
@@ -709,6 +710,7 @@ function RecordDetailView({
         minute: "2-digit",
         second: "2-digit",
         fractionalSecondDigits: 3,
+        timeZone: displayTimeZone(),
       }),
     // The zone is read by the formatter when it is made.
     [locale, zone],

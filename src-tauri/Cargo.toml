@@ -98,8 +98,8 @@ dirs = "7.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 semver = "1.0"
-# System IANA timezone name, used once to seed config.json's defaultTimezone on
-# first run (the wizard then owns the value).
+# The computer's IANA zone: the interpretation zone's built-in, and what a
+# time-zone setting of System resolves to.
 iana-time-zone = "0.1"
 sha2 = "0.11"
 hex = "0.4"
@@ -160,6 +160,9 @@ windows-sys = { version = "0.61.2", features = [
     # placement observations independent of tao's cached window modes.
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Shell",
+    # AppsUseLightTheme is the OS appearance Settings' System theme names
+    # (theme::system_theme).
+    "Win32_System_Registry",
 ] }
 # Load the packaged runtime only when face scoring actually starts. This keeps
 # optional model code out of process initialization on older Windows CPUs.

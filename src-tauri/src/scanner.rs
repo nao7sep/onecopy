@@ -283,22 +283,12 @@ pub fn settings_from_config(
     data_root: &Path,
     now_ms: i64,
 ) -> ScanSettings {
-    let defaults = crate::storage::DefaultConfig::default();
-    let get = |key: &str| config.and_then(|c| c.get(key));
-
-    // `system` (the built-in) follows the computer's zone at each use.
-    let computer = || {
-        iana_time_zone::get_timezone()
-            .ok()
-            .and_then(|zone| zone.parse().ok())
-    };
-    let tz: chrono_tz::Tz = match get("defaultTimezone").and_then(|v| v.as_str()) {
-        Some(zone) if zone != "system" => zone.parse().ok(),
-        _ => None,
-    }
-    .or_else(|| defaults.default_timezone.parse().ok())
-    .or_else(computer)
-    .unwrap_or(chrono_tz::UTC);
+    // A chosen zone stays; `system` follows the computer's zone at each use,
+    // as does a configuration without one (the built-in is that zone).
+    let tz = crate::resolution::setting_zone(
+        config.and_then(|c| c.get("defaultTimezone")).and_then(|v| v.as_str()),
+        crate::storage::computer_time_zone,
+    );
 
     let owned = |list: &[&str]| list.iter().map(|s| s.to_string()).collect();
     ScanSettings {

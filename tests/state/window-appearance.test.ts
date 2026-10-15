@@ -42,6 +42,20 @@ it("initializes the font without Main bootstrap, then follows saved changes", as
   expect(listenerCount("appearance://changed")).toBe(1);
 });
 
+it("formats every window's times in the saved display zone and follows a saved change", async () => {
+  const effective = { uiFontFamily: "", enlargeSmallImages: true, videoTranscriptionEnabled: true, audioTranscriptionEnabled: true };
+  let preferences: Record<string, unknown> = { ...effective, displayTimezone: "Asia/Tokyo" };
+  mockCommands({ appearance_preferences: () => preferences });
+  const { installWindowAppearance } = await import("../../src/workflows/window-appearance");
+  const { displayTimeZone } = await import("../../src/repositories/display-zone");
+  await installWindowAppearance();
+  expect(displayTimeZone()).toBe("Asia/Tokyo");
+
+  preferences = { ...effective, displayTimezone: "system" };
+  fireEvent("appearance://changed");
+  await vi.waitFor(() => expect(displayTimeZone()).toBeUndefined());
+});
+
 // R5.5 C2: `appearance://changed` updates `useLanguageStore` with the
 // `language` / `systemLanguage` / `systemLocale` fields the core sends,
 // not just the font this suite otherwise exercises.

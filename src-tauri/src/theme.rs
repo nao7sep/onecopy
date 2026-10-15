@@ -28,6 +28,54 @@ pub fn config_window_theme(config: &Value) -> Option<Theme> {
     window_theme_for(config.get("theme")?.as_str()?)
 }
 
+/// What System resolves to now: the OS appearance itself, for Settings' System
+/// entry. A window cannot say while Light or Dark is chosen, because the
+/// choice overrides the theme it reports. `None` where OneCopy cannot read it.
+#[cfg(target_os = "macos")]
+pub fn system_theme() -> Option<Theme> {
+    use objc2_foundation::{NSString, NSUserDefaults};
+    // The global domain holds "Dark" while the Mac is dark, Auto included,
+    // and nothing while it is light.
+    let style = NSUserDefaults::standardUserDefaults()
+        .stringForKey(&NSString::from_str("AppleInterfaceStyle"));
+    Some(if style.is_some_and(|style| style.to_string() == "Dark") {
+        Theme::Dark
+    } else {
+        Theme::Light
+    })
+}
+
+#[cfg(windows)]
+pub fn system_theme() -> Option<Theme> {
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+    let wide = |text: &str| text.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let key = wide(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+    let name = wide("AppsUseLightTheme");
+    let mut light: u32 = 1;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    // SAFETY: both names are NUL-terminated UTF-16 that outlive the call, and
+    // `light` is a DWORD buffer of `size` bytes.
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            name.as_ptr(),
+            RRF_RT_REG_DWORD,
+            std::ptr::null_mut(),
+            (&mut light as *mut u32).cast(),
+            &mut size,
+        )
+    };
+    // Without the value, apps are light, as Windows ships.
+    Some(if status == ERROR_SUCCESS && light == 0 { Theme::Dark } else { Theme::Light })
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+pub fn system_theme() -> Option<Theme> {
+    None
+}
+
 /// The window background behind each page — App.css's --background in each
 /// theme — so the frames before a page paints and the backing exposed while
 /// resizing already match.

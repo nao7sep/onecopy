@@ -771,6 +771,15 @@ fn text_preview_options() -> text_preview::Options {
     text_preview::options()
 }
 
+/// What the System theme resolves to now, "light" or "dark", or null.
+#[tauri::command]
+fn system_theme() -> Option<&'static str> {
+    theme::system_theme().map(|theme| match theme {
+        tauri::Theme::Dark => "dark",
+        _ => "light",
+    })
+}
+
 #[tauri::command]
 fn visibility_capabilities() -> visibility::Capabilities {
     visibility::capabilities()
@@ -1091,7 +1100,7 @@ async fn background_work_set_paused(
 
 /// Ephemeral viewport hints for the fixed derived-work coordinator. Output
 /// facts remain the only queue; closing the app loses nothing that must be
-/// recovered. Resolving the section's month reads the system timezone, so it
+/// recovered. Resolving the section's month reads the display zone, so it
 /// runs through `dispatch()`; the hint generation already discards a response
 /// that arrives after a newer one.
 #[tauri::command]
@@ -1415,7 +1424,7 @@ async fn items_in_synced_folders(items: Vec<operations::ItemIdentity>) -> Result
 }
 
 // Left-pane section counts (logical items per kind per month), bucketed in the
-// OS display timezone.
+// display zone.
 #[tauri::command]
 async fn get_section_counts() -> Result<queries::SectionCounts, String> {
     dispatch(move || {
@@ -1716,6 +1725,7 @@ pub fn run() {
             load_app_data,
             save_config,
             appearance_preferences,
+            system_theme,
             patch_state,
             record_managed_tool_check_attempt,
             record_interface_failure,

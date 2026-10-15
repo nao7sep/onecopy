@@ -9,6 +9,7 @@ import { act, cleanup, fireEvent as fire, render } from "@testing-library/react"
 import DeletedFilesModal from "../../src/components/DeletedFilesModal";
 import { fireEvent, invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 import type { TrashEntry, TrashListing } from "../../src/models/deletedFiles";
+import { applyDisplayZoneSetting } from "../../src/repositories/display-zone";
 
 const LOCATION = "/Photos/.onecopy-trash";
 
@@ -57,6 +58,23 @@ function list(): HTMLElement {
 }
 
 describe("Deleted files browse", () => {
+  it("dates each deletion and its day in the display zone, and re-buckets when it changes", async () => {
+    // 23:30 UTC on the 27th is already the 28th in Tokyo.
+    mockCommands({ trash_entries: () => ({ ...LISTING, entries: [entry({ id: "20260927-utc/late.jpg", deletedAtUtc: "2026-09-27T23:30:00.000Z" })] }) });
+    applyDisplayZoneSetting("Asia/Tokyo");
+    try {
+      const view = render(<DeletedFilesModal location={LOCATION} onClose={() => {}} />);
+      await act(async () => {});
+      expect(view.getByText(/September 28, 2026/)).toBeTruthy();
+      expect(view.getByText(/Sep 28, 2026/)).toBeTruthy();
+      act(() => applyDisplayZoneSetting("UTC"));
+      expect(view.getByText(/September 27, 2026/)).toBeTruthy();
+      expect(view.getByText(/Sep 27, 2026/)).toBeTruthy();
+    } finally {
+      applyDisplayZoneSetting("system");
+    }
+  });
+
   it("refreshes after another window deletes files while retaining selection and the visible row", async () => {
     vi.useFakeTimers();
     try {

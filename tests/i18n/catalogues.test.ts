@@ -30,6 +30,7 @@ const SAME_AS_ENGLISH: Partial<Record<Language, readonly string[]>> = {
     "app.detailsTab",
     "settings.languageSystem",
     "settings.timezoneSystem",
+    "settings.themeSystem",
     "settings.audio",
     "settings.videos",
     "section.videos",

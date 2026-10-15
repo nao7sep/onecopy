@@ -8,7 +8,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { log, toErrorFields } from "../repositories";
 import { stringArrayField } from "../utils/configProjection";
 import { requestSeq } from "./request-seq";
-import { computerTimeZone, SYSTEM_TIME_ZONE } from "../utils/timezones";
+import { computerTimeZone } from "../utils/timezones";
 import { message, type Message } from "../i18n/translate";
 import { recordActionFailure } from "./notifications-store";
 import {
@@ -94,12 +94,10 @@ export const useWizardStore = create<WizardState>((set, get) => ({
   init: async (config) => {
     languageChoice.begin();
     const sourceDirs = stringArrayField(config, "sourceDirs");
-    // First run opens on the computer's own zone, so finishing setup saves a
-    // concrete zone; "System" stays a deliberate choice.
-    const saved = configString(config, "defaultTimezone");
-    const timezone = saved === null || saved === "" || saved === SYSTEM_TIME_ZONE
-      ? computerTimeZone()
-      : saved;
+    // First run opens on the core's built-in, the computer's own zone, so
+    // finishing setup saves that concrete zone; "System" is a deliberate
+    // choice and stays.
+    const timezone = configString(config, "defaultTimezone") || computerTimeZone();
     const language = normalizeLanguagePreference(config?.language);
     if (sourceDirs.length === 0) {
       presenceCheck.begin();

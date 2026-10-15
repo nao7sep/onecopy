@@ -274,6 +274,28 @@ fn display_timezone_decides_the_month_boundary() {
 }
 
 #[test]
+fn the_display_zone_setting_decides_the_month() {
+    // 2016-03-31T22:00:00Z: March in UTC, already April in Tokyo.
+    let instant = Some(utc_ms(2016, 3, 31, 22));
+    let month = |setting: serde_json::Value| {
+        let zone = display_timezone_in(Some(&serde_json::json!({ "displayTimezone": setting })));
+        section_from_facts("image".to_string(), instant, zone).unwrap().month
+    };
+    assert_eq!(month(serde_json::json!("UTC")), "2016-03");
+    assert_eq!(month(serde_json::json!("Asia/Tokyo")), "2016-04");
+    // System, and a missing or unknown value, follow the computer's zone.
+    let computer = crate::storage::computer_time_zone();
+    for config in [
+        serde_json::json!({ "displayTimezone": "system" }),
+        serde_json::json!({ "displayTimezone": "Mars/Olympus" }),
+        serde_json::json!({}),
+    ] {
+        assert_eq!(display_timezone_in(Some(&config)), computer, "{config}");
+    }
+    assert_eq!(display_timezone_in(None), computer);
+}
+
+#[test]
 fn unhashed_other_files_count_individually_and_companions_never_appear() {
     let (_d, conn) = seeded();
     conn.execute_batch(&format!(

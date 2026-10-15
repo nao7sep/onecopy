@@ -153,12 +153,24 @@ describe("the staged timezone", () => {
 });
 
 describe("the first-run timezone", () => {
-  it("opens on the computer's own zone, so finishing saves a concrete zone", async () => {
-    await useWizardStore.getState().init({ sourceDirs: [], defaultTimezone: "system" });
+  it("opens on the core's built-in, the computer's concrete zone, so finishing saves it", async () => {
+    await useWizardStore.getState().init({ sourceDirs: [], defaultTimezone: "Pacific/Auckland" });
+
+    expect(useWizardStore.getState().timezone).toBe("Pacific/Auckland");
+  });
+
+  it("opens on the computer's zone when the settings carry none", async () => {
+    await useWizardStore.getState().init({ sourceDirs: [] });
 
     expect(useWizardStore.getState().timezone).toBe(
       Intl.DateTimeFormat().resolvedOptions().timeZone,
     );
+  });
+
+  it("keeps a saved System choice on a first run too", async () => {
+    await useWizardStore.getState().init({ sourceDirs: [], defaultTimezone: "system" });
+
+    expect(useWizardStore.getState().timezone).toBe("system");
   });
 
   it("keeps a saved System choice when setup is run again", () => {

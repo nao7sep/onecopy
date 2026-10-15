@@ -12,6 +12,15 @@ fn temp_dir(label: &str) -> tempfile::TempDir {
         .unwrap()
 }
 
+/// A saved settings file holding `sets`, beside its format marker and the
+/// interpretation zone every save writes (the computer's zone when none was
+/// chosen).
+fn saved_file(sets: serde_json::Value) -> serde_json::Value {
+    let mut file = serde_json::json!({ "formatVersion": 1, "defaultTimezone": computer_time_zone().name() });
+    file.as_object_mut().unwrap().extend(sets.as_object().unwrap().clone());
+    file
+}
+
 #[test]
 #[serial(backup_store)]
 fn appearance_reads_only_preferences_from_the_settings_in_memory() {
@@ -27,6 +36,7 @@ fn appearance_reads_only_preferences_from_the_settings_in_memory() {
             "enlargeSmallImages": false,
             "videoTranscriptionEnabled": false,
             "audioTranscriptionEnabled": true,
+            "displayTimezone": "system",
         })
     );
     assert_eq!(std::fs::read(&config).unwrap(), bytes);
@@ -71,7 +81,11 @@ fn default_config_serializes_with_camel_case_and_expected_defaults() {
     assert_eq!(value["maximumImagesInComparison"], serde_json::json!(16));
     assert_eq!(value["notificationDisplaySeconds"], serde_json::json!(6));
     assert_eq!(value["screenPriority"], serde_json::json!([]));
-    assert!(value["defaultTimezone"].as_str().is_some_and(|s| !s.is_empty()));
+    // The interpretation zone's built-in is the computer's zone as a concrete
+    // name, whatever that zone is; the display zone's is System.
+    assert_eq!(value["defaultTimezone"], computer_time_zone().name());
+    assert_ne!(value["defaultTimezone"], "system");
+    assert_eq!(value["displayTimezone"], "system");
     assert!(value.get("cacheDir").is_none());
     // Spec, not configuration: extension lists (and the other dead keys)
     // are never materialized into the user-editable file.
@@ -105,7 +119,7 @@ fn loading_config_removes_the_obsolete_copy_verification_preference() {
     assert_eq!(untouched["verifyAfterCopy"], false);
     save_config(&root, &serde_json::json!({ "theme": "dark" })).unwrap();
     let stored: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    assert_eq!(stored, serde_json::json!({ "formatVersion": 1, "theme": "dark" }), "a copy equal to its built-in is not kept");
+    assert_eq!(stored, saved_file(serde_json::json!({ "theme": "dark" })), "a copy equal to its built-in is not kept");
 }
 
 #[test]
@@ -211,7 +225,7 @@ fn saving_over_a_corrupt_config_keeps_only_sets_that_differ() {
     assert_eq!(outcome.effective["theme"], "dark");
     assert_eq!(outcome.effective["similarPhotoGrouping"], "normal");
     let stored: serde_json::Value = serde_json::from_slice(&std::fs::read(&target).unwrap()).unwrap();
-    assert_eq!(stored, serde_json::json!({ "formatVersion": 1, "theme": "dark" }));
+    assert_eq!(stored, saved_file(serde_json::json!({ "theme": "dark" })));
     // The outcome carries the record — a mid-session quarantine has no load
     // result to ride home on, so the save itself must hand it back.
     let record = outcome.quarantined.expect("the save reports its own quarantine");
@@ -253,16 +267,71 @@ fn first_run_writes_nothing_and_a_save_writes_every_set_that_differs() {
         serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
     };
     save_config(&dir, &serde_json::json!({ "notificationDisplaySeconds": 10 })).unwrap();
-    assert_eq!(stored(&path), serde_json::json!({ "formatVersion": 1, "notificationDisplaySeconds": 10 }));
+    assert_eq!(stored(&path), saved_file(serde_json::json!({ "notificationDisplaySeconds": 10 })));
     assert_eq!(load_from_root(&dir).unwrap().config["theme"], "system");
     // Unknown keys are dropped, and a set saved equal to its built-in leaves.
     std::fs::write(&path, br#"{"formatVersion":1,"version":1,"notificationDisplaySeconds":10}"#).unwrap();
     load_from_root(&dir).unwrap();
     save_config(&dir, &serde_json::json!({ "theme": "dark", "playbackVolume": 1 })).unwrap();
-    assert_eq!(stored(&path), serde_json::json!({ "formatVersion": 1, "notificationDisplaySeconds": 10, "theme": "dark" }));
+    assert_eq!(stored(&path), saved_file(serde_json::json!({ "notificationDisplaySeconds": 10, "theme": "dark" })));
     save_config(&dir, &serde_json::json!({ "notificationDisplaySeconds": 6, "theme": "system" })).unwrap();
-    assert_eq!(stored(&path), serde_json::json!({ "formatVersion": 1 }), "the file stays, holding no set");
+    assert_eq!(stored(&path), saved_file(serde_json::json!({})), "the file stays, holding only the zone");
     assert!(save_config(&dir, &serde_json::json!({ "theme": "purple" })).is_err());
+}
+
+#[test]
+#[serial(backup_store, quarantine_journal)]
+fn every_save_writes_the_interpretation_zone_even_while_it_equals_the_computers_zone() {
+    let dir_owner = temp_dir("zone-kept");
+    let dir = dir_owner.path();
+    let path = dir.join(CONFIG_FILE_NAME);
+    let stored = |path: &std::path::Path| -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    };
+    // The built-in is the computer's zone now, and Settings' defaults say so.
+    let computer = computer_time_zone().name().to_string();
+    let loaded = load_from_root(&dir).unwrap();
+    assert!(!path.exists(), "first run writes nothing");
+    assert_eq!(loaded.config["defaultTimezone"], computer.as_str());
+    assert_eq!(loaded.config_defaults["defaultTimezone"], computer.as_str());
+    // A save that does not name the zone pins the one dates are read in now.
+    save_config(&dir, &serde_json::json!({ "notificationDisplaySeconds": 10 })).unwrap();
+    assert_eq!(stored(&path)["defaultTimezone"], computer.as_str());
+    // A chosen zone stays through later saves and the next launch's read, so
+    // a move of the computer does not re-date the library.
+    save_config(&dir, &serde_json::json!({ "defaultTimezone": "Pacific/Auckland" })).unwrap();
+    save_config(&dir, &serde_json::json!({ "notificationDisplaySeconds": 6 })).unwrap();
+    assert_eq!(stored(&path), serde_json::json!({ "formatVersion": 1, "defaultTimezone": "Pacific/Auckland" }));
+    let relaunched_owner = temp_dir("zone-kept-relaunch");
+    let relaunched = relaunched_owner.path();
+    std::fs::copy(&path, relaunched.join(CONFIG_FILE_NAME)).unwrap();
+    save_config(relaunched, &serde_json::json!({ "theme": "dark" })).unwrap();
+    assert_eq!(stored(&relaunched.join(CONFIG_FILE_NAME))["defaultTimezone"], "Pacific/Auckland");
+    // System stays a choice of its own.
+    save_config(&dir, &serde_json::json!({ "defaultTimezone": "system" })).unwrap();
+    assert_eq!(stored(&path)["defaultTimezone"], "system");
+    assert_eq!(load_from_root(&dir).unwrap().config["defaultTimezone"], "system");
+    assert!(save_config(&dir, &serde_json::json!({ "defaultTimezone": "Mars/Olympus" })).is_err());
+}
+
+#[test]
+#[serial(backup_store, quarantine_journal)]
+fn the_display_zone_is_system_unless_a_known_zone_is_saved() {
+    let dir_owner = temp_dir("display-zone");
+    let dir = dir_owner.path();
+    let path = dir.join(CONFIG_FILE_NAME);
+    assert_eq!(load_from_root(&dir).unwrap().config["displayTimezone"], "system");
+    save_config(&dir, &serde_json::json!({ "displayTimezone": "Asia/Tokyo" })).unwrap();
+    assert_eq!(load_from_root(&dir).unwrap().config["displayTimezone"], "Asia/Tokyo");
+    save_config(&dir, &serde_json::json!({ "displayTimezone": "system" })).unwrap();
+    let stored: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(stored, saved_file(serde_json::json!({})), "System is the built-in");
+    assert!(save_config(&dir, &serde_json::json!({ "displayTimezone": "Mars/Olympus" })).is_err());
+    // An unknown or wrong-shaped stored value reads as System.
+    for value in [serde_json::json!("Mars/Olympus"), serde_json::json!(9)] {
+        let effective = effective_config(Some(&serde_json::json!({ "displayTimezone": value })));
+        assert_eq!(effective["displayTimezone"], "system", "{value}");
+    }
 }
 
 #[test]
@@ -276,7 +345,7 @@ fn resetting_similarity_removes_the_whole_set_from_the_file() {
     let result = save_config(&dir, &serde_json::json!({ "similarPhotoGrouping": "normal" })).unwrap();
     assert_eq!(result.effective["similarPhotoGrouping"], "normal");
     let stored: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    assert_eq!(stored, serde_json::json!({ "formatVersion": 1, "theme": "dark" }));
+    assert_eq!(stored, saved_file(serde_json::json!({ "theme": "dark" })));
 }
 
 #[test]
@@ -507,6 +576,7 @@ fn the_frontend_config_fixture_matches_the_core_defaults() {
         .join("../tests/fixtures/effective-config.json");
     let mut expected = effective_config(None);
     expected["aiAcceleration"] = serde_json::json!({});
+    expected["defaultTimezone"] = serde_json::json!("UTC");
     let fixture: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(

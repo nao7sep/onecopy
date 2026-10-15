@@ -66,7 +66,8 @@ describe("wizard language preview", () => {
     const options = [...select.options];
     expect(options).toHaveLength(LANGUAGES.length + 1);
     expect(options[0].value).toBe("system");
-    expect(options[0].textContent).toBe("System");
+    const system = useLanguageStore.getState().systemLanguage;
+    expect(options[0].textContent).toBe(`System (${LANGUAGE_NAMES[system]})`);
     for (const language of LANGUAGES) {
       const option = options.find((candidate) => candidate.value === language)!;
       expect(option).toBeTruthy();

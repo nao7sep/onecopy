@@ -227,3 +227,21 @@ fn timezone_names_reject_blank_and_non_iana_values() {
     assert!(parse_timezone_name("").is_err());
     assert!(parse_timezone_name("Tokyo").is_err());
 }
+
+#[test]
+fn the_computers_zone_falls_back_to_utc_never_a_fixed_zone() {
+    assert_eq!(zone_or_utc(Some("Asia/Tokyo")), chrono_tz::Asia::Tokyo);
+    assert_eq!(zone_or_utc(None), chrono_tz::UTC);
+    assert_eq!(zone_or_utc(Some("Local")), chrono_tz::UTC);
+}
+
+#[test]
+fn a_zone_setting_names_a_zone_or_follows_the_computer() {
+    let computer = || chrono_tz::America::Sao_Paulo;
+    assert_eq!(setting_zone(Some("Asia/Tokyo"), computer), chrono_tz::Asia::Tokyo);
+    for setting in [Some(SYSTEM_ZONE), None, Some(""), Some("Mars/Olympus")] {
+        assert_eq!(setting_zone(setting, computer), chrono_tz::America::Sao_Paulo, "{setting:?}");
+    }
+    // The computer is read only when the setting follows it.
+    assert_eq!(setting_zone(Some("UTC"), || unreachable!()), chrono_tz::UTC);
+}

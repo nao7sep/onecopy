@@ -59,6 +59,24 @@ pub fn parse_timezone_name(name: &str) -> Result<Tz, String> {
         .map_err(|_| format!("Not a recognized IANA timezone: {name}"))
 }
 
+/// The time-zone settings' value that follows the computer's zone.
+pub const SYSTEM_ZONE: &str = "system";
+
+/// The zone the computer reports, or UTC when it reports none or one
+/// chrono-tz does not know. Never a fixed zone of OneCopy's choosing.
+pub fn zone_or_utc(reported: Option<&str>) -> Tz {
+    reported.and_then(|name| name.parse().ok()).unwrap_or(chrono_tz::UTC)
+}
+
+/// The zone a time-zone setting names. `system`, and a missing or unknown
+/// value, follow the computer's zone, which is read only then.
+pub fn setting_zone(setting: Option<&str>, computer: impl FnOnce() -> Tz) -> Tz {
+    setting
+        .filter(|name| *name != SYSTEM_ZONE)
+        .and_then(|name| name.parse().ok())
+        .unwrap_or_else(computer)
+}
+
 const DAY_MS: i64 = 86_400_000;
 
 impl ResolutionConfig {

@@ -2,7 +2,9 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useDisplayZone } from "../../src/hooks/useDisplayZone";
-import { subscribeDisplayZone } from "../../src/repositories/display-zone";
+import { applyDisplayZoneSetting, displayTimeZone, subscribeDisplayZone } from "../../src/repositories/display-zone";
+import { createTranslator } from "../../src/i18n/translate";
+import { formatLocalMinute } from "../../src/utils/displayTime";
 import { installDisplayZoneReconciliation } from "../../src/workflows/display-zone";
 import { useItemsStore } from "../../src/state/items-store";
 import { useSectionsStore } from "../../src/state/sections-store";
@@ -26,6 +28,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  applyDisplayZoneSetting("system");
   cleanup();
   for (const stop of dispose.splice(0)) stop();
   vi.restoreAllMocks();
@@ -92,4 +95,28 @@ it("reconciles Main through existing read owners only when the zone changes", ()
   expect(sourceCheck).not.toHaveBeenCalled();
   vi.advanceTimersByTime(60_000);
   expect(counts).toHaveBeenCalledTimes(1);
+});
+
+it("shows times in a chosen display zone, and in the computer's under System or an unknown value", () => {
+  const { dateTime } = createTranslator("en", "en-US");
+  const instant = "2016-03-31T22:00:00.000Z";
+  const changed = vi.fn();
+  dispose.push(subscribeDisplayZone(changed));
+  applyDisplayZoneSetting("Asia/Tokyo");
+  expect(displayTimeZone()).toBe("Asia/Tokyo");
+  expect(formatLocalMinute(instant, dateTime)).toContain("Apr 1, 2016");
+  expect(changed).toHaveBeenCalledTimes(1);
+  applyDisplayZoneSetting("UTC");
+  expect(formatLocalMinute(instant, dateTime)).toContain("Mar 31, 2016");
+  for (const setting of ["system", "Mars/Olympus", 9, undefined]) {
+    applyDisplayZoneSetting(setting);
+    expect(displayTimeZone()).toBeUndefined();
+  }
+  expect(changed).toHaveBeenCalledTimes(3);
+  // Under a chosen zone the computer's zone still counts, for System entries.
+  applyDisplayZoneSetting("UTC");
+  zone = "Europe/Paris";
+  offset = -120;
+  fireEvent.focus(window);
+  expect(changed).toHaveBeenCalledTimes(5);
 });

@@ -7,6 +7,7 @@ import "../../src/App.css";
 mockIPC((command) => {
   if (command === "plugin:event|listen") return 1;
   if (command === "visibility_capabilities") return { hiddenAttributes: true, systemAttributes: true };
+  if (command === "system_theme") return "light";
   if (command === "text_preview_options") return { encodings: ["utf-8"], maxAllowedBytes: 16777216 };
   if (command === "plugin:window|available_monitors") return [];
   if (command === "plugin:event|unlisten" || command === "log_event" || command === "activity_record") return;

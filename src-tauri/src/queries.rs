@@ -340,7 +340,7 @@ impl SectionCountsCache {
 static SECTION_COUNTS_CACHE: Mutex<Option<SectionCountsCache>> = Mutex::new(None);
 
 /// Reuses the exact count projection while SQLite reports the same committed
-/// index snapshot and the OS display timezone is unchanged. The cache owns a
+/// index snapshot and the display zone is unchanged. The cache owns a
 /// read-only-in-practice observer connection, so `PRAGMA data_version` changes
 /// for every writer connection without adding a revision table or trigger.
 ///
@@ -401,12 +401,20 @@ pub struct SectionItem {
     pub derived_work: crate::derived_state::ItemWorkStates,
 }
 
-/// The OS display timezone that section months are bucketed in.
+/// The display zone that section months are bucketed in: the
+/// `displayTimezone` setting the app holds.
 pub fn display_timezone() -> chrono_tz::Tz {
-    iana_time_zone::get_timezone()
-        .ok()
-        .and_then(|name| name.parse().ok())
-        .unwrap_or(chrono_tz::UTC)
+    let config = crate::paths::data_root().ok().and_then(|root| crate::storage::config(&root).ok());
+    display_timezone_in(config.as_deref())
+}
+
+/// The display zone a configuration names; `system`, and a missing or unknown
+/// value, follow the computer's zone (UTC when it cannot be read).
+pub fn display_timezone_in(config: Option<&serde_json::Value>) -> chrono_tz::Tz {
+    crate::resolution::setting_zone(
+        config.and_then(|config| config.get("displayTimezone")).and_then(serde_json::Value::as_str),
+        crate::storage::computer_time_zone,
+    )
 }
 
 /// The three Main sections. Deserialized once at the command boundary, so

@@ -1,6 +1,7 @@
 import { useWizardStore, type WizardStep } from "../state/wizard-store";
 import { finishWizard } from "../workflows/wizard";
 import { useBlockingSurface } from "../hooks/useBlockingSurface";
+import { useDisplayZone } from "../hooks/useDisplayZone";
 import DirectoryRow from "./DirectoryRow";
 import Button from "./ui/Button";
 import { computerTimeZone, SYSTEM_TIME_ZONE, timeZoneOptions } from "../utils/timezones";
@@ -71,6 +72,9 @@ function WizardContent() {
   const setOptionalFeature = useWizardStore((s) => s.setOptionalFeature);
   const setTimezone = useWizardStore((s) => s.setTimezone);
   const cancel = useWizardStore((s) => s.cancel);
+  const systemLanguage = useLanguageStore((s) => s.systemLanguage);
+  // Keeps System's zone current when the computer's zone changes.
+  useDisplayZone();
 
   useBlockingSurface();
 
@@ -127,7 +131,9 @@ function WizardContent() {
                   });
                 }}
               >
-                <option value="system">{t("settings.languageSystem")}</option>
+                <option value="system">
+                  {t("settings.languageSystem", { language: LANGUAGE_NAMES[systemLanguage] })}
+                </option>
                 {LANGUAGES.map((tag) => (
                   <option key={tag} value={tag} lang={tag}>
                     {LANGUAGE_NAMES[tag]}

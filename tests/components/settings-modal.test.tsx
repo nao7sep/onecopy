@@ -7,6 +7,8 @@ import SettingsModal from "../../src/components/SettingsModal";
 import { useSettingsStore } from "../../src/state/settings-store";
 import { useQuitDiscardStore } from "../../src/workflows/quit";
 import { DEFAULT_CONFIG, effectiveConfig } from "../helpers/config";
+import { useLanguageStore } from "../../src/state/language-store";
+import { computerTimeZone } from "../../src/utils/timezones";
 import { createdWindows, invokeCalls, mockCommands, resetTauriMocks, setMonitors, setWindowCreatedHook, WebviewWindow } from "../mocks/tauri";
 
 const config = effectiveConfig({
@@ -43,6 +45,7 @@ beforeEach(() => {
     get_issues: () => ({ total: 0, rows: [] }),
     text_preview_options: () => ({ encodings: ["utf-8", "shift_jis"], maxAllowedBytes: 64 * 1024 * 1024 }),
     visibility_capabilities: () => ({ hiddenAttributes: true, systemAttributes: false }),
+    system_theme: () => "light",
     index_work_snapshot: () => ({
       sourceCheck: {
         running: true,
@@ -105,6 +108,43 @@ describe("Settings categories", () => {
     expect(screen.queryByRole("button", { name: /timezone names/i })).toBeNull();
   });
 
+  it("offers the display zone beside the interpretation zone, both led by System and its zone", () => {
+    render(<SettingsModal open onClose={() => {}} />);
+    const reading = screen.getByLabelText(/^Time zone for reading dates/) as HTMLSelectElement;
+    const showing = screen.getByLabelText(/^Time zone for showing dates/) as HTMLSelectElement;
+    expect(reading.value).toBe("Asia/Tokyo");
+    expect(showing.value).toBe("system");
+    for (const select of [reading, showing]) {
+      expect(select.options[0].value).toBe("system");
+      expect(select.options[0].textContent).toBe(`System (${computerTimeZone()})`);
+    }
+    fireEvent.change(showing, { target: { value: "Europe/Paris" } });
+    expect(useSettingsStore.getState().draft).toMatchObject({
+      defaultTimezone: "Asia/Tokyo",
+      displayTimezone: "Europe/Paris",
+    });
+  });
+
+  it("names what the System language and theme resolve to now, and follows the OS appearance", async () => {
+    let appearance = "dark";
+    mockCommands({ system_theme: () => appearance });
+    const previous = useLanguageStore.getState().systemLanguage;
+    useLanguageStore.setState({ systemLanguage: "ja" });
+    try {
+      render(<SettingsModal open onClose={() => {}} />);
+      fireEvent.click(screen.getByRole("tab", { name: "Appearance" }));
+      const language = screen.getByLabelText("Language") as HTMLSelectElement;
+      expect(language.options[0].textContent).toBe("System (日本語)");
+      const theme = screen.getByLabelText("Theme") as HTMLSelectElement;
+      await waitFor(() => expect(theme.options[0].textContent).toBe("System (Dark)"));
+      appearance = "light";
+      fireEvent.focus(window);
+      await waitFor(() => expect(theme.options[0].textContent).toBe("System (Light)"));
+    } finally {
+      useLanguageStore.setState({ systemLanguage: previous });
+    }
+  });
+
   it("shows the default font as a placeholder without writing it into the preference", () => {
     render(<SettingsModal open onClose={() => {}} />);
     fireEvent.click(screen.getByRole("tab", { name: "Appearance" }));
@@ -128,7 +168,7 @@ describe("Settings categories", () => {
     const options = [...select.options];
     expect(options).toHaveLength(LANGUAGES.length + 1);
     expect(options[0].value).toBe("system");
-    expect(options[0].textContent).toBe("System");
+    expect(options[0].textContent).toBe(`System (${LANGUAGE_NAMES[useLanguageStore.getState().systemLanguage]})`);
     for (const language of LANGUAGES) {
       const option = options.find((candidate) => candidate.value === language)!;
       expect(option).toBeTruthy();

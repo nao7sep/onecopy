@@ -33,6 +33,9 @@ import { computerTimeZone, SYSTEM_TIME_ZONE, timeZoneOptions } from "../utils/ti
 import { type MessageKey } from "../i18n/catalogues";
 import { useI18n } from "../i18n/I18nContext";
 import { LANGUAGES, LANGUAGE_NAMES, normalizeLanguagePreference } from "../i18n/languages";
+import { useLanguageStore } from "../state/language-store";
+import { useDisplayZone } from "../hooks/useDisplayZone";
+import { useSystemTheme } from "../hooks/useSystemTheme";
 
 /** The core's text-preview choices (`text_preview::Options`); the limit
  * keeps the gate itself bounded (C-L2). */
@@ -256,6 +259,66 @@ function CheckField({
   );
 }
 
+/** A time zone chosen from the platform's list, led by System named with the
+ * zone it resolves to now (timestamp-conventions, Time zones). */
+function ZoneRow({
+  label,
+  hint,
+  value,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  value: string;
+  onChange: (zone: string) => void;
+}) {
+  const { t } = useI18n();
+  // Keeps System's zone current when the computer's zone changes.
+  useDisplayZone();
+  return (
+    <Row label={label} hint={hint}>
+      <Select className="w-64" value={value} onChange={(e) => onChange(e.target.value)}>
+        <option value={SYSTEM_TIME_ZONE}>
+          {t("settings.timezoneSystem", { zone: computerTimeZone() })}
+        </option>
+        {timeZoneOptions(value).map((zone) => (
+          <option key={zone} value={zone}>
+            {zone}
+          </option>
+        ))}
+      </Select>
+    </Row>
+  );
+}
+
+/** The theme choice; System is named with the appearance it resolves to now. */
+function ThemeRow({
+  value,
+  onChange,
+}: {
+  value: "system" | "light" | "dark";
+  onChange: (theme: "system" | "light" | "dark") => void;
+}) {
+  const { t } = useI18n();
+  const resolved = useSystemTheme();
+  return (
+    <Row label={t("settings.theme")}>
+      <Select
+        value={value}
+        onChange={(e) => onChange(e.target.value as "system" | "light" | "dark")}
+      >
+        <option value="system">
+          {t("settings.themeSystem", {
+            theme: t(resolved === "dark" ? "settings.themeDark" : "settings.themeLight"),
+          })}
+        </option>
+        <option value="light">{t("settings.themeLight")}</option>
+        <option value="dark">{t("settings.themeDark")}</option>
+      </Select>
+    </Row>
+  );
+}
+
 const SETTINGS_TABS = [
   { id: "library", label: "settings.library" },
   { id: "media", label: "settings.media" },
@@ -342,6 +405,7 @@ export default function SettingsModal({
   const accelerationCapabilities = useSettingsStore(
     (s) => s.accelerationCapabilities,
   );
+  const systemLanguage = useLanguageStore((s) => s.systemLanguage);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const quitDiscard = useQuitDiscardStore((s) => s.choose);
   const quitDiscardPresented = useQuitDiscardStore((s) => s.presented);
@@ -551,22 +615,18 @@ export default function SettingsModal({
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             {t("settings.timestamps")}
           </h2>
-          <Row label={t("settings.defaultTimezone")} hint={t("settings.defaultTimezoneHint")}>
-            <Select
-              className="w-64"
-              value={draft.defaultTimezone}
-              onChange={(e) => update({ defaultTimezone: e.target.value })}
-            >
-              <option value={SYSTEM_TIME_ZONE}>
-                {t("settings.timezoneSystem", { zone: computerTimeZone() })}
-              </option>
-              {timeZoneOptions(draft.defaultTimezone).map((zone) => (
-                <option key={zone} value={zone}>
-                  {zone}
-                </option>
-              ))}
-            </Select>
-          </Row>
+          <ZoneRow
+            label={t("settings.defaultTimezone")}
+            hint={t("settings.defaultTimezoneHint")}
+            value={draft.defaultTimezone}
+            onChange={(zone) => update({ defaultTimezone: zone })}
+          />
+          <ZoneRow
+            label={t("settings.displayTimezone")}
+            hint={t("settings.displayTimezoneHint")}
+            value={draft.displayTimezone}
+            onChange={(zone) => update({ displayTimezone: zone })}
+          />
 
           <h2 className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-ink-muted">
             {t("settings.applicationUpdates")}
@@ -783,7 +843,9 @@ export default function SettingsModal({
                 update({ language: normalizeLanguagePreference(e.target.value) })
               }
             >
-              <option value="system">{t("settings.languageSystem")}</option>
+              <option value="system">
+                {t("settings.languageSystem", { language: LANGUAGE_NAMES[systemLanguage] })}
+              </option>
               {LANGUAGES.map((language) => (
                 <option key={language} value={language} lang={language}>
                   {LANGUAGE_NAMES[language]}
@@ -802,18 +864,7 @@ export default function SettingsModal({
               onChange={(e) => update({ uiFontFamily: e.target.value })}
             />
           </Row>
-          <Row label={t("settings.theme")}>
-            <Select
-              value={draft.theme}
-              onChange={(e) =>
-                update({ theme: e.target.value as "system" | "light" | "dark" })
-              }
-            >
-              <option value="system">{t("settings.themeSystem")}</option>
-              <option value="light">{t("settings.themeLight")}</option>
-              <option value="dark">{t("settings.themeDark")}</option>
-            </Select>
-          </Row>
+          <ThemeRow value={draft.theme} onChange={(theme) => update({ theme })} />
 
           <ScreensSection />
         </div>

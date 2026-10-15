@@ -19,6 +19,7 @@ import {
   type AppConfig,
 } from "../models/config";
 import { normalizeUiFontPreference } from "../utils/uiFont";
+import { SYSTEM_TIME_ZONE } from "../utils/timezones";
 import { message, type Message } from "../i18n/translate";
 import { recordActionFailure } from "./notifications-store";
 import type { AiAccelerationCapability } from "../repositories";
@@ -30,6 +31,7 @@ export interface SettingsDraft {
   hideHiddenAttributes: boolean;
   hideSystemAttributes: boolean;
   defaultTimezone: string;
+  displayTimezone: string;
   videoSnapshotsEnabled: boolean;
   similarPhotoAnalysisEnabled: boolean;
   videoTranscriptionEnabled: boolean;
@@ -99,6 +101,8 @@ function draftFrom(
     hideHiddenAttributes: flag("hideHiddenAttributes"),
     hideSystemAttributes: flag("hideSystemAttributes"),
     defaultTimezone: stringField(config, "defaultTimezone"),
+    // A missing display zone is System, the same rule the core applies.
+    displayTimezone: configString(config, "displayTimezone") ?? SYSTEM_TIME_ZONE,
     videoSnapshotsEnabled: flag("videoSnapshotsEnabled"),
     similarPhotoAnalysisEnabled: flag("similarPhotoAnalysisEnabled"),
     videoTranscriptionEnabled: flag("videoTranscriptionEnabled"),

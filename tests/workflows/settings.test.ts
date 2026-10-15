@@ -56,6 +56,14 @@ describe("Settings save boundary", () => {
     expect(invokeCalls.find((call) => call.command === "save_config")?.args.changes).toEqual({ notificationDisplaySeconds: 10 });
   });
 
+  it("saves a display zone like its neighbours and re-reads Main's months", async () => {
+    useSettingsStore.getState().update({ displayTimezone: "Asia/Tokyo" });
+    await saveSettings();
+    expect(invokeCalls.find((call) => call.command === "save_config")?.args.changes).toEqual({ displayTimezone: "Asia/Tokyo" });
+    const saved = invokeCalls.findIndex((call) => call.command === "save_config");
+    expect(invokeCalls.findIndex((call, index) => index > saved && call.command === "get_section_counts")).toBeGreaterThan(saved);
+  });
+
   it("saves the similarity reset as the built-in values, which the core then leaves out of the file", async () => {
     useSettingsStore.getState().beginEditing(effectiveConfig({ similarPhotoGrouping: "looser" }), [], effectiveConfig());
     useSettingsStore.getState().update({ similarPhotoGrouping: "normal" });

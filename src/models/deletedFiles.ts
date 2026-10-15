@@ -133,8 +133,8 @@ export function groupEntries(entries: readonly TrashEntry[]): DeletionGroup[] {
   });
 }
 
-/** The local calendar day of an instant in `timeZone` (the computer's zone
- * when omitted). A UTC day folder can span two local days, so the list is
+/** The local calendar day of an instant in `timeZone` (the display zone's,
+ * or the computer's zone when omitted). A UTC day folder can span two local days, so the list is
  * bucketed by this, never by the folder's name. */
 export function localDay(iso: string, timeZone?: string): string {
   const date = new Date(iso);

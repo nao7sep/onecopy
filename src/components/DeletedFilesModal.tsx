@@ -13,6 +13,8 @@ import { useI18n } from "../i18n/I18nContext";
 import { message, type Message } from "../i18n/translate";
 import type { MessageKey } from "../i18n/catalogues";
 import { useDisplayZone } from "../hooks/useDisplayZone";
+import { displayTimeZone } from "../repositories/display-zone";
+import { formatLocalMinute } from "../utils/displayTime";
 import { useComposing } from "../hooks/useComposing";
 import { formatBytes } from "../models/items";
 import {
@@ -76,7 +78,7 @@ function DeletedFilesBrowser({
   onClose: () => void;
 }) {
   const { t, text, number, dateTime, calendarDay } = useI18n();
-  useDisplayZone();
+  const zone = useDisplayZone();
   const manager = fileManagerWord();
   const [listing, setListing] = useState<TrashListing | null>(null);
   const [updatesError, setUpdatesError] = useState<Message | null>(null);
@@ -130,8 +132,9 @@ function DeletedFilesBrowser({
   const groups = useMemo(() => groupEntries(listing?.entries ?? []), [listing]);
   const visible = useMemo(() => filterGroups(groups, query), [groups, query]);
   const rows = useMemo(
-    () => browseRows(bucketByDay(visible), expanded),
-    [visible, expanded],
+    () => browseRows(bucketByDay(visible, displayTimeZone()), expanded),
+    // The days are the display zone's, read when the rows are made.
+    [visible, expanded, zone],
   );
   displayedRows.current = rows;
   useLayoutEffect(() => {
@@ -412,7 +415,7 @@ function DeletedFilesBrowser({
             <span className="block truncate text-xs text-ink-muted">{facts}</span>
           </span>
           <span className="shrink-0 text-right text-xs tabular-nums text-ink-muted">
-            <span className="block">{dateTime(new Date(group.deletedAtUtc))}</span>
+            <span className="block">{formatLocalMinute(group.deletedAtUtc, dateTime)}</span>
             <span className="block">{formatBytes(group.size, number)}</span>
           </span>
         </div>

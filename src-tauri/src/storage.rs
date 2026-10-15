@@ -64,9 +64,14 @@ pub struct DefaultConfig {
     pub hide_dot_names: bool,
     pub hide_hidden_attributes: bool,
     pub hide_system_attributes: bool,
-    /// IANA name applied when interpreting naive local timestamps (EXIF without
-    /// an offset). The built-in follows the system timezone; the wizard saves the choice.
+    /// The interpretation zone: the IANA name applied when interpreting naive
+    /// local timestamps (EXIF without an offset, file dates), or `system`. The
+    /// built-in is the computer's zone now; every save writes it (see
+    /// [`INTERPRETATION_ZONE`]).
     pub default_timezone: String,
+    /// The display zone every user-facing time and Main's month sections use:
+    /// `system` (follow the computer's zone) or an IANA name.
+    pub display_timezone: String,
     pub video_snapshots_enabled: bool,
     pub similar_photo_analysis_enabled: bool,
     pub video_transcription_enabled: bool,
@@ -132,9 +137,11 @@ impl Default for DefaultConfig {
             hide_dot_names: true,
             hide_hidden_attributes: true,
             hide_system_attributes: true,
-            // The `system` token follows the computer's zone wherever it is
-            // used (config-sets conventions); a chosen zone is always saved.
-            default_timezone: "system".to_string(),
+            // The computer's zone, concrete (timestamp conventions, Time
+            // zones): people travel without resetting their cameras, so the
+            // zone dates are read in must not follow the computer once chosen.
+            default_timezone: computer_time_zone().name().to_string(),
+            display_timezone: crate::resolution::SYSTEM_ZONE.to_string(),
             video_snapshots_enabled: true,
             similar_photo_analysis_enabled: true,
             video_transcription_enabled: true,
@@ -165,6 +172,20 @@ impl Default for DefaultConfig {
         }
     }
 }
+
+/// The computer's zone now, UTC when it cannot be read: the interpretation
+/// zone's built-in and what `system` resolves to.
+pub fn computer_time_zone() -> chrono_tz::Tz {
+    crate::resolution::zone_or_utc(iana_time_zone::get_timezone().ok().as_deref())
+}
+
+/// The interpretation zone's set key, the one exception to "a set equal to
+/// its built-in leaves the file": every save writes it. Its built-in is the
+/// computer's zone now rather than a constant, so only the value in the file
+/// keeps dates read in the zone they were set up in after the computer's zone
+/// changes. Setup saves it at first run; a library whose zone was never saved
+/// gets the computer's current zone pinned at its next save.
+const INTERPRETATION_ZONE: &str = "defaultTimezone";
 
 /// Known set keys and built-ins have one owner: `DefaultConfig`. The one
 /// check on read (config-sets conventions' reading and healing).
@@ -211,6 +232,9 @@ fn valid_set(key: &str, value: &JsonValue, builtin: &JsonValue) -> bool {
     shape && match key {
         "theme" => matches!(value.as_str(), Some("system" | "light" | "dark")),
         "language" => value.as_str().is_some_and(|tag| tag == "system" || crate::i18n::LANGUAGES.contains(&tag)),
+        "defaultTimezone" | "displayTimezone" => value
+            .as_str()
+            .is_some_and(|name| name == crate::resolution::SYSTEM_ZONE || name.parse::<chrono_tz::Tz>().is_ok()),
         "similarPhotoGrouping" => matches!(value.as_str(), Some("stricter" | "normal" | "looser")),
         "playbackVolume" => value.as_f64().is_some_and(|value| value.is_finite() && (0.01..=1.0).contains(&value)),
         "transcription" | "face-scoring" => matches!(value.as_str(), Some("none" | "metal")),
@@ -292,6 +316,7 @@ pub fn appearance_preferences(root: &Path) -> Result<JsonValue, String> {
         "enlargeSmallImages": config.get("enlargeSmallImages"),
         "videoTranscriptionEnabled": config.get("videoTranscriptionEnabled"),
         "audioTranscriptionEnabled": config.get("audioTranscriptionEnabled"),
+        "displayTimezone": config.get("displayTimezone"),
     }))
 }
 
@@ -526,7 +551,8 @@ pub struct SaveOutcome {
 
 /// Saves settings: each changed set replaces the held set whole, then the
 /// file is written from what the app holds, every set that differs from its
-/// built-in and nothing else (config-sets conventions).
+/// built-in and nothing else (config-sets conventions), plus the
+/// interpretation zone always.
 pub fn save_config(root: &Path, changes: &JsonValue) -> Result<SaveOutcome, String> {
     // records: config.json is durable user settings — managed text, recorded on
     // every save (data-backup conventions).
@@ -548,7 +574,9 @@ pub fn save_config(root: &Path, changes: &JsonValue) -> Result<SaveOutcome, Stri
         .as_object()
         .expect("defaults are an object")
         .iter()
-        .filter(|(key, builtin)| !same_value(&effective[key.as_str()], builtin))
+        .filter(|(key, builtin)| {
+            key.as_str() == INTERPRETATION_ZONE || !same_value(&effective[key.as_str()], builtin)
+        })
         .map(|(key, _)| (key.clone(), effective[key.as_str()].clone()))
         .collect::<serde_json::Map<_, _>>();
     write_json_file(&root.join(CONFIG_FILE_NAME), &JsonValue::Object(stored), formats::CONFIG, true)?;

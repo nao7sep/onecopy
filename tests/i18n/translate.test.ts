@@ -43,6 +43,6 @@ describe("createTranslator", () => {
   });
 
   it("falls back to the key's English form only when a language lacks it", () => {
-    expect(createTranslator("en").t("settings.languageSystem")).toBe("System");
+    expect(createTranslator("en").t("settings.languageSystem", { language: "English" })).toBe("System (English)");
   });
 });
