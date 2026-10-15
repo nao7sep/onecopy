@@ -45,7 +45,7 @@ describe("formattingLocale", () => {
 });
 
 // The System entry names its language in the language the user is reading
-// (localization-conventions): "System (Japanese)", "システム (日本語)".
+// (localization-conventions): "System (Japanese)", "システム（日本語）".
 describe("languageNameIn", () => {
   it("names a language in the interface language, by its primary language", () => {
     expect(languageNameIn("ja", "en")).toBe("Japanese");

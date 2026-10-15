@@ -24,7 +24,7 @@ export const LANGUAGE_NAMES: Readonly<Record<Language, string>> = {
 
 // A language named in the interface language, for the System entry, which
 // names what it resolves to in the language the user is reading
-// (localization-conventions): "System (Japanese)", "システム (日本語)". Named by
+// (localization-conventions): "System (Japanese)", "システム（日本語）". Named by
 // its primary language, as the picker names it by its own.
 export function languageNameIn(tag: Language, interfaceLanguage: Language): string {
   try {
