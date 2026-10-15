@@ -10,7 +10,7 @@ import { Row, Select, Toggle } from "./ui/Field";
 import type { OptionalFeatureId } from "../models/optionalFeatures";
 import OperationResult from "./ui/OperationResult";
 import { I18nProvider, useI18n } from "../i18n/I18nContext";
-import { LANGUAGES, LANGUAGE_NAMES, effectiveLanguage, formattingLocale, normalizeLanguagePreference } from "../i18n/languages";
+import { LANGUAGES, LANGUAGE_NAMES, effectiveLanguage, formattingLocale, languageNameIn, normalizeLanguagePreference } from "../i18n/languages";
 import { useLanguageStore } from "../state/language-store";
 import { message } from "../i18n/translate";
 import { log, toErrorFields } from "../repositories";
@@ -56,7 +56,7 @@ export default function Wizard() {
 }
 
 function WizardContent() {
-  const { t, text } = useI18n();
+  const { t, text, language: interfaceLanguage } = useI18n();
   const step = useWizardStore((s) => s.step);
   const language = useWizardStore((s) => s.language);
   const setLanguage = useWizardStore((s) => s.setLanguage);
@@ -132,7 +132,7 @@ function WizardContent() {
                 }}
               >
                 <option value="system">
-                  {t("settings.languageSystem", { language: LANGUAGE_NAMES[systemLanguage] })}
+                  {t("settings.languageSystem", { language: languageNameIn(systemLanguage, interfaceLanguage) })}
                 </option>
                 {LANGUAGES.map((tag) => (
                   <option key={tag} value={tag} lang={tag}>

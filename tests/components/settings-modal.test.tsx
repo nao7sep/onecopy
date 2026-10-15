@@ -134,7 +134,7 @@ describe("Settings categories", () => {
       render(<SettingsModal open onClose={() => {}} />);
       fireEvent.click(screen.getByRole("tab", { name: "Appearance" }));
       const language = screen.getByLabelText("Language") as HTMLSelectElement;
-      expect(language.options[0].textContent).toBe("System (日本語)");
+      expect(language.options[0].textContent).toBe("System (Japanese)");
       const theme = screen.getByLabelText("Theme") as HTMLSelectElement;
       await waitFor(() => expect(theme.options[0].textContent).toBe("System (Dark)"));
       appearance = "light";

@@ -22,6 +22,19 @@ export const LANGUAGE_NAMES: Readonly<Record<Language, string>> = {
   "zh-Hans": "中文",
 };
 
+// A language named in the interface language, for the System entry, which
+// names what it resolves to in the language the user is reading
+// (localization-conventions): "System (Japanese)", "システム (日本語)". Named by
+// its primary language, as the picker names it by its own.
+export function languageNameIn(tag: Language, interfaceLanguage: Language): string {
+  try {
+    const named = new Intl.DisplayNames([interfaceLanguage], { type: "language" }).of(tag.split("-")[0] ?? tag);
+    return named ?? LANGUAGE_NAMES[tag];
+  } catch {
+    return LANGUAGE_NAMES[tag];
+  }
+}
+
 // The saved choice. System follows the computer's language on every launch.
 export type LanguagePreference = "system" | Language;
 

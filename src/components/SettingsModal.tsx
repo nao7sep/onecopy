@@ -32,7 +32,7 @@ import OperationResult from "./ui/OperationResult";
 import { computerTimeZone, SYSTEM_TIME_ZONE, timeZoneOptions } from "../utils/timezones";
 import { type MessageKey } from "../i18n/catalogues";
 import { useI18n } from "../i18n/I18nContext";
-import { LANGUAGES, LANGUAGE_NAMES, normalizeLanguagePreference } from "../i18n/languages";
+import { LANGUAGES, LANGUAGE_NAMES, languageNameIn, normalizeLanguagePreference } from "../i18n/languages";
 import { useLanguageStore } from "../state/language-store";
 import { useDisplayZone } from "../hooks/useDisplayZone";
 import { useSystemTheme } from "../hooks/useSystemTheme";
@@ -391,7 +391,7 @@ export default function SettingsModal({
   open: boolean;
   onClose: () => void;
 }) {
-  const { t, text } = useI18n();
+  const { t, text, language: interfaceLanguage } = useI18n();
   const [activeTab, setActiveTab] = useState<SettingsTab>("library");
   const draft = useSettingsStore((s) => s.draft);
   const opened = useSettingsStore((s) => s.opened);
@@ -844,7 +844,7 @@ export default function SettingsModal({
               }
             >
               <option value="system">
-                {t("settings.languageSystem", { language: LANGUAGE_NAMES[systemLanguage] })}
+                {t("settings.languageSystem", { language: languageNameIn(systemLanguage, interfaceLanguage) })}
               </option>
               {LANGUAGES.map((language) => (
                 <option key={language} value={language} lang={language}>

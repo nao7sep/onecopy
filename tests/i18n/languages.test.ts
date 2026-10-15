@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   effectiveLanguage,
   formattingLocale,
+  languageNameIn,
   normalizeLanguagePreference,
 } from "../../src/i18n/languages";
 
@@ -40,5 +41,17 @@ describe("formattingLocale", () => {
     expect(formattingLocale("zh-Hans", "zh-TW")).toBe("zh-Hans");
     expect(formattingLocale("en", null)).toBe("en");
     expect(formattingLocale("en", "not a locale")).toBe("en");
+  });
+});
+
+// The System entry names its language in the language the user is reading
+// (localization-conventions): "System (Japanese)", "システム (日本語)".
+describe("languageNameIn", () => {
+  it("names a language in the interface language, by its primary language", () => {
+    expect(languageNameIn("ja", "en")).toBe("Japanese");
+    expect(languageNameIn("ja", "ja")).toBe("日本語");
+    expect(languageNameIn("en", "ja")).toBe("英語");
+    expect(languageNameIn("zh-Hans", "en")).toBe("Chinese");
+    expect(languageNameIn("pt-BR", "de")).toBe("Portugiesisch");
   });
 });
