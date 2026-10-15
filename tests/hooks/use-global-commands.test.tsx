@@ -339,6 +339,27 @@ describe("native Settings menu item (R8-04)", () => {
   });
 });
 
+describe("native About menu item", () => {
+  afterEach(() => resetModalStack());
+
+  it("opens Main's About surface instead of the native panel, unless a modal is already open", async () => {
+    useAppShellStore.setState({ utilitySurface: null });
+    render(<Harness />);
+
+    await act(async () => {
+      fireBackendEvent("menu://open-about");
+    });
+    expect(useAppShellStore.getState().utilitySurface).toBe("about");
+
+    useAppShellStore.setState({ utilitySurface: null });
+    pushModal({});
+    await act(async () => {
+      fireBackendEvent("menu://open-about");
+    });
+    expect(useAppShellStore.getState().utilitySurface).toBeNull();
+  });
+});
+
 describe("Enter playback toggle (R5.1 D3)", () => {
   it("does nothing, without an untrue notice, when no player is visible for a video anchor", () => {
     useItemsStore.setState({ selected: { kind: "video", month: "2026-01" } });

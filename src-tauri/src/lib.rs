@@ -1,7 +1,7 @@
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::menu::{OPEN_SETTINGS_MENU_ID, SAFE_QUIT_MENU_ID};
+use crate::menu::SAFE_QUIT_MENU_ID;
 
 // Before every module: unit tests below use it.
 #[cfg(test)]
@@ -1660,19 +1660,19 @@ pub fn run() {
         .on_menu_event(|app, event| {
             if event.id() == SAFE_QUIT_MENU_ID {
                 quit::request_quit(app);
-            } else if event.id() == OPEN_SETTINGS_MENU_ID {
+            } else if let Some(surface_event) = menu::main_surface_event(event.id().as_ref()) {
                 // The native item cannot call into the webview directly; Main
-                // owns the only Settings surface, the same one the webview's
-                // own Cmd+, shortcut already opens (R8-04).
+                // owns the only Settings and About surfaces, the ones its own
+                // Cmd+, and app menu open (R8-04).
                 if let Some(window) = app.get_webview_window("main") {
                     if let Err(error) = window.set_focus() {
                         logging::warn(
-                            "focusing Main for the native Settings item failed",
-                            json!({ "error": { "message": error.to_string() } }),
+                            "focusing Main for a native menu item failed",
+                            json!({ "event": surface_event, "error": { "message": error.to_string() } }),
                         );
                     }
                 }
-                failure_runtime::emit_or_record(app, "menu://open-settings", json!({}));
+                failure_runtime::emit_or_record(app, surface_event, json!({}));
             }
         })
         // Asynchronous registration (W-B2, C-B1): the handler body — index

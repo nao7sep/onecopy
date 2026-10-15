@@ -70,21 +70,27 @@ export function useGlobalCommands() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [openSettings]);
 
-  // The macOS native menu's Settings… item (R8-04) cannot call into the
-  // webview directly; the core emits this event, and Main is the one owner of
-  // the Settings surface, same as the webview's own Cmd+, shortcut above.
+  // The native menu's Settings and About items (R8-04) cannot call into the
+  // webview directly; the core emits these events, and Main is the one owner
+  // of both surfaces, the ones its Cmd+, shortcut and app menu open.
   useEffect(() => {
     let disposed = false;
-    let unlisten: (() => void) | null = null;
+    const stops: Array<() => void> = [];
+    const keep = (stop: () => void) => {
+      if (disposed) stop();
+      else stops.push(stop);
+    };
     void listen("menu://open-settings", () => {
       if (!hasOpenModal()) openSettings();
-    }).then((stop) => {
-      if (disposed) stop();
-      else unlisten = stop;
-    });
+    }).then(keep);
+    // The native About panel shows only the name and version; the app menu's
+    // About opens Main's own About surface instead.
+    void listen("menu://open-about", () => {
+      if (!hasOpenModal()) useAppShellStore.getState().openUtility("about");
+    }).then(keep);
     return () => {
       disposed = true;
-      unlisten?.();
+      stops.forEach((stop) => stop());
     };
   }, [openSettings]);
 

@@ -15,10 +15,23 @@ pub const SAFE_QUIT_MENU_ID: &str = "onecopy.safe-quit";
 /// the same target the webview's own Cmd+, shortcut already opens.
 pub const OPEN_SETTINGS_MENU_ID: &str = "onecopy.open-settings";
 
+/// The About item, on the macOS app menu and Windows' Help menu. The native
+/// About panel shows only the name and version, so lib.rs routes the item to
+/// Main's About surface ("menu://open-about"), as it does Settings.
+pub const OPEN_ABOUT_MENU_ID: &str = "onecopy.open-about";
+
+/// The event that opens Main's surface for a native menu item, if the item
+/// opens one.
+pub fn main_surface_event(id: &str) -> Option<&'static str> {
+    match id {
+        OPEN_SETTINGS_MENU_ID => Some("menu://open-settings"),
+        OPEN_ABOUT_MENU_ID => Some("menu://open-about"),
+        _ => None,
+    }
+}
+
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-use tauri::menu::{
-    AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID, WINDOW_SUBMENU_ID,
-};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID, WINDOW_SUBMENU_ID};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use tauri::{AppHandle, Wry};
 
@@ -56,17 +69,9 @@ pub fn build(app: &AppHandle, language: &str) -> tauri::Result<Menu<Wry>> {
     let name = app.package_info().name.clone();
     let text = i18n::catalogue(language);
     let t = |key: &str| text.text(key, &name);
-    let config = app.config();
-    let about = AboutMetadata {
-        name: Some(name.clone()),
-        version: Some(app.package_info().version.to_string()),
-        copyright: config.bundle.copyright.clone(),
-        authors: config.bundle.publisher.clone().map(|publisher| vec![publisher]),
-        ..Default::default()
-    };
     let quit_text = if cfg!(target_os = "macos") { t("nativeMenu.quit") } else { t("nativeMenu.exit") };
     let quit = MenuItem::with_id(app, SAFE_QUIT_MENU_ID, quit_text, true, Some("CmdOrCtrl+Q"))?;
-    let about_item = PredefinedMenuItem::about(app, Some(&t("nativeMenu.about")), Some(about))?;
+    let about_item = MenuItem::with_id(app, OPEN_ABOUT_MENU_ID, t("nativeMenu.about"), true, None::<&str>)?;
 
     let file = Submenu::with_items(
         app,

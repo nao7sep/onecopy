@@ -28,3 +28,13 @@ it("refuses Spaces fullscreen for every window as its page starts loading", () =
   expect(hook).toContain("PageLoadEvent::Started");
   expect(hook).toContain("fullscreen::refuse_spaces_fullscreen(&webview.window())");
 });
+
+// The native About panel shows only the name and version, so the About item
+// is OneCopy's own and opens Main's About surface, as the Settings item opens
+// Settings (the listener is tested in tests/hooks/use-global-commands.test.tsx).
+it("routes the About item to Main's About surface instead of the native panel", () => {
+  expect(menu).not.toMatch(/PredefinedMenuItem::about/);
+  expect(menu).toMatch(/MenuItem::with_id\(app, OPEN_ABOUT_MENU_ID/);
+  expect(menu).toMatch(/OPEN_ABOUT_MENU_ID => Some\("menu:\/\/open-about"\)/);
+  expect(lib).toContain("menu::main_surface_event(event.id().as_ref())");
+});
