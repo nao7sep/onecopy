@@ -1,7 +1,7 @@
 // The two test entry points, as a fixed list of lanes.
 //
 // `npm test` runs the default set: the type check, the frontend bundle,
-// every Vitest test, and every Cargo test.
+// every Cargo test, and every Vitest test.
 // `npm run test:full` adds the lanes held out for cost — the heavy
 // Rust suite, which downloads and runs the managed tools and models, and on
 // Windows the packaging script test.
@@ -33,8 +33,11 @@ const full = process.argv.includes("--full");
 // npm is a .cmd shim on Windows, which Node starts only through a shell.
 run("typecheck", "npm", ["run", "typecheck"], onWindows);
 runNode("frontend bundle", "node_modules/vite/bin/vite.js", ["build"]);
-runNode("vitest", "node_modules/vitest/vitest.mjs", ["run"]);
+// Cargo runs before Vitest: the capability test resolves window permissions
+// against the ACL manifest tauri-build writes, which a clean checkout lacks
+// until Cargo has built the crate.
 run("cargo test", "cargo", ["test", ...MANIFEST]);
+runNode("vitest", "node_modules/vitest/vitest.mjs", ["run"]);
 
 if (full) {
   run("heavy suite: managed tools, models and the shared corpus", "cargo", [
