@@ -19,7 +19,7 @@ fn lists() -> ScanLists {
 
 fn no_data_root() -> PathBuf {
     // A path these tests never write under, so restat_dir's data-root
-    // exclusion (R6-02) never fires unless a test deliberately targets it.
+    // exclusion never fires unless a test deliberately targets it.
     PathBuf::from("/onecopy-test-data-root-never-used")
 }
 
@@ -111,7 +111,7 @@ fn restat_skips_apple_double_sidecars_beside_their_real_file() {
     assert_eq!(missing, 0, "a lone ._name with no sibling is ordinary content");
 }
 
-// (W-M2) A vanished directory PROVES absence — `read_dir` failing with
+// A vanished directory PROVES absence — `read_dir` failing with
 // `NotFound` is the normal shape of "this folder was deleted after its
 // events arrived" (Shift+Del, `rm -r`), not an unreadable directory. Every
 // row known to live under it is marked missing instead of raising a
@@ -300,7 +300,7 @@ fn restat_keeps_trash_lookalikes_but_never_opens_deleted_storage() {
     assert_eq!(counts, (1, 0));
 }
 
-// (R7-02) A vanished directory marks its rows missing through the
+// A vanished directory marks its rows missing through the
 // projection-batch publisher, page by page, never through the per-row
 // projection trigger that holds the write lock for the whole subtree.
 #[test]

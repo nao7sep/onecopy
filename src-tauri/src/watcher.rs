@@ -20,9 +20,9 @@ use std::time::Duration;
 
 /// The bounded queue's capacity between the `notify` callback and the drain
 /// loop. Large enough for an ordinary import burst; a queue this deep filling
-/// up while ingestion is blocked on `INDEXING` (W-B1) means the run is
+/// up while ingestion is blocked on `INDEXING` means the run is
 /// already going to need a full recheck, so overflow is treated the same as
-/// `notify`'s own `need_rescan()` rather than growing without bound (W-L4).
+/// `notify`'s own `need_rescan()` rather than growing without bound.
 const EVENT_QUEUE_CAPACITY: usize = 4096;
 
 use serde_json::json;
@@ -278,11 +278,11 @@ pub fn start(app: tauri::AppHandle, source_dirs: Vec<String>) -> Result<bool, St
 
 fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Result<(), String> {
     // Resolved once: a source containing the data root must never make the
-    // watcher index or churn the app's own storage (R6-02).
+    // watcher index or churn the app's own storage.
     let data_root = crate::paths::data_root()?;
     let (tx, rx) = mpsc::sync_channel::<notify::Result<notify::Event>>(EVENT_QUEUE_CAPACITY);
     // A full queue means ingestion cannot keep up (typically an `INDEXING`
-    // holder running for a long time, W-B1). `try_send` never blocks the
+    // holder running for a long time). `try_send` never blocks the
     // `notify` callback thread; a full queue instead flags the same overflow
     // path the drain loop already uses for `need_rescan()`, so the affected
     // roots are rechecked instead of the process either stalling or growing
@@ -666,7 +666,7 @@ fn record_root_condition(
 }
 
 /// The `notify` callback: forwards into the bounded channel, or flags
-/// overflow instead of blocking the callback thread when it is full (W-L4).
+/// overflow instead of blocking the callback thread when it is full.
 fn forward_or_flag_overflow(
     tx: &mpsc::SyncSender<notify::Result<notify::Event>>,
     overflowed: &AtomicBool,

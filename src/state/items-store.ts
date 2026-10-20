@@ -645,7 +645,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
 
   // The light refresh round: fresher rows for the window Main wants, without
   // round-tripping a possibly huge selection through `reconcile_section`
-  // (C-M2) while the section order is unchanged (`adoptWindow`).
+  // while the section order is unchanged (`adoptWindow`).
   refreshWindow: async () => {
     const section = get().selected;
     if (section === null) return;

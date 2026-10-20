@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-// R5.5 D-L3: the wizard previews the chosen language inside its own view and
+// The wizard previews the chosen language inside its own view and
 // commits it only on Finish. Nothing outside the wizard's own rendered
 // subtree — the document's declared language, or the shared language store
 // every other window reads — may see the choice before that.
@@ -56,7 +56,7 @@ describe("wizard language preview", () => {
     expect(document.documentElement.lang).toBe("en");
   });
 
-  // R5.5 C1: the wizard offers the SAME choice as Settings -- System plus
+  // The wizard offers the SAME choice as Settings -- System plus
   // exactly the ten supported languages, each named in its own words.
   it("lists System plus the ten languages, each named in its own words", async () => {
     const { LANGUAGES, LANGUAGE_NAMES } = await import("../../src/i18n/languages");

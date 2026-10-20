@@ -1,18 +1,18 @@
-// Threading discipline for the Tauri command registry (see the THREADING
-// comment above `dispatch()` in `src-tauri/src/lib.rs`).
+// Threading discipline for the Tauri command registry.
 //
 // A plain `#[tauri::command]` fn runs on Tauri's MAIN thread; an `async fn`
 // command runs on a tokio worker. Neither may block on SQLite, the
-// filesystem, a subprocess, or a lock retained through those effects — a plain command would freeze every
-// window, and an async command would starve every other command's dispatch
-// (see the responsiveness audit's W-H2/C-H2 findings). The one place either
-// may touch those is through `dispatch()`, which moves the work onto
-// `tauri::async_runtime::spawn_blocking`'s dedicated pool.
+// filesystem, a subprocess, or a lock retained through those effects: a plain
+// command would freeze every window, and an async command would starve every
+// other command's dispatch. The one place either may touch those is through
+// `dispatch()`, which moves the work onto `tauri::async_runtime::spawn_blocking`'s
+// dedicated pool.
 //
-// This is a source-text check: it needs no running backend, so it cannot
-// drift from the shipped file the way a hand-kept inventory would, and it
-// catches the regression class directly — a new command added straight to
-// the index/filesystem/subprocess boundary without going through dispatch().
+// This scans the shipped Rust source rather than a running backend: the
+// commands and their delegate call graph are derived from the source, so a new
+// command added straight to the index/filesystem/subprocess boundary without
+// going through dispatch() fails here, and the planted cases below prove the
+// scan can fail.
 
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -297,6 +297,16 @@ describe("command threading", () => {
     `;
     const sources = new Map(rustSources).set("lib", source);
     expect(boundaryViolations(findCommands(source), sources)).toHaveLength(1);
+  });
+
+  it("excuses only async commands that exist and really skip dispatch()", () => {
+    const stale = [...ASYNC_WITHOUT_DISPATCH].filter((name) => {
+      const command = commands.find((candidate) => candidate.name === name);
+      return command === undefined
+        || !command.isAsync
+        || DISPATCH_MARKERS.some((pattern) => pattern.test(command.body));
+    });
+    expect(stale).toEqual([]);
   });
 
   it("runs every async command's body through dispatch()", () => {

@@ -41,7 +41,7 @@ it("focuses the fullscreen command surface on entry and native-window reactivati
   expect(emitCalls).toContainEqual({ event: "fullscreen-view://key", payload: expect.objectContaining({ key: " " }) });
 });
 
-it("keeps the chrome hover- and focus-revealed, not permanently shown (D9)", async () => {
+it("keeps the chrome hover- and focus-revealed, not permanently shown", async () => {
   render(<FullscreenViewWindow />);
   await act(async () => deliver("fullscreen-view://state", state));
   const surface = screen.getByLabelText("Fullscreen view");

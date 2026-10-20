@@ -80,7 +80,7 @@ describe("the presence gate", () => {
     expect(hasOpenModal()).toBe(false);
   });
 
-  it("blocks the same way when the check itself failed, without showing a stale or empty list (R3-07)", () => {
+  it("blocks the same way when the check itself failed, without showing a stale or empty list", () => {
     const view = render(
       <SubstitutedSourceGate
         substituted={[]}

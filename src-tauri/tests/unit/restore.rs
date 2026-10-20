@@ -39,7 +39,7 @@ fn restore_works_on_a_volume_without_exclusive_rename() {
     assert!(!Path::new(&record.stored_path).exists());
 }
 
-// 54, 56, 6: a read-only or full drive, or a root that went away, stops the
+// A read-only or full drive, or a root that went away, stops the
 // unstarted remainder; an ordinary refusal fails only its own file.
 #[test]
 fn full_read_only_or_vanished_storage_stops_the_remainder() {

@@ -70,7 +70,7 @@ try {
     # happen before the Tauri build updates it.
     Write-Step "Replacing any existing OneCopy runtime"
     Invoke-Native -FilePath "node" -ArgumentList @($runtimeHelper, "claim", $runtimeToken)
-    Invoke-Native -FilePath "node" -ArgumentList @($runtimeHelper, "stop", "tauri", "OneCopy", "onecopy")
+    Invoke-Native -FilePath "node" -ArgumentList @($runtimeHelper, "stop", "OneCopy", "onecopy")
 
     # Remove stale frontend output so a build that fails to emit a file can't be
     # masked by a leftover artifact from a previous run. Only the frontend output

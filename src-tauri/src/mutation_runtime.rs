@@ -472,8 +472,8 @@ impl Touches<'_> {
 }
 
 /// The configured source directories a mutation actually touches, so the
-/// volume-substitution gate can be scoped to only those roots (R3-07,
-/// R1-14): a source that failed verification never blocks work that never
+/// volume-substitution gate can be scoped to only those roots: a
+/// source that failed verification never blocks work that never
 /// reads or writes under it, and a destination root is never gated.
 fn touched_source_dirs(source_dirs: &[String], touches: &Touches) -> Vec<String> {
     source_dirs
@@ -616,10 +616,10 @@ fn admit(
     on_wait: &mut dyn FnMut(),
 ) -> Result<Option<Admitted>, String> {
     // The volume-substitution gate guards every destructive path it is
-    // documented for, not only the frontend's own recheck (R1-14): a backup
+    // documented for, not only the frontend's own recheck: a backup
     // drive swapped mid-session at the same mount path must not be walked or
     // mutated under the original drive's rows. A failed check keeps this gate
-    // closed (R3-07) — the `?` below refuses admission rather than treating
+    // closed — the `?` below refuses admission rather than treating
     // an unreadable check as "nothing recorded". Scoped to the configured
     // roots this batch's accepted files actually sit under, so a source that
     // failed verification never blocks a batch that never touches it.
@@ -1118,7 +1118,7 @@ pub(crate) fn empty_trash(
             let data_root = crate::paths::data_root()?;
             // Scoped to the root being emptied, not every configured source:
             // a different source that failed verification never blocks
-            // emptying deleted files under an unaffected root (R3-07, R1-14).
+            // emptying deleted files under an unaffected root.
             empty_trash_gate_with(
                 &data_root,
                 std::path::Path::new(&root),

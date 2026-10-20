@@ -35,7 +35,7 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-describe("Details no-detail states (R5.1 D13)", () => {
+describe("Details no-detail states", () => {
   const anchorItem: SectionItem = {
     hash: "interview", pathId: 1, fileName: "interview.mp4", resolvedUtcMs: null, copyCount: 1,
     width: 1920, height: 1080, hasThumb: true, similarGroupId: null, sharpness: null,

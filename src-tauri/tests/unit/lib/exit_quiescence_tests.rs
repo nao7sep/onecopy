@@ -126,7 +126,7 @@ fn no_exit_thread(name: &'static str, work: Box<dyn FnOnce() + Send>) -> std::io
     spawn_thread(name, work)
 }
 
-// (R4.4 B) When the exit thread cannot start, the failure is reported and the
+// When the exit thread cannot start, the failure is reported and the
 // sequence still runs to exit on the caller's thread, after mutation
 // quiescence, instead of leaving the app open with its workers stopped.
 #[test]

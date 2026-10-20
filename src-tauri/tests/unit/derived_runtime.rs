@@ -715,7 +715,7 @@ fn a_requested_preview_runs_beside_a_transcription() {
 
 #[test]
 fn preview_lane_reports_closed_while_a_requested_preview_holds_it() {
-    // Phase 10 fresh review of Phase 3: `derived_work::run_preview_pass` must
+    // `derived_work::run_preview_pass` must
     // not contend for the index admission's urgent share — which preempts a
     // background index owner's turn (e.g. file-information completion) at
     // its safe point — when the preview lane cannot actually admit automatic

@@ -30,8 +30,8 @@ use tauri::AppHandle;
 use crate::derived_state::WorkClass;
 
 /// How long a requested preview or an external open waits for its lane or
-/// for automatic work on the same file to stop. Reused at exit (W-L2/exit
-/// joins) as the bound on how long quitting waits for derived work, mutation
+/// for automatic work on the same file to stop. Reused at exit as the
+/// bound on how long quitting waits for derived work, mutation
 /// and requested-media joins before killing any subprocess still running and
 /// exiting anyway — the same "how long is reasonable to make the user wait"
 /// judgment already made for foreground preemption.
@@ -431,7 +431,7 @@ fn preview_capacity(class: WorkClass) -> usize {
 /// is entirely occupied by a requested preview (or its FIFO queue), still
 /// took the urgent share — preempting a background index owner's turn (e.g.
 /// file-information completion, at whatever it had done so far) only to find
-/// no slot free and do nothing (Phase 10 fresh review of Phase 3).
+/// no slot free and do nothing.
 pub(crate) fn preview_lane_open_for_automatic() -> bool {
     let capacity = preview_capacity(WorkClass::Previews);
     let Ok(runtime) = RUNTIME.0.lock() else {

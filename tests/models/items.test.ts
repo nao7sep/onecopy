@@ -93,8 +93,8 @@ describe("extLabel", () => {
 
 describe("the file-manager orders (other-files table)", () => {
   it("offers NO folder sort — copies merge into one row with many folders", () => {
-    // Any single folder key was an arbitrary MIN over the merged copies
-    // (Phase 33): the Folders column displays them all and never sorts.
+    // Any single folder key was an arbitrary MIN over the merged copies:
+    // the Folders column displays them all and never sorts.
     expect(Object.keys(SORT_ORDERS.other.orders)).not.toContain("folder");
   });
 });

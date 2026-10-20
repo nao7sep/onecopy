@@ -74,7 +74,7 @@ fn ignored_file_names_are_kept_once_in_order_and_compared_as_a_set() {
     assert_eq!(visibility::clean_ignored_file_names(&json!(builtin)).unwrap(), builtin);
 }
 
-// R4.1 finding 2: the ignored-name filter must be case-insensitive at the
+// The ignored-name filter must be case-insensitive at the
 // SQL level (the trigger's and apply_policy's own `name = paths.file_name`
 // join, which relies on visibility_ignored_names' onecopy_nocase collation),
 // not merely in the Rust Policy::visible helper exercised above.

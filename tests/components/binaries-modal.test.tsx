@@ -51,6 +51,7 @@ function entry(
     requiredForCore: isBinary,
     checkable: isBinary,
     released: isBinary ? null : "2024-10-01",
+    upstreamVersion: null,
     downloadBytes: isBinary ? null : 1_624_555_275,
     ...over,
   };
@@ -302,6 +303,13 @@ describe("the two lifecycles", () => {
     }
     expect(document.body.textContent).not.toContain("Models selected by OneCopy");
     expect(invokeCalls).toEqual([]);
+  });
+
+  it("names the runtime with the upstream release the core pins", () => {
+    seed(managedToolsFixture("windows").map((entry) =>
+      entry.id === "onnxruntime-win-x64" ? { ...entry, upstreamVersion: "9.8.7" } : entry));
+    render(<ManagedTools />);
+    expect(document.body.textContent).toContain("Face-scoring runtime (ONNX Runtime 9.8.7)");
   });
 
   it.each(["macos", "windows"] as const)("shows installed and available ffmpeg identities together on %s", (platform) => {

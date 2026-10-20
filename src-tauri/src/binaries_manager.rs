@@ -132,6 +132,10 @@ pub struct DependencySpec {
 
 pub struct PinnedArtifact {
     pub url: &'static str,
+    /// The upstream's own release number, for an upstream that numbers its
+    /// releases; the interface names it beside the tool. None for an artifact
+    /// pinned by commit, whose age `released` already says.
+    pub upstream_version: Option<&'static str>,
     /// Digest and exact size of the downloaded object.
     pub sha256: &'static str,
     pub bytes: u64,
@@ -154,6 +158,15 @@ pub struct ExtractedArtifact {
     pub bytes: u64,
 }
 
+// The pinned ONNX Runtime release, written once: the download URL and the
+// English label are built from it, and the interface reads it from
+// `upstream_version`.
+macro_rules! onnxruntime_version {
+    () => {
+        "1.28.0"
+    };
+}
+
 /// The registry. Order is display order in Managed tools. Adding an entry
 /// here is the WHOLE registration — facts, status, download, and the UI row
 /// all derive from it.
@@ -169,7 +182,7 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
     },
     DependencySpec {
         id: "onnxruntime-win-x64",
-        label: "Face-scoring runtime (ONNX Runtime 1.28)",
+        label: concat!("Face-scoring runtime (ONNX Runtime ", onnxruntime_version!(), ")"),
         kind: DependencyKind::Runtime,
         required_for_core: false,
         file_name: "onnxruntime.dll",
@@ -178,7 +191,11 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
             // Official Microsoft NuGet package. Pin both the package and the
             // exact x64 CPU runtime extracted from it so System32 and PATH can
             // never choose a different ONNX Runtime build.
-            url: "https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime/1.28.0",
+            url: concat!(
+                "https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime/",
+                onnxruntime_version!()
+            ),
+            upstream_version: Some(onnxruntime_version!()),
             sha256: "769d1d3ea8ab6cd69f737c9dd4d4462aa4ad0ccfa106eaf506efc40d7bead5db",
             bytes: 139_145_017,
             extracted: Some(ExtractedArtifact {
@@ -200,6 +217,7 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
             // Canonical whisper.cpp model repository, fixed to the verified
             // commit that added this file; sha256 matches its Xet metadata.
             url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/98aa99a0a9db05ae2342309f5096248665f7cba3/ggml-large-v3-turbo.bin",
+            upstream_version: None,
             sha256: "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
             bytes: 1_624_555_275,
             extracted: None,
@@ -221,6 +239,7 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
             // input resolution, so a face that is small in the frame — the
             // common case in family photos — is still found.
             url: "https://media.githubusercontent.com/media/onnx/models/4c46cd00fbdb7cd30b6c1c17ab54f2e1f4f7b177/validated/vision/body_analysis/ultraface/models/version-RFB-640.onnx",
+            upstream_version: None,
             sha256: "8f4c659275977e7a3bfbfa339a9c769ad793df50f9c0baa8c14b11baa1646430",
             bytes: 1_588_012,
             extracted: None,
@@ -243,6 +262,7 @@ pub const DEPENDENCIES: &[DependencySpec] = &[
             // on 2016-era FER data and is five years older. Face scoring needs
             // BOTH this and the detector — either alone stays inert.
             url: "https://raw.githubusercontent.com/sb-ai-lab/EmotiEffLib/af833487321c3efdcb1768a91a6c656a1986fdf6/models/affectnet_emotions/onnx/enet_b2_8.onnx",
+            upstream_version: None,
             sha256: "180a9d4845b59393de4511598a0d1d34b705034691ea32959ce5009db7cf52b7",
             bytes: 30_779_724,
             extracted: None,
@@ -1060,6 +1080,8 @@ pub struct DependencyState {
     /// A pinned artifact's upstream publication date — how old this model
     /// actually is. None for binaries, whose live version is the answer.
     pub released: Option<String>,
+    /// The pinned artifact's upstream release number, where it has one.
+    pub upstream_version: Option<String>,
     /// Pinned transfer size, not the extracted runtime's installed size.
     /// Live-resolved binaries remain unknown until acquisition resolves them.
     pub download_bytes: Option<u64>,
@@ -1113,6 +1135,11 @@ pub fn state_of(root: &Path, spec: &DependencySpec) -> DependencyState {
         required_for_core: spec.required_for_core,
         checkable: matches!(spec.kind, DependencyKind::Binary),
         released: spec.pinned.as_ref().map(|p| p.released.to_string()),
+        upstream_version: spec
+            .pinned
+            .as_ref()
+            .and_then(|p| p.upstream_version)
+            .map(str::to_string),
         download_bytes: spec.pinned.as_ref().map(|p| p.bytes),
     }
 }

@@ -158,7 +158,7 @@ let pendingStateReportFailure = false;
 // cleared merely because a write attempt started; only a SUCCESSFUL write
 // advances a key's entry, so two failed writes in a row for the same key both
 // roll back to the same last-good value instead of the first failure's
-// now-stale optimistic snapshot (D-S15).
+// now-stale optimistic snapshot.
 const ABSENT = Symbol("state key had no confirmed value");
 let confirmedState: Record<string, unknown> = {};
 // Values can return to an earlier value while a write is pending. Track each

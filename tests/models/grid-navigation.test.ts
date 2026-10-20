@@ -11,7 +11,7 @@ const base = {
 };
 
 describe("grid keyboard navigation", () => {
-  it("pages by the rows the measured row height fits in the viewport (R7-12)", () => {
+  it("pages by the rows the measured row height fits in the viewport", () => {
     expect(pageRows(600, 150)).toBe(4);
     expect(gridNavigationTarget({ ...base, key: "PageDown" })).toBe(10 + 4 * 4);
     // A larger zoom makes rows taller, so a page moves fewer rows.

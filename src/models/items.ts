@@ -152,7 +152,7 @@ export function identityFromKey(key: string): SectionIdentity {
  * known. Anchor recovery compares a selected survivor's *former* position
  * against the vanished anchor's former position, both in the same
  * before-the-refresh coordinate space; the backend's own current-window
- * indices shift under removal and cannot substitute for it (R5.1 D5). */
+ * indices shift under removal and cannot substitute for it. */
 export function positionedIdentityFromKey(
   key: string,
   positions: ReadonlyMap<string, number>,

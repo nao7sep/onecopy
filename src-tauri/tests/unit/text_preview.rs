@@ -91,7 +91,7 @@ fn whole_file_cap_returns_attributes_without_reading_a_prefix() {
     ));
 }
 
-// (C-L2) The read itself is bounded, not just the pre-check: a boundary-fit
+// The read itself is bounded, not just the pre-check: a boundary-fit
 // file still decodes, and an unclamped setting can no longer overflow the
 // `max_bytes + 1` read bound.
 #[test]

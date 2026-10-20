@@ -68,7 +68,7 @@ describe("what the status bar shows", () => {
   });
 
   it("is NEVER blank", () => {
-    // The whole finding: the bar rendered scan progress and nothing else, so
+    // The whole point: the bar rendered scan progress and nothing else, so
     // it stood empty except during a scan and looked broken.
     const cases = [
       IDLE,

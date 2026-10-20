@@ -1,5 +1,5 @@
 /// <reference types="vite/client" />
 
-// Injected by vite.config.ts / vitest.config.ts from src-tauri/tauri.conf.json
-// (the canonical version source; see tests/version.test.ts).
+// The app version, injected by the Vite and Vitest configs from the Tauri
+// config, which is its single source.
 declare const __APP_VERSION__: string;

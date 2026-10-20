@@ -197,7 +197,7 @@ fn run_listener(
                 // so a read here could return WouldBlock before the client's
                 // 8 bytes arrive and silently drop the activation. Put the
                 // accepted stream into blocking mode with its own bounded
-                // read timeout instead (W-L5).
+                // read timeout instead.
                 let _ = stream.set_nonblocking(false);
                 let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
                 let mut request = [0u8; 8];

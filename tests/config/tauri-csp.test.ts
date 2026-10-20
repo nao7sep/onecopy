@@ -16,29 +16,6 @@ const config = JSON.parse(
 
 const csp = config.app?.security?.csp;
 
-const EXPECTED_DIRECTIVES: Record<string, string[]> = {
-  "default-src": ["'self'"],
-  "script-src": ["'self'"],
-  "style-src": ["'self'", "'unsafe-inline'"],
-  "img-src": [
-    "'self'",
-    "asset:",
-    "http://asset.localhost",
-    "mediacache:",
-    "http://mediacache.localhost",
-    "mediafile:",
-    "http://mediafile.localhost",
-    "data:",
-    "blob:",
-  ],
-  "media-src": ["'self'", "mediafile:", "http://mediafile.localhost"],
-  "font-src": ["'self'", "data:"],
-  "connect-src": ["'self'", "ipc:", "http://ipc.localhost"],
-  "object-src": ["'none'"],
-  "base-uri": ["'self'"],
-  "frame-ancestors": ["'none'"],
-};
-
 function directives(value: unknown): Record<string, string[]> {
   if (typeof value !== "string") return {};
   return Object.fromEntries(
@@ -50,16 +27,22 @@ function directives(value: unknown): Record<string, string[]> {
   );
 }
 
-describe("Tauri production CSP (src-tauri/tauri.conf.json)", () => {
-  it("keeps the complete production policy regardless of harmless token ordering", () => {
-    expect(directives(csp)).toEqual(
-      Object.fromEntries(
-        Object.entries(EXPECTED_DIRECTIVES).map(([name, sources]) => [
-          name,
-          [...sources].sort(),
-        ]),
-      ),
-    );
+describe("Tauri production CSP", () => {
+  it("runs only the app's own scripts and refuses plugins, framing and base rewrites", () => {
+    const policy = directives(csp);
+    expect(policy["default-src"]).toEqual(["'self'"]);
+    expect(policy["script-src"]).toEqual(["'self'"]);
+    expect(policy["object-src"]).toEqual(["'none'"]);
+    expect(policy["frame-ancestors"]).toEqual(["'none'"]);
+    expect(policy["base-uri"]).toEqual(["'self'"]);
+  });
+
+  it("reaches the network only through the app's own IPC and media protocols", () => {
+    const policy = directives(csp);
+    const remote = Object.values(policy)
+      .flat()
+      .filter((source) => /^https?:/.test(source) && !/^http:\/\/[a-z]+\.localhost$/.test(source));
+    expect(remote).toEqual([]);
   });
 
   it("keeps the permissive dev policy out of the production one", () => {

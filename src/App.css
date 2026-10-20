@@ -72,7 +72,7 @@ body.row-resizing * {
    sets from the saved choice before each window is shown and again on Save, so
    the stylesheet — not page script — decides the palette from the first frame
    (app-chrome conventions, Theme). Every pair a component draws keeps high
-   contrast in both themes (tests/styles/palette.test.ts). */
+   contrast in both themes. */
 :root {
   color-scheme: light;
 
@@ -98,7 +98,7 @@ body.row-resizing * {
      user operates (fields, bordered buttons) and on a modal's band lines,
      which modal-dialog-conventions draw in the control-edge colour. The
      control edge sits between two slate steps, so it is spelled in slate's
-     own hue. tests/styles/palette.test.ts records the ranges. */
+     own hue. The palette test holds the tokens to these ranges. */
   --border-subtle: var(--color-slate-200);
   --border: var(--color-slate-300);
   --control-edge: oklch(75% 0.034 255.5);

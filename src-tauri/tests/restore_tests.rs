@@ -1,5 +1,4 @@
-// Restore from Deleted files, through
-// the crate's public API. Numbers in comments are the blueprint's edge cases.
+// Restore from Deleted files, through the crate's public API.
 
 use onecopy_lib::file_names::{FolderNames, RenameStyle};
 use onecopy_lib::restore::*;
@@ -93,12 +92,12 @@ fn target_of(plan: &RestorePlan, id: &str) -> String {
 fn a_clean_selection_goes_home_without_a_review() {
     let plan = plan(&[candidate(entry("d/a.jpg", "trips/a.jpg"))], &[]);
     assert_eq!(target_of(&plan, "d/a.jpg"), "/r/trips/a.jpg");
-    assert!(!review_of(&plan, Path::new("/r"), &[]).needed(), "D5: nothing to decide");
+    assert!(!review_of(&plan, Path::new("/r"), &[]).needed(), "nothing to decide");
 }
 
 #[test]
 fn missing_folders_are_recreated_and_named_in_the_review() {
-    // 1, 2: a missing or renamed folder is recreated under its old name.
+    // A missing or renamed folder is recreated under its old name.
     let mut missing = candidate(entry("d/a.jpg", "gone/deeper/a.jpg"));
     missing.missing_folders = vec![PathBuf::from("/r/gone"), PathBuf::from("/r/gone/deeper")];
     let plan = plan(&[missing], &[]);
@@ -110,10 +109,10 @@ fn missing_folders_are_recreated_and_named_in_the_review() {
 
 #[test]
 fn identical_bytes_are_already_there_and_different_ones_are_renamed() {
-    // 13, 19: the same bytes at the original path are left alone.
+    // The same bytes at the original path are left alone.
     let plan_same = plan(&[with_state(candidate(entry("d/a.jpg", "a.jpg")), TargetState::Identical)], &[]);
     assert_eq!(target_of(&plan_same, "d/a.jpg"), "skip:AlreadyThere");
-    // 14, 15, 19: different content, or a folder, takes the Rename suffix.
+    // Different content, or a folder, takes the Rename suffix.
     let plan_other = plan(
         &[with_state(candidate(entry("d/a.jpg", "a.jpg")), TargetState::Occupied)],
         &["/r/a 2.jpg"],
@@ -125,7 +124,7 @@ fn identical_bytes_are_already_there_and_different_ones_are_renamed() {
 
 #[test]
 fn a_family_shares_one_suffix_so_its_companions_still_pair() {
-    // 23: the main is renamed, so its companion in the same folder takes the
+    // The main is renamed, so its companion in the same folder takes the
     // same suffix even though the companion's own name was free.
     let main = in_family(entry("d/x.jpg", "a/x.jpg"), "item:op:x", TrashRole::Main);
     let sidecar = in_family(entry("d/x.xmp", "a/x.xmp"), "item:op:x", TrashRole::Companion);
@@ -141,7 +140,7 @@ fn a_family_shares_one_suffix_so_its_companions_still_pair() {
 
 #[test]
 fn copies_in_other_folders_keep_their_own_names() {
-    // 20: a whole group returns to its own paths; only the folder with a
+    // A whole group returns to its own paths; only the folder with a
     // conflict renames.
     let one = in_family(entry("d/x.jpg", "a/x.jpg"), "item:op:x", TrashRole::Main);
     let two = in_family(entry("d/x-2.jpg", "b/x.jpg"), "item:op:x", TrashRole::Main);
@@ -152,7 +151,6 @@ fn copies_in_other_folders_keep_their_own_names() {
 
 #[test]
 fn the_newest_of_several_versions_takes_the_original_name() {
-    // 17, 18, D9.
     let mut old = entry("20260901-utc/a.jpg", "a.jpg");
     old.deleted_at_utc = "2026-09-01T10:00:00.000Z".to_string();
     old.group = "item:op1:a".to_string();
@@ -167,7 +165,7 @@ fn the_newest_of_several_versions_takes_the_original_name() {
 
 #[test]
 fn names_that_the_folder_treats_as_one_are_planned_as_one() {
-    // 49, 50: case and Unicode normalization fold together on macOS-style
+    // Case and Unicode normalization fold together on macOS-style
     // volumes, so the second selected file is renamed rather than failing.
     let mut first = entry("d/IMG.jpg", "IMG.jpg");
     first.group = "item:op:1".to_string();
@@ -201,7 +199,6 @@ fn names_that_the_folder_treats_as_one_are_planned_as_one() {
 
 #[test]
 fn unrestorable_entries_are_skipped_with_their_reason() {
-    // 30, 32, 51, 65, 3, 4, 12.
     let mut cases = Vec::new();
     for (id, status) in [
         ("d/changed.jpg", EntryStatus::Changed),
@@ -239,7 +236,7 @@ fn unrestorable_entries_are_skipped_with_their_reason() {
 
 #[test]
 fn a_main_without_its_companion_notes_the_companion_stays() {
-    // 21, 22, 24: either half restores alone to its own original name.
+    // Either half restores alone to its own original name.
     let main = in_family(entry("d/x.jpg", "a/x.jpg"), "item:op:x", TrashRole::Main);
     let sidecar = in_family(entry("d/x.xmp", "a/x.xmp"), "item:op:x", TrashRole::Companion);
     let main_only = plan(&[candidate(main.clone())], &[]);
@@ -253,7 +250,7 @@ fn a_main_without_its_companion_notes_the_companion_stays() {
 
 #[test]
 fn a_displaced_destination_file_comes_back_renamed_beside_its_replacement() {
-    // 27, D12: never swapped back.
+    // The displaced file is never swapped back.
     let mut displaced = entry("d/x.jpg", "out/x.jpg");
     displaced.kind = Some(TrashKind::OverwriteDisplaced);
     displaced.item = None;
@@ -263,7 +260,7 @@ fn a_displaced_destination_file_comes_back_renamed_beside_its_replacement() {
 
 #[test]
 fn the_token_changes_with_any_target_or_observation() {
-    // 16: a path occupied since the review changes the plan and its token.
+    // A path occupied since the review changes the plan and its token.
     let root = Path::new("/r");
     let free = plan(&[candidate(entry("d/a.jpg", "a.jpg"))], &[]);
     let taken = plan(&[with_state(candidate(entry("d/a.jpg", "a.jpg")), TargetState::Occupied)], &[]);
@@ -470,7 +467,7 @@ fn an_occupied_path_is_never_replaced() {
 
 #[test]
 fn identical_bytes_stay_in_deleted_files_as_already_there() {
-    // 13, 64: zero bytes too.
+    // Zero-byte files count too.
     let f = fixture("identical", false);
     let same = f.deleted("same.jpg", b"same", "i1", TrashRole::Main);
     std::fs::write(f.root.join("same.jpg"), b"same").unwrap();
@@ -486,7 +483,7 @@ fn identical_bytes_stay_in_deleted_files_as_already_there() {
 
 #[test]
 fn a_zero_byte_file_restores_beside_a_different_empty_folder() {
-    // 64 with 15: a folder at the path is not the same bytes.
+    // A folder at the path is not the same bytes.
     let f = fixture("zero-byte", false);
     let id = f.deleted("empty.txt", b"", "i1", TrashRole::Main);
     std::fs::create_dir(f.root.join("empty.txt")).unwrap();
@@ -496,7 +493,6 @@ fn a_zero_byte_file_restores_beside_a_different_empty_folder() {
 
 #[test]
 fn a_family_comes_back_under_one_suffix() {
-    // 20, 23 end to end.
     let f = fixture("family", false);
     let main = f.deleted("a/x.jpg", b"image", "item", TrashRole::Main);
     let sidecar = f.deleted("a/x.xmp", b"sidecar", "item", TrashRole::Companion);
@@ -512,7 +508,7 @@ fn a_family_comes_back_under_one_suffix() {
 #[cfg(unix)]
 #[test]
 fn a_companion_restored_after_its_main_came_back_renamed_says_it_will_not_pair() {
-    // 24: the companion returns under its own original name, and the review
+    // The companion returns under its own original name, and the review
     // says so, naming where its main file is.
     let f = fixture("companion-after-main", false);
     let main = f.deleted("trip/IMG.jpg", b"main", "i1", TrashRole::Main);
@@ -547,7 +543,6 @@ fn a_companion_restored_after_its_main_came_back_unchanged_needs_no_review() {
 #[cfg(unix)]
 #[test]
 fn a_folder_that_became_a_link_is_refused_and_never_followed() {
-    // 3.
     let f = fixture("link", false);
     let id = f.deleted("album/a.jpg", b"a", "i1", TrashRole::Main);
     let elsewhere = f.dir.path().join("elsewhere");
@@ -563,7 +558,7 @@ fn a_folder_that_became_a_link_is_refused_and_never_followed() {
 windows_test! {
     "Windows only: junctions",
     fn a_folder_that_became_a_junction_is_refused_and_never_followed() {
-        // 3, with the link Windows makes without privilege.
+        // The link Windows makes without privilege.
         let f = fixture("junction", false);
         let id = f.deleted("album/a.jpg", b"a", "i1", TrashRole::Main);
         let elsewhere = f.dir.path().join("elsewhere");
@@ -585,7 +580,6 @@ windows_test! {
 
 #[test]
 fn a_file_in_the_way_of_a_folder_fails_that_file_only() {
-    // 4.
     let f = fixture("file-in-way", false);
     let blocked = f.deleted("album/a.jpg", b"a", "i1", TrashRole::Main);
     let fine = f.deleted("b.jpg", b"b", "i2", TrashRole::Main);
@@ -598,7 +592,7 @@ fn a_file_in_the_way_of_a_folder_fails_that_file_only() {
 
 #[test]
 fn a_different_drive_at_the_original_path_fails_that_file() {
-    // 12, 53: never a cross-volume copy (the volume answer is the seam).
+    // Never a cross-volume copy (the volume answer is the seam).
     let f = fixture("other-drive", false);
     let id = f.deleted("mounted/a.jpg", b"a", "i1", TrashRole::Main);
     let mount = f.root.join("mounted");
@@ -617,7 +611,6 @@ fn a_different_drive_at_the_original_path_fails_that_file() {
 
 #[test]
 fn a_stored_file_changed_after_the_review_is_refused() {
-    // 30 at execution time.
     let f = fixture("changed-late", false);
     let id = f.deleted("a.jpg", b"original", "i1", TrashRole::Main);
     let (plan, _, _) = f.plan(std::slice::from_ref(&id));
@@ -631,7 +624,6 @@ fn a_stored_file_changed_after_the_review_is_refused() {
 
 #[test]
 fn a_path_occupied_after_the_review_fails_that_file_and_is_never_renamed_silently() {
-    // 16 during execution.
     let f = fixture("occupied-late", false);
     let id = f.deleted("a.jpg", b"deleted", "i1", TrashRole::Main);
     let (plan, _, token) = f.plan(std::slice::from_ref(&id));
@@ -648,7 +640,7 @@ fn a_path_occupied_after_the_review_fails_that_file_and_is_never_renamed_silentl
 
 #[test]
 fn a_stored_file_taken_by_someone_else_fails_as_missing() {
-    // 47, 48: another process or the user moved it first.
+    // Another process or the user moved it first.
     let f = fixture("taken", false);
     let id = f.deleted("a.jpg", b"a", "i1", TrashRole::Main);
     let (plan, _, _) = f.plan(std::slice::from_ref(&id));
@@ -660,7 +652,6 @@ fn a_stored_file_taken_by_someone_else_fails_as_missing() {
 
 #[test]
 fn an_id_no_longer_listed_is_skipped_as_missing() {
-    // 29.
     let f = fixture("gone", false);
     let (plan, review, _) = f.plan(&["20260101-utc/nothing.jpg".to_string()]);
     assert_eq!(review.files[0].skip, Some(Skip::Missing));
@@ -671,7 +662,7 @@ fn an_id_no_longer_listed_is_skipped_as_missing() {
 #[cfg(unix)]
 #[test]
 fn a_folder_that_refuses_writes_fails_its_file_and_others_continue() {
-    // 55: permission denied on one target folder.
+    // Permission denied on one target folder.
     use std::os::unix::fs::PermissionsExt;
     let f = fixture("read-only-folder", false);
     let locked = f.deleted("locked/a.jpg", b"a", "i1", TrashRole::Main);
@@ -686,7 +677,6 @@ fn a_folder_that_refuses_writes_fails_its_file_and_others_continue() {
 
 #[test]
 fn cancel_between_files_leaves_an_exact_partial_result() {
-    // 57, 58.
     let f = fixture("cancel", false);
     let ids: Vec<String> = (0..4)
         .map(|n| f.deleted(&format!("f{n}.jpg"), b"x", &format!("i{n}"), TrashRole::Main))
@@ -710,7 +700,7 @@ fn cancel_between_files_leaves_an_exact_partial_result() {
 
 #[test]
 fn cancelling_while_planning_does_no_filesystem_work() {
-    // 58: nothing observed, nothing moved.
+    // Nothing observed, nothing moved.
     let f = fixture("cancel-planning", false);
     let id = f.deleted("a.jpg", b"a", "i1", TrashRole::Main);
     let listing = list_root(&f.root, &f.data).unwrap();
@@ -721,7 +711,7 @@ fn cancelling_while_planning_does_no_filesystem_work() {
 
 #[test]
 fn a_restored_line_never_breaks_emptying() {
-    // 44: Empty measured before a restore removes nothing afterwards.
+    // Empty measured before a restore removes nothing afterwards.
     let f = fixture("empty-after", false);
     let a = f.deleted("a.jpg", b"a", "i1", TrashRole::Main);
     f.deleted("b.jpg", b"b", "i2", TrashRole::Main);
@@ -751,7 +741,7 @@ fn rows(f: &Fixture, name: &str) -> i64 {
 
 #[test]
 fn a_restored_source_file_is_indexed_without_the_watcher() {
-    // 2.3: the restore re-reads the folder itself.
+    // The restore re-reads the folder itself.
     let f = fixture("index", true);
     let id = f.deleted("trip/a.jpg", b"image-bytes", "i1", TrashRole::Main);
     assert_eq!(rows(&f, "a.jpg"), 0);
@@ -761,7 +751,6 @@ fn a_restored_source_file_is_indexed_without_the_watcher() {
 
 #[test]
 fn a_restored_companion_pairs_again_by_the_ordinary_rule() {
-    // 25, 22.
     let f = fixture("pair", true);
     std::fs::create_dir_all(f.root.join("trip")).unwrap();
     std::fs::write(f.root.join("trip/x.jpg"), b"image").unwrap();
@@ -781,7 +770,7 @@ fn a_restored_companion_pairs_again_by_the_ordinary_rule() {
 
 #[test]
 fn identical_content_elsewhere_becomes_a_copy_of_that_item_again() {
-    // 62, D10: no warning; hashing merges them.
+    // No warning; hashing merges them.
     let f = fixture("duplicate", true);
     std::fs::create_dir_all(f.root.join("keep")).unwrap();
     std::fs::write(f.root.join("keep/x.jpg"), b"same-bytes").unwrap();
@@ -804,7 +793,7 @@ fn identical_content_elsewhere_becomes_a_copy_of_that_item_again() {
 
 #[test]
 fn a_destination_restore_adds_no_row() {
-    // 2.3, 28: destinations are not indexed.
+    // Destinations are not indexed.
     let f = fixture("destination", false);
     let id = f.deleted("out/x.jpg", b"x", "i1", TrashRole::Main);
     f.restore(&[id]);
@@ -826,7 +815,7 @@ fn restore_with_rename_given_up_on(label: &str, land: bool) {
     let (plan, _, _) = f.plan(&[first, second]);
     let volume = FakeStallingVolume::mount(&f.root, STALL_BOUND);
     volume.stall(&[Op::Rename], None);
-    // 59: quitting has already asked to cancel; the rename in progress is
+    // Quitting has already asked to cancel; the rename in progress is
     // allowed its bound, never interrupted, and nothing after it starts.
     let outcome = execute(
         &f.conn,
@@ -877,7 +866,7 @@ fn a_restore_rename_given_up_on_that_fails_later_is_still_in_deleted_files() {
 
 #[test]
 fn a_drive_that_stops_answering_before_the_move_says_the_file_is_still_in_deleted_files() {
-    // 6: the stop is the drive's, not the file's: the Issue must not claim
+    // The stop is the drive's, not the file's: the Issue must not claim
     // the file left Deleted files or that something blocks its folder.
     use onecopy_lib::volume_io::{FakeStallingVolume, Op};
     let f = fixture("stat-given-up", false);
@@ -900,7 +889,7 @@ fn a_drive_that_stops_answering_before_the_move_says_the_file_is_still_in_delete
 
 #[test]
 fn only_a_configured_root_can_be_restored_into() {
-    // 5, 8: the location must be one the settings name now.
+    // The location must be one the settings name now.
     let roots = [PathBuf::from("/Volumes/A/Photos")];
     assert!(onecopy_lib::trash::owning_root_of(&roots, Path::new("/Volumes/A/Photos/.onecopy-trash")).is_ok());
     assert!(onecopy_lib::trash::owning_root_of(&roots, Path::new("/Volumes/B/.onecopy-trash")).is_err());
@@ -908,7 +897,7 @@ fn only_a_configured_root_can_be_restored_into() {
 
 #[test]
 fn a_hidden_name_restores_as_an_ordinary_file() {
-    // 63: visibility is decided by the library afterwards, not by Restore.
+    // Visibility is decided by the library afterwards, not by Restore.
     let f = fixture("hidden", true);
     let id = f.deleted(".secret.jpg", b"s", "i1", TrashRole::Main);
     let outcome = f.restore(&[id]);
@@ -918,7 +907,7 @@ fn a_hidden_name_restores_as_an_ordinary_file() {
 
 #[test]
 fn ten_thousand_files_plan_quickly() {
-    // 61: planning is linear in the selection.
+    // Planning is linear in the selection.
     let candidates: Vec<Candidate> = (0..10_000)
         .map(|n| candidate(entry(&format!("d/f{n}.jpg"), &format!("album{}/f{n}.jpg", n % 50))))
         .collect();

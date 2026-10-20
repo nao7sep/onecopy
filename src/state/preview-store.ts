@@ -230,9 +230,9 @@ export async function restorePreviewAfterComparison(current: () => boolean = () 
 }
 
 /** Reveals the preview window above Main and gives it focus, like Quick Look
- * (developer decision; window-conventions). The window forwards the selection
- * keys to Main (`preview://key`), which changes the selection it follows, and
- * closing it returns focus to Main (`close_preview_window`). */
+ * does. The window forwards the selection keys to Main (`preview://key`),
+ * which changes the selection it follows, and closing it returns focus to Main
+ * (`close_preview_window`). */
 async function frontPreviewWindow(current: () => boolean = () => true): Promise<void> {
   const existing = await WebviewWindow.getByLabel("preview");
   if (!current()) return;

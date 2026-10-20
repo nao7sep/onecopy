@@ -48,7 +48,7 @@ try {
 
     $builtAt = (Get-Item $exePath).LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss")
     & node $runtimeHelper claim $runtimeToken
-    & node $runtimeHelper stop tauri "OneCopy" "onecopy"
+    & node $runtimeHelper stop "OneCopy" "onecopy"
     if ($LASTEXITCODE -ne 0) { throw "Could not replace the existing OneCopy runtime." }
     Write-Step "Launching the existing built app (built: $builtAt)"
     Write-Host "If you changed source since then, run rebuild instead."

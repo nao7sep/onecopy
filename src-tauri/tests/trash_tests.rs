@@ -969,7 +969,7 @@ fn malformed_and_torn_lines_are_skipped_and_counted_without_rewriting() {
 
 #[test]
 fn a_line_appended_after_a_torn_one_starts_a_line_of_its_own() {
-    // 37: a crash (or a write given up on) tore the last line; the records
+    // A crash (or a write given up on) tore the last line; the records
     // and restored lines written after it are not lost to it.
     let f = fixture("torn-then-append");
     let first = f.source.join("one.jpg");

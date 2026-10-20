@@ -1,4 +1,4 @@
-// The generalized managed-dependency registry (Phase 28's foundation).
+// The generalized managed-dependency registry.
 //
 // The contract that matters: N entries share one facts file WITHOUT sharing
 // fate — one entry's install, check, or corruption can never touch another's
@@ -25,14 +25,9 @@ fn home(label: &str) -> tempfile::TempDir {
 #[test]
 fn model_details_and_transfer_sizes_come_from_the_selected_artifacts() {
     let dir = home("display-facts");
-    for (id, identity) in [
-        ("whisper-large-v3-turbo", "Whisper large-v3-turbo"),
-        ("ultraface-rfb640", "UltraFace RFB-640"),
-        ("hsemotion-enet-b2", "HSEmotion EfficientNet-B2"),
-    ] {
-        let spec = spec_of(id).unwrap();
+    for spec in DEPENDENCIES.iter().filter(|spec| spec.kind == DependencyKind::Model) {
         let state = state_of(dir.path(), spec);
-        assert!(state.label.contains(identity));
+        assert_eq!(state.label, spec.label);
         assert_eq!(state.kind, DependencyKind::Model);
         assert_eq!(state.download_bytes, Some(spec.pinned.as_ref().unwrap().bytes));
     }
@@ -43,26 +38,18 @@ fn model_details_and_transfer_sizes_come_from_the_selected_artifacts() {
     let pin = runtime.pinned.as_ref().unwrap();
     assert_eq!(state.kind, DependencyKind::Runtime);
     assert_eq!(state.download_bytes, Some(pin.bytes));
+    assert_eq!(state.upstream_version.as_deref(), pin.upstream_version);
     assert_ne!(state.download_bytes, Some(pin.extracted.as_ref().unwrap().bytes));
     assert_eq!(state_of(dir.path(), spec_of("ffmpeg").unwrap()).download_bytes, None);
 }
 
 #[test]
 fn the_registry_carries_ffmpeg_and_the_whisper_model() {
-    // Display order is registry order; adding an entry is the whole
-    // registration, so this doubles as the "declare it deliberately" pin the
-    // schema test uses for tables.
-    let ids: Vec<&str> = DEPENDENCIES.iter().map(|d| d.id).collect();
-    assert_eq!(
-        ids,
-        [
-            "ffmpeg",
-            "onnxruntime-win-x64",
-            "whisper-large-v3-turbo",
-            "ultraface-rfb640",
-            "hsemotion-enet-b2",
-        ]
-    );
+    // Each id keys its own facts and installed file, so no two entries share one.
+    let mut ids: Vec<&str> = DEPENDENCIES.iter().map(|d| d.id).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), DEPENDENCIES.len());
     assert!(spec_of("ffmpeg").unwrap().required_for_core);
     for model in DEPENDENCIES
         .iter()
@@ -86,8 +73,8 @@ fn the_registry_carries_ffmpeg_and_the_whisper_model() {
         assert_eq!(runtime.kind, DependencyKind::Runtime);
         let pin = runtime.pinned.as_ref().expect("runtime carries a pin");
         let extracted = pin.extracted.as_ref().expect("runtime is extracted from NuGet");
-        assert_eq!(extracted.archive_entry, "runtimes/win-x64/native/onnxruntime.dll");
-        assert_eq!(extracted.bytes, 15_809_848);
+        assert!(extracted.archive_entry.ends_with(&format!("/{}", runtime.file_name)));
+        assert!(extracted.bytes < pin.bytes, "the DLL is one file inside the package");
         assert_eq!(extracted.sha256.len(), 64);
     }
 

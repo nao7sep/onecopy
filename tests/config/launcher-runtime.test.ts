@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { claimRuntime, isRuntimeOwner, ownsProcess, releaseRuntime, REPO_ROOT } from "../../scripts/launcher-runtime.mjs";
 
 describe("launcher process identity", () => {
-  const identity = { kind: "tauri", label: "OneCopy", executable: "onecopy" };
+  const identity = { label: "OneCopy", executable: "onecopy" };
 
   it("owns only this repository's OneCopy runtime", () => {
     expect(ownsProcess({

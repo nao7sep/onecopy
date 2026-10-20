@@ -893,7 +893,7 @@ async fn ensure_preview(
 ) -> Result<derived_work::EnsurePreviewResult, String> {
     dispatch(move || {
         // Registered so exit joins this ffmpeg-capable work instead of
-        // orphaning it (W-L1) — see derived_work::RequestedMediaGuard.
+        // orphaning it — see derived_work::RequestedMediaGuard.
         let _requested_media = derived_work::RequestedMediaGuard::begin();
         logging::boundary(
             "ensure_preview",
@@ -922,7 +922,7 @@ async fn ensure_preview(
 async fn ensure_fullres(app: AppHandle, hash: String) -> Result<(), String> {
     dispatch(move || {
         // See ensure_preview: registers this ffmpeg-capable work so exit
-        // joins it instead of orphaning the process (W-L1).
+        // joins it instead of orphaning the process.
         let _requested_media = derived_work::RequestedMediaGuard::begin();
         logging::boundary(
             "ensure_fullres",
@@ -1647,7 +1647,7 @@ pub fn run() {
             } else if let Some(surface_event) = menu::main_surface_event(event.id().as_ref()) {
                 // The native item cannot call into the webview directly; Main
                 // owns the only Settings and About surfaces, the ones its own
-                // Cmd+, and app menu open (R8-04).
+                // Cmd+, and app menu open.
                 if let Some(window) = app.get_webview_window("main") {
                     if let Err(error) = window.set_focus() {
                         logging::warn(
@@ -1659,7 +1659,7 @@ pub fn run() {
                 failure_runtime::emit_or_record(app, surface_event, json!({}));
             }
         })
-        // Asynchronous registration (W-B2, C-B1): the handler body — index
+        // Asynchronous registration: the handler body — index
         // open, the source/cache read, Range slicing — runs on the blocking
         // pool via spawn_blocking rather than inline on the main thread, so a
         // sleeping drive or a slow NAS no longer freezes every window. Range

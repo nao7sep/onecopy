@@ -40,7 +40,7 @@ windows_test! {
     }
 }
 
-// (R1-14, R3-07) The volume-substitution gate is enforced in the backend,
+// The volume-substitution gate is enforced in the backend,
 // not only through the frontend's own recheck, and a failed check keeps it
 // closed rather than reading as "nothing recorded".
 #[cfg(any(target_os = "macos", windows))]
@@ -132,8 +132,8 @@ fn enforce_no_substitution_refuses_promptly_when_a_recorded_volume_does_not_answ
 
 // A batch spanning several configured roots is not all-or-nothing: a
 // substituted root's failure names only that root, and a caller that scopes
-// the check to a different, healthy root sees no refusal at all (R3-07,
-// R1-14 — work touching an unaffected drive keeps working). The volume probe
+// the check to a different, healthy root sees no refusal at all (work touching an unaffected drive
+// keeps working). The volume probe
 // is stood in for: this is the gate's scoping, and the real probe has its own
 // tests above.
 #[test]

@@ -82,7 +82,7 @@ fn decoder_panics_record_one_failure_and_continue_in_serial_and_parallel() {
 
 #[test]
 fn startup_sweep_cannot_run_between_an_identity_promotions_commit_and_its_rename() {
-    // R2-07 follow-up (Phase 10): `scanner::promote_identity` commits the DB
+    // `scanner::promote_identity` commits the DB
     // move from a provisional hash to the real one, then renames the cache
     // files to match — two steps that cannot be one filesystem+DB
     // transaction. If the startup sweep's orphan check ran in the gap

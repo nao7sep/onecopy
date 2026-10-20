@@ -349,7 +349,7 @@ export function mockSectionItems(handler: InvokeHandler): void {
     let anchor = keyed.find((item) => item.key === requestedKey) ?? null;
     if (anchor === null && requestedKey !== null && recovery !== null) {
       // Mirrors queries::choose_reconciled_anchor: a selected survivor in
-      // either direction outranks an unselected one, however near (R5.1 D6).
+      // either direction outranks an unselected one, however near.
       const neighborKeys = [...recoverKeys(recovery.after), ...recoverKeys(recovery.before)];
       const key =
         neighborKeys.find(

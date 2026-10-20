@@ -205,7 +205,7 @@ fn upsert_and_clear_issue_report_whether_they_actually_changed_a_row() {
     assert!(index_store::upsert_issue(&conn, Some("/a.jpg"), "read-error", "first").unwrap());
     // A repeated failure of the same already-open issue only bumps its
     // occurrence count and last-seen time; that is not a change the Issues
-    // surface needs to reload for (C-M3).
+    // surface needs to reload for.
     assert!(!index_store::upsert_issue(&conn, Some("/a.jpg"), "read-error", "again").unwrap());
     assert!(!index_store::upsert_issue(&conn, Some("/a.jpg"), "read-error", "again").unwrap());
 

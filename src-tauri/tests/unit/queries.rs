@@ -547,7 +547,7 @@ fn section_order_cache_does_not_serve_a_stale_order_after_this_same_connection_w
     // `PRAGMA data_version` only advances for a *different* connection's
     // commit, so a cache keyed on it alone would miss this connection's own
     // write. Ordinary command dispatch never shares one connection across a
-    // write and a later read (Phase 3 opens a fresh connection per command),
+    // write and a later read (each command opens a fresh connection),
     // but the cache must still be correct if that ever changes.
     let (_d, conn) = seeded();
     seed_month_image(&conn, "h1", "a.jpg", utc_ms(2016, 3, 1, 0));

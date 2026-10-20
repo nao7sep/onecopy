@@ -344,7 +344,7 @@ fn finish_exit(sequence: ExitSequence, spawn: Spawn, deadline: Duration) {
 
 /// Waits up to `deadline` for the non-mutation exit joins signalled on `rx`.
 /// If the deadline passes first, kills every managed-tool subprocess still
-/// running (W-L1) and stops waiting for those joins. Returns whether the
+/// running and stops waiting for those joins. Returns whether the
 /// joins finished in time.
 fn await_other_joins_with_deadline(
     rx: mpsc::Receiver<bool>,

@@ -275,7 +275,7 @@ fn sweep_removes_orphans_and_temps_but_keeps_live_entries() {
     .unwrap();
     // A `paths` row is what makes `live01` live rather than leaked: since
     // `startup_sweep` now reconciles any `contents` row with no surviving
-    // `paths` row before it walks the cache tree (D-L2's reconciler), a bare
+    // `paths` row before it walks the cache tree, a bare
     // `contents` row with nothing pointing at it is itself an orphan.
     conn.execute(
         "INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash) \
@@ -726,7 +726,7 @@ fn webp_entries_keep_transparency() {
 // rather than running it vacuously green: the failure is staged with a chmod
 // 0o000 that Windows has no equivalent for.
 //
-// (R6-05) A full disk or unwritable cache is a lifecycle condition, not a
+// A full disk or unwritable cache is a lifecycle condition, not a
 // bad file: the pass must stop and report one reason, not record a permanent
 // per-item failure for every remaining item.
 #[cfg(unix)]

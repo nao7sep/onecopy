@@ -987,7 +987,7 @@
   "reason.previewBinary": "该文件看起来是二进制文件，而不是文本文件。",
   "reason.previewNotResponding": "存放此文件的驱动器没有响应。",
   "tool.ffmpeg": "ffmpeg",
-  "tool.onnxruntimeWinX64": "人脸评分运行时（ONNX Runtime 1.28）",
+  "tool.onnxruntimeWinX64": "人脸评分运行时（ONNX Runtime {version}）",
   "tool.whisperLargeV3Turbo": "转录模型（Whisper large-v3-turbo）",
   "tool.ultrafaceRfb640": "人脸检测器（UltraFace RFB-640）",
   "tool.hsemotionEnetB2": "表情模型（HSEmotion EfficientNet-B2）",

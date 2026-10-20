@@ -203,7 +203,7 @@ it("renderer failure cancels a question that was already presented", async () =>
   await flushConfigForShutdown();
 });
 
-// Unsaved Settings edits and an ordinary quit (developer decision): ask, and
+// Unsaved Settings edits and an ordinary quit: ask, and
 // never on the OS path.
 function editSettings(): void {
   useSettingsStore.getState().beginEditing(effectiveConfig());
@@ -302,7 +302,7 @@ it("quit waits for a Settings save in flight and does not ask about it", async (
   expect(useAppStore.getState().appData?.config.defaultTimezone).toBe("Asia/Tokyo");
 });
 
-// Running work the user started (developer decision): a file operation or a
+// Running work the user started: a file operation or a
 // managed-tool install asks before quit stops it; the OS path never asks.
 function runOperation(kind: MutationKind = "destination-copy"): void {
   useMutationStore.setState({ cancelling: false, progress: {

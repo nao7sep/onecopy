@@ -15,7 +15,7 @@ fn debug_diagnostics_do_not_create_ordinary_work_rows() {
     assert!(!visible);
 }
 
-// (W-M3) Per-item background preview traces must never become ordinary
+// Per-item background preview traces must never become ordinary
 // Activity rows — the pass that owns their chunk already records one. This
 // checks the routing `WorkTrace` itself carries; `debug_only` rows still go
 // through the same `record()` debug gate as everything else.

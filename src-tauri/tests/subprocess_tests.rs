@@ -3,7 +3,7 @@
 
 // `sleep` is not a portable command name on Windows; the process-registry
 // kill path itself is platform-independent (`std::process::Child`), so one
-// platform's coverage is enough (Phase 5's exit-join task).
+// platform's coverage is enough.
 #[cfg(unix)]
 #[test]
 fn kill_all_running_ends_a_subprocess_its_own_thread_cannot_reach() {

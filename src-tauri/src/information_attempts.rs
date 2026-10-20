@@ -25,7 +25,7 @@ impl Stage {
 
     /// The catalogue key naming this stage's sentence, so it follows the
     /// interface language; the raw read/parse error stays in `message`, as
-    /// recorded, after it (R5.5 D-L12, D-L13).
+    /// recorded, after it.
     fn message_key(self) -> &'static str {
         match self {
             Self::Identity => "notice.fileReadFailed",

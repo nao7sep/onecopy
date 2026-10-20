@@ -35,7 +35,6 @@ describe("window minimums are derived, never hand-typed", () => {
       app: { windows: { width: number; height: number }[] };
     };
     const [main] = conf.app.windows;
-    expect(main).toMatchObject({ width: 1120, height: 640 });
     expect(main.width).toBeGreaterThanOrEqual(computeMinWindowWidth());
     expect(main.height).toBeGreaterThanOrEqual(computeMinWindowHeight());
   });

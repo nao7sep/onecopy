@@ -20,7 +20,7 @@ fn not_found() -> tauri::http::Response<Vec<u8>> {
 /// contains `.` or `/` in a well-formed request, so rejecting anything but
 /// ASCII letters, digits and `-` here — before either handler builds a path
 /// from it — is what keeps a crafted key like `thumb-../x` from climbing out
-/// of its shard directory (R6-08). One boundary, checked first, for both.
+/// of its shard directory. One boundary, checked first, for both.
 fn valid_key(key: &str) -> bool {
     !key.is_empty() && key.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }

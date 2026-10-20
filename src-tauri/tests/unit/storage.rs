@@ -155,7 +155,7 @@ fn new_config_confirms_direct_trash_by_default() {
     assert!(DefaultConfig::default().confirm_trash_delete);
 }
 
-// R5.5 C3: a config patch that sets `language` updates `LanguageState::current`,
+// A config patch that sets `language` updates `LanguageState::current`,
 // and the very next appearance-preferences read must return it -- not a
 // cached or launch-time value. `with_language_fields` is exactly that
 // projection, kept apart from the `app.state::<i18n::LanguageState>()` lookup

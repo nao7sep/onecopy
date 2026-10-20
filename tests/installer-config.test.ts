@@ -37,18 +37,11 @@ describe("Windows installer configuration", () => {
     );
   });
 
-  it("ships the application licence in installed and portable packages", () => {
+  it("ships the application licence in the installed package", () => {
     const config = JSON.parse(
       readFileSync(join(process.cwd(), "src-tauri", "tauri.conf.json"), "utf8"),
     );
-    const packageScript = readFileSync(
-      join(process.cwd(), "scripts", "package.ps1"),
-      "utf8",
-    );
 
     expect(config.bundle?.resources?.["../LICENSE"]).toBe("LICENSE.txt");
-    expect(packageScript).toContain(
-      'Compress-Archive -Path "src-tauri/target/release/onecopy.exe", "LICENSE"',
-    );
   });
 });

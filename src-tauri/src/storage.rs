@@ -338,7 +338,7 @@ pub fn appearance_preferences(root: &Path) -> Result<JsonValue, String> {
 /// `app.state::<i18n::LanguageState>()` lookup so the actual contract —
 /// a language a settings save just set is what the very next read returns —
 /// is directly testable against a `LanguageState` a test constructs itself,
-/// with no `AppHandle` involved (R5.5 C3).
+/// with no `AppHandle` involved.
 pub fn with_language_fields(mut preferences: JsonValue, state: &crate::i18n::LanguageState) -> JsonValue {
     if let Some(object) = preferences.as_object_mut() {
         object.insert("language".into(), serde_json::json!(state.current()));
@@ -928,7 +928,7 @@ fn write_atomic_inner(
     // owner already knows Windows has no portable directory handle to fsync
     // (a journaled no-replace move stands in for it there) — calling it
     // directly here, rather than opening the directory by hand, is what was
-    // logging a spurious warning on every managed-text save on Windows (R1-13).
+    // logging a spurious warning on every managed-text save on Windows.
     if let Err(error) = crate::fs_publish::sync_directory(parent) {
         crate::logging::warn(
             "atomic store directory sync failed",

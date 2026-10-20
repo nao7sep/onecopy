@@ -39,7 +39,7 @@ describe("first-use Preview allocation", () => {
     expect(hostingScreen([screens[1], screens[0]], equal)).toBe(screens[1]);
   });
 
-  it("excludes nothing when Main's own display cannot be determined (D-S11)", () => {
+  it("excludes nothing when Main's own display cannot be determined", () => {
     const farAway = { x: -100_000, y: -100_000, width: 100, height: 100 };
     expect(hostingScreen(screens, farAway)).toBeNull();
     const result = allocatePreviewPlacement(screens, farAway)!;

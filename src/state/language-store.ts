@@ -9,7 +9,7 @@ import { requestSeq } from "./request-seq";
 
 // If the appearance read never completes (a slow core, or window-appearance's
 // own 5 s bound), the window must not paint in English regardless of what the
-// computer's language actually is (D-L9) — the same fallback the Rust core
+// computer's language actually is — the same fallback the Rust core
 // would have resolved, from the browser's own preferred-locale list.
 function browserSystemLanguage(): Language {
   const locales = typeof navigator === "undefined" ? [] : navigator.languages ?? [navigator.language];

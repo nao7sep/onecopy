@@ -22,7 +22,7 @@ fn valid_key_accepts_ordinary_media_keys_and_rejects_traversal() {
     assert!(valid_key("strip-3f2a9c-4"));
     assert!(valid_key("p17"));
     assert!(!valid_key(""));
-    // A crafted key climbing out of its shard directory (R6-08): `hash` here
+    // A crafted key climbing out of its shard directory: `hash` here
     // is "../x", and CachePaths shards on its first two characters, so an
     // unvalidated key would resolve to `<cache root>/thumbs/../x.webp`.
     assert!(!valid_key("thumb-../x"));

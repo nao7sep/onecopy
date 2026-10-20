@@ -18,7 +18,7 @@ fn runtime_diagnostics_are_not_user_presentation() {
 fn every_condition_message_key_exists_in_every_embedded_catalogue() {
     // These are the keys a notice or Issue's descriptor names; a typo here
     // would fall back to `t()`'s key-echo behavior instead of a sentence, in
-    // every language at once (R5.5 D-L12).
+    // every language at once.
     let kinds = [
         "sleep-prevention-failed", "derived-worker-failed", "config-save-failed",
         "state-save-failed", "source-check-failed", "watcher-failed", "watcher-root-failed",

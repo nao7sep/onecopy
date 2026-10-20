@@ -64,8 +64,7 @@ export function SubstitutedSourceGate({
   substituted: string[];
   /** True when the check that would have answered "verified" or
    * "substituted" instead failed outright. Blocks exactly like a known
-   * substitution: an unreadable check is never treated as "verified safe"
-   * (R3-07). */
+   * substitution: an unreadable check is never treated as "verified safe". */
   unknown: boolean;
   onRecheck: () => void;
   onReconfigure: () => void;

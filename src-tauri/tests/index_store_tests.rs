@@ -133,7 +133,7 @@ fn results_go_when_their_content_leaves_the_library() {
     assert_eq!(faces, (0, 0));
 }
 
-/// (R4.1 finding 3) The section a logical item lands in must follow its
+/// The section a logical item lands in must follow its
 /// representative copy's own kind, never `contents.kind` — which records
 /// only whichever copy was hashed first and has no product meaning (a
 /// backup `.bak` copy hashed before its `.jpg` twin must not push the item
@@ -254,7 +254,7 @@ fn reopening_a_current_index_does_not_publish_schema_writes() {
 
 #[test]
 fn foreign_keys_are_enforced_on_an_ordinary_open_not_only_on_an_upgrade() {
-    // R1-11: a connection that opens an already-current index (no upgrade
+    // A connection that opens an already-current index (no upgrade
     // branch runs) must still enforce foreign keys, since every command,
     // worker and watcher pass opens this way.
     let dir = tempfile::Builder::new()

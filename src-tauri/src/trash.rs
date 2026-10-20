@@ -291,7 +291,7 @@ fn prepare_trash(
     // never a symlink or anything else that would lead elsewhere.
     ensure_real_directory_if_present(&trash_root)?;
     // Hide the trash root on Windows exactly once, the moment this call is
-    // the one that creates it — never per trashed file (R1-12, R6-04).
+    // the one that creates it — never per trashed file.
     #[cfg_attr(not(windows), allow(unused_variables))]
     let trash_root_is_new = !volume_io::exists(&trash_root).map_err(|e| e.to_string())?;
     volume_io::create_dir_all(&day_dir).map_err(|e| e.to_string())?;
@@ -1495,10 +1495,9 @@ fn nearest_existing(path: &Path) -> Result<PathBuf, String> {
 fn hide_windows(trash_root: &Path) {
     // Best-effort: mark the trash root hidden (dot-prefix means nothing to
     // Explorer). This calls the Win32 attribute API directly rather than
-    // spawning `attrib`, so there is no console flash and no process start
-    // (R1-12, R6-04), in one bounded call like every other step on the root's
-    // volume; it runs at most once per trash root, when `prepare_trash`
-    // creates it.
+    // spawning `attrib`, so there is no console flash and no process start, in
+    // one bounded call like every other step on the root's volume; it runs at
+    // most once per trash root, when `prepare_trash` creates it.
     let wide: Vec<u16> = {
         use std::os::windows::ffi::OsStrExt;
         crate::winpath::for_fs(trash_root)

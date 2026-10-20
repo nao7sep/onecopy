@@ -987,7 +987,7 @@
   "reason.previewBinary": "Le fichier semble binaire plutôt que textuel.",
   "reason.previewNotResponding": "Le disque contenant ce fichier ne répond pas.",
   "tool.ffmpeg": "ffmpeg",
-  "tool.onnxruntimeWinX64": "Moteur d’exécution de la notation des visages (ONNX Runtime 1.28)",
+  "tool.onnxruntimeWinX64": "Moteur d’exécution de la notation des visages (ONNX Runtime {version})",
   "tool.whisperLargeV3Turbo": "Modèle de transcription (Whisper large-v3-turbo)",
   "tool.ultrafaceRfb640": "Détecteur de visages (UltraFace RFB-640)",
   "tool.hsemotionEnetB2": "Modèle d’expressions (HSEmotion EfficientNet-B2)",

@@ -107,7 +107,7 @@ fn facts_round_trip_through_the_store() {
     assert_eq!(load_facts_for(dir.path(), "ffmpeg"), facts);
 }
 
-// R6-09: the checksum-mismatch, missing-sums-entry and extracted-entry-
+// The checksum-mismatch, missing-sums-entry and extracted-entry-
 // mismatch refusals are pure local-file verification (`verify_checksum`,
 // `verify_pinned_artifact`), so they are exercised directly here against
 // local fixtures — no network, no fake GitHub-shaped server.
@@ -157,6 +157,7 @@ fn verify_checksum_accepts_a_matching_digest_and_refuses_a_mismatch() {
 fn pinned_artifact(sha256: &'static str, bytes: u64) -> PinnedArtifact {
     PinnedArtifact {
         url: "https://example.test/artifact",
+        upstream_version: None,
         sha256,
         bytes,
         extracted: None,

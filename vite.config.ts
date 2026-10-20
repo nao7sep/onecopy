@@ -3,17 +3,16 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
-const remoteHost = process.env.TAURI_DEV_HOST;
-const host = remoteHost ?? "127.0.0.1";
-
-// Version single source of truth is src-tauri/tauri.conf.json; injected here as
-// __APP_VERSION__ (declared in src/vite-env.d.ts). vitest.config.ts duplicates
-// this define because vitest does not read this file.
-const appVersion = (
-  JSON.parse(readFileSync("./src-tauri/tauri.conf.json", "utf8")) as {
-    version: string;
-  }
-).version;
+// The Tauri config is the single source of the app version, injected as
+// __APP_VERSION__, and of the development URL Tauri loads, which this server
+// must listen on. The Vitest config reads the version the same way because
+// Vitest does not load this file.
+const tauriConfig = JSON.parse(readFileSync("./src-tauri/tauri.conf.json", "utf8")) as {
+  version: string;
+  build: { devUrl: string };
+};
+const appVersion = tauriConfig.version;
+const devUrl = new URL(tauriConfig.build.devUrl);
 
 // https://vite.dev/config/
 export default defineConfig(() => ({
@@ -34,20 +33,13 @@ export default defineConfig(() => ({
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
-  // 2. tauri expects a fixed port, fail if that port is not available.
-  //    Fleet-unique port so it never collides with a sibling app's fixed
-  //    development endpoint.
+  // 2. Tauri loads the fixed development URL, so fail rather than move to
+  //    another port when it is taken. The port is unique across the fleet so
+  //    it never collides with a sibling app's development server.
   server: {
-    port: 28867,
+    port: Number(devUrl.port),
     strictPort: true,
-    host,
-    hmr: remoteHost
-      ? {
-          protocol: "ws",
-          host: remoteHost,
-          port: 29587,
-        }
-      : undefined,
+    host: devUrl.hostname,
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],

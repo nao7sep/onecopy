@@ -1,32 +1,46 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import viteConfig from "../../vite.config";
+
+// Tauri's `build.devUrl` is the one source of the development endpoint: the
+// Vite server and the run-dev launchers both derive it, and the development
+// CSP must admit it.
 const root = fileURLToPath(new URL("../../", import.meta.url));
-const read = (path: string): string => readFileSync(root + path, "utf8");
-const tauri = JSON.parse(read("src-tauri/tauri.conf.json")) as {
+const tauri = JSON.parse(readFileSync(`${root}src-tauri/tauri.conf.json`, "utf8")) as {
   build: { devUrl: string };
   app: { security: { devCsp: string } };
 };
+const devUrl = new URL(tauri.build.devUrl);
 
-describe("development endpoints", () => {
-  it("keeps Vite, HMR, Tauri, and both launchers on the app-owned ports", () => {
-    expect(read("vite.config.ts")).toContain("port: 28867");
-    expect(read("vite.config.ts")).toContain("port: 29587");
-    expect(read("vite.config.ts")).toContain('remoteHost ?? "127.0.0.1"');
-    expect(tauri.build.devUrl).toBe("http://127.0.0.1:28867");
-    expect(tauri.app.security.devCsp).toContain("http://127.0.0.1:28867");
-    for (const path of ["scripts/run-dev.command", "scripts/run-dev.ps1"]) {
-      expect(read(path)).toContain("28867");
-      expect(read(path)).toContain("29587");
-      expect(read(path)).not.toMatch(/stop[_-]port|Stop-Port/);
-    }
+describe("development endpoint", () => {
+  it("serves Vite on the URL Tauri loads", () => {
+    const config = typeof viteConfig === "function"
+      ? viteConfig({ command: "serve", mode: "development" })
+      : viteConfig;
+    expect(config).toMatchObject({
+      server: { host: devUrl.hostname, port: Number(devUrl.port), strictPort: true },
+    });
   });
 
-  it("gives a cold Windows native build a bounded readiness interval", () => {
-    const launcher = read("scripts/run-dev.ps1");
-    expect(launcher).toContain("$sourceReadyTimeoutMs = 900000");
-    expect(launcher).toContain('"wait-process", (Join-Path $repoDir "src-tauri/target/debug/onecopy.exe"), $sourceReadyTimeoutMs');
+  it("gives the launchers the URL Tauri loads", () => {
+    const printed = execFileSync(process.execPath, [`${root}scripts/launcher-runtime.mjs`, "dev-url"], {
+      encoding: "utf8",
+    }).trim();
+    expect(new URL(printed).href).toBe(devUrl.href);
+  });
+
+  it("lets the development CSP load scripts and hot updates from that URL", () => {
+    const directives = new Map(
+      tauri.app.security.devCsp.split(";").map((directive) => {
+        const [name = "", ...sources] = directive.trim().split(/\s+/);
+        return [name, sources] as const;
+      }),
+    );
+    expect(directives.get("script-src")).toContain(devUrl.origin);
+    expect(directives.get("connect-src")).toContain(devUrl.origin);
   });
 });

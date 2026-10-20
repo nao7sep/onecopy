@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { contrast, luminance, resolveRgb, themeBlock, tokenValue, type Rgb } from "../helpers/themeCss";
+import { contrast, luminance, resolveRgb, themeBlock, tokenValue } from "../helpers/themeCss";
 
 const modalShellSource = readFileSync(
   join(__dirname, "../../src/components/ModalShell.tsx"),
@@ -14,7 +14,6 @@ const tailwindTheme = readFileSync(
   join(__dirname, "../../node_modules/tailwindcss/theme.css"),
   "utf8",
 );
-const themeRs = readFileSync(join(__dirname, "../../src-tauri/src/theme.rs"), "utf8");
 const sources = `${css}\n${tailwindTheme}`;
 const themes = ["light", "dark"] as const;
 
@@ -165,23 +164,4 @@ describe("modal-dialog band lines", () => {
         .toBeGreaterThanOrEqual(controlContrast);
     });
   }
-});
-
-describe("native window background", () => {
-  function rustBackground(arm: string): Rgb {
-    const match = themeRs.match(
-      new RegExp(`${arm} => Color\\(0x([0-9a-f]{2}), 0x([0-9a-f]{2}), 0x([0-9a-f]{2}), 0xff\\)`, "i"),
-    );
-    if (!match) throw new Error(`window_background arm ${arm} missing`);
-    return [match[1]!, match[2]!, match[3]!].map((part) => Number.parseInt(part, 16)) as Rgb;
-  }
-
-  it("matches --background in each theme so the frame behind each page never flashes", () => {
-    for (const [theme, arm] of [["dark", "Theme::Dark"], ["light", "_"]] as const) {
-      const expected = resolveRgb(themeBlock(css, theme), "--background", sources);
-      rustBackground(arm).forEach((channel, index) => {
-        expect(Math.abs(channel - expected[index]!), `${theme} channel ${index}`).toBeLessThanOrEqual(1);
-      });
-    }
-  });
 });

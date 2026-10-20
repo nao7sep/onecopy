@@ -23,7 +23,7 @@ static EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 // EXISTS queries, one a correlated NOT EXISTS scan over every media row).
 // Conservatively true until `run_requested` proves otherwise, so pause/resume
 // and startup admission (all plain main-thread commands) can read it without
-// touching the index (D-M1, W-M4). `wake()` is called at every point new
+// touching the index. `wake()` is called at every point new
 // debt might exist — scan-admission release, watcher activity, explicit
 // resume — so setting it true there keeps it a faithful hint.
 static PENDING_WORK_HINT: AtomicBool = AtomicBool::new(true);

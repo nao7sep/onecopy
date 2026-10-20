@@ -212,7 +212,7 @@ impl AcceptedFiles {
 
     /// The absolute paths this accepted batch covers, so admission can scope
     /// the volume-substitution gate to only the configured roots the batch
-    /// actually touches (R3-07, R1-14): a source that failed verification
+    /// actually touches: a source that failed verification
     /// never blocks a batch that never reads or writes under it.
     pub fn abs_paths(&self) -> impl Iterator<Item = &str> {
         self.files.iter().map(|(_, abs_path)| abs_path.as_str())

@@ -54,8 +54,8 @@ fn presentation_for(kind: &str) -> &'static str {
 
 /// The catalogue key `condition_message_key(kind)` names, so the sentence a
 /// notice or Issue shows for this condition follows the interface language
-/// instead of freezing at whatever language was current when it was recorded
-/// (R5.5 D-L12). Every key here is one `noticeConditions.ts` used to name the
+/// instead of freezing at whatever language was current when it was recorded.
+/// Every key here is one `noticeConditions.ts` used to name the
 /// same conditions from the frontend side; the two lists must stay in step,
 /// checked by `every_condition_message_key_matches_the_frontend_list`.
 pub(crate) fn condition_message_key(kind: &str) -> &'static str {

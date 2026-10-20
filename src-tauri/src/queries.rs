@@ -396,7 +396,7 @@ pub struct SectionItem {
     /// (`for_display`, like copy_paths). The other-files table shows them
     /// all in one Folders column — copies merge into one row, so a single
     /// representative folder was an arbitrary MIN and sorting by it was
-    /// meaningless (Phase 33 dropped folder sort with it).
+    /// meaningless (folder sort was dropped with it).
     pub dir_paths: Vec<String>,
     pub derived_work: crate::derived_state::ItemWorkStates,
 }
@@ -883,8 +883,7 @@ pub fn reconcile_section(
     // The caller's own former window position for each selected identity,
     // in the same before-the-refresh coordinate space as a recovery
     // context's `index`. `matches` only carries *current* positions, which
-    // shift under removal and cannot be compared against a former position
-    // (R5.1 D5).
+    // shift under removal and cannot be compared against a former position.
     let selected_former_index: HashMap<String, u64> = selected
         .iter()
         .map(|identity| (identity.key(), identity.index))
@@ -1012,7 +1011,7 @@ fn choose_reconciled_anchor(
         // Compare former positions on both sides -- the anchor's own former
         // index (`context.index`) and each survivor's former index -- rather
         // than a survivor's current index, which shifts under removal and is
-        // not comparable to `context.index` (R5.1 D5).
+        // not comparable to `context.index`.
         if let Some(member) = live_selected
             .iter()
             .find(|member| {
@@ -2032,7 +2031,7 @@ pub struct IssueRow {
     pub message: Option<String>,
     /// A catalogue key the frontend renders in the current interface
     /// language; absent for a row recorded before this descriptor existed,
-    /// or one whose text has no translatable sentence to key (R5.5 D-L12).
+    /// or one whose text has no translatable sentence to key.
     pub message_key: Option<String>,
     /// The key's interpolation values, as a JSON object; absent when the key
     /// takes none.
@@ -2053,14 +2052,14 @@ const ISSUES_PAGE_AFTER_SQL: &str =
 
 /// The largest page `get_issues` serves regardless of the client-supplied
 /// limit, matching `activity::MAX_PAGE_SIZE`'s bound on the analogous
-/// Activity page (C-L5: an unclamped client limit could otherwise pull every
+/// Activity page (an unclamped client limit could otherwise pull every
 /// Issue row and its JSON on each poll).
 const MAX_ISSUES_PAGE_SIZE: u32 = 500;
 
 /// Where the previous page ended, so the next one picks up right after it —
 /// keyset paging on the same order the page is sorted by (oldest first), so a
 /// row past the 500th is reachable and dismissing earlier rows cannot skip or
-/// repeat a later one the way an OFFSET page would (R4.4 finding A).
+/// repeat a later one the way an OFFSET page would.
 pub struct IssuesCursor {
     pub first_seen_utc: String,
     pub id: i64,

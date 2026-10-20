@@ -23,9 +23,9 @@ permissions:
 
 jobs:
   # Gate on both supported platforms with `npm test`, the fixed default set:
-  # the source-text and spec checks, the type check, the frontend bundle, the
-  # Vitest suite and `cargo test`. The heavy Rust suite stays out of CI, in the
-  # local full gate. Both build jobs depend on every matrix leg.
+  # the type check, the frontend bundle, the Vitest suite and `cargo test`.
+  # The heavy Rust suite stays out of CI, in the local full gate. Both build
+  # jobs depend on every matrix leg.
   test:
     strategy:
       fail-fast: false
@@ -44,7 +44,7 @@ jobs:
       - run: npm ci
       - run: npm run check:release-version
       - run: npm test
-      - name: Test Windows package failure handling
+      - name: Test Windows packaging
         if: runner.os == 'Windows'
         run: pwsh tests/windows/package-fail-closed.ps1
 

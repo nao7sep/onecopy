@@ -513,7 +513,7 @@ fn a_config_change_invalidates_every_bucket_once() {
     );
 }
 
-// ---- Time-gated pairing (Phase 33) ----------------------------------------
+// ---- Time-gated pairing ---------------------------------------------------
 // Family bursts spread wider in dhash than the icon-tuned strict line, and
 // capture time is the strongest signal that frames belong together. The
 // relaxed allowance applies ONLY within the burst gap; everything else —

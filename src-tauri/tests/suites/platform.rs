@@ -23,6 +23,8 @@ mod i18n_tests;
 mod presence_tests;
 #[path = "../fullscreen_tests.rs"]
 mod fullscreen_tests;
+#[path = "../menu_tests.rs"]
+mod menu_tests;
 #[path = "../records_recovery_tests.rs"]
 mod records_recovery_tests;
 #[path = "../records_view_tests.rs"]

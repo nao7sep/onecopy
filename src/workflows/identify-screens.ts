@@ -8,8 +8,7 @@ let pending: Promise<void> | null = null;
 /** Creation is one bounded operation; each flash owns its later self-close.
  * `pending` stays open until every flash in the batch has actually closed
  * (not merely finished being created), so a second identification cannot
- * start while the first batch's labels are still on screen with stale ranks
- * (D-S7). Native identities cannot collide with a previous batch still
+ * start while the first batch's labels are still on screen with stale ranks. Native identities cannot collide with a previous batch still
  * closing. */
 export function identifyScreens(monitors: readonly Monitor[]): Promise<void> {
   if (pending !== null) return pending;

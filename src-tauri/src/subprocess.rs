@@ -42,8 +42,7 @@ const POLL: Duration = Duration::from_millis(100);
 /// bounded wait for derived work, mutations or requested media expires
 /// before every job reaches its own cancellation point, `kill_all_running`
 /// force-kills whatever managed-tool subprocess is still alive instead of
-/// leaving it to write into `temp/` or the cache after the app has exited
-/// (W-L1, generalized to the exit-join deadline).
+/// leaving it to write into `temp/` or the cache after the app has exited.
 static RUNNING: Mutex<Vec<Arc<Mutex<OwnedProcess>>>> = Mutex::new(Vec::new());
 
 /// A spawned managed tool and, on Windows, the job object that holds it and
@@ -248,7 +247,7 @@ fn run_bounded_idle_output(
     let stderr_pipe = spawned.stderr.take();
     // Shared with the global registry below so an exit watchdog can kill this
     // child from outside this function if this function's own thread never
-    // reaches a poll iteration again (W-L2/exit joins) — the registration
+    // reaches a poll iteration again — the registration
     // guard removes it once this function returns by any path.
     let child = Arc::new(Mutex::new(OwnedProcess::new(spawned)));
     let _registration = register_running(Arc::clone(&child));

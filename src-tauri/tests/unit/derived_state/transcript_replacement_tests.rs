@@ -32,7 +32,7 @@ fn replacement_failure_preserves_the_completed_transcript_and_records_the_attemp
     assert_eq!(state, READY_TEXT);
     // The raw diagnostic stays as recorded detail; OneCopy's own sentence
     // follows the interface language through its catalogue key instead of
-    // freezing as English at record time (R5.5 D-L12, D-L13).
+    // freezing as English at record time.
     assert_eq!(
         issue,
         (

@@ -49,7 +49,7 @@ fn image_concurrency_obeys_the_aggregate_memory_budget() {
     );
 }
 
-// (W-L2) ffmpeg and ONNX must never default to every physical core: they
+// ffmpeg and ONNX must never default to every physical core: they
 // share the same interactive-headroom budget Whisper already respects.
 #[test]
 fn cpu_thread_budget_never_claims_every_core() {

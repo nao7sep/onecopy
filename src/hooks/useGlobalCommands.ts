@@ -70,7 +70,7 @@ export function useGlobalCommands() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [openSettings]);
 
-  // The native menu's Settings and About items (R8-04) cannot call into the
+  // The native menu's Settings and About items cannot call into the
   // webview directly; the core emits these events, and Main is the one owner
   // of both surfaces, the ones its Cmd+, shortcut and app menu open.
   useEffect(() => {

@@ -36,7 +36,7 @@ beforeEach(() => {
 afterEach(() => { cleanup(); resetModalStack(); });
 
 describe("destination folder states", () => {
-  it("exposes a subfolder's full path to keyboard/AT users and shows the active destination's full path visibly (R8-05)", () => {
+  it("exposes a subfolder's full path to keyboard/AT users and shows the active destination's full path visibly", () => {
     useDestinationsStore.setState({
       roots: ["/dest"],
       children: {

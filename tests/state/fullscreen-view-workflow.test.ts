@@ -606,13 +606,6 @@ describe("fullscreen view workflow", () => {
     expect(useFullscreenViewStore.getState().session?.item.hash).toBe("b");
   });
 
-  it("ignores F, which no longer changes any view", async () => {
-    expect(openFullscreenView()).toBe(true);
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await handleFullscreenViewKey({ key: "f" });
-    expect(useFullscreenViewStore.getState().session?.item.hash).toBe("b");
-  });
-
   it("deletes the member the review named even after a refresh advances the sequence", async () => {
     mockCommand("delete_items", () => ({ error: null, failedFiles: 0 }));
     expect(openFullscreenView()).toBe(true);
@@ -637,7 +630,7 @@ describe("fullscreen view workflow", () => {
     });
   });
 
-  it("trashes only the displayed item, never a hidden Main multi-selection (R5.2 T1)", async () => {
+  it("trashes only the displayed item, never a hidden Main multi-selection", async () => {
     mockCommand("delete_items", () => ({ error: null, failedFiles: 0 }));
     useItemsStore.setState({
       selectedKeys: new Set(["a", "b", "c"]),
@@ -657,7 +650,7 @@ describe("fullscreen view workflow", () => {
     });
   });
 
-  it("permanently deletes only the displayed item, never a hidden Main multi-selection (R5.2 T1)", async () => {
+  it("permanently deletes only the displayed item, never a hidden Main multi-selection", async () => {
     mockCommand("delete_items", () => ({ error: null, failedFiles: 0 }));
     useItemsStore.setState({
       selectedKeys: new Set(["a", "b", "c"]),

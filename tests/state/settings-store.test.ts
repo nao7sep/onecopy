@@ -61,7 +61,7 @@ describe("time zones", () => {
 });
 
 describe("defaults", () => {
-  it("confirms a single-item Delete by default, as the core's defaults say (R7-07)", () => {
+  it("confirms a single-item Delete by default, as the core's defaults say", () => {
     expect(useSettingsStore.getState().draft?.confirmTrashDelete).toBe(true);
   });
 

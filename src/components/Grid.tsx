@@ -234,7 +234,7 @@ function RowBadge({ badge }: { badge: PresentationBadge }) {
 /** The other-files table columns, in render order. Each sortable column maps
  * to the model's `other` catalogue, so a column the sort cannot honour can
  * never appear — the FOLDERS column is exactly that case: copies merge into
- * one row with many folders (Phase 33), so it displays and never sorts.
+ * one row with many folders, so it displays and never sorts.
  * Kind/Name/Size/Date carry persisted, draggable widths; Folders takes the
  * rest of the pane (the developer's rule — it is usually the longest text). */
 const SIZED_COLUMNS = ["kind", "name", "size", "date"] as const;
@@ -437,7 +437,7 @@ function ListRow({
       >
         {item.resolvedUtcMs !== null ? formatLocalMinute(item.resolvedUtcMs, dateTime) : "—"}
       </span>
-      {/* EVERY copy's folder, sorted (Phase 33) — one row per merged binary,
+      {/* EVERY copy's folder, sorted — one row per merged binary,
           so a single folder was an arbitrary pick. Cut as a path, so the
           deep end stays visible: the tail distinguishes folders, not the
           shared root. The Details pane lists every copy whole. */}

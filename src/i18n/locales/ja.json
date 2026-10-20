@@ -987,7 +987,7 @@
   "reason.previewBinary": "このファイルはテキストではなくバイナリのようです。",
   "reason.previewNotResponding": "このファイルがあるドライブが応答していません。",
   "tool.ffmpeg": "ffmpeg",
-  "tool.onnxruntimeWinX64": "顔スコアのランタイム（ONNX Runtime 1.28）",
+  "tool.onnxruntimeWinX64": "顔スコアのランタイム（ONNX Runtime {version}）",
   "tool.whisperLargeV3Turbo": "文字起こしモデル（Whisper large-v3-turbo）",
   "tool.ultrafaceRfb640": "顔検出（UltraFace RFB-640）",
   "tool.hsemotionEnetB2": "表情モデル（HSEmotion EfficientNet-B2）",

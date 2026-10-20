@@ -362,8 +362,8 @@ fn preview_poster_and_snapshot_transitions_retire_their_current_issue() {
     let (_dir, conn) = seeded();
 
     // Each success here resolves the matching Issue seeded above: the
-    // Issues surface must be told even though nothing in this batch failed
-    // (C-M3), so the record_* calls report the resolution back to the caller.
+    // Issues surface must be told even though nothing in this batch failed,
+    // so the record_* calls report the resolution back to the caller.
     assert!(
         derived_state::record_preview_success(&conn, "image", "/image.jpg", 4000, 3000, 12.5, 42)
             .unwrap()
@@ -410,7 +410,7 @@ fn preview_poster_and_snapshot_failures_checkpoint_once_for_retry() {
     let (_dir, conn) = seeded();
     // `seeded()` already opened each of these Issues, so a repeated failure
     // only bumps the existing entry's occurrence count: nothing the Issues
-    // surface has not already shown, so no reload is needed (C-M3).
+    // surface has not already shown, so no reload is needed.
     assert!(!derived_state::record_preview_failure(&conn, "image", "/image.jpg", "decode").unwrap());
     assert!(
         !derived_state::record_poster_failure(&conn, "poster", "/poster.mov", "poster").unwrap()
@@ -444,7 +444,7 @@ fn a_success_with_no_matching_issue_reports_no_issues_change() {
     let (_dir, conn) = seeded();
     // "/delete.jpg" only ever had a "delete-error" Issue (unrelated to
     // preview derivation), so resolving PREVIEW_ERROR here is a genuine
-    // no-op: nothing for the Issues surface to reload (C-M3).
+    // no-op: nothing for the Issues surface to reload.
     assert!(!derived_state::record_preview_success(
         &conn, "delete", "/delete.jpg", 100, 100, 1.0, 7
     )
@@ -463,9 +463,9 @@ fn transcript_reads_distinguish_pending_failed_empty_and_ready_output() {
     assert_eq!(failed.status, "failed");
     // The Issue's `message` is now the raw recorded diagnostic; OneCopy's own
     // sentence lives behind the Issue's `message_key` instead, so this field
-    // carries whatever `record_transcript_failure` was given (R5.5 D-L12,
-    // D-L13). The frontend transcript surface does not read this field for
-    // display — it shows its own translated `transcript.couldNotFinish`.
+    // carries whatever `record_transcript_failure` was given. The frontend
+    // transcript surface does not read this field for display — it shows its
+    // own translated `transcript.couldNotFinish`.
     assert_eq!(failed.message.as_deref(), Some("decoder failed"));
 
     let pending = derived_state::transcript_result(&conn, "poster").unwrap();

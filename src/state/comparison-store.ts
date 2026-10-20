@@ -311,7 +311,7 @@ async function resolveMonitors(
         host === null || host.size.height <= 0
           ? 16 / 9
           : host.size.width / host.size.height,
-      // An unknown host display excludes nothing (D-S11): the priority order
+      // An unknown host display excludes nothing: the priority order
       // is a preference over connected displays, not a claim that its first
       // entry is Main's display, so dropping it here would be a guess.
       others:
@@ -367,7 +367,7 @@ async function showSpread(monitors: MonitorList): Promise<void> {
       const created = new WebviewWindow(label, {
         url: `index.html?view=comparison&slice=${index + 1}`,
         // window-appearance.ts sets the definitive title on first paint; this
-        // is only what shows for the brief instant before that (L6).
+        // is only what shows for the brief instant before that.
         title: documentTranslator().t("window.titleComparison"),
         x: monitor.position.x / scale,
         y: monitor.position.y / scale,

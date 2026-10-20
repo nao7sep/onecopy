@@ -987,7 +987,7 @@
   "reason.previewBinary": "O arquivo parece binário em vez de textual.",
   "reason.previewNotResponding": "O disco que contém este arquivo não está respondendo.",
   "tool.ffmpeg": "ffmpeg",
-  "tool.onnxruntimeWinX64": "Runtime de avaliação de rostos (ONNX Runtime 1.28)",
+  "tool.onnxruntimeWinX64": "Runtime de avaliação de rostos (ONNX Runtime {version})",
   "tool.whisperLargeV3Turbo": "Modelo de transcrição (Whisper large-v3-turbo)",
   "tool.ultrafaceRfb640": "Detector de rostos (UltraFace RFB-640)",
   "tool.hsemotionEnetB2": "Modelo de expressões (HSEmotion EfficientNet-B2)",

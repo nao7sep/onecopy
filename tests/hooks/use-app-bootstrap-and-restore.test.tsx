@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-// R5.1 D10: restart restores the last section and anchor. `useAppBootstrapAndRestore`
+// Restart restores the last section and anchor. `useAppBootstrapAndRestore`
 // is the one place a fresh app run turns `lastSection` / `lastItem` /
 // `lastItemContext` (persisted by `installItemWorkflow`, workflows/items.ts:58-70)
 // back into a `select()` call; no test in the repo exercised that round trip

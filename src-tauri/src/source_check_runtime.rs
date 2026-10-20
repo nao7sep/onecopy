@@ -260,7 +260,7 @@ fn run(
             || {
                 let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::SourceCheck, None, None);
                 let report = trace.progress_reporter();
-                // The volume-substitution gate (R1-14, R3-07) is enforced per
+                // The volume-substitution gate is enforced per
                 // root inside `run_source_check`'s own walk loop, so a
                 // substituted or unverifiable root is skipped with a
                 // recorded issue while every other configured root is still

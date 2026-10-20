@@ -40,7 +40,7 @@ import { invalidIgnoredFileName } from "../models/ignoredFileNames";
 import { stringArrayField } from "../utils/configProjection";
 
 /** The core's text-preview choices (`text_preview::Options`); the limit
- * keeps the gate itself bounded (C-L2). */
+ * keeps the gate itself bounded. */
 interface TextPreviewOptions {
   encodings: string[];
   maxAllowedBytes: number;
@@ -348,8 +348,8 @@ function SettingsTabList({
     const current = tabs.indexOf(event.currentTarget);
     let next = current;
     // Arrows STOP at the ends — the app-wide end-of-axis choice App.tsx's
-    // Details/Destinations tablist, Grid and Sidebar all already use
-    // (R8-01) — rather than wrapping around.
+    // Details/Destinations tablist, Grid and Sidebar all already use —
+    // rather than wrapping around.
     if (event.key === "ArrowRight") next = Math.min(current + 1, tabs.length - 1);
     else if (event.key === "ArrowLeft") next = Math.max(current - 1, 0);
     else if (event.key === "Home") next = 0;

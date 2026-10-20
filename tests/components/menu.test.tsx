@@ -216,7 +216,7 @@ describe("the shared menu viewport boundary", () => {
   });
 });
 
-describe("keyboard fallthrough while a menu is open (R8-02)", () => {
+describe("keyboard fallthrough while a menu is open", () => {
   it("lets an unclaimed key (Backspace) reach the window's own command layer, but stops a claimed key", () => {
     render(
       <Menu

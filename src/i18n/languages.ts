@@ -53,7 +53,7 @@ export function effectiveLanguage(preference: LanguagePreference, systemLanguage
 }
 
 // The same resolution the Rust core's match_locale/system_language apply, so
-// a browser-side fallback (D-L9: the appearance read timing out or failing)
+// a browser-side fallback (the appearance read timing out or failing)
 // agrees with what the core would have said, instead of defaulting to
 // English. Every Chinese locale resolves to Simplified Chinese and every
 // Portuguese one to Brazilian Portuguese.

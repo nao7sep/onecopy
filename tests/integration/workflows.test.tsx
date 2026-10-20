@@ -254,7 +254,7 @@ describe("the culling workflow", () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
-  it("offers access to application logs from the blocked-start shell (Finding D)", async () => {
+  it("offers access to application logs from the blocked-start shell", async () => {
     mockCommand("load_app_data", () => ({
       status: "blocked",
       failure: {

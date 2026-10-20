@@ -987,7 +987,7 @@
   "reason.previewBinary": "The file looks binary rather than textual.",
   "reason.previewNotResponding": "The drive holding this file is not responding.",
   "tool.ffmpeg": "ffmpeg",
-  "tool.onnxruntimeWinX64": "Face-scoring runtime (ONNX Runtime 1.28)",
+  "tool.onnxruntimeWinX64": "Face-scoring runtime (ONNX Runtime {version})",
   "tool.whisperLargeV3Turbo": "Transcription model (Whisper large-v3-turbo)",
   "tool.ultrafaceRfb640": "Face detector (UltraFace RFB-640)",
   "tool.hsemotionEnetB2": "Expression model (HSEmotion EfficientNet-B2)",

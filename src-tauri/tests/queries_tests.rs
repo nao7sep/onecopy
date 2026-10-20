@@ -360,7 +360,7 @@ fn section_reconciliation_chooses_the_nearest_surviving_selection_outside_contex
     assert_eq!(result.anchor.unwrap().hash.as_deref(), Some("h150"));
 }
 
-/// R5.1 D5: a bulk removal well before both the vanished anchor and its
+/// A bulk removal well before both the vanished anchor and its
 /// selected survivors shifts every subsequent current index down by the same
 /// amount. Comparing a survivor's *current* index against the anchor's
 /// *former* index (as opposed to comparing former-to-former) can then place
@@ -498,7 +498,7 @@ fn section_family_context_is_none_when_the_whole_family_is_gone() {
     assert!(result.is_none());
 }
 
-/// R5.1 D6: a selected previous survivor beats an unselected next neighbour
+/// A selected previous survivor beats an unselected next neighbour
 /// inside the recovery context. The spec orders anchor recovery as "next
 /// selected, then previous selected, then an unselected neighbor" -- a
 /// selected member never loses to a closer unselected one.
@@ -1054,7 +1054,7 @@ fn issues_page_oldest_first_with_the_full_total() {
 
 #[test]
 fn issues_beyond_the_first_page_are_reachable_with_a_keyset_cursor() {
-    // R4.4 finding A: a row past the 500th (here, past a 2-row page) must be
+    // A row past the 500th (here, past a 2-row page) must be
     // reachable, and each page must pick up exactly where the last one
     // stopped — no row skipped or repeated, the way an OFFSET page could
     // after an intervening insert or dismissal.
@@ -1326,7 +1326,7 @@ fn diagnostic_paths_resolve_only_current_source_members_and_companion_owners() {
     assert!(resolve(&file("photo.xmp")).is_none());
 }
 
-// R4.1 finding 4: diagnostic navigation refuses a target whose only copy is
+// Diagnostic navigation refuses a target whose only copy is
 // hidden by review-visibility policy, and resolves it again once the policy
 // lifts. section_for_identity is the shared resolver behind both
 // resolve_library_path and the identity lookup other diagnostics use.

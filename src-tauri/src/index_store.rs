@@ -225,7 +225,7 @@ END;
 -- A section's kind follows the representative copy's own kind, not
 -- `contents.kind` (fixed by whichever copy was hashed first): byte-identical
 -- copies with different extensions must not have their section depend on
--- indexing order (R4.1 finding 3).
+-- indexing order.
 ", projection_view_sql!(), "
 
 -- Similarity is published as complete UTC-month cohorts. Dirty buckets are
@@ -559,7 +559,7 @@ fn open_before_setup(db_file: &Path, before_setup: impl FnOnce()) -> Result<Conn
     // Enforced on every open, not only the connection that ran the upgrade:
     // a dangling `evidence` or `companion_of` row after a same-transaction
     // sibling delete (see delete_targets and forget_unconfigured_roots) must
-    // fail the transaction rather than survive silently (R1-11).
+    // fail the transaction rather than survive silently.
     conn.pragma_update(None, "foreign_keys", true)
         .map_err(|error| error.to_string())?;
     // The index is rebuilt from the source folders, so a commit need not wait
@@ -672,8 +672,7 @@ fn record_issue_event(conn: &Connection, kind: &str, path: &str, event: &str) ->
 /// Records one occurrence of a condition, identified by (kind, path). `path`
 /// None anchors to '' so rootless conditions also coalesce. Returns whether
 /// this call opened a new Issue — a repeated failure of an open one only adds
-/// an occurrence, which callers must not treat as an Issues-surface change
-/// (C-M3).
+/// an occurrence, which callers must not treat as an Issues-surface change.
 pub fn upsert_issue(
     conn: &Connection,
     path: Option<&str>,
@@ -688,7 +687,7 @@ pub fn upsert_issue(
 /// interpolation values as a JSON object) beside the recorded `message`.
 /// `message` stays exactly what a caller with no descriptor already passed:
 /// real, non-restatable detail (a system error, a count, a path), shown as
-/// recorded after the translated sentence (R5.5 D-L12).
+/// recorded after the translated sentence.
 pub fn upsert_issue_with_descriptor(
     conn: &Connection,
     path: Option<&str>,
@@ -722,7 +721,7 @@ pub fn upsert_issue_with_descriptor(
 
 /// Resolves open conditions. Returns whether any Issue was actually
 /// resolved, so callers can tell a real resolution from a no-op clear of an
-/// already-closed or absent issue (C-M3).
+/// already-closed or absent issue.
 pub fn clear_issues(conn: &Connection, path: &str, kinds: &[&str]) -> Result<bool, String> {
     let mut changed = false;
     for kind in kinds {

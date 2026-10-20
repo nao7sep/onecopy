@@ -106,7 +106,7 @@ export function ManagedToolRow({ entry }: { entry: DependencyState }) {
     <div className="rounded-xl border border-border p-3 text-sm">
       <div className="flex items-center justify-between gap-3">
         <span className="min-w-0 break-words font-semibold leading-snug text-ink-strong">
-          {toolLabel(entry.id, entry.label, t)}
+          {toolLabel(entry, t)}
         </span>
         <span
           className={`shrink-0 text-xs ${

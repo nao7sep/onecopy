@@ -987,7 +987,7 @@
   "reason.previewBinary": "Il file sembra binario anziché testuale.",
   "reason.previewNotResponding": "L’unità che contiene questo file non risponde.",
   "tool.ffmpeg": "ffmpeg",
-  "tool.onnxruntimeWinX64": "Runtime per la valutazione dei volti (ONNX Runtime 1.28)",
+  "tool.onnxruntimeWinX64": "Runtime per la valutazione dei volti (ONNX Runtime {version})",
   "tool.whisperLargeV3Turbo": "Modello di trascrizione (Whisper large-v3-turbo)",
   "tool.ultrafaceRfb640": "Rilevatore di volti (UltraFace RFB-640)",
   "tool.hsemotionEnetB2": "Modello delle espressioni (HSEmotion EfficientNet-B2)",

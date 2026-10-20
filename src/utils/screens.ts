@@ -44,7 +44,7 @@ export function monitorKey(monitor: MonitorLike): string {
  * placeholders instead of being handed a pre-joined English phrase. */
 // With four or more displays on one axis, "left/centre/right" (or
 // "top/middle/bottom") stops distinguishing every inner one — two displays
-// side by side in the middle both read "centre" (D-S9). Past three distinct
+// side by side in the middle both read "centre". Past three distinct
 // positions, an ordinal position replaces the word for that axis.
 const ORDINAL_AXIS_THRESHOLD = 3;
 

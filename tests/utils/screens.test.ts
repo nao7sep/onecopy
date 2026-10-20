@@ -17,7 +17,7 @@ describe("screen priority ordering", () => {
     expect(ordered.map((x) => x.name)).toEqual(["B", "A", "C"]);
   });
 
-  // R5.5 C9: an entry for a display that is not currently connected is
+  // An entry for a display that is not currently connected is
   // simply skipped -- it neither crashes the sort nor produces a phantom
   // row, and the remaining, connected entries still rank correctly.
   it("ignores a priority entry for a display that is not connected", () => {
@@ -80,7 +80,7 @@ describe("describing where a monitor sits", () => {
     expect(describePosition(all[0], all)).toBeNull();
   });
 
-  it("gives every display in a row of four or more a distinct ordinal position (D-S9)", () => {
+  it("gives every display in a row of four or more a distinct ordinal position", () => {
     // "left/centre/right" collapses to two indistinguishable "centre" rows
     // once there are two inner displays; an ordinal keeps every row unique.
     const all = [m("a", 0), m("b", 1920), m("c", 3840), m("d", 5760)];

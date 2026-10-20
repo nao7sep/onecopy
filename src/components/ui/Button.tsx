@@ -46,10 +46,9 @@ const VARIANTS: Record<Variant, string> = {
     "text-ink-muted enabled:hover:bg-surface-muted enabled:hover:text-ink enabled:active:bg-surface-pressed enabled:active:text-ink disabled:opacity-50",
   danger:
     "border border-danger/50 bg-danger-surface text-danger enabled:hover:border-danger enabled:hover:brightness-95 enabled:active:border-danger enabled:active:brightness-90 disabled:opacity-50",
-  // The filled "commit" style (interface-styling-conventions): reserved for a
+  // The filled "commit" style: reserved for a
   // single click that IS the irreversible action itself, never a trigger that
-  // merely opens a confirming step — `danger` above stays the trigger style
-  // (R8-03).
+  // merely opens a confirming step — `danger` above stays the trigger style.
   "danger-solid":
     "bg-danger-solid text-ink-inverted shadow-sm enabled:hover:bg-danger-solid-hover enabled:active:bg-danger-solid-pressed disabled:opacity-50",
 };

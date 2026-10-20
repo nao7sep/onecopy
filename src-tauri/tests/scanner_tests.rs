@@ -500,8 +500,7 @@ fn diverged_copies_surface_as_a_copies_disagree_issue() {
     assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM contents"), 2);
 
     // OneCopy's own sentence carries a catalogue key so it follows the
-    // interface language; only the quantitative detail stays recorded
-    // (R5.5 D-L12, D-L13).
+    // interface language; only the quantitative detail stays recorded.
     let (message_key, message): (String, String) = f
         .conn
         .query_row(
@@ -639,7 +638,7 @@ fn companions_pair_same_directory_same_stem_only() {
     // Idempotent: a second rebuild reports and retains the same two pairs.
     assert_eq!(pair_companions(&f.conn, true).unwrap().paired, 2);
 
-    // (R7-02) Library-wide re-pairing publishes through the batch publisher,
+    // Library-wide re-pairing publishes through the batch publisher,
     // never through the per-row projection trigger.
     f.conn
         .execute_batch(
@@ -876,7 +875,7 @@ fn source_check_continues_after_an_unavailable_root() {
 
 #[test]
 fn source_check_skips_only_a_substituted_root() {
-    // R3-07, R1-14: the volume-substitution gate is scoped per root inside
+    // The volume-substitution gate is scoped per root inside
     // the walk loop, so a substituted (or unverifiable) root is refused with
     // an Issue while every other configured root still completes normally.
     let f = fixture("substituted-root-skips");
@@ -929,7 +928,7 @@ fn source_check_skips_only_a_substituted_root() {
 
 #[test]
 fn a_source_containing_the_data_root_never_indexes_the_apps_own_storage() {
-    // R6-02: a source root that happens to contain the app's data root (the
+    // A source root that happens to contain the app's data root (the
     // whole home directory, say) must not index or churn the app's own
     // index, logs, caches and models.
     let f = fixture("data-root-inside-source");
@@ -1182,7 +1181,7 @@ fn duplicate_live_photo_identifiers_never_cross_directory_cohorts() {
     );
 }
 
-/// (R4.1 finding 1) A same-stem sidecar (an AAE) must attach to the family's
+/// A same-stem sidecar (an AAE) must attach to the family's
 /// still image, never to its Live Photo MOV: the MOV itself pairs to the
 /// image, and a companion of a companion would be orphaned by Move and
 /// Delete, which only walk one companion level. This holds regardless of
@@ -1246,7 +1245,7 @@ fn companion_never_pairs_to_a_live_photo_movie_in_either_id_order() {
         assert_eq!(mov_pairs_to_heic, 1, "order {order:?}: the movie still pairs to the image");
     }
 
-    // The finding's exact failure scenario (MOV indexed first) and its
+    // The exact failure scenario (MOV indexed first) and its
     // reverse both land on the same deterministic, path-ordered result.
     run(&["IMG_1234.MOV", "IMG_1234.AAE", "IMG_1234.HEIC"]);
     run(&["IMG_1234.HEIC", "IMG_1234.AAE", "IMG_1234.MOV"]);
@@ -2075,7 +2074,7 @@ fn forgetting_a_parent_excludes_only_the_exact_nested_root_in_every_batch_step()
 
 #[test]
 fn removing_a_root_with_more_orphaned_hashes_than_sqlites_bound_parameter_limit_still_works() {
-    // R6-01: orphan collection is a subquery over `batch_touched_hashes`,
+    // Orphan collection is a subquery over `batch_touched_hashes`,
     // never one bound parameter per orphaned hash, so a root holding more
     // unique items than SQLite's bound-parameter ceiling can still be
     // forgotten in one pass, instead of rolling back with "too many SQL
@@ -2304,7 +2303,7 @@ fn insert_indexed_images(conn: &Connection, dir: &str, rows: i64) {
 
 #[test]
 fn library_wide_settings_change_holds_the_write_lock_only_briefly() {
-    // D-H2: removing a configured source root (a library-wide settings
+    // Removing a configured source root (a library-wide settings
     // change) used to fire the per-row logical-projection trigger for every
     // row under that root — once for the companion-detach UPDATE, again for
     // the path DELETE, then again per orphan in a separate per-hash loop —
@@ -2337,7 +2336,7 @@ fn library_wide_settings_change_holds_the_write_lock_only_briefly() {
 
 #[test]
 fn library_wide_date_re_resolution_holds_the_write_lock_only_briefly() {
-    // D-H2 (the date-re-resolution follow-up): `re_resolve_all_with_progress`
+    // `re_resolve_all_with_progress`
     // used to invalidate the whole library in one statement and then have
     // `resolve_from_evidence_with_progress` write one row at a time in
     // autocommit — both fire the per-row logical-projection trigger, or
@@ -2376,7 +2375,7 @@ fn library_wide_date_re_resolution_holds_the_write_lock_only_briefly() {
 
 #[test]
 fn a_concurrent_commit_does_not_fail_a_source_check() {
-    // D-H3: the walk's vanished-path publication (and `apply_policy`) used
+    // The walk's vanished-path publication (and `apply_policy`) used
     // to open a DEFERRED transaction whose first statement is a read, so it
     // took only a read snapshot and later upgraded to a write lock. SQLite
     // can fail that upgrade at once with SQLITE_BUSY_SNAPSHOT the moment
@@ -2447,7 +2446,7 @@ fn a_concurrent_commit_does_not_fail_a_source_check() {
 
 #[test]
 fn concurrent_provisional_promotions_never_race_the_contents_row() {
-    // D-L1: `promote_identity` used to read `already_known` in autocommit,
+    // `promote_identity` used to read `already_known` in autocommit,
     // then do the insert/repoint/delete as separate statements. Two
     // concurrent promoters of the same provisional key could both see
     // `already_known == false` and then both try to INSERT the same real

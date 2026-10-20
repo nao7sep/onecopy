@@ -1,7 +1,7 @@
 // Private helpers behind `file_identity::is_abandoned_leftover`'s
-// process-global public surface; see the `mod tests` stub in
-// `src/file_identity.rs` for why these are exercised here instead of through
-// the public API.
+// process-global public surface. They are exercised here instead of through
+// the public API because every case needs that process-wide settled data root
+// and fingerprint set differently, which one test binary cannot do.
 
 use super::*;
 
@@ -115,9 +115,8 @@ fn this_installations_dead_pid_file_is_swept() {
 fn sweep_removes_only_this_installations_dead_leftover() {
     // The mechanism `sweep_private_tmp_leftovers` delegates to, exercised
     // with a proven fingerprint injected directly: a real process-global
-    // settled data root cannot be set up per case in one test binary (see the
-    // `#[cfg(test)]` exception above `mod tests` in `src/file_identity.rs`),
-    // so this is where "the dead leftover is actually removed from disk" is
+    // settled data root cannot be set up per case in one test binary, so
+    // this is where "the dead leftover is actually removed from disk" is
     // proven, matching what a destination-folder sweep does once this
     // process's identity is settled. `operations_tests.rs`'s
     // `an_operation_sweeps_only_its_own_dead_leftover_from_the_destination_folder`

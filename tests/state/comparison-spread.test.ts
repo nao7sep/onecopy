@@ -382,9 +382,9 @@ describe("opening Comparison across displays", () => {
     ]);
   });
 
-  // R5.5 C8: Comparison orders its OTHER displays by the configured
+  // Comparison orders its OTHER displays by the configured
   // screenPriority (not system order) and always excludes Main's own
-  // display, however that priority ranks it (D-S11: an unranked display
+  // display, however that priority ranks it (an unranked display
   // still is Main's, and still gets excluded).
   it("orders its other displays by screenPriority and excludes Main's own display", async () => {
     setMonitors(THREE_SCREENS);

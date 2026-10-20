@@ -76,7 +76,7 @@ fn only_a_work_area_sized_frame_is_mac_maximized() {
     ));
 }
 
-/// R5.1 D12: a saved rectangle that only grazes the work area by a pixel or
+/// A saved rectangle that only grazes the work area by a pixel or
 /// two is not "restored safely" -- there is nothing to see or drag back.
 #[test]
 fn a_sliver_of_overlap_is_not_restorable() {

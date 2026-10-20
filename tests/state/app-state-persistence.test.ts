@@ -133,7 +133,7 @@ describe("app state persistence settlement", () => {
     expect(useAppStore.getState().appData?.state).toEqual({ zoomLevel: 1.5 });
   });
 
-  it("rolls two consecutive failed writes back to the last saved value, not an earlier failed attempt's optimistic value (D-S15)", async () => {
+  it("rolls two consecutive failed writes back to the last saved value, not an earlier failed attempt's optimistic value", async () => {
     useAppStore.setState((current) => ({
       appData: { ...current.appData!, state: { zoomLevel: 1 } },
     }));

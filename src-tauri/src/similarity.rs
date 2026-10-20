@@ -38,7 +38,7 @@ pub struct SimilarityConfig {
     pub max_gap_seconds: u32,
     pub phash_max_distance: u32,
     /// The RELAXED distance for pairs whose capture times sit within
-    /// `max_gap_seconds` of each other (Phase 33). Family bursts legitimately
+    /// `max_gap_seconds` of each other. Family bursts legitimately
     /// spread wider in dhash than the strict threshold tolerates — handheld
     /// shift, subject motion, a toddler mid-turn — and capture time is the
     /// strongest, cheapest signal that two frames belong together. Pairs far

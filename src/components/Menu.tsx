@@ -205,8 +205,8 @@ export function Menu({
     // it — a key this handler does NOT claim must genuinely bubble to reach
     // it. "Backspace" is the reachable case: the single-char type-ahead below
     // skips it (it is 9 characters), so an unclaimed Backspace must still
-    // reach the global command layer instead of being silently swallowed here
-    // (R8-02) — stopPropagation only runs once a branch below claims the key.
+    // reach the global command layer instead of being silently swallowed here:
+    // stopPropagation only runs once a branch below claims the key.
     const list = items();
     const current = Math.max(0, list.indexOf(activeItem.current as HTMLElement));
     const focusAt = (index: number) => {

@@ -105,7 +105,7 @@ describe("the app-frame notification host", () => {
     expect(invokeCalls.some((call) => call.command === "dismiss_notification")).toBe(true);
   });
 
-  it("does not resume while the mouse leaves but focus is still inside, or focus leaves but the mouse is still over it (Finding C)", async () => {
+  it("does not resume while the mouse leaves but focus is still inside, or focus leaves but the mouse is still over it", async () => {
     vi.useFakeTimers();
     render(<NotificationHost />);
     act(() =>
@@ -131,7 +131,7 @@ describe("the app-frame notification host", () => {
     expect(invokeCalls.some((call) => call.command === "dismiss_notification")).toBe(true);
   });
 
-  it("never starts a timer for a window that does not own timed dismissal (Finding C)", async () => {
+  it("never starts a timer for a window that does not own timed dismissal", async () => {
     vi.useFakeTimers();
     render(<NotificationHost ownsTimedDismissal={false} />);
     act(() =>
@@ -144,7 +144,7 @@ describe("the app-frame notification host", () => {
     expect(invokeCalls.some((call) => call.command === "dismiss_notification")).toBe(false);
   });
 
-  it("shows a live notice in the current interface language and follows a change with no re-record (R5.5 D-L12)", () => {
+  it("shows a live notice in the current interface language and follows a change with no re-record", () => {
     const view = render(
       <I18nProvider language="ja" locale="ja">
         <NotificationHost />

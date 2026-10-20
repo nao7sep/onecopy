@@ -51,7 +51,7 @@ async function createWindow(monitor: Display): Promise<WebviewWindow> {
   const window = new WebviewWindow(WINDOW_LABEL, {
     url: "index.html?view=fullscreen-view",
     // window-appearance.ts sets the definitive title on first paint; this is
-    // only what shows for the brief instant before that (L6).
+    // only what shows for the brief instant before that.
     title: documentTranslator().t("window.titleFullscreenView"),
     x: monitor.position.x / scale,
     y: monitor.position.y / scale,

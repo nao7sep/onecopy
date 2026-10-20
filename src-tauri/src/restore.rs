@@ -335,7 +335,7 @@ pub fn review_of(plan: &RestorePlan, root: &Path, selected_all: &[TrashEntry]) -
                 Action::Restore { target, renamed } => (Some(target), *renamed, None),
                 Action::Skip(skip) => (None, false, Some(*skip)),
             };
-            // Blueprint case 24: pairing is by folder and name stem, so a
+            // Pairing is by folder and name stem, so a
             // companion restored under a stem its restored main no longer
             // has comes back alone.
             let main_restored_as = match (target, &step.entry.main_restored_as) {

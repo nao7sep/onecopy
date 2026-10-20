@@ -211,17 +211,17 @@ pub fn check_identity(root: &Path, dir: &str, current: &str) -> Result<IdentityC
 }
 
 /// The volume-substitution gate itself, enforced in the backend rather than
-/// left to a frontend check the caller might skip (R1-14): `Err` naming every
+/// left to a frontend check the caller might skip: `Err` naming every
 /// directory in `dirs` whose current volume identity differs from the one
 /// recorded for it, or whose recorded identity cannot even be read. A read
 /// failure keeps that directory's gate CLOSED rather than reading as "nothing
-/// recorded" (R3-07) — the opposite of `verify_source_dirs`'s own frontend
+/// recorded" — the opposite of `verify_source_dirs`'s own frontend
 /// status, which must still answer something for every directory even when
 /// this fails. A directory that is absent, or that has no recorded identity
 /// because its filesystem had none to read, is not this gate's concern and is
 /// skipped. Callers scope `dirs` to the configured roots the work at hand
 /// actually touches, so a source that failed verification blocks only work
-/// on that source; every other configured root is unaffected (R3-07, R1-14).
+/// on that source; every other configured root is unaffected.
 /// A failure reading the whole record is the one case that closes the gate
 /// for every directory passed in, because then nothing about any of them can
 /// be verified.

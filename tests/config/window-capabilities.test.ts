@@ -1,9 +1,8 @@
 // Every window call the app makes must be a capability it was granted.
 //
 // This exists because window capabilities are runtime data: a call compiles
-// even when its permission is absent. Fullscreen is OneCopy's own app command
-// (src-tauri/src/fullscreen.rs), never Tauri's window fullscreen, which on
-// macOS is Spaces fullscreen.
+// even when its permission is absent. Fullscreen is OneCopy's own app command,
+// never Tauri's window fullscreen, which on macOS is Spaces fullscreen.
 //
 // Nothing else can catch this: the call compiles, the permission is data in a
 // JSON file, and the failure is a runtime rejection on a machine nobody

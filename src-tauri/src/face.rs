@@ -179,7 +179,7 @@ impl FaceScorer {
         #[cfg(not(windows))]
         let _ = runtime;
         // Same interactive-headroom budget as ffmpeg and Whisper: the default
-        // intra-op thread count is every physical core (W-L2).
+        // intra-op thread count is every physical core.
         let threads = crate::resource_limits::cpu_thread_budget().max(1) as usize;
         let detector = ort::session::Session::builder()
             .map_err(|e| e.to_string())?
@@ -413,7 +413,7 @@ pub struct FaceStats {
     pub candidates_found: bool,
     pub last_attempted_hash: Option<String>,
     /// Whether any result in this batch actually opened or resolved a live
-    /// Issue, independent of `failed` count (C-M3).
+    /// Issue, independent of `failed` count.
     pub issues_changed: bool,
 }
 

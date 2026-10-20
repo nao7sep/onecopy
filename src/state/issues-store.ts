@@ -13,7 +13,7 @@ export interface IssueRow {
   kind: string;
   message: string | null;
   /** A catalogue key the frontend renders in the current interface language;
-   * absent for a row recorded before this descriptor existed (R5.5 D-L12). */
+   * absent for a row recorded before this descriptor existed. */
   messageKey: MessageKey | null;
   messageValues: StoredMessageValues | null;
   firstSeenUtc: string;
@@ -28,8 +28,8 @@ interface IssuesState {
   rows: IssueRow[];
   loading: boolean;
   /** A later page loading on top of what's already shown, distinct from the
-   * first load's own spinner (R4.4 finding A: a row past the first page must
-   * stay reachable, not hidden behind dismissing everything ahead of it). */
+   * first load's own spinner: a row past the first page must
+   * stay reachable, not hidden behind dismissing everything ahead of it. */
   loadingMore: boolean;
   error: Message | null;
   load: () => Promise<void>;

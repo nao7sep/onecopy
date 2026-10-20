@@ -56,7 +56,7 @@ it("formats every window's times in the saved display zone and follows a saved c
   await vi.waitFor(() => expect(displayTimeZone()).toBeUndefined());
 });
 
-// R5.5 C2: `appearance://changed` updates `useLanguageStore` with the
+// `appearance://changed` updates `useLanguageStore` with the
 // `language` / `systemLanguage` / `systemLocale` fields the core sends,
 // not just the font this suite otherwise exercises.
 it("applies language, systemLanguage and systemLocale from appearance preferences", async () => {
@@ -145,7 +145,7 @@ it("contains read failure and leaves the listener ready for a repaired configura
   await vi.waitFor(() => expect(document.documentElement.style.getPropertyValue("--font-ui")).toBe("Recovered font"));
 });
 
-it("sets Main's title on first paint and again after a language change (D-L6)", async () => {
+it("sets Main's title on first paint and again after a language change", async () => {
   let language: unknown = "en";
   mockCommands({ appearance_preferences: () => ({ uiFontFamily: null, language }) });
   const { installWindowAppearance } = await import("../../src/workflows/window-appearance");
@@ -158,7 +158,7 @@ it("sets Main's title on first paint and again after a language change (D-L6)", 
   await vi.waitFor(() => expect(setTitle).toHaveBeenCalledWith("OneCopy"));
 });
 
-it("titles an auxiliary window from the current language, not fixed English (D-L6)", async () => {
+it("titles an auxiliary window from the current language, not fixed English", async () => {
   window.history.pushState(null, "", "/?view=preview");
   let language: unknown = "en";
   mockCommands({ appearance_preferences: () => ({ uiFontFamily: null, language }) });

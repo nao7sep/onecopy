@@ -502,7 +502,7 @@ fn wait_for_idle_returns_as_soon_as_the_claim_drops_before_the_deadline() {
     );
 }
 
-// R3-07, R1-14: the volume-substitution gate at mutation admission is scoped
+// The volume-substitution gate at mutation admission is scoped
 // to the configured roots the accepted batch actually sits under, so a
 // substituted or unverifiable source never blocks a batch that touches only
 // another, unaffected root.
@@ -560,8 +560,7 @@ fn a_restore_receipt_counts_restored_already_there_failed_unknown_and_unstarted(
 }
 
 // Restore touches one configured root: a source containing it is gated, a
-// destination root never is (blueprint case 8: the manifest travels with its
-// own drive).
+// destination root never is (the manifest travels with its own drive).
 #[test]
 fn a_restore_gates_only_the_source_its_root_lies_in() {
     let source_dirs = vec!["/Volumes/A".to_string(), "/Volumes/B".to_string()];
@@ -738,7 +737,7 @@ fn test_host(data_root: &std::path::Path) -> TestRestoreHost {
     }
 }
 
-// Blueprint case 58: Cancel while the restore waits for background work ends
+// Cancel while the restore waits for background work ends
 // the wait, and nothing is observed, created, moved or recorded.
 #[test]
 fn cancelling_a_restore_while_it_waits_for_background_work_changes_nothing() {

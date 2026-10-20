@@ -55,8 +55,7 @@ interface WizardState {
   /** True when the last presence check could not answer at all (a config
    * read error, or an I/O error in the backend's volume-identity check).
    * Modeled as its own state rather than folded into an empty
-   * `substitutedDirs`: unknown blocks exactly like a known substitution
-   * (R3-07) — the gate must never read a failed check as "verified safe". */
+   * `substitutedDirs`: unknown blocks exactly like a known substitution: the gate must never read a failed check as "verified safe". */
   presenceUnknown: boolean;
   init: (config: Record<string, unknown> | null) => Promise<void>;
   /** Re-runs the wizard as RECONFIGURE: seeded from the current config, never
@@ -228,7 +227,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
       const failure = message("wizard.sourceCheckFailed");
       // A check that could not even answer must not read as "no substituted
       // volume": it blocks exactly like a known substitution until a recheck
-      // succeeds (R3-07).
+      // succeeds.
       set({ substitutedDirs: [], presenceUnknown: true, error: failure });
       if (!quiet) recordActionFailure("configured-source-check-failed", failure, error);
       return false;

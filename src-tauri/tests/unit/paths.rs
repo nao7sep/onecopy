@@ -67,7 +67,7 @@ fn override_that_expands_to_empty_is_rejected() {
 
 #[test]
 fn is_within_data_root_matches_the_root_and_its_descendants_only() {
-    // R6-02: a source containing the data root must be excluded from walking
+    // A source containing the data root must be excluded from walking
     // and watching wherever it lies.
     let data_root = PathBuf::from("/Users/tester/.onecopy");
     assert!(is_within_data_root(&data_root, &data_root), "the root itself");
@@ -89,11 +89,11 @@ fn is_within_data_root_matches_the_root_and_its_descendants_only() {
     );
 }
 
-// R6-03: the data root must be private to the owner, and an existing root an
+// The data root must be private to the owner, and an existing root an
 // earlier build left too open must be tightened, not just a freshly created
 // one. Unix-only: Windows has no equivalent permission bits to assert on
 // (the profile ACL already applies there).
-// R6-03/Phase 9: a freshly created root must be born owner-only, not merely
+// A freshly created root must be born owner-only, not merely
 // tightened afterward. Uses a throwaway home so a broad umask (e.g. 022)
 // cannot leave the directory briefly world-readable before any tightening.
 #[cfg(unix)]

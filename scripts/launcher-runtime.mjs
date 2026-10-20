@@ -40,34 +40,13 @@ export function ownsProcess(processInfo, identity) {
   }
 
   const executableName = identity.executable.toLowerCase();
-  const macBundleExecutable = `/${identity.label.toLowerCase()}.app/contents/macos/${executableName}`;
-  const windowsExecutable = `/${executableName}.exe`;
-  if (identity.kind === "electron") {
-    return combined.includes("/node_modules/.bin/electron-vite")
-      || combined.includes("/node_modules/electron-vite/")
-      || combined.includes("/node_modules/electron/dist/")
-      || combined.includes(macBundleExecutable)
-      || combined.includes(windowsExecutable);
-  }
-  if (identity.kind === "tauri") {
-    return combined.includes("/node_modules/.bin/tauri")
-      || combined.includes("/node_modules/@tauri-apps/cli/")
-      || combined.includes("/node_modules/.bin/vite")
-      || combined.includes("/node_modules/vite/")
-      || combined.includes(`/target/debug/${executableName}`)
-      || combined.includes(`/target/release/${executableName}`)
-      || combined.includes(macBundleExecutable);
-  }
-  if (identity.kind === "web") {
-    return combined.includes("/node_modules/.bin/vite")
-      || combined.includes("/node_modules/.bin/tsx")
-      || combined.includes("/node_modules/.bin/concurrently")
-      || combined.includes("/node_modules/vite/")
-      || combined.includes("/node_modules/tsx/")
-      || combined.includes("/node_modules/concurrently/")
-      || combined.includes("/scripts/run-dev.ts");
-  }
-  throw new Error(`Unknown runtime identity: ${identity.kind}`);
+  return combined.includes("/node_modules/.bin/tauri")
+    || combined.includes("/node_modules/@tauri-apps/cli/")
+    || combined.includes("/node_modules/.bin/vite")
+    || combined.includes("/node_modules/vite/")
+    || combined.includes(`/target/debug/${executableName}`)
+    || combined.includes(`/target/release/${executableName}`)
+    || combined.includes(`/${identity.label.toLowerCase()}.app/contents/macos/${executableName}`);
 }
 
 function parsePosixProcesses(stdout) {
@@ -214,7 +193,15 @@ async function stopRuntime(identity) {
   }
 }
 
-async function assertEndpointAvailable(host, port) {
+// Tauri's config owns the development URL; Vite derives its server from the
+// same field, so the launchers read it here rather than repeating the port.
+export async function developmentUrl() {
+  const config = JSON.parse(await readFile(join(REPO_ROOT, "src-tauri", "tauri.conf.json"), "utf8"));
+  return new URL(config.build.devUrl).href.replace(/\/$/, "");
+}
+
+async function assertEndpointAvailable(url) {
+  const { hostname: host, port } = new URL(url);
   await new Promise((resolveProbe, rejectProbe) => {
     const probe = createServer();
     probe.unref();
@@ -223,7 +210,7 @@ async function assertEndpointAvailable(host, port) {
         `Cannot bind ${host}:${port}: ${error.code ?? error.message}. The listener was left running because its app identity is unknown.`,
       ));
     });
-    probe.listen({ host, port, exclusive: true }, () => {
+    probe.listen({ host, port: Number(port), exclusive: true }, () => {
       probe.close((error) => error ? rejectProbe(error) : resolveProbe());
     });
   });
@@ -278,13 +265,12 @@ async function waitForExecutable(executablePath, timeoutMilliseconds) {
 }
 
 function parseIdentity(args) {
-  const kind = args.shift();
   const label = args.shift();
   const executable = args.shift();
-  if (!["electron", "tauri", "web"].includes(kind) || !label || !executable) {
-    throw new Error("Expected runtime identity: <electron|tauri|web> <label> <executable-name>.");
+  if (!label || !executable) {
+    throw new Error("Expected runtime identity: <label> <executable-name>.");
   }
-  return { kind, label, executable };
+  return { label, executable };
 }
 
 async function main(args) {
@@ -320,11 +306,14 @@ async function main(args) {
     await releaseRuntime(token);
     return;
   }
+  if (command === "dev-url") {
+    process.stdout.write(`${await developmentUrl()}\n`);
+    return;
+  }
   if (command === "check-endpoint") {
-    const host = args.shift();
-    const port = Number(args.shift());
-    if (!host || !Number.isInteger(port)) throw new Error("Expected check-endpoint <host> <port>.");
-    await assertEndpointAvailable(host, port);
+    const url = args.shift();
+    if (!url) throw new Error("Expected check-endpoint <url>.");
+    await assertEndpointAvailable(url);
     return;
   }
   if (command === "wait-http") {
@@ -341,7 +330,7 @@ async function main(args) {
     await waitForExecutable(executablePath, timeout);
     return;
   }
-  throw new Error("Expected one of: claim, is-owner, release-if-owner, stop, stop-if-owner, check-endpoint, wait-http, wait-process.");
+  throw new Error("Expected one of: claim, is-owner, release-if-owner, stop, stop-if-owner, dev-url, check-endpoint, wait-http, wait-process.");
 }
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : "";

@@ -56,7 +56,7 @@ static REQUESTED_MEDIA_INFLIGHT: LazyLock<(Mutex<u64>, Condvar)> =
 /// thread this module owns, so `join()` cannot simply join a `JoinHandle` for
 /// them — this guard is the equivalent counted registration: it keeps the
 /// requested-media population visible to shutdown so an owned ffmpeg process
-/// is never orphaned (W-L1). Cooperative cancellation already stops the work
+/// is never orphaned. Cooperative cancellation already stops the work
 /// promptly at shutdown (`derived_runtime::begin_shutdown` + the ffmpeg poll),
 /// so this wait is bounded in practice.
 pub(crate) struct RequestedMediaGuard;
@@ -637,7 +637,7 @@ pub fn join() {
     }
     // Requested previews/full-resolution images run on dispatch()'s blocking
     // pool rather than a thread this module owns; wait for them too so their
-    // ffmpeg is never orphaned (W-L1).
+    // ffmpeg is never orphaned.
     join_requested_media();
 }
 
@@ -1191,7 +1191,7 @@ fn derive_priority_previews(
         // Issues change only when a write actually opened or resolved one; a
         // clean batch of successes with nothing to resolve has nothing new
         // for the Issues inbox, and deriving hundreds of thousands of items
-        // otherwise reloaded it twice a second for the whole run (C-M3).
+        // otherwise reloaded it twice a second for the whole run.
         if image.issues_changed {
             notify_issues(app);
         }
@@ -1472,7 +1472,7 @@ fn run_optional_class(
             )?;
             if stats.attempted > 0 {
                 // Issues change only when a write actually opened or resolved
-                // one; a clean attempt has nothing new for the Issues inbox (C-M3).
+                // one; a clean attempt has nothing new for the Issues inbox.
                 if stats.issues_changed {
                     notify_issues(app);
                 }
@@ -1530,7 +1530,7 @@ fn run_optional_class(
             if stats.attempted > 0 {
                 clear_model_failure(app, conn, class);
                 // Issues change only when a write actually opened or resolved
-                // one; a clean attempt has nothing new for the Issues inbox (C-M3).
+                // one; a clean attempt has nothing new for the Issues inbox.
                 if stats.issues_changed {
                     notify_issues(app);
                 }
@@ -1668,7 +1668,7 @@ pub(crate) fn pause_for_resource_safety(
 /// every remaining item in the class would fail the same write the same way.
 /// This pauses the class exactly like a resource-safety failure, with one
 /// Issue naming the condition, instead of recording a permanent per-item
-/// failure for every item the pass has not reached yet (R6-05).
+/// failure for every item the pass has not reached yet.
 pub(crate) fn pause_for_storage_safety(
     app: &AppHandle,
     conn: &Connection,
@@ -1714,7 +1714,7 @@ fn clear_model_failure(app: &AppHandle, conn: &Connection, class: WorkClass) {
 /// Runs a `with_active` result through the storage-safety gate: a cache-write
 /// failure pauses `class` and answers "no work done" instead of propagating as
 /// an ordinary pass error that would otherwise unwind the whole background
-/// loop (R6-05).
+/// loop.
 fn active_or_pause_for_storage<T: Default>(
     app: &AppHandle,
     conn: &Connection,
@@ -1790,7 +1790,7 @@ struct TranscriptStep {
     exhausted: bool,
     /// Whether this attempt actually opened or resolved a live transcript
     /// Issue. Used to gate `notify_issues`: a completed or cancelled attempt
-    /// with no Issue change has nothing new for the Issues inbox (C-M3).
+    /// with no Issue change has nothing new for the Issues inbox.
     issues_changed: bool,
 }
 
@@ -1853,7 +1853,7 @@ pub struct TranscriptionAttempt<'a> {
 #[derive(Debug, PartialEq, Eq)]
 pub enum TranscriptionAttemptOutcome {
     /// `issues_changed`: whether this result actually opened or resolved a
-    /// live transcript Issue (C-M3).
+    /// live transcript Issue.
     Completed {
         hash: String,
         text: String,

@@ -49,7 +49,7 @@ const PATH_SCAN_ISSUES: &[&str] = &[WALK_ERROR, STAT_ERROR, READ_ERROR, METADATA
 
 /// The catalogue key for a scan-time Issue's kind: OneCopy's own sentence
 /// follows the interface language, while whatever WalkDir or the OS reported
-/// stays in `message`, as recorded, after it (R5.5 D-L12, D-L13). The one
+/// stays in `message`, as recorded, after it. The one
 /// place that resolves this rule for every scanner- and watcher-raised path
 /// Issue.
 pub(crate) fn scan_issue_message_key(kind: &str) -> &'static str {
@@ -179,8 +179,7 @@ pub struct ScanSettings {
 impl ScanSettings {
     /// The app's data root, derived from `cache_root` (always
     /// `<data root>/cache`) rather than re-plumbed everywhere `ScanSettings`
-    /// already travels. Used to exclude the app's own storage from discovery
-    /// (R6-02).
+    /// already travels. Used to exclude the app's own storage from discovery.
     pub fn data_root(&self) -> &Path {
         self.cache_root.parent().unwrap_or(&self.cache_root)
     }
@@ -619,7 +618,7 @@ pub fn forget_unconfigured_roots(
                 // IN-clauses below are subqueries over `batch_touched_hashes`,
                 // never a bound parameter per orphaned hash. A root with more
                 // unique items than SQLite's ~32,766 bound-parameter ceiling
-                // could not otherwise be forgotten (R6-01). `orphaned_hashes`
+                // could not otherwise be forgotten. `orphaned_hashes`
                 // is read out separately, only so cache files can be removed
                 // by hash; it never feeds a query's parameter list.
                 const ORPHAN_HASHES: &str = "SELECT content_hash FROM batch_touched_hashes bth \
@@ -778,10 +777,10 @@ pub fn run_source_check_scoped(
     let mut changed_roots = Vec::new();
     progress(ScanProgress::phase(ScanPhase::Walk, root_total, None));
     for (root_index, root) in checked_roots.iter().enumerate() {
-        // The volume-substitution gate is per root, not per source pass
-        // (R3-07, R1-14): a backup drive swapped mid-session at one
-        // configured path must not be walked under the original drive's
-        // rows, but every other independent root still checks normally.
+        // The volume-substitution gate is per root, not per source pass: a
+        // backup drive swapped mid-session at one configured path must not be
+        // walked under the original drive's rows, but every other independent root
+        // still checks normally.
         if let Err(error) =
             crate::volume::enforce_no_substitution(settings.data_root(), std::slice::from_ref(root))
         {
@@ -1181,7 +1180,7 @@ pub(crate) fn hard_link_key(meta: &std::fs::Metadata) -> Option<String> {
 
 /// Excludes the app's own storage the way `trash::is_trash_path` excludes
 /// deleted-file storage: a source containing the data root must never index
-/// or churn the app's own index, logs, caches and models (R6-02). Package
+/// or churn the app's own index, logs, caches and models. Package
 /// directories (`packages`) are excluded whole, the walk's root included, so
 /// a source folder configured inside a library indexes nothing.
 fn is_excluded_from_discovery(path: &Path, is_dir: bool, data_root: Option<&Path>) -> bool {
@@ -2333,7 +2332,7 @@ fn resolve_from_evidence_with_progress(
         }
 
         // Compute this page's resolutions outside any transaction, then
-        // publish them all in one IMMEDIATE transaction (D-H2): autocommit
+        // publish them all in one IMMEDIATE transaction: autocommit
         // per row fires the per-row logical-projection trigger for every
         // row and starves concurrent writers on a large library.
         let mut page_ids: Vec<i64> = Vec::with_capacity(rows.len());

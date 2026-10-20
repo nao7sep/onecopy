@@ -178,7 +178,7 @@ describe("global destructive commands", () => {
     );
   });
 
-  // R5.2 T4: a Delete forwarded from the SEPARATE Preview window
+  // A Delete forwarded from the SEPARATE Preview window
   // (`preview.ts`'s "preview://key" listener, which dispatches a real
   // keydown on `#main-item-area`) must run Main's own full-selection,
   // count-reviewed Delete -- not a single-item delete of whatever Preview
@@ -318,7 +318,7 @@ describe("global destructive commands", () => {
   });
 });
 
-describe("native Settings menu item (R8-04)", () => {
+describe("native Settings menu item", () => {
   afterEach(() => resetModalStack());
 
   it("opens Settings when the core reports the macOS menu item, unless a modal is already open", async () => {
@@ -360,7 +360,7 @@ describe("native About menu item", () => {
   });
 });
 
-describe("Enter playback toggle (R5.1 D3)", () => {
+describe("Enter playback toggle", () => {
   it("does nothing, without an untrue notice, when no player is visible for a video anchor", () => {
     useItemsStore.setState({ selected: { kind: "video", month: "2026-01" } });
     const view = render(<Harness />);

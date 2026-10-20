@@ -161,7 +161,8 @@ export function runningWork(): Message[] {
   const { installing, entries } = useBinariesStore.getState();
   for (const [id, install] of Object.entries(installing)) {
     if (install.cancelling) continue;
-    const tool = toolName(id, entries.find((entry) => entry.id === id)?.label ?? id);
+    const entry = entries.find((candidate) => candidate.id === id);
+    const tool = entry === undefined ? id : toolName(entry);
     const phase = install.progress?.phase;
     work.push(message(phase === "verify" || phase === "install" ? "quit.toolInstalling" : "quit.toolDownloading", { tool }));
   }

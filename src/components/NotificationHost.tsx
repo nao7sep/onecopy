@@ -101,7 +101,7 @@ function Toast({
         <div className="min-w-0 flex-1">
           {/* The condition's own sentence, in the current interface
               language; real detail the sentence cannot restate (a system
-              error) appears as recorded, right after it (R5.5 D-L12). A
+              error) appears as recorded, right after it. A
               notice is a compact surface, so it shows a summary of each —
               a few lines, the path on one — and Issues and Records, where
               every notice is recorded, show them whole. */}
@@ -140,7 +140,7 @@ export default function NotificationHost({
   ownsTimedDismissal = true,
 }: {
   // False in the fullscreen view: Main, always open, is the one timer
-  // owner (Finding C). The fullscreen view still shows and lets the user dismiss
+  // owner. The fullscreen view still shows and lets the user dismiss
   // every notice; it just never races Main's own countdown.
   ownsTimedDismissal?: boolean;
 } = {}) {

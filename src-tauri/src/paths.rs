@@ -77,7 +77,7 @@ pub fn resolve_data_root(app: &AppHandle) -> Result<PathBuf, String> {
 // POSIX, rather than creating it under the default umask and relying solely
 // on `ensure_private` to tighten it afterward — that sequence leaves a window
 // where a freshly created root is briefly world-readable. `ensure_private`
-// still runs after this (R6-03) to tighten a root an earlier build left
+// still runs after this to tighten a root an earlier build left
 // broader than 0700; this only narrows the mode a *new* root is born with.
 #[cfg(unix)]
 fn create_data_root(root: &Path) -> std::io::Result<()> {
@@ -95,7 +95,7 @@ fn create_data_root(root: &Path) -> std::io::Result<()> {
 
 /// Restricts the data root to the owner (0700) so previews, transcripts, the
 /// index and logs never inherit broader access than the source material they
-/// are derived from (R6-03): on macOS the home directory is `drwxr-x---`
+/// are derived from: on macOS the home directory is `drwxr-x---`
 /// (group `staff`, every standard account's primary group), while this app's
 /// default `create_dir_all` umask left `~/.onecopy` world-readable. A
 /// directory this restrictive blocks traversal into anything beneath it
@@ -130,7 +130,7 @@ pub fn data_root_before_launch() -> Option<PathBuf> {
 
 /// Whether `candidate` is the app's own data root, or lies beneath it — the
 /// app's index, logs, caches and models, which are never source content to
-/// walk, watch or offer as a destination (R6-02). This mirrors
+/// walk, watch or offer as a destination. This mirrors
 /// `trash::is_trash_path`: a plain path-component comparison, cheap enough to
 /// run on every walked and watched entry, not a filesystem identity check.
 /// `data_root` is the app's already-resolved storage root; a source that

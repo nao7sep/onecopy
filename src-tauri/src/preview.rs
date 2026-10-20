@@ -130,7 +130,7 @@ pub(crate) fn long_edge_scale(edge: u32) -> String {
 }
 
 /// `max_edge` scales INSIDE ffmpeg (after its own display-orientation pass),
-/// never upscaling. The derive path uses it (Phase 33): a 48 MP HEIC piped as
+/// never upscaling. The derive path uses it: a 48 MP HEIC piped as
 /// full-size BMP is ~144 MB of transfer, allocation and BMP parse per photo —
 /// at 1600 px it is ~6 MB, a 25× cut in everything after the decode. The
 /// decode itself is untouched (HEVC has no partial decode), and the original
@@ -180,7 +180,7 @@ fn decode_via_ffmpeg_bounded(
 /// Public as the routing seam the decode-path tests drive directly.
 pub fn decode_image(src: &Path, ffmpeg: Option<&Path>) -> Result<(DynamicImage, u16), String> {
     if needs_ffmpeg_decode(src) {
-        // ONE decode route (Phase 33): the managed ffmpeg. A system libheif
+        // ONE decode route: the managed ffmpeg. A system libheif
         // used to accelerate this in-process, but a second route the
         // developer never exercises daily is drift waiting to happen, and it
         // cost a dlopen module, a kill switch, and a four-path test matrix.
@@ -434,7 +434,7 @@ pub fn ensure_fullres(
     // not recorded: full-resolution conversion is a reconstructible binary
     // cache entry, staged beside its final path.
     // ffmpeg applies the container's display transforms itself, so the
-    // output is already upright (one decode route, Phase 33). It writes the
+    // output is already upright (one decode route). It writes the
     // PNG itself: a full-resolution frame never passes through this process,
     // whose decode ceiling protects the native image worker, not this route.
     let src = Path::new(&path);
@@ -502,7 +502,7 @@ pub struct DeriveStats {
     /// records the promotion explicitly.
     pub changes: Vec<(String, String)>,
     /// Whether any result in this batch actually opened or resolved a live
-    /// Issue, independent of `derived`/`failed` counts (C-M3).
+    /// Issue, independent of `derived`/`failed` counts.
     pub issues_changed: bool,
 }
 
@@ -587,8 +587,7 @@ fn record_preview_failure_or_combine(
 ) -> String {
     // A stopped attempt is not a failed one; the next attempt starts fresh.
     // A full disk or unwritable cache is the same: every later click would
-    // fail the identical write, so this is not evidence the FILE is broken
-    // (R6-05).
+    // fail the identical write, so this is not evidence the FILE is broken.
     if failure.starts_with(crate::scanner::CANCELLED)
         || crate::resource_limits::is_storage_unavailable(&failure)
     {
@@ -858,7 +857,7 @@ fn derive_candidate_rows_with(
         };
         let mut outcomes: Vec<Option<DeriveOutcome>> = (0..chunk.len()).map(|_| None).collect();
         // Per-item detail inside a chunk is debug-only: the pass that owns
-        // this chunk already records one ordinary trace (W-M3).
+        // this chunk already records one ordinary trace.
         let mut traces: Vec<_> = chunk.iter().map(|(hash, _)| crate::activity::WorkTrace::begin_debug(
             crate::activity::ActivityOwner::BackgroundWork, Some(crate::activity::ActivitySubject::Previews), Some(hash))).collect();
         if parallel.len() > 1 {
@@ -930,7 +929,7 @@ fn derive_candidate_rows_with(
                     // remaining item would fail the same write. Stop the pass
                     // here rather than recording one permanent failure per
                     // item; the derived-work owner turns this into a paused
-                    // lifecycle condition with a single Issue (R6-05).
+                    // lifecycle condition with a single Issue.
                     traces[index].finish(crate::activity::ActivityState::Waiting, None);
                     return Err(err);
                 }

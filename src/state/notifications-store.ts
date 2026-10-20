@@ -205,7 +205,7 @@ export async function errorNotification(
   // The message descriptor (key + values) crosses IPC and is stored beside
   // the record, so every window renders it in ITS current interface
   // language — including after a later language change, not just the one
-  // active in this window when the failure happened (R5.5 D-L12).
+  // active in this window when the failure happened.
   return publishNotification({
     kind,
     level: "error",

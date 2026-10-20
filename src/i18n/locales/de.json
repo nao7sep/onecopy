@@ -987,7 +987,7 @@
   "reason.previewBinary": "Die Datei scheint eine Binärdatei zu sein und kein Text.",
   "reason.previewNotResponding": "Das Laufwerk mit dieser Datei reagiert nicht.",
   "tool.ffmpeg": "ffmpeg",
-  "tool.onnxruntimeWinX64": "Laufzeitumgebung für die Gesichtsbewertung (ONNX Runtime 1.28)",
+  "tool.onnxruntimeWinX64": "Laufzeitumgebung für die Gesichtsbewertung (ONNX Runtime {version})",
   "tool.whisperLargeV3Turbo": "Transkriptionsmodell (Whisper large-v3-turbo)",
   "tool.ultrafaceRfb640": "Gesichtsdetektor (UltraFace RFB-640)",
   "tool.hsemotionEnetB2": "Modell für Gesichtsausdrücke (HSEmotion EfficientNet-B2)",

@@ -12,7 +12,7 @@ export function I18nProvider({
   locale,
   children,
   // False for a preview nested inside the window's own provider (the setup
-  // wizard previewing a choice before Finish, R5.5 D-L3): only its own
+  // wizard previewing a choice before Finish): only its own
   // subtree should speak the previewed language, so <html lang> stays on the
   // language actually in effect, as do the surfaces outside that subtree
   // (`documentTranslator` reads the language store).

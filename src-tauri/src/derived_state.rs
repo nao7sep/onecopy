@@ -1068,7 +1068,7 @@ fn stored_transcript(conn: &Connection, hash: &str) -> Result<Option<Transcript>
 
 /// Returns whether this success actually resolved a live Issue, so the
 /// derived-work coordinator can tell the Issues surface changed even when the
-/// batch as a whole had no failure (C-M3).
+/// batch as a whole had no failure.
 pub fn record_preview_success(
     conn: &Connection,
     hash: &str,
@@ -1136,8 +1136,7 @@ fn record_content_failure(
 
 /// The catalogue key naming a derived-work Issue's sentence for `issue_kind`,
 /// so it follows the interface language; the raw diagnostic (an ffmpeg or
-/// decode error) stays in `message`, as recorded, after it (R5.5 D-L12,
-/// D-L13).
+/// decode error) stays in `message`, as recorded, after it.
 fn derived_issue_message_key(issue_kind: &str) -> &'static str {
     match issue_kind {
         PREVIEW_ERROR => "notice.previewFailed",
@@ -1175,7 +1174,7 @@ fn logged_if_unrecorded(
     recorded
 }
 
-/// Returns whether this call actually opened a new live Issue (C-M3).
+/// Returns whether this call actually opened a new live Issue.
 fn record_derived_issue(
     conn: &Connection,
     path: &str,

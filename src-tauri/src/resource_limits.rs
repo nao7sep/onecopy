@@ -40,7 +40,7 @@ pub const DECODE_LIMIT_PREFIX: &str = "decode safety: ";
 /// data root is full, or its cache directory has stopped accepting writes.
 /// Every remaining item in the pass would fail the same way, so this is a
 /// lifecycle condition the derive owner pauses on rather than a per-item
-/// failure it records one Issue for each of (R6-05).
+/// failure it records one Issue for each of.
 pub const STORAGE_UNAVAILABLE_PREFIX: &str = "cache storage unavailable: ";
 
 fn image_limits() -> Limits {
@@ -159,7 +159,7 @@ pub(crate) fn available_transcription_threads() -> i32 {
 /// The CPU budget every bounded ffmpeg invocation and the ONNX face session
 /// pass as their own thread count, so decode/encode work leaves the same
 /// interactive headroom Whisper already respects instead of defaulting to
-/// every physical core (W-L2). Reuses `transcription_threads`'s formula
+/// every physical core. Reuses `transcription_threads`'s formula
 /// (half the logical CPUs, clamped to 1..=4) rather than a second budget.
 pub fn cpu_thread_budget() -> i32 {
     available_transcription_threads()

@@ -236,7 +236,7 @@ describe("loaded directory projection", () => {
     ).toEqual([]);
   });
 
-  it("a presence check that fails outright blocks like a substitution, not like verified-safe (R3-07)", async () => {
+  it("a presence check that fails outright blocks like a substitution, not like verified-safe", async () => {
     mockCommands({
       check_source_dirs: () => {
         throw new Error("volume check failed");

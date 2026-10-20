@@ -58,10 +58,10 @@ export function allocatePreviewPlacement(
   orderedMonitors: readonly PreviewMonitor[],
   mainBounds: PreviewBounds,
 ): PreviewInitialPlacement | null {
-  // When Main's own display cannot be determined, nothing is excluded (screen-
-  // priority.md: "the order is a preference over the displays that happen to
-  // be connected"; the fallback below is not a claim that the first entry is
-  // Main's display, so it must not be dropped from consideration, D-S11).
+  // When Main's own display cannot be determined, nothing is excluded: the
+  // display order is a preference over whichever displays are connected, and
+  // falling back to the first entry does not claim it is Main's display, so
+  // that display stays a candidate for the preview.
   const main = hostingScreen(orderedMonitors, mainBounds);
   const target = main === null
     ? orderedMonitors[0]

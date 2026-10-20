@@ -223,7 +223,7 @@ describe("the issues modal", () => {
     expect(invokeCalls.map((call) => call.command)).toEqual(["get_issues"]);
   });
 
-  it("reaches row 501 through Show more, using a keyset cursor from the last loaded row (R4.4 finding A)", async () => {
+  it("reaches row 501 through Show more, using a keyset cursor from the last loaded row", async () => {
     const firstPage = [row(1), row(2)];
     const secondPage = [row(3), row(4)];
     mockCommands({
@@ -250,7 +250,7 @@ describe("the issues modal", () => {
     });
   });
 
-  it("shows an Issue's own sentence in the current interface language, following a change with no reload (R5.5 D-L12)", async () => {
+  it("shows an Issue's own sentence in the current interface language, following a change with no reload", async () => {
     mockCommands({
       get_issues: () => ({
         total: 1,

@@ -151,7 +151,7 @@ describe("comparison keyboard selection", () => {
   });
 
   it.each(["Delete", "Backspace"])(
-    "routes %s to the same single-mark direct trash (G1)",
+    "routes %s to the same single-mark direct trash",
     async (key) => {
       mockCommand("delete_items", ({ items }) => ({
         error: null, failedFiles: 0,
@@ -174,7 +174,7 @@ describe("comparison keyboard selection", () => {
     },
   );
 
-  it("routes Shift+Delete to a permanent review, never a direct trash (G2)", async () => {
+  it("routes Shift+Delete to a permanent review, never a direct trash", async () => {
     useComparisonStore.getState().selectSlot(1, "toggle");
     expect(handleComparisonKey({ key: "Delete", shiftKey: true })).toBe(true);
     await vi.waitFor(() =>

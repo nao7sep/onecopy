@@ -1,7 +1,7 @@
 // Frontend logging. The sandboxed webview never opens a log file itself; it
 // builds the JSON-Lines envelope and forwards each structured event to the Rust
 // core (the `log_event` command), which owns the per-session file and applies
-// the debug gate authoritatively (see src-tauri/src/logging.rs). If
+// the debug gate authoritatively. If
 // forwarding fails, this degrades to the console and never throws — logging
 // must never break the app.
 //

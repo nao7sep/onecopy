@@ -49,8 +49,6 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoDir = Split-Path -Parent $scriptDir
 $runtimeHelper = Join-Path $scriptDir "launcher-runtime.mjs"
 $runtimeToken = [guid]::NewGuid().ToString("N")
-$devHost = if ($env:TAURI_DEV_HOST) { $env:TAURI_DEV_HOST } else { "127.0.0.1" }
-$devUrl = "http://${devHost}:28867"
 $sourceReadyTimeoutMs = 900000
 
 try {
@@ -64,11 +62,9 @@ try {
 
     Write-Step "Replacing any existing OneCopy runtime"
     Invoke-Native -FilePath "node" -ArgumentList @($runtimeHelper, "claim", $runtimeToken)
-    Invoke-Native -FilePath "node" -ArgumentList @($runtimeHelper, "stop", "tauri", "OneCopy", "onecopy")
-    Invoke-Native -FilePath "node" -ArgumentList @($runtimeHelper, "check-endpoint", $devHost, "28867")
-    if ($env:TAURI_DEV_HOST) {
-        Invoke-Native -FilePath "node" -ArgumentList @($runtimeHelper, "check-endpoint", $devHost, "29587")
-    }
+    Invoke-Native -FilePath "node" -ArgumentList @($runtimeHelper, "stop", "OneCopy", "onecopy")
+    $devUrl = Invoke-Native -FilePath "node" -ArgumentList @($runtimeHelper, "dev-url")
+    Invoke-Native -FilePath "node" -ArgumentList @($runtimeHelper, "check-endpoint", $devUrl)
 
     Write-Step "Installing dependencies required for launch"
     Invoke-Native -FilePath "npm" -ArgumentList @("install", "--no-audit", "--no-fund")
@@ -91,7 +87,7 @@ catch {
 finally {
     & node $runtimeHelper is-owner $runtimeToken *> $null
     if ($LASTEXITCODE -eq 0) {
-        & node $runtimeHelper stop-if-owner $runtimeToken tauri "OneCopy" "onecopy" *> $null
+        & node $runtimeHelper stop-if-owner $runtimeToken "OneCopy" "onecopy" *> $null
         Read-Host "Press Enter to close" | Out-Null
     }
 }

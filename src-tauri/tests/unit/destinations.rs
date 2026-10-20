@@ -37,7 +37,7 @@ fn one_listing_projects_children_and_emptiness_together() {
     .unwrap()
     .is_empty());
 
-    // R6-02: the app's own data root is never a browsable destination child,
+    // The app's own data root is never a browsable destination child,
     // and listing straight into it (a source containing the data root, or a
     // destination path resolving inside it) answers empty like trash.
     let rows_excluding_data_root =

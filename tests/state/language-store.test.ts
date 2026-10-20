@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-// D-L9: if the appearance read never completes (a slow core, or
+// If the appearance read never completes (a slow core, or
 // window-appearance's own bound), the window must not paint in English
 // regardless of what the computer's language actually is — it falls back to
 // the browser's own preferred-locale resolution instead of a fixed default.

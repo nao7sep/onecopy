@@ -35,7 +35,7 @@ describe("screen identification operation", () => {
       expect(window.setFocus).not.toHaveBeenCalled();
     }
     // Creation alone does not settle the batch: a second identification must
-    // not start while the flashes are still showing (D-S7).
+    // not start while the flashes are still showing.
     expect(identifyScreens(monitors)).toBe(first);
     for (const label of firstLabels) await outcome(label, "tauri://destroyed");
     await expect(first).resolves.toBeUndefined();

@@ -594,7 +594,7 @@ function MainStatusLine() {
       title={status.title ?? status.text}
       // The visible line keeps the bar one line high: past its width it ends
       // with an ellipsis. The hover title and the accessible name carry the
-      // longer explanation where a status has one (R8-09).
+      // longer explanation where a status has one.
       aria-label={status.title ?? status.text}
       role={status.announce === true ? (status.tone === "danger" ? "alert" : "status") : undefined}
     >

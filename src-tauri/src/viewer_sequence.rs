@@ -89,7 +89,7 @@ pub fn start(
     // one WITHOUT holding ACTIVE: streaming a whole section -- or a large
     // explicit selection -- into the temp store can take a while for a large
     // library, and holding the lock across that blocked a concurrent move or
-    // close on another blocking-pool thread until it finished (C-L4). The
+    // close on another blocking-pool thread until it finished. The
     // temp file is private until it is swapped in below, so nothing else can
     // observe it half-built.
     {

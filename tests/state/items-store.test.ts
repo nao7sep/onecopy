@@ -229,7 +229,7 @@ describe("bounded section state", () => {
     expect(useItemsStore.getState().scrollRequest).toMatchObject({ key: "h3", index: 1 });
   });
 
-  it("does not re-centre the view when a routine refresh finds no anchor issue (R5.1 D2)", async () => {
+  it("does not re-centre the view when a routine refresh finds no anchor issue", async () => {
     const rows = [item(1), item(2), item(3)];
     mockSection(rows);
     await useItemsStore.getState().select(SECTION);
@@ -245,7 +245,7 @@ describe("bounded section state", () => {
     expect(useItemsStore.getState().scrollRequest).toBeNull();
   });
 
-  it("recovers a vanished similar-strip target near the current position, not section index 0 (R5.1 D7)", async () => {
+  it("recovers a vanished similar-strip target near the current position, not section index 0", async () => {
     const rows = Array.from({ length: 10 }, (_, i) => item(i + 1));
     mockSection(rows);
     await useItemsStore.getState().select(SECTION);
@@ -262,7 +262,7 @@ describe("bounded section state", () => {
     expect(useItemsStore.getState().selectedItem).toBe("h6");
   });
 
-  // R5.1 D10: a same-run return to a previously visited section restores
+  // A same-run return to a previously visited section restores
   // only the remembered anchor -- exclusively -- rather than whatever
   // multi-selection the section held when it was left. `sectionMemory` only
   // ever records `{ anchor, context }` (items-store.ts:250-253), so this
@@ -501,7 +501,7 @@ describe("request ownership", () => {
   });
 });
 
-// R5.1 D13: a slow detail request for a since-abandoned anchor must never
+// A slow detail request for a since-abandoned anchor must never
 // overwrite Details once the anchor has moved on -- `loadAnchorDetail`'s
 // freshness guard (items-store.ts) checks the CURRENT anchor identity when
 // its response arrives, not just request order.

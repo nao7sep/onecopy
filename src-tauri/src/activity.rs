@@ -498,7 +498,7 @@ impl WorkTrace {
 
     /// A trace for per-item work inside a larger background pass (for
     /// example one photo in a preview-derivation chunk): debug detail, never
-    /// an ordinary Activity row (W-M3).
+    /// an ordinary Activity row.
     pub fn begin_debug(
         owner: ActivityOwner,
         subject: Option<ActivitySubject>,

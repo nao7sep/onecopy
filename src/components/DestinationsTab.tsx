@@ -91,7 +91,7 @@ function DirNode({
       // accessible name is the full path, so keyboard and screen-reader users
       // get the same identifying information a mouse hover already gives
       // sighted users — and the ActionBar below mirrors it visibly the
-      // moment this row becomes active (R8-05).
+      // moment this row becomes active.
       aria-label={entry.path}
     >
       <div
@@ -298,7 +298,7 @@ function ActionBar() {
   return (
     <div className="-mx-3 mt-3 shrink-0 border-t border-border px-3 pt-3">
       {/* This is the exact destination a Move/Copy button below commits
-          against (R8-05): the second line keeps the path's final segment,
+          against: the second line keeps the path's final segment,
           its tooltip and the header's accessible name carry the whole path,
           and a Move's confirmation names the destination in full. */}
       <p
@@ -628,7 +628,7 @@ export function factText(fact: DestinationFact, { text, t, list }: Translator): 
   return text({ key: fact.key, values: { ...fact.values, names } });
 }
 
-/** The drop's Move/Copy question (Phase 33). Dropping used to read modifier
+/** The drop's Move/Copy question. Dropping used to read modifier
  * keys held at release — a silent decision nobody remembers making with a
  * mouse button down. The permanent variant is deliberately absent here: it
  * stays behind the explicit destination-row action and its own confirmation. */

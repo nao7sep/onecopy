@@ -444,7 +444,7 @@ fn ctx() -> TrashContext {
 
 #[test]
 fn the_latest_record_names_a_stored_file_reused_after_a_failed_move() {
-    // Blueprint 1.4: a line is written before the move; when the move fails
+    // A line is written before the move; when the move fails
     // the stored name stays free, and a later deletion the same day is given
     // it. Two lines then name one stored file, and only the later is true.
     let dir = tempfile::tempdir().unwrap();

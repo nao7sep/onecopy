@@ -7,7 +7,7 @@ fn replacement_and_shutdown_each_retire_an_owned_generation() {
     assert!(!generation_is_live(4, 4, true));
 }
 
-// (R4.3 finding 5) A directory the watcher could not re-read leaves its part
+// A directory the watcher could not re-read leaves its part
 // of the library stale, so the pass carries a failure to report instead of
 // letting the loop clear the watcher-failed condition.
 #[test]
@@ -20,7 +20,7 @@ fn a_directory_that_fails_to_restat_keeps_the_watcher_failure_visible() {
     std::fs::create_dir_all(&outside).unwrap();
     std::fs::write(root.join("new.jpg"), b"fresh").unwrap();
     let stored_root = crate::winpath::for_fs(&root).to_string_lossy().into_owned();
-    // A data root distinct from `root`/`outside` (R6-02's exclusion would
+    // A data root distinct from `root`/`outside` (the data-root exclusion would
     // otherwise treat these watched directories as the app's own storage,
     // since they would sit inside it).
     let app_data = dir.path().join("app-data");
@@ -245,7 +245,7 @@ mod events {
         assert!(dirty.is_empty());
     }
 
-    // (W-L4) The channel between `notify`'s callback and the drain loop is
+    // The channel between `notify`'s callback and the drain loop is
     // bounded: a full queue flags overflow instead of growing without bound
     // while ingestion is blocked (e.g. a long `INDEXING` hold).
     #[test]

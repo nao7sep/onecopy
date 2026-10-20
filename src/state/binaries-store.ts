@@ -57,6 +57,9 @@ export interface DependencyState {
   /** A pinned artifact's upstream publication date; null for binaries, whose
    * live version answers that. */
   released: string | null;
+  /** The pinned artifact's upstream release number, which its name shows;
+   * null where the pin is a commit rather than a numbered release. */
+  upstreamVersion: string | null;
   /** Known transfer size; an archived runtime uses its download, not DLL size. */
   downloadBytes: number | null;
 }

@@ -84,7 +84,7 @@ export function Select({
   ...props
 }: Omit<SelectHTMLAttributes<HTMLSelectElement>, "size"> & { size?: FieldSize }) {
   // A restyled control draws its own chevron rather than keeping the
-  // platform's native one (interface-styling-conventions, R8-07): only the
+  // platform's native one: only the
   // closed control is the app's, and the list it opens stays the platform's.
   return (
     <span className="relative inline-flex min-w-0 max-w-full">

@@ -92,11 +92,10 @@ describe("the title band", () => {
     }
   });
 
-  it("opens the Records window from the menu, which no longer reveals the logs folder", async () => {
+  it("opens the Records window from the menu", async () => {
     mockCommands({ open_records_window: () => null });
     const view = renderReadyApp();
     fireEvent.click(view.getByRole("button", { name: "Open menu" }));
-    expect(view.queryByText("Reveal logs folder")).toBeNull();
 
     await act(async () => {
       fireEvent.click(view.getByText("Records"));
@@ -113,7 +112,7 @@ describe("the title band", () => {
     expect(footer?.textContent).not.toContain("OneCopy");
   });
 
-  it("gives the status line's clipped text a real accessible name, not only a hover title (R8-09)", () => {
+  it("gives the status line's clipped text a real accessible name, not only a hover title", () => {
     const view = renderReadyApp();
     const status = view.container.querySelector("footer > span");
     expect(status).not.toBeNull();
@@ -121,7 +120,7 @@ describe("the title band", () => {
     expect(title).toBeTruthy();
     // Keyboard and screen-reader users get the same full value a mouse
     // hover already gives sighted users, the same escape hatch destination
-    // paths already carry (R8-05).
+    // paths already carry.
     expect(status?.getAttribute("aria-label")).toBe(title);
   });
 

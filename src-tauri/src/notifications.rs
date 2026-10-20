@@ -35,7 +35,7 @@ pub struct NotificationRequest {
     /// The rendered sentence, in whatever language this window currently
     /// shows. Kept in the record and for a row with no descriptor; a window that redraws its live notices while this one is
     /// still active renders `message_key` instead, so they follow a later
-    /// language change (R5.5 D-L12).
+    /// language change.
     pub message: String,
     /// A catalogue key the frontend can re-render in the current interface
     /// language; `None` for a condition the caller does not (yet) key.
@@ -85,7 +85,7 @@ fn validate(request: &NotificationRequest) -> Result<(), String> {
     }
     // A row must say SOMETHING: either real recorded detail, or a message
     // key the frontend renders into a sentence. A keyed row with nothing else
-    // to add legitimately sends an empty message (R5.5 D-L12).
+    // to add legitimately sends an empty message.
     if request.message.trim().is_empty() && request.message_key.is_none() {
         return Err("notification message or message key is required".to_string());
     }

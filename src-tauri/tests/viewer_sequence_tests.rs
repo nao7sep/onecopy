@@ -175,7 +175,7 @@ fn disk_backed_sequence_freezes_order_and_skips_disappeared_members() {
 
 #[test]
 fn concurrent_starts_never_collide_on_one_temp_sequence_file() {
-    // C-L4: `start` used to hold the ACTIVE lock for its entire build,
+    // `start` used to hold the ACTIVE lock for its entire build,
     // serializing concurrent starts and, before that, using one fixed temp
     // file name across every call. It now builds off-lock with a
     // token-unique path, swapping the finished sequence in only under a
@@ -315,7 +315,7 @@ fn members_keep_their_place_when_their_provisional_identity_is_promoted() {
     viewer_sequence::close(Some(&snapshot.token)).unwrap();
 }
 
-// R5.2 T3: a multi-item selection freezes in DISPLAYED order (by section
+// A multi-item selection freezes in DISPLAYED order (by section
 // index), not in whatever order the caller happened to list the selected
 // members, and starts at the anchor.
 #[test]
@@ -408,7 +408,7 @@ fn moving_past_either_end_stays_on_that_end_without_wrapping() {
     viewer_sequence::close(Some(&snapshot.token)).unwrap();
 }
 
-// R5.2 T2: after the CURRENT item itself is removed, recovery goes to the
+// After the CURRENT item itself is removed, recovery goes to the
 // next member, then the previous one when there is no next, and closes the
 // session once none remain. The existing coverage only ever removed a
 // non-current member.

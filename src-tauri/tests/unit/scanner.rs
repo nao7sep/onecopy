@@ -36,8 +36,7 @@ fn directory_containment_uses_native_components_and_spelling_aliases() {
 #[test]
 fn every_scan_issue_message_key_exists_in_every_embedded_catalogue() {
     // A typo here would fall back to `t()`'s key-echo behavior in every
-    // language at once, for every scan-time Issue OneCopy raises (R5.5
-    // D-L12, D-L13).
+    // language at once, for every scan-time Issue OneCopy raises.
     let kinds = [WALK_ERROR, STAT_ERROR, READ_ERROR, METADATA_READ_ERROR, COPIES_DISAGREE, "unmapped-kind"];
     for language in crate::i18n::LANGUAGES {
         let text = crate::i18n::catalogue(language);

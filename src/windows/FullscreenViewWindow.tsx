@@ -105,10 +105,10 @@ export default function FullscreenViewWindow() {
   return (
     <div ref={surface} tabIndex={-1} aria-label={t("fullscreenView.window")} className="group relative flex h-screen w-screen flex-col overflow-hidden bg-black text-white outline-none">
       {/* Main, always open, is the one window that owns timed-notice
-          auto-dismiss (Finding C) — this copy still shows and dismisses
+          auto-dismiss — this copy still shows and dismisses
           notices, it just never runs a second, unpausable countdown. */}
       <NotificationHost ownsTimedDismissal={false} />
-      {/* Hover- and focus-reveal (D9, reverted): the lightweight chrome
+      {/* Hover- and focus-reveal: the lightweight chrome
           stays reachable by keyboard (Tab reaches it, focus-within keeps it
           shown) without permanently overlaying the media beneath it. */}
       <header className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 bg-black/65 px-3 py-2 opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100 focus-within:opacity-100">

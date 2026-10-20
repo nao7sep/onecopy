@@ -7,9 +7,9 @@ export function managedToolsFixture(
 ): DependencyState[] {
   const pinned = (
     id: string, label: string, released: string, downloadBytes: number,
-    kind: "model" | "runtime" = "model",
+    kind: "model" | "runtime" = "model", upstreamVersion: string | null = null,
   ): DependencyState => ({
-    id, label, kind, released, downloadBytes,
+    id, label, kind, released, downloadBytes, upstreamVersion,
     status: "not-installed", installedVersion: null,
     facts: { latestKnownVersion: null, lastCheckedAtUtc: null },
     path: "", requiredForCore: false, checkable: false,
@@ -25,13 +25,13 @@ export function managedToolsFixture(
         : platform === "windows" ? "autobuild-2026-09-08-12-00" : "9.1",
       lastCheckedAtUtc: "2026-09-09T00:00:00.000Z",
     },
-    path: "", requiredForCore: true, checkable: true, released: null, downloadBytes: null,
+    path: "", requiredForCore: true, checkable: true, released: null, upstreamVersion: null, downloadBytes: null,
   };
   return [
     ffmpeg,
     ...(platform === "windows" ? [pinned(
-      "onnxruntime-win-x64", "Face-scoring runtime (ONNX Runtime 1.28)",
-      "2026-07-25", 139_145_017, "runtime",
+      "onnxruntime-win-x64", "Face-scoring runtime (ONNX Runtime 1.28.0)",
+      "2026-07-25", 139_145_017, "runtime", "1.28.0",
     )] : []),
     pinned("whisper-large-v3-turbo", "Transcription model (Whisper large-v3-turbo)", "2024-10-01", 1_624_555_275),
     pinned("ultraface-rfb640", "Face detector (UltraFace RFB-640)", "2020-12-17", 1_588_012),

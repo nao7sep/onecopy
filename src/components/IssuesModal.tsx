@@ -18,7 +18,7 @@ import type { MessageKey } from "../i18n/catalogues";
 
 // Real, unrestatable detail (a system error, a count) beside a keyed
 // sentence — never shown for an unkeyed row, whose recorded text IS the
-// sentence `noticeSentence` already renders (R5.5 D-L12).
+// sentence `noticeSentence` already renders.
 function recordedDetail(row: IssueRow): string | null {
   if (row.messageKey == null) return null;
   if (row.message === null || row.message.trim() === "") return null;

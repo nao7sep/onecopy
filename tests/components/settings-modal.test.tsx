@@ -188,7 +188,7 @@ describe("Settings categories", () => {
     expect(useSettingsStore.getState().draft?.uiFontFamily).toBe("");
   });
 
-  // R5.5 C1: the language picker lists System plus exactly the ten supported
+  // The language picker lists System plus exactly the ten supported
   // languages, each named in its own words rather than a fixed English list.
   it("lists System plus the ten languages, each named in its own words", async () => {
     const { LANGUAGES, LANGUAGE_NAMES } = await import("../../src/i18n/languages");
@@ -269,7 +269,7 @@ describe("Settings categories", () => {
     expect((screenWrite?.args.changes as Record<string, unknown>)).toHaveProperty("screenPriority");
   });
 
-  // R5.5 C7: each screen row renders POSITION before name, in the DOM, not
+  // Each screen row renders POSITION before name, in the DOM, not
   // only in the sentence template -- position is what tells a matched pair
   // (same name, same resolution) apart, so it must lead visually.
   it("renders each screen row with position before name", async () => {
@@ -392,7 +392,7 @@ describe("Settings categories", () => {
     expect(screen.queryByText("Directories")).toBeNull();
   });
 
-  it("stops at the ends instead of wrapping, like every other tablist in the app (R8-01)", () => {
+  it("stops at the ends instead of wrapping, like every other tablist in the app", () => {
     render(<SettingsModal open onClose={() => {}} />);
     const first = screen.getByRole("tab", { name: "Library" });
     fireEvent.keyDown(first, { key: "ArrowLeft" });
@@ -422,7 +422,7 @@ describe("Settings categories", () => {
     fireEvent.click(screen.getByRole("button", { name: /Rebuild library index/ }));
     expect(screen.getByText(/Your files, settings, and managed tools will not change/)).toBeTruthy();
     // Both discard options render unchecked, and the transcript one carries
-    // its highlighted caution note (Phase 9 developer decision).
+    // its highlighted caution note.
     const previews = screen.getByLabelText("Previews, posters, and scene snapshots") as HTMLInputElement;
     const transcripts = screen.getByLabelText("Transcripts") as HTMLInputElement;
     const faces = screen.getByLabelText("Face scores") as HTMLInputElement;

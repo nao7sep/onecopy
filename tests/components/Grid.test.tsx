@@ -448,7 +448,7 @@ describe("other files", () => {
     expect(useItemsStore.getState().selectedItem).toBe("h3");
   });
 
-  it("shows truthful preparation and error state, not a plain row (R5.1 D6b)", () => {
+  it("shows truthful preparation and error state, not a plain row", () => {
     const failed = item(1, {
       derivedWork: {
         ...EMPTY_ITEM_WORK,

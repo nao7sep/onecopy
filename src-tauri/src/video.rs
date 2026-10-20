@@ -167,7 +167,7 @@ pub struct VideoDeriveStats {
     pub skipped_no_ffmpeg: bool,
     pub changed_hashes: Vec<String>,
     /// Whether any result in this batch actually opened or resolved a live
-    /// Issue, independent of `derived`/`failed` counts (C-M3).
+    /// Issue, independent of `derived`/`failed` counts.
     pub issues_changed: bool,
 }
 
@@ -179,7 +179,7 @@ pub struct StripDeriveStats {
     pub candidates_found: bool,
     pub last_attempted_hash: Option<String>,
     /// Whether any result in this batch actually opened or resolved a live
-    /// Issue, independent of `failed` count (C-M3).
+    /// Issue, independent of `failed` count.
     pub issues_changed: bool,
 }
 
@@ -330,7 +330,7 @@ fn derive_videos_pending_limit(
             Err(err) if crate::resource_limits::is_storage_unavailable(&err) => {
                 // A full disk or unwritable cache, not a broken video: every
                 // remaining item would fail the same write. The derived-work
-                // owner turns this into a paused lifecycle condition (R6-05).
+                // owner turns this into a paused lifecycle condition.
                 trace.finish(crate::activity::ActivityState::Waiting, None);
                 return Err(err);
             }
@@ -445,7 +445,7 @@ pub fn derive_strips_pending(
                 // remaining item would fail the same write. Clean up any
                 // partial frames this attempt staged, exactly like a
                 // cancellation, and let the derived-work owner pause the
-                // class with one Issue instead of failing every video (R6-05).
+                // class with one Issue instead of failing every video.
                 trace.finish(crate::activity::ActivityState::Waiting, None);
                 for index in 0..count {
                     crate::fs_recovery::remove_file(

@@ -59,16 +59,14 @@ interface SequencedProgress extends ScopedChange {
 
 // Single-flight counts+refresh, driven by the pure coalescer model. Scan-time
 // progress can fire 8 times a second; without single-flight gating, a round
-// slower than the event rate queued another round on top of it without bound
-// (C-H1). At most one round runs at a time, and at most one more is queued to
+// slower than the event rate queued another round on top of it without bound. At most one round runs at a time, and at most one more is queued to
 // run immediately after it finishes.
 //
 // A round is either "light" or "full". A full round round-trips the whole
 // selection through `reconcile_section`. A light round reloads only the window
 // Main wants and reconciles only when the section order changed since the last
 // reconcile (the items store owns that check), so high-frequency progress
-// ticks do not serialize a 100k+ selection each way when nothing moved
-// (C-M2). Watcher updates and completion events request (and, once requested,
+// ticks do not serialize a 100k+ selection each way when nothing moved. Watcher updates and completion events request (and, once requested,
 // keep) a full round; if a full round is requested while a light one is
 // pending or running, the eventual round escalates to full rather than
 // downgrading.
@@ -383,7 +381,7 @@ const install = createEventInstaller(
     await listeners.listen<ScopedChange>("derived://similarity-updated", (event) => {
       // A similarity rebuild after a settings change fires once per rebuilt
       // month bucket -- hundreds of events in a burst -- so this goes through
-      // the same single-flight coalescer as scan progress (C-H1) instead of
+      // the same single-flight coalescer as scan progress instead of
       // calling refresh() unthrottled per event.
       refreshLibrarySoon(event.payload.sections);
     });

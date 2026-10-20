@@ -171,7 +171,7 @@ pub fn preview_file(
     // to (a log file kept open, for example) can grow between `metadata()`
     // and this read. `take(max_bytes + 1)` caps the read itself so a growing
     // file can never be decoded past the gate; the `+ 1` distinguishes an
-    // exact-fit file from one that has since outgrown the limit (C-L2).
+    // exact-fit file from one that has since outgrown the limit.
     let mut bytes = Vec::with_capacity(byte_size.min(max_bytes) as usize);
     if let Err(error) = std::io::BufReader::with_capacity(1024 * 1024, file)
         .take(max_bytes + 1)

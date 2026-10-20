@@ -167,7 +167,7 @@ fn only_a_requested_run_reports_a_missing_tool_or_a_pause_to_its_requester() {
     }
 }
 
-// R4.4 E1: the derived worker's own panic boundary. `worker_termination` is
+// The derived worker's own panic boundary. `worker_termination` is
 // the pure outcome-to-action mapping `derived_worker` executes against a live
 // `AppHandle`; testing it directly proves a panicking or failing worker is
 // caught and correctly routed to `Failed` (which `derived_worker` reports as
