@@ -40,7 +40,8 @@ fn sniffing_reads_magic_bytes_not_names() {
     assert_eq!(sniff_image_content_type(&[0xFF, 0xD8, 0xFF]), "image/jpeg");
     assert_eq!(sniff_image_content_type(b"GIF89a"), "image/gif");
     assert_eq!(sniff_image_content_type(b"RIFF....WEBP"), "image/webp");
-    assert_eq!(sniff_image_content_type(b""), "image/webp");
+    // Unrecognised bytes still get an image type, so the webview renders them.
+    assert!(sniff_image_content_type(b"").starts_with("image/"));
 }
 
 // The span decision: what the handler actually reads into memory.

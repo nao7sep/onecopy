@@ -97,11 +97,11 @@ fn a_file_stat_failure_preserves_its_row_and_allows_other_entries_to_update() {
         }).unwrap();
         let present: i64 = conn.query_row("SELECT count(*) FROM paths WHERE missing = 0", [], |row| row.get(0)).unwrap();
         assert_eq!(present, 2);
-        let issues: i64 = conn.query_row("SELECT count(*) FROM active_issues WHERE kind = 'stat-error'", [], |row| row.get(0)).unwrap();
+        let issues: i64 = conn.query_row("SELECT count(*) FROM active_issues WHERE kind = ?1", [crate::scanner::STAT_ERROR], |row| row.get(0)).unwrap();
         assert_eq!(issues, 1);
     }
     super::restat_dir(&conn, &root, &settings.lists, &settings.source_dirs, settings.data_root()).unwrap();
-    assert_eq!(conn.query_row("SELECT count(*) FROM active_issues WHERE kind = 'stat-error'", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    assert_eq!(conn.query_row("SELECT count(*) FROM active_issues WHERE kind = ?1", [crate::scanner::STAT_ERROR], |row| row.get::<_, i64>(0)).unwrap(), 0);
     std::fs::remove_dir_all(&root).unwrap();
     super::restat_dir(&conn, &root, &settings.lists, &settings.source_dirs, settings.data_root()).unwrap();
     assert_eq!(conn.query_row("SELECT count(*) FROM paths WHERE missing = 0", [], |row| row.get::<_, i64>(0)).unwrap(), 2);
@@ -217,11 +217,11 @@ mod events {
         let dir = tempfile::tempdir().unwrap();
         // A removed trash directory no longer answers is_dir(). It must not dirty
         // the ordinary parent just because the event refers to a vanished path.
-        let (dirty, overflowed) = fold(vec![dir.path().join(".onecopy-trash")]);
+        let (dirty, overflowed) = fold(vec![dir.path().join(crate::trash::TRASH_DIR_NAME)]);
         assert!(!overflowed);
         assert!(dirty.is_empty());
 
-        let lookalike = dir.path().join(".onecopy-trash-notes");
+        let lookalike = dir.path().join(format!("{}-notes", crate::trash::TRASH_DIR_NAME));
         std::fs::create_dir(&lookalike).unwrap();
         let file = lookalike.join("photo.jpg");
         std::fs::write(&file, b"ordinary").unwrap();

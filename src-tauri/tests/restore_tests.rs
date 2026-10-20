@@ -303,6 +303,12 @@ fn fixture(label: &str, indexed: bool) -> Fixture {
     }
 }
 
+/// A manifest line in a format newer than this build reads.
+fn newer_line(mut line: serde_json::Value) -> String {
+    onecopy_lib::formats::stamp_json(&mut line, onecopy_lib::formats::DELETED_FILES_MANIFEST + 1).unwrap();
+    format!("{line}\n")
+}
+
 #[test]
 fn a_day_that_gains_newer_records_after_restore_preparation_stays_untouched() {
     let f = fixture("newer-after-preparation", false);
@@ -315,7 +321,7 @@ fn a_day_that_gains_newer_records_after_restore_preparation_stays_untouched() {
     let (plan, _, _) = f.plan(&["20000101-utc/a.jpg".to_string(), healthy]);
     let manifest = old_day.join(onecopy_lib::trash::MANIFEST_FILE_NAME);
     let mut bytes = std::fs::read(&manifest).unwrap();
-    bytes.extend_from_slice(b"{\"formatVersion\":2,\"storedName\":\"a.jpg\"}\n");
+    bytes.extend_from_slice(newer_line(serde_json::json!({ "storedName": "a.jpg" })).as_bytes());
     std::fs::write(&manifest, &bytes).unwrap();
 
     let outcome = f.execute(&plan);
@@ -336,7 +342,7 @@ fn a_day_that_gains_newer_records_during_restore_volume_checks_is_not_renamed() 
     let stored = Path::new(&plan.steps[0].entry.stored_path);
     let manifest = stored.parent().unwrap().join(onecopy_lib::trash::MANIFEST_FILE_NAME);
     let mut bytes = std::fs::read(&manifest).unwrap();
-    bytes.extend_from_slice(b"{\"formatVersion\":2}\n");
+    bytes.extend_from_slice(newer_line(serde_json::json!({})).as_bytes());
     let injected = std::cell::Cell::new(false);
 
     let (outcome, _) = execute(
@@ -429,12 +435,12 @@ impl Fixture {
             .unwrap()
     }
 
-    fn manifest_events(&self) -> usize {
+    /// Records the product's own manifest reader counts as restored.
+    fn manifest_events(&self) -> u64 {
         let trash = self.root.join(TRASH_DIR_NAME);
         std::fs::read_dir(&trash)
             .unwrap()
-            .map(|day| std::fs::read_to_string(day.unwrap().path().join("manifest.jsonl")).unwrap_or_default())
-            .map(|text| text.lines().filter(|line| line.contains("\"event\":\"restored\"")).count())
+            .map(|day| onecopy_lib::trash::read_day(&day.unwrap().path()).unwrap().restored)
             .sum()
     }
 }
@@ -552,7 +558,7 @@ fn a_folder_that_became_a_link_is_refused_and_never_followed() {
     let outcome = f.restore(&[id]);
     assert_eq!(outcome.failed, 1);
     assert!(std::fs::read_dir(&elsewhere).unwrap().next().is_none(), "nothing went through the link");
-    assert_eq!(f.issue_keys(), [("restore-error".to_string(), "notice.restoreFolderBlocked".to_string())]);
+    assert_eq!(f.issue_keys(), [(RESTORE_ERROR.to_string(), "notice.restoreFolderBlocked".to_string())]);
 }
 
 windows_test! {
@@ -574,7 +580,7 @@ windows_test! {
         let outcome = f.restore(&[id]);
         assert_eq!(outcome.failed, 1);
         assert!(std::fs::read_dir(&elsewhere).unwrap().next().is_none(), "nothing went through the junction");
-        assert_eq!(f.issue_keys(), [("restore-error".to_string(), "notice.restoreFolderBlocked".to_string())]);
+        assert_eq!(f.issue_keys(), [(RESTORE_ERROR.to_string(), "notice.restoreFolderBlocked".to_string())]);
     }
 }
 
@@ -619,7 +625,7 @@ fn a_stored_file_changed_after_the_review_is_refused() {
     let outcome = f.execute(&plan);
     assert_eq!(outcome.failed, 1);
     assert!(!f.root.join("a.jpg").exists());
-    assert_eq!(f.issue_keys(), [("restore-error".to_string(), "notice.restoreChanged".to_string())]);
+    assert_eq!(f.issue_keys(), [(RESTORE_ERROR.to_string(), "notice.restoreChanged".to_string())]);
 }
 
 #[test]
@@ -635,7 +641,7 @@ fn a_path_occupied_after_the_review_fails_that_file_and_is_never_renamed_silentl
     assert_eq!(outcome.failed, 1);
     assert_eq!(std::fs::read(f.root.join("a.jpg")).unwrap(), b"arrived meanwhile");
     assert!(!f.root.join("a 2.jpg").exists());
-    assert_eq!(f.issue_keys(), [("restore-error".to_string(), "notice.restoreOccupied".to_string())]);
+    assert_eq!(f.issue_keys(), [(RESTORE_ERROR.to_string(), "notice.restoreOccupied".to_string())]);
 }
 
 #[test]
@@ -647,7 +653,7 @@ fn a_stored_file_taken_by_someone_else_fails_as_missing() {
     std::fs::rename(f.root.join(TRASH_DIR_NAME).join(&id), f.dir.path().join("taken.jpg")).unwrap();
     let outcome = f.execute(&plan);
     assert_eq!(outcome.failed, 1);
-    assert_eq!(f.issue_keys(), [("restore-error".to_string(), "notice.restoreMissing".to_string())]);
+    assert_eq!(f.issue_keys(), [(RESTORE_ERROR.to_string(), "notice.restoreMissing".to_string())]);
 }
 
 #[test]
@@ -672,7 +678,7 @@ fn a_folder_that_refuses_writes_fails_its_file_and_others_continue() {
     std::fs::set_permissions(f.root.join("locked"), std::fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!((outcome.failed, outcome.restored.len()), (1, 1));
     assert!(outcome.error.is_none(), "one folder's refusal does not stop the rest");
-    assert_eq!(f.issue_keys(), [("restore-error".to_string(), "notice.restoreFailed".to_string())]);
+    assert_eq!(f.issue_keys(), [(RESTORE_ERROR.to_string(), "notice.restoreFailed".to_string())]);
 }
 
 #[test]
@@ -834,7 +840,7 @@ fn restore_with_rename_given_up_on(label: &str, land: bool) {
     assert!(outcome.error.is_some());
     assert_eq!(
         f.issue_keys(),
-        [("restore-outcome-unknown".to_string(), "notice.restoreOutcomeUnknown".to_string())]
+        [(RESTORE_OUTCOME_UNKNOWN.to_string(), "notice.restoreOutcomeUnknown".to_string())]
     );
     if land {
         volume.release();
@@ -882,7 +888,7 @@ fn a_drive_that_stops_answering_before_the_move_says_the_file_is_still_in_delete
     assert!(outcome.error.is_some());
     assert_eq!(
         f.issue_keys(),
-        [("restore-error".to_string(), "notice.restoreFailed".to_string())]
+        [(RESTORE_ERROR.to_string(), "notice.restoreFailed".to_string())]
     );
     assert_eq!(list_root(&f.root, &f.data).unwrap().entries.len(), 2, "nothing moved");
 }
@@ -891,8 +897,8 @@ fn a_drive_that_stops_answering_before_the_move_says_the_file_is_still_in_delete
 fn only_a_configured_root_can_be_restored_into() {
     // The location must be one the settings name now.
     let roots = [PathBuf::from("/Volumes/A/Photos")];
-    assert!(onecopy_lib::trash::owning_root_of(&roots, Path::new("/Volumes/A/Photos/.onecopy-trash")).is_ok());
-    assert!(onecopy_lib::trash::owning_root_of(&roots, Path::new("/Volumes/B/.onecopy-trash")).is_err());
+    assert!(onecopy_lib::trash::owning_root_of(&roots, &roots[0].join(TRASH_DIR_NAME)).is_ok());
+    assert!(onecopy_lib::trash::owning_root_of(&roots, &Path::new("/Volumes/B").join(TRASH_DIR_NAME)).is_err());
 }
 
 #[test]

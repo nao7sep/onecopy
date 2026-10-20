@@ -58,17 +58,28 @@ fn insert_image(
 
 #[test]
 fn grouping_presets_change_real_group_membership() {
-    // Eight changed hash bits: too different for Stricter, grouped by Normal.
-    // Twelve changed bits: grouped only by Looser.
-    for (bits, expected) in [(8, [0, 1, 1]), (12, [0, 0, 1])] {
-        for (preset, groups) in ["stricter", "normal", "looser"].into_iter().zip(expected) {
+    // Two shots one second apart pair at a preset's wider (burst) distance.
+    let presets = ["stricter", "normal", "looser"];
+    let allowance = |preset: &str| {
+        let config = SimilarityConfig::from_preset(Some(preset));
+        config.phash_max_distance.max(config.phash_max_distance_burst)
+    };
+    let allowances = presets.map(allowance);
+    assert!(
+        allowances[0] < allowances[1] && allowances[1] < allowances[2],
+        "each preset reaches further than the one before: {allowances:?}"
+    );
+    // Normal's reach: too different for Stricter, grouped by Normal and
+    // Looser. Looser's reach: grouped only by Looser.
+    for bits in [allowances[1], allowances[2]] {
+        for (preset, reach) in presets.into_iter().zip(allowances) {
             let (_dir, conn) = seeded();
             let time = 1_700_000_000_000;
             insert_image(&conn, "a", "Ricoh", time, 0, 1.0);
-            insert_image(&conn, "b", "Ricoh", time + 1_000, (1 << bits) - 1, 1.0);
+            insert_image(&conn, "b", "Ricoh", time + 1_000, (1i64 << bits) - 1, 1.0);
             rebuild_groups(&conn, &SimilarityConfig::from_preset(Some(preset))).unwrap();
             let actual: i64 = conn.query_row("SELECT COUNT(*) FROM similar_groups", [], |row| row.get(0)).unwrap();
-            assert_eq!(actual, groups, "{preset}: {bits} bits");
+            assert_eq!(actual, i64::from(bits <= reach), "{preset}: {bits} bits");
         }
     }
 }

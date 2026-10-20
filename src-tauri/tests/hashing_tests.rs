@@ -25,7 +25,7 @@ fn full_hash_matches_one_shot_blake3() {
 
 #[test]
 fn prehash_of_small_file_hashes_all_bytes_once() {
-    // ≤64 KB: the prehash is the hash of the whole content.
+    // Within one window: the prehash is the hash of the whole content.
     let bytes = b"tiny file".to_vec();
     let (_dir, path) = temp_file("small", &bytes);
     assert_eq!(
@@ -36,8 +36,10 @@ fn prehash_of_small_file_hashes_all_bytes_once() {
 
 #[test]
 fn prehash_between_one_and_two_windows_never_double_counts() {
-    // 100 KB: head 64 KB + remaining 36 KB, hashed exactly once each.
-    let bytes: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+    // One and a half windows: the head window plus the remaining half,
+    // hashed exactly once each.
+    let size = PREHASH_WINDOW + PREHASH_WINDOW / 2;
+    let bytes: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
     let (_dir, path) = temp_file("mid", &bytes);
     assert_eq!(
         prehash(&path).unwrap(),
@@ -47,7 +49,7 @@ fn prehash_between_one_and_two_windows_never_double_counts() {
 
 #[test]
 fn prehash_of_large_file_is_head_plus_tail() {
-    let bytes: Vec<u8> = (0..400_000u32).map(|i| (i % 249) as u8).collect();
+    let bytes: Vec<u8> = (0..3 * PREHASH_WINDOW + 1234).map(|i| (i % 249) as u8).collect();
     let (_dir, path) = temp_file("large", &bytes);
     let window = PREHASH_WINDOW as usize;
     let mut expected = blake3::Hasher::new();
@@ -63,10 +65,11 @@ fn prehash_of_large_file_is_head_plus_tail() {
 fn prehash_distinguishes_differing_edges_but_not_middles() {
     // Same size, difference only in the middle: prehash agrees (which is
     // exactly why it never collapses copies) while full hash differs.
-    let mut a: Vec<u8> = vec![1; 400_000];
-    let mut b: Vec<u8> = vec![1; 400_000];
-    a[200_000] = 9;
-    b[200_000] = 8;
+    let window = PREHASH_WINDOW as usize;
+    let mut a: Vec<u8> = vec![1; 4 * window];
+    let mut b: Vec<u8> = vec![1; 4 * window];
+    a[2 * window] = 9;
+    b[2 * window] = 8;
     let (_da, pa) = temp_file("mid-a", &a);
     let (_db, pb) = temp_file("mid-b", &b);
     assert_eq!(prehash(&pa).unwrap(), prehash(&pb).unwrap());

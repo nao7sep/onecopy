@@ -137,14 +137,11 @@ fn a_failed_exit_thread_start_still_quits_after_mutation_quiescence() {
     run_exit(exit, no_exit_thread, Duration::from_secs(5));
 
     exited.try_recv().expect("the caller's thread ran the sequence to exit");
-    assert_eq!(
-        *steps.lock().unwrap(),
-        vec![
-            "reported: could not start the exit thread: thread limit reached",
-            "mutation idle",
-            "exit",
-        ]
-    );
+    let steps = steps.lock().unwrap();
+    assert_eq!(steps.len(), 3, "{steps:?}");
+    // The report comes first and carries the spawn error itself.
+    assert!(steps[0].starts_with("reported: ") && steps[0].contains("thread limit reached"), "{steps:?}");
+    assert_eq!(steps[1..], ["mutation idle", "exit"]);
 }
 
 

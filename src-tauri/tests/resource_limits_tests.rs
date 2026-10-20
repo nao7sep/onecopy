@@ -43,7 +43,7 @@ fn subprocess_stdout_stops_at_the_declared_ceiling() {
 #[test]
 fn subprocess_stdout_has_a_default_ceiling() {
     let mut command = Command::new("sh");
-    command.args(["-c", "head -c 2097152 /dev/zero"]);
+    command.arg("-c").arg(format!("head -c {} /dev/zero", subprocess::STDOUT_BYTES + 1));
     let error = match subprocess::run_bounded(command, &|| false) {
         Ok(_) => panic!("oversized default stdout unexpectedly succeeded"),
         Err(error) => error,
@@ -55,7 +55,7 @@ fn subprocess_stdout_has_a_default_ceiling() {
 #[test]
 fn subprocess_stderr_has_a_fixed_ceiling() {
     let mut command = Command::new("sh");
-    command.args(["-c", "head -c 2097152 /dev/zero >&2"]);
+    command.arg("-c").arg(format!("head -c {} /dev/zero >&2", subprocess::STDERR_BYTES + 1));
     let error = match subprocess::run_bounded(command, &|| false) {
         Ok(_) => panic!("oversized stderr unexpectedly succeeded"),
         Err(error) => error,

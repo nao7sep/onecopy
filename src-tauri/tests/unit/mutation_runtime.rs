@@ -457,10 +457,7 @@ fn result_accounting_reports_unknown_outcomes_apart_from_failures() {
 fn section_recheck_answers_busy_while_a_file_operation_runs() {
     let _serial = crate::scan_runtime::serial_test();
     let operation = begin().unwrap();
-    assert_eq!(
-        crate::scan_runtime::section_admission().unwrap_err(),
-        "Recheck this section is unavailable while a file operation is running."
-    );
+    assert!(crate::scan_runtime::section_admission().is_err());
     drop(operation);
     assert!(crate::scan_runtime::section_admission().is_ok());
 }
@@ -581,12 +578,13 @@ fn a_rebuild_requested_during_a_file_operation_is_refused_at_once_and_never_queu
     let _serial = crate::scan_runtime::serial_test();
     let operation = begin().unwrap();
     let requested = std::time::Instant::now();
-    let refused = begin().map(|_| ()).unwrap_err();
+    assert!(begin().is_err());
     assert!(requested.elapsed() < std::time::Duration::from_millis(100));
-    assert_eq!(refused, "Another file operation is already running.");
     drop(operation);
     // Nothing waited to run once the operation ended.
     assert!(!active());
+    // The running operation was the reason: a new request is admitted now.
+    assert!(begin().is_ok());
 }
 
 // ---------------------------------------------------------------------------

@@ -116,13 +116,16 @@ fn enforce_no_substitution_refuses_promptly_when_a_recorded_volume_does_not_answ
     let app_data = tempfile::tempdir().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let dir_str = dir.path().to_string_lossy().to_string();
-    check_identity(app_data.path(), &dir_str, "recorded-identity").unwrap();
+    // The drive's true identity is recorded, so the only reason left to
+    // refuse is that it could not be verified.
+    let identity = volume_identity(dir.path()).expect("identity for temp dir");
+    check_identity(app_data.path(), &dir_str, &identity).unwrap();
     let volume = FakeStallingVolume::mount(dir.path(), std::time::Duration::from_millis(300));
     volume.stall(&[], None);
 
     let started = std::time::Instant::now();
     let refused = enforce_no_substitution(app_data.path(), std::slice::from_ref(&dir_str));
-    assert!(refused.is_err_and(|error| error.contains("could not verify")));
+    assert!(refused.is_err_and(|error| error.contains(&dir_str)));
     // The volume now fails fast; the gate answers again at once.
     assert!(enforce_no_substitution(app_data.path(), &[dir_str]).is_err());
     assert!(started.elapsed() < std::time::Duration::from_secs(3));
@@ -184,11 +187,15 @@ fn the_source_volume_record_carries_its_format_version() {
 fn a_source_volume_record_written_by_a_newer_onecopy_closes_the_gate_and_is_left_as_it_is() {
     let app_data = tempfile::tempdir().unwrap();
     let path = app_data.path().join("source-volumes.json");
-    let bytes = br#"{"formatVersion":2,"sources":[]}"#;
-    std::fs::write(&path, bytes).unwrap();
+    let bytes = serde_json::to_vec(&serde_json::json!({
+        "formatVersion": onecopy_lib::formats::SOURCE_VOLUMES + 1,
+        "sources": [],
+    }))
+    .unwrap();
+    std::fs::write(&path, &bytes).unwrap();
     let error = onecopy_lib::volume::check_identity(app_data.path(), "/photos", "volume-a")
         .expect_err("a newer record is not read");
-    assert!(error.contains("newer"), "{error}");
+    assert!(error.contains(&path.to_string_lossy().into_owned()), "the record is named: {error}");
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
 }
 
@@ -231,9 +238,17 @@ fn availability_wording_requires_recorded_volume_evidence() {
     use onecopy_lib::volume::{check_identity, unavailable_message_with};
     let data = tempfile::tempdir().unwrap();
     let source = data.path().join("missing").to_string_lossy().into_owned();
-    assert_eq!(unavailable_message_with(data.path(), &source, &|_| Some("disk-a".into())), "source.unavailable");
+    let unrecorded = unavailable_message_with(data.path(), &source, &|_| Some("disk-a".into()));
     check_identity(data.path(), &source, "disk-a").unwrap();
-    assert_eq!(unavailable_message_with(data.path(), &source, &|_| Some("disk-a".into())), "source.folderMissing");
-    assert_eq!(unavailable_message_with(data.path(), &source, &|_| Some("disk-b".into())), "source.driveUnavailable");
-    assert_eq!(unavailable_message_with(data.path(), &source, &|_| None), "source.unavailable");
+    let folder_missing = unavailable_message_with(data.path(), &source, &|_| Some("disk-a".into()));
+    let drive_unavailable = unavailable_message_with(data.path(), &source, &|_| Some("disk-b".into()));
+    // Without evidence of the drive, the wording claims nothing about it.
+    assert_eq!(unavailable_message_with(data.path(), &source, &|_| None), unrecorded);
+    assert_ne!(folder_missing, unrecorded);
+    assert_ne!(drive_unavailable, unrecorded);
+    assert_ne!(folder_missing, drive_unavailable);
+    let english = onecopy_lib::i18n::catalogue("en");
+    for key in [unrecorded, folder_missing, drive_unavailable] {
+        assert!(english.has(key), "{key} is shipped wording");
+    }
 }

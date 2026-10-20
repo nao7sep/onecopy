@@ -33,8 +33,9 @@ fn a_stored_ignored_name_that_is_not_a_file_name_does_not_stop_the_launch() {
 #[test]
 fn blocked_gate_exposes_only_stable_private_safe_copy() {
     let failure = StartupGate::blocked().failure().unwrap();
-    assert_eq!(failure.title, "OneCopy could not start safely");
-    assert!(failure.message.contains("Your photos were not changed"));
+    // The fixed sentences, with nothing from the failure interpolated.
+    assert_eq!(failure.title, BLOCKED_TITLE);
+    assert_eq!(failure.message, BLOCKED_MESSAGE);
     assert!(!failure.message.contains('/'));
     assert!(!failure.message.contains("sqlite"));
 }
@@ -56,7 +57,7 @@ fn required_stores_a_newer_onecopy_wrote_stop_the_launch_by_name_untouched() {
 
     assert_eq!(
         newer.iter().map(|store| store.file.as_str()).collect::<Vec<_>>(),
-        ["index.sqlite3", "config.json"]
+        [crate::storage::INDEX_DB_FILE_NAME, crate::storage::CONFIG_FILE_NAME]
     );
     assert_eq!(std::fs::read(&index).unwrap(), index_bytes);
     assert_eq!(std::fs::read(&config).unwrap(), br#"{"formatVersion":2}"#);

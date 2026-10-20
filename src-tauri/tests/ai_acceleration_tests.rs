@@ -7,16 +7,19 @@ use onecopy_lib::ai_acceleration::{
 };
 
 #[test]
-fn cpu_is_always_available_and_face_has_no_hidden_accelerator() {
-    assert!(available(TRANSCRIPTION).unwrap().contains(&Mode::None));
-    assert_eq!(available(FACE_SCORING).unwrap(), vec![Mode::None]);
+fn cpu_is_always_available_and_each_default_is_selectable() {
+    for feature in [TRANSCRIPTION, FACE_SCORING] {
+        let modes = available(feature).unwrap();
+        assert!(modes.contains(&Mode::None), "{feature} offers CPU");
+        assert!(modes.contains(&default_for(feature).unwrap()), "{feature}'s default is offered");
+    }
 }
 
 #[test]
 fn missing_values_use_the_accepted_platform_default() {
     let selected = selection_from_config(None).unwrap();
     assert_eq!(selected.transcription, default_for(TRANSCRIPTION).unwrap());
-    assert_eq!(selected.face_scoring, Mode::None);
+    assert_eq!(selected.face_scoring, default_for(FACE_SCORING).unwrap());
 }
 
 #[test]

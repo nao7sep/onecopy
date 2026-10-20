@@ -105,17 +105,23 @@ fn every_launch_failure_key_is_in_every_language() {
 
 #[test]
 fn catalogue_text_fills_in_the_app_name() {
-    assert_eq!(catalogue("en").text("nativeMenu.quit", "OneCopy"), "Quit OneCopy");
+    for language in LANGUAGES {
+        let quit = catalogue(language).text("nativeMenu.quit", "OneCopy");
+        assert!(quit.contains("OneCopy"), "{language}: {quit}");
+        assert!(!quit.contains("{app}"), "{language}: {quit}");
+    }
 }
 
 #[test]
 fn catalogue_text_with_fills_in_a_second_placeholder() {
     // The launch-failure dialog's log-location sentence: a path is
     // appended as recorded, not translated, alongside the app name.
-    assert_eq!(
-        catalogue("en").text_with("launch.failedLogDir", "OneCopy", "logDir", "/tmp/onecopy/logs"),
-        "Application logs, when there are any, are in /tmp/onecopy/logs.",
-    );
+    for language in LANGUAGES {
+        let sentence =
+            catalogue(language).text_with("launch.failedLogDir", "OneCopy", "logDir", "/tmp/onecopy/logs");
+        assert!(sentence.contains("/tmp/onecopy/logs"), "{language}: {sentence}");
+        assert!(!sentence.contains("{logDir}"), "{language}: {sentence}");
+    }
 }
 
 // AppKit takes its own language from the defaults' argument domain. The

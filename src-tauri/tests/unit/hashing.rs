@@ -32,7 +32,8 @@ fn streamed_bytes_stay_private_until_source_metadata_is_applied() {
     std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o644)).unwrap();
     let (_, _, private, _) = hash_while_copying_detailed(&source, &stage, &|| false, &mut |copied, _| {
         if copied > 0 {
-            assert_eq!(std::fs::metadata(&stage).unwrap().permissions().mode() & 0o777, 0o600);
+            // Private: no group or other access while the bytes stream in.
+            assert_eq!(std::fs::metadata(&stage).unwrap().permissions().mode() & 0o077, 0);
         }
     }, false, |_| {}).unwrap();
     assert_eq!(std::fs::metadata(&stage).unwrap().permissions().mode() & 0o777, 0o644);

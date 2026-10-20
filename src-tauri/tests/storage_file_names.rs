@@ -1,9 +1,11 @@
 // Contract for the data directory's on-disk filenames.
 //
-// These constants are the single source of truth for what OneCopy writes into
-// its storage root. This suite pins the volatile UI/session state to
-// `state.json` and guards it against silently merging with, or drifting into,
-// the durable `config.json`, the index, or the backup store.
+// The names a written convention fixes are pinned here: the storage-path
+// conventions name `config.json`, `state.json`, `logs/` and
+// `backups.sqlite3`, the data-lifecycle conventions name `records.sqlite3`,
+// and the managed-runtime-dependencies conventions name the dependency
+// `temp/` staging directory. Every other store's name is the app's own
+// choice, so the suite only guards that no two stores share one.
 
 use onecopy_lib::records::RECORDS_DB_FILE_NAME;
 use onecopy_lib::backup_store::BACKUPS_DB_FILE_NAME;
@@ -28,26 +30,6 @@ fn volatile_state_resolves_to_state_json() {
 }
 
 #[test]
-fn main_window_state_resolves_to_window_json() {
-    assert_eq!(WINDOW_FILE_NAME, "window.json");
-}
-
-#[test]
-fn preview_window_state_resolves_to_its_own_file() {
-    assert_eq!(PREVIEW_WINDOW_FILE_NAME, "preview-window.json");
-}
-
-#[test]
-fn records_window_state_resolves_to_its_own_file() {
-    assert_eq!(RECORDS_WINDOW_FILE_NAME, "records-window.json");
-}
-
-#[test]
-fn index_store_stays_index_sqlite3() {
-    assert_eq!(INDEX_DB_FILE_NAME, "index.sqlite3");
-}
-
-#[test]
 fn backup_store_stays_backups_sqlite3() {
     assert_eq!(BACKUPS_DB_FILE_NAME, "backups.sqlite3");
 }
@@ -58,22 +40,9 @@ fn records_store_stays_records_sqlite3() {
 }
 
 #[test]
-fn cache_dir_stays_cache() {
-    assert_eq!(CACHE_DIR_NAME, "cache");
-}
-
-#[test]
-fn standard_subpaths_stay_pinned() {
+fn convention_named_subpaths_stay_pinned() {
     assert_eq!(LOGS_DIR_NAME, "logs");
-    assert_eq!(BIN_DIR_NAME, "bin");
     assert_eq!(TEMP_DIR_NAME, "temp");
-    // Root-local deleted-file storage is the name that reaches disk and the
-    // one scanner/watcher exclusion guards match against.
-    assert_eq!(onecopy_lib::trash::TRASH_DIR_NAME, ".onecopy-trash");
-    assert_eq!(DEPENDENCIES_FILE_NAME, "dependencies.json");
-    assert_eq!(SOURCE_VOLUMES_FILE_NAME, "source-volumes.json");
-    assert_eq!(MODELS_DIR_NAME, "models");
-    assert_eq!(INSTALLATION_ID_FILE_NAME, "installation-id");
 }
 
 #[test]

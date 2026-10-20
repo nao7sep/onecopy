@@ -10,8 +10,13 @@ fn runtime_diagnostics_are_not_user_presentation() {
     assert!(!presentation.contains("EACCES"));
     assert!(!presentation.contains("/private/tmp"));
     assert!(!presentation.contains("Error invoking remote method"));
-    assert!(presentation.contains("file operation"));
-    assert!(presentation_for("derived-worker-failed").contains("Resume a row in Background work"));
+    // Both conditions have a sentence of their own, not the generic one an
+    // unrecognised kind falls back to.
+    let generic = presentation_for("an-unnamed-condition-nothing-maps-to");
+    let derived = presentation_for("derived-worker-failed");
+    assert_ne!(presentation, generic);
+    assert_ne!(derived, generic);
+    assert_ne!(presentation, derived);
 }
 
 #[test]
@@ -49,7 +54,12 @@ fn an_interface_failure_keeps_its_own_sentence_and_the_real_error_without_a_wind
         message_values: Some(values.clone()),
         detail: "x".to_string(),
     });
-    assert_eq!(notice.kind, "interface-failed");
+    // The notice names a recognised condition, so its Issue reads that
+    // condition's sentence rather than the generic fallback.
+    assert_ne!(
+        condition_message_key(&notice.kind),
+        condition_message_key("an-unnamed-condition-nothing-maps-to")
+    );
     assert_eq!(notice.message_key.as_deref(), Some("app.appearanceUpdateFailed"));
     assert_eq!(notice.message_values, Some(values));
     assert_eq!(notice.message, "x");

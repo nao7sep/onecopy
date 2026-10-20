@@ -135,7 +135,7 @@ fn revealable_folder_is_created_lazily() {
     let root = tempfile::tempdir().unwrap();
     let target = revealable_data_subdir(root.path(), "logs").unwrap();
     assert!(target.is_dir());
-    assert_eq!(target, root.path().join("logs"));
+    assert_eq!(target, root.path().join(LOGS_DIR_NAME));
 }
 
 #[test]

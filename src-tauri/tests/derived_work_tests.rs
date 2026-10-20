@@ -223,10 +223,13 @@ fn transcription_attempt_owns_cached_publication_and_dependency_classification()
         |_, _| {},
     )
     .unwrap();
+    // The message names the missing tool and the surface that installs it,
+    // by the title that surface carries.
+    let surface = onecopy_lib::i18n::catalogue("en").text("work.title", "OneCopy");
     assert!(matches!(
         unavailable,
         TranscriptionAttemptOutcome::Unavailable { ref message, .. }
-            if message.contains("ffmpeg") && message.contains("Background work & tools")
+            if message.contains("ffmpeg") && message.contains(&surface)
     ));
 
     let ffmpeg = onecopy_lib::binaries_manager::ffmpeg_path(dir.path());
@@ -486,17 +489,18 @@ fn snapshot_projects_output_debt_without_inventing_jobs() {
         .tempdir()
         .unwrap();
     let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
-    conn.execute_batch(
+    conn.execute_batch(&format!(
         "INSERT INTO contents (hash, byte_size, kind) VALUES ('image', 1, 'image');
          INSERT INTO contents (hash, byte_size, kind, derive_outcome)
-           VALUES ('broken', 1, 'image', 'failed');
+           VALUES ('broken', 1, 'image', '{}');
          INSERT INTO paths
            (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms, resolved_source)
            VALUES ('/image.jpg', '/', 'image.jpg', 'image', 'image', 120, 'metadata');
          INSERT INTO paths
            (abs_path, dir_path, file_name, kind, content_hash, resolved_utc_ms, resolved_source)
            VALUES ('/broken.jpg', '/', 'broken.jpg', 'image', 'broken', 130, 'metadata');",
-    )
+        derived_state::FAILED
+    ))
     .unwrap();
 
     let value = serde_json::to_value(

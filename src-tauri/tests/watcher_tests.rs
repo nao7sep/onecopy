@@ -238,8 +238,8 @@ fn an_unreadable_directory_never_turns_known_files_into_missing_rows() {
     assert_eq!(missing, 0, "failed enumeration proves nothing about absence");
     let issues: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM active_issues WHERE kind = 'walk-error' AND path = ?1",
-            [onecopy_lib::winpath::for_fs(&root).to_string_lossy().as_ref()],
+            "SELECT COUNT(*) FROM active_issues WHERE kind = ?1 AND path = ?2",
+            [onecopy_lib::scanner::WALK_ERROR, onecopy_lib::winpath::for_fs(&root).to_string_lossy().as_ref()],
             |row| row.get(0),
         )
         .unwrap();
@@ -284,13 +284,14 @@ windows_test! {
 fn restat_keeps_trash_lookalikes_but_never_opens_deleted_storage() {
     let dir = tempfile::tempdir().unwrap();
     let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
-    let lookalike = dir.path().join(".onecopy-trash-notes");
+    let trash = onecopy_lib::trash::TRASH_DIR_NAME;
+    let lookalike = dir.path().join(format!("{trash}-notes"));
     std::fs::create_dir(&lookalike).unwrap();
-    std::fs::write(lookalike.join(".onecopy-trash.jpg"), b"ordinary").unwrap();
+    std::fs::write(lookalike.join(format!("{trash}.jpg")), b"ordinary").unwrap();
     assert_eq!(restat_dir(&conn, &lookalike, &lists(), &[lookalike.to_string_lossy().into_owned()], &no_data_root()).unwrap(), 1);
     // Intentionally absent: an excluded location needs no enumeration and
     // must not produce an inaccessible-directory Issue.
-    let excluded = lookalike.join(".onecopy-trash").join("day");
+    let excluded = lookalike.join(trash).join("day");
     assert_eq!(restat_dir(&conn, &excluded, &lists(), &[excluded.to_string_lossy().into_owned()], &no_data_root()).unwrap(), 0);
     let counts: (i64, i64) = conn.query_row(
         "SELECT (SELECT COUNT(*) FROM paths), (SELECT COUNT(*) FROM active_issues)",
@@ -375,7 +376,8 @@ fn source_issues_coalesce_and_clear_on_return_or_configuration_removal() {
     let roots = vec!["/offline/photos".to_string(), "/offline/videos".to_string()];
     for _ in 0..3 { reconcile_source_conditions(dir.path(), &roots, &roots, &[]).unwrap(); }
     let conn = index_store::open(&dir.path().join(onecopy_lib::storage::INDEX_DB_FILE_NAME)).unwrap();
-    let count = || conn.query_row("SELECT count(*) FROM active_issues WHERE kind = 'source-unavailable'", [], |row| row.get::<_, i64>(0)).unwrap();
+    // The reconciler is the only writer to this fresh index.
+    let count = || conn.query_row("SELECT count(*) FROM active_issues", [], |row| row.get::<_, i64>(0)).unwrap();
     assert_eq!(count(), 2);
     reconcile_source_conditions(dir.path(), &roots, &roots[..1], &[]).unwrap();
     assert_eq!(count(), 1);
@@ -391,7 +393,8 @@ fn a_folder_whose_drive_cannot_be_identified_keeps_one_issue_until_it_can() {
     let roots = vec!["/Volumes/share/photos".to_string(), "/Users/me/Pictures".to_string()];
     for _ in 0..2 { onecopy_lib::watcher::reconcile_unidentified_sources(dir.path(), &roots, &roots[..1]).unwrap(); }
     let conn = index_store::open(&dir.path().join(onecopy_lib::storage::INDEX_DB_FILE_NAME)).unwrap();
-    let count = || conn.query_row("SELECT count(*) FROM active_issues WHERE kind = 'source-identity-unavailable'", [], |row| row.get::<_, i64>(0)).unwrap();
+    // The reconciler is the only writer to this fresh index.
+    let count = || conn.query_row("SELECT count(*) FROM active_issues", [], |row| row.get::<_, i64>(0)).unwrap();
     assert_eq!(count(), 1);
     onecopy_lib::watcher::reconcile_unidentified_sources(dir.path(), &roots, &[]).unwrap();
     assert_eq!(count(), 0);

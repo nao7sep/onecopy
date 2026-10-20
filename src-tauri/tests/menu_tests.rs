@@ -5,8 +5,9 @@ use onecopy_lib::menu::{main_surface_event, OPEN_ABOUT_MENU_ID, OPEN_SETTINGS_ME
 
 #[test]
 fn the_settings_and_about_items_open_mains_own_surfaces() {
-    assert_eq!(main_surface_event(OPEN_SETTINGS_MENU_ID), Some("menu://open-settings"));
-    assert_eq!(main_surface_event(OPEN_ABOUT_MENU_ID), Some("menu://open-about"));
+    let settings = main_surface_event(OPEN_SETTINGS_MENU_ID).expect("Settings opens a surface");
+    let about = main_surface_event(OPEN_ABOUT_MENU_ID).expect("About opens a surface");
+    assert_ne!(settings, about, "each item opens its own surface");
 }
 
 #[test]

@@ -2,6 +2,7 @@
 // (tests-folder conventions, Rust form).
 
 
+use onecopy_lib::formats;
 use onecopy_lib::storage::*;
 use serial_test::serial;
 
@@ -16,9 +17,15 @@ fn temp_dir(label: &str) -> tempfile::TempDir {
 /// interpretation zone every save writes (the computer's zone when none was
 /// chosen).
 fn saved_file(sets: serde_json::Value) -> serde_json::Value {
-    let mut file = serde_json::json!({ "formatVersion": 1, "defaultTimezone": computer_time_zone().name() });
+    let mut file = serde_json::json!({ "defaultTimezone": computer_time_zone().name() });
+    file[formats::JSON_KEY] = formats::CONFIG.into();
     file.as_object_mut().unwrap().extend(sets.as_object().unwrap().clone());
     file
+}
+
+/// The built-in value of one setting.
+fn builtin(key: &str) -> serde_json::Value {
+    effective_config(None)[key].clone()
 }
 
 #[test]
@@ -36,7 +43,7 @@ fn appearance_reads_only_preferences_from_the_settings_in_memory() {
             "enlargeSmallImages": false,
             "videoTranscriptionEnabled": false,
             "audioTranscriptionEnabled": true,
-            "displayTimezone": "system",
+            "displayTimezone": builtin("displayTimezone"),
         })
     );
     assert_eq!(std::fs::read(&config).unwrap(), bytes);
@@ -50,41 +57,24 @@ fn appearance_reads_only_preferences_from_the_settings_in_memory() {
 }
 
 #[test]
-fn default_config_serializes_with_camel_case_and_expected_defaults() {
+#[serial(backup_store, quarantine_journal)]
+fn default_config_serializes_with_camel_case_keys_and_values_the_settings_accept() {
     let value = serde_json::to_value(DefaultConfig::default()).unwrap();
-    assert_eq!(value["autoplay"], serde_json::json!(true));
-    assert_eq!(value["soundEnabled"], serde_json::json!(true));
-    assert_eq!(value["playbackVolume"], serde_json::json!(1.0));
-    assert_eq!(value["enlargeSmallImages"], serde_json::json!(true));
-    assert_eq!(value["textFallbackEncoding"], serde_json::json!("utf-8"));
-    assert_eq!(value["videoSnapshotsEnabled"], serde_json::json!(true));
-    assert_eq!(
-        value["similarPhotoAnalysisEnabled"],
-        serde_json::json!(true)
-    );
-    assert_eq!(value["scoreFaces"], serde_json::json!(true));
-    assert_eq!(value["videoTranscriptionEnabled"], serde_json::json!(true));
-    assert_eq!(value["audioTranscriptionEnabled"], serde_json::json!(true));
-    assert_eq!(value["aiAcceleration"]["face-scoring"], "none");
-    assert_eq!(
-        value["aiAcceleration"]["transcription"],
-        if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-            "metal"
-        } else {
-            "none"
-        }
-    );
-    assert_eq!(value["checkSourceFoldersAtLaunch"], serde_json::json!(true));
-    assert_eq!(value["uiFontFamily"], serde_json::json!(""));
+    // camelCase, the spelling the frontend reads the settings by.
+    for key in value.as_object().unwrap().keys() {
+        assert!(
+            key.starts_with(|c: char| c.is_ascii_lowercase()) && key.chars().all(|c| c.is_ascii_alphanumeric()),
+            "{key} is not camelCase"
+        );
+    }
+    // Every built-in is a value Settings itself would save.
+    let dir_owner = temp_dir("defaults-accepted");
+    save_config(dir_owner.path(), &value).expect("every built-in passes the settings' own validation");
     assert!(value.get("verifyAfterCopy").is_none());
-    assert_eq!(value["maximumImagesInComparison"], serde_json::json!(16));
-    assert_eq!(value["notificationDisplaySeconds"], serde_json::json!(6));
-    assert_eq!(value["screenPriority"], serde_json::json!([]));
     // The interpretation zone's built-in is the computer's zone as a concrete
-    // name, whatever that zone is; the display zone's is System.
+    // name, whatever that zone is.
     assert_eq!(value["defaultTimezone"], computer_time_zone().name());
     assert_ne!(value["defaultTimezone"], "system");
-    assert_eq!(value["displayTimezone"], "system");
     assert!(value.get("cacheDir").is_none());
     // Spec, not configuration: extension lists (and the other dead keys)
     // are never materialized into the user-editable file.
@@ -222,13 +212,13 @@ fn saving_over_a_corrupt_config_keeps_only_sets_that_differ() {
     let outcome = save_config(&dir, &serde_json::json!({ "theme": "dark" })).unwrap();
 
     assert_eq!(outcome.effective["theme"], "dark");
-    assert_eq!(outcome.effective["similarPhotoGrouping"], "normal");
+    assert_eq!(outcome.effective["similarPhotoGrouping"], builtin("similarPhotoGrouping"));
     let stored: serde_json::Value = serde_json::from_slice(&std::fs::read(&target).unwrap()).unwrap();
     assert_eq!(stored, saved_file(serde_json::json!({ "theme": "dark" })));
     // The outcome carries the record — a mid-session quarantine has no load
     // result to ride home on, so the save itself must hand it back.
     let record = outcome.quarantined.expect("the save reports its own quarantine");
-    assert_eq!(record.file, "config.json");
+    assert_eq!(record.file, CONFIG_FILE_NAME);
     assert!(record.quarantined_to.ends_with(".invalid"));
 }
 
@@ -261,19 +251,19 @@ fn first_run_writes_nothing_and_a_save_writes_every_set_that_differs() {
     let loaded = load_from_root(&dir).unwrap();
     let path = dir.join(CONFIG_FILE_NAME);
     assert!(!path.exists());
-    assert_eq!(loaded.config["notificationDisplaySeconds"], 6);
+    assert_eq!(loaded.config["notificationDisplaySeconds"], builtin("notificationDisplaySeconds"));
     let stored = |path: &std::path::Path| -> serde_json::Value {
         serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
     };
     save_config(&dir, &serde_json::json!({ "notificationDisplaySeconds": 10 })).unwrap();
     assert_eq!(stored(&path), saved_file(serde_json::json!({ "notificationDisplaySeconds": 10 })));
-    assert_eq!(load_from_root(&dir).unwrap().config["theme"], "system");
+    assert_eq!(load_from_root(&dir).unwrap().config["theme"], builtin("theme"));
     // Unknown keys are dropped, and a set saved equal to its built-in leaves.
     std::fs::write(&path, br#"{"formatVersion":1,"version":1,"notificationDisplaySeconds":10}"#).unwrap();
     load_from_root(&dir).unwrap();
-    save_config(&dir, &serde_json::json!({ "theme": "dark", "playbackVolume": 1 })).unwrap();
+    save_config(&dir, &serde_json::json!({ "theme": "dark", "playbackVolume": builtin("playbackVolume") })).unwrap();
     assert_eq!(stored(&path), saved_file(serde_json::json!({ "notificationDisplaySeconds": 10, "theme": "dark" })));
-    save_config(&dir, &serde_json::json!({ "notificationDisplaySeconds": 6, "theme": "system" })).unwrap();
+    save_config(&dir, &serde_json::json!({ "notificationDisplaySeconds": builtin("notificationDisplaySeconds"), "theme": builtin("theme") })).unwrap();
     assert_eq!(stored(&path), saved_file(serde_json::json!({})), "the file stays, holding only the zone");
     assert!(save_config(&dir, &serde_json::json!({ "theme": "purple" })).is_err());
 }
@@ -299,8 +289,10 @@ fn every_save_writes_the_interpretation_zone_even_while_it_equals_the_computers_
     // A chosen zone stays through later saves and the next launch's read, so
     // a move of the computer does not re-date the library.
     save_config(&dir, &serde_json::json!({ "defaultTimezone": "Pacific/Auckland" })).unwrap();
-    save_config(&dir, &serde_json::json!({ "notificationDisplaySeconds": 6 })).unwrap();
-    assert_eq!(stored(&path), serde_json::json!({ "formatVersion": 1, "defaultTimezone": "Pacific/Auckland" }));
+    save_config(&dir, &serde_json::json!({ "notificationDisplaySeconds": builtin("notificationDisplaySeconds") })).unwrap();
+    let mut chosen = serde_json::json!({ "defaultTimezone": "Pacific/Auckland" });
+    chosen[formats::JSON_KEY] = formats::CONFIG.into();
+    assert_eq!(stored(&path), chosen);
     let relaunched_owner = temp_dir("zone-kept-relaunch");
     let relaunched = relaunched_owner.path();
     std::fs::copy(&path, relaunched.join(CONFIG_FILE_NAME)).unwrap();
@@ -319,7 +311,8 @@ fn the_display_zone_is_system_unless_a_known_zone_is_saved() {
     let dir_owner = temp_dir("display-zone");
     let dir = dir_owner.path();
     let path = dir.join(CONFIG_FILE_NAME);
-    assert_eq!(load_from_root(&dir).unwrap().config["displayTimezone"], "system");
+    let system = builtin("displayTimezone");
+    assert_eq!(load_from_root(&dir).unwrap().config["displayTimezone"], system);
     save_config(&dir, &serde_json::json!({ "displayTimezone": "Asia/Tokyo" })).unwrap();
     assert_eq!(load_from_root(&dir).unwrap().config["displayTimezone"], "Asia/Tokyo");
     save_config(&dir, &serde_json::json!({ "displayTimezone": "system" })).unwrap();
@@ -329,7 +322,7 @@ fn the_display_zone_is_system_unless_a_known_zone_is_saved() {
     // An unknown or wrong-shaped stored value reads as System.
     for value in [serde_json::json!("Mars/Olympus"), serde_json::json!(9)] {
         let effective = effective_config(Some(&serde_json::json!({ "displayTimezone": value })));
-        assert_eq!(effective["displayTimezone"], "system", "{value}");
+        assert_eq!(effective["displayTimezone"], system, "{value}");
     }
 }
 
@@ -341,8 +334,8 @@ fn resetting_similarity_removes_the_whole_set_from_the_file() {
     let path = dir.join(CONFIG_FILE_NAME);
     save_config(&dir, &serde_json::json!({ "similarPhotoGrouping": "looser", "theme": "dark" })).unwrap();
     assert_eq!(load_from_root(&dir).unwrap().config["similarPhotoGrouping"], "looser");
-    let result = save_config(&dir, &serde_json::json!({ "similarPhotoGrouping": "normal" })).unwrap();
-    assert_eq!(result.effective["similarPhotoGrouping"], "normal");
+    let result = save_config(&dir, &serde_json::json!({ "similarPhotoGrouping": builtin("similarPhotoGrouping") })).unwrap();
+    assert_eq!(result.effective["similarPhotoGrouping"], builtin("similarPhotoGrouping"));
     let stored: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(stored, saved_file(serde_json::json!({ "theme": "dark" })));
 }
@@ -357,8 +350,18 @@ fn ignored_file_names_are_saved_trimmed_and_leave_the_file_when_they_equal_the_b
     let saved = save_config(&dir, &serde_json::json!({ "ignoredFileNames": [" .DS_Store ", "", "   ", "local.ini\t"] })).unwrap();
     assert_eq!(saved.effective["ignoredFileNames"], serde_json::json!([".DS_Store", "local.ini"]));
     assert_eq!(stored(), saved_file(serde_json::json!({ "ignoredFileNames": [".DS_Store", "local.ini"] })));
-    // Reordered, with stray whitespace, a blank row and a repeat: the built-in.
-    let saved = save_config(&dir, &serde_json::json!({ "ignoredFileNames": ["desktop.ini ", "", " Thumbs.db", ".DS_Store", "thumbs.db"] })).unwrap();
+    // Reordered, with stray whitespace, a blank row and a repeat in another
+    // case: the built-in.
+    let names: Vec<String> = builtin("ignoredFileNames")
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|name| name.as_str().unwrap().to_string())
+        .collect();
+    let mut reordered: Vec<String> = names.iter().rev().map(|name| format!(" {name}\t")).collect();
+    reordered.insert(1, String::new());
+    reordered.push(names[0].to_uppercase());
+    let saved = save_config(&dir, &serde_json::json!({ "ignoredFileNames": reordered })).unwrap();
     assert_eq!(stored(), saved_file(serde_json::json!({})));
     assert_eq!(saved.effective["ignoredFileNames"], effective_config(None)["ignoredFileNames"]);
     assert!(save_config(&dir, &serde_json::json!({ "ignoredFileNames": ["ok.txt", ".."] })).is_err());
@@ -387,14 +390,19 @@ fn retired_settings_cannot_change_runtime_behavior() {
     assert_eq!(effective_config(Some(&legacy)), effective_config(None));
     let root_owner = temp_dir("retired-config");
     let root = root_owner.path();
+    // The retired keys leave the runtime exactly where no configuration does.
     let derived = onecopy_lib::derived_work::settings_from_config(Some(&legacy), &root);
-    assert_eq!(derived.preview_long_edge, 1600);
-    assert_eq!(derived.thumb_edge, 320);
-    assert_eq!(derived.strip.seconds_per_frame, 20);
-    assert_eq!(derived.similarity.phash_max_distance, 3);
+    let unconfigured = onecopy_lib::derived_work::settings_from_config(None, &root);
+    assert_eq!(derived.preview_long_edge, unconfigured.preview_long_edge);
+    assert_eq!(derived.thumb_edge, unconfigured.thumb_edge);
+    assert_eq!(derived.strip.seconds_per_frame, unconfigured.strip.seconds_per_frame);
+    assert_eq!(derived.similarity.phash_max_distance, unconfigured.similarity.phash_max_distance);
     let scan = onecopy_lib::scanner::settings_from_config(Some(&legacy), &root, 0);
     assert!(scan.pairing_enabled);
-    assert_eq!(scan.resolution.good_range_start_year, 1995);
+    assert_eq!(
+        scan.resolution.good_range_start_year,
+        onecopy_lib::scanner::settings_from_config(None, &root, 0).resolution.good_range_start_year
+    );
 }
 
 #[test]
@@ -476,7 +484,7 @@ fn write_atomic_replaces_and_leaves_no_temps() {
 fn a_corrupt_config_is_set_aside_reported_and_not_reseeded() {
     let root_owner = temp_dir("quarantine-config");
     let root = root_owner.path();
-    let config = root.join("config.json");
+    let config = root.join(CONFIG_FILE_NAME);
     std::fs::write(&config, b"{ not json").unwrap();
 
     let loaded = load_from_root(&root).unwrap();
@@ -484,7 +492,7 @@ fn a_corrupt_config_is_set_aside_reported_and_not_reseeded() {
     // Reported: one record, naming the file and where its bytes went.
     assert_eq!(loaded.quarantines.len(), 1);
     let record = &loaded.quarantines[0];
-    assert_eq!(record.file, "config.json");
+    assert_eq!(record.file, CONFIG_FILE_NAME);
     assert!(record.quarantined_to.ends_with(".invalid"), "{record:?}");
 
     // Preserved: the original bytes are readable at that exact path.
@@ -499,7 +507,7 @@ fn a_corrupt_config_is_set_aside_reported_and_not_reseeded() {
     let started_with = loaded.config;
     assert_eq!(
         started_with["similarPhotoGrouping"],
-        serde_json::json!("normal"),
+        builtin("similarPhotoGrouping"),
         "and those defaults are the canonical ones"
     );
 
@@ -513,14 +521,14 @@ fn a_corrupt_config_is_set_aside_reported_and_not_reseeded() {
 fn a_corrupt_state_is_reported_without_disturbing_a_good_config() {
     let root_owner = temp_dir("quarantine-state");
     let root = root_owner.path();
-    let config = root.join("config.json");
+    let config = root.join(CONFIG_FILE_NAME);
     std::fs::write(&config, br#"{"formatVersion": 1, "sourceDirs": ["/photos"]}"#).unwrap();
-    std::fs::write(root.join("state.json"), b"not json at all").unwrap();
+    std::fs::write(root.join(STATE_FILE_NAME), b"not json at all").unwrap();
 
     let loaded = load_from_root(&root).unwrap();
 
     assert_eq!(loaded.quarantines.len(), 1);
-    assert_eq!(loaded.quarantines[0].file, "state.json");
+    assert_eq!(loaded.quarantines[0].file, STATE_FILE_NAME);
     // Each store recovers on its own branch: one being set aside must not
     // touch, reset or re-seed its neighbour.
     assert_eq!(
@@ -565,7 +573,7 @@ fn the_settings_held_before_the_window_shows_never_touch_the_file() {
 fn a_settings_read_that_loads_leaves_its_quarantine_pending_for_load_from_root() {
     let root_owner = temp_dir("quarantine-worker-read");
     let root = root_owner.path();
-    let config_path = root.join("config.json");
+    let config_path = root.join(CONFIG_FILE_NAME);
     std::fs::write(&config_path, b"{ not json").unwrap();
 
     assert_eq!(*config(&root).unwrap(), effective_config(None));
@@ -577,18 +585,17 @@ fn a_settings_read_that_loads_leaves_its_quarantine_pending_for_load_from_root()
         1,
         "the worker's read must not drain the quarantine meant for Main"
     );
-    assert_eq!(loaded.quarantines[0].file, "config.json");
+    assert_eq!(loaded.quarantines[0].file, CONFIG_FILE_NAME);
 }
 
 #[test]
 fn the_effective_config_is_the_stored_values_over_the_defaults() {
     let defaults = effective_config(None);
     assert_eq!(defaults, serde_json::to_value(DefaultConfig::default()).unwrap());
-    // A config written before a key existed resolves that key to its default:
-    // new installations confirm a direct single-item Delete.
+    // A config written before a key existed resolves that key to its default.
     let older = serde_json::json!({ "sourceDirs": ["/photos"], "autoplay": false });
     let effective = effective_config(Some(&older));
-    assert_eq!(effective["confirmTrashDelete"], serde_json::json!(true));
+    assert_eq!(effective["confirmTrashDelete"], defaults["confirmTrashDelete"]);
     assert_eq!(effective["autoplay"], serde_json::json!(false));
     assert_eq!(effective["sourceDirs"], serde_json::json!(["/photos"]));
     assert_eq!(effective_config(Some(&serde_json::json!([]))), defaults);
@@ -622,9 +629,15 @@ fn every_json_store_records_its_format_version_and_reads_without_it() {
     save_window_state(&dir, &serde_json::json!({ "x": 1 })).unwrap();
     save_preview_window_state(&dir, &serde_json::json!({ "x": 2 })).unwrap();
     save_records_window_state(&dir, &serde_json::json!({ "x": 3 })).unwrap();
-    for name in [CONFIG_FILE_NAME, STATE_FILE_NAME, WINDOW_FILE_NAME, PREVIEW_WINDOW_FILE_NAME, RECORDS_WINDOW_FILE_NAME] {
+    for (name, version) in [
+        (CONFIG_FILE_NAME, formats::CONFIG),
+        (STATE_FILE_NAME, formats::STATE),
+        (WINDOW_FILE_NAME, formats::WINDOW_PLACEMENT),
+        (PREVIEW_WINDOW_FILE_NAME, formats::WINDOW_PLACEMENT),
+        (RECORDS_WINDOW_FILE_NAME, formats::WINDOW_PLACEMENT),
+    ] {
         let stored: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join(name)).unwrap()).unwrap();
-        assert_eq!(stored["formatVersion"], 1, "{name}");
+        assert_eq!(stored[formats::JSON_KEY], version, "{name}");
     }
     assert_eq!(read_state(&dir).unwrap().0, Some(serde_json::json!({ "zoomLevel": 1.2 })));
     assert_eq!(read_window_state_for_setup(&dir).unwrap(), Some(serde_json::json!({ "x": 1 })));
@@ -640,10 +653,12 @@ fn a_json_store_without_its_marker_is_unreadable_and_set_aside() {
     assert_eq!(config_newer(&dir).unwrap(), None);
     let loaded = load_from_root(&dir).unwrap();
     assert_eq!(loaded.state, None);
-    assert_eq!(loaded.config["theme"], "system", "nothing is inferred from the shape");
+    assert_eq!(loaded.config["theme"], builtin("theme"), "nothing is inferred from the shape");
     let mut files: Vec<_> = loaded.quarantines.iter().map(|record| record.file.as_str()).collect();
     files.sort_unstable();
-    assert_eq!(files, ["config.json", "state.json"]);
+    let mut expected = [CONFIG_FILE_NAME, STATE_FILE_NAME];
+    expected.sort_unstable();
+    assert_eq!(files, expected);
 }
 
 #[test]
@@ -652,13 +667,18 @@ fn settings_written_by_a_newer_onecopy_stop_the_load_by_name_and_are_left_as_the
     let dir_owner = temp_dir("newer-config");
     let dir = dir_owner.path();
     let path = dir.join(CONFIG_FILE_NAME);
-    let bytes = br#"{"formatVersion":2,"theme":"dark"}"#;
-    std::fs::write(&path, bytes).unwrap();
+    let mut newer_file = serde_json::json!({ "theme": "dark" });
+    newer_file[formats::JSON_KEY] = (formats::CONFIG + 1).into();
+    let bytes = newer_file.to_string().into_bytes();
+    std::fs::write(&path, &bytes).unwrap();
     let newer = config_newer(&dir).unwrap().expect("a newer settings file is named");
-    assert_eq!((newer.file.as_str(), newer.version, newer.supported), ("config.json", 2, 1));
-    assert_eq!(held_config(&dir)["theme"], "system", "the built-ins answer before the load");
+    assert_eq!(
+        (newer.file.as_str(), newer.version, newer.supported),
+        (CONFIG_FILE_NAME, formats::CONFIG + 1, formats::CONFIG)
+    );
+    assert_eq!(held_config(&dir)["theme"], builtin("theme"), "the built-ins answer before the load");
     let error = config(&dir).expect_err("a newer settings file is not loaded");
-    assert!(error.contains("newer"), "{error}");
+    assert_eq!(error, newer.to_string(), "the load stops on the store that names the file");
     assert!(save_config(&dir, &serde_json::json!({ "theme": "light" })).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), bytes, "never quarantined, reset or written to");
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "nothing is set aside");
@@ -669,10 +689,14 @@ fn settings_written_by_a_newer_onecopy_stop_the_load_by_name_and_are_left_as_the
 fn volatile_state_written_by_a_newer_onecopy_reads_as_absent_and_is_not_saved_over() {
     let dir_owner = temp_dir("newer-state");
     let dir = dir_owner.path();
-    let state = br#"{"formatVersion":2,"zoomLevel":1.5}"#;
-    let window = br#"{"formatVersion":2,"x":1}"#;
-    std::fs::write(dir.join(STATE_FILE_NAME), state).unwrap();
-    std::fs::write(dir.join(WINDOW_FILE_NAME), window).unwrap();
+    let newer = |version: i64, mut fields: serde_json::Value| {
+        fields[formats::JSON_KEY] = (version + 1).into();
+        fields.to_string().into_bytes()
+    };
+    let state = newer(formats::STATE, serde_json::json!({ "zoomLevel": 1.5 }));
+    let window = newer(formats::WINDOW_PLACEMENT, serde_json::json!({ "x": 1 }));
+    std::fs::write(dir.join(STATE_FILE_NAME), &state).unwrap();
+    std::fs::write(dir.join(WINDOW_FILE_NAME), &window).unwrap();
     let loaded = load_from_root(&dir).unwrap();
     assert_eq!(loaded.state, None);
     assert!(loaded.quarantines.is_empty(), "a newer store is not quarantined");

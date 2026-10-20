@@ -83,7 +83,11 @@ fn a_video_whose_duration_is_known_is_owed_a_transcript_even_after_its_poster_fa
     let states = item_work_states(facts("video", Some(FAILED), None), capabilities(), false);
     let transcript = states.transcripts.unwrap();
     assert_eq!(transcript.state, "blocked");
-    assert_eq!(transcript.reason, Some("Video poster generation failed"));
+    assert_eq!(
+        transcript.reason,
+        WorkClass::VideoTranscripts.prerequisite().unmet(true, false).reason,
+        "blocked by its own prerequisite's failure"
+    );
     assert_eq!(states.snapshots.unwrap().state, "blocked");
 }
 
@@ -103,7 +107,10 @@ fn the_item_state_and_the_class_debt_name_the_same_gate_reason() {
     );
     let transcript = video.transcripts.unwrap();
     assert_eq!(transcript.state, "unavailable");
-    assert_eq!(transcript.reason, Some("waiting-for-transcription-model"));
+    assert_eq!(
+        WorkClass::VideoTranscripts.gate(off),
+        ClassGate::Unavailable(transcript.reason.unwrap())
+    );
     let image = item_work_states(facts("image", None, None), off, false);
     let faces = image.faces.unwrap();
     assert_eq!(faces.state, "unavailable");
@@ -117,7 +124,12 @@ fn the_item_state_and_the_class_debt_name_the_same_gate_reason() {
 fn a_gated_class_is_never_a_priority_candidate() {
     let mut off = capabilities();
     off.face_enabled = false;
-    assert_eq!(priority_predicate(WorkClass::Faces, off), "0");
+    // The gated predicate selects nothing, whatever row it is evaluated on.
+    let selects: bool = rusqlite::Connection::open_in_memory()
+        .unwrap()
+        .query_row(&format!("SELECT ({})", priority_predicate(WorkClass::Faces, off)), [], |row| row.get(0))
+        .unwrap();
+    assert!(!selects);
     assert_eq!(
         priority_predicate(WorkClass::Faces, capabilities()),
         WorkClass::Faces.owed_sql().unwrap()

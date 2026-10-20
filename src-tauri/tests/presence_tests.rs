@@ -15,17 +15,6 @@ fn root(label: &str) -> tempfile::TempDir {
         .unwrap()
 }
 
-fn recorded(root: &std::path::Path, dir: &str) -> Option<String> {
-    let value: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(root.join(SOURCE_VOLUMES_FILE_NAME)).ok()?).ok()?;
-    value["sources"]
-        .as_array()?
-        .iter()
-        .find(|source| source["dir"] == dir)
-        .and_then(|source| source["identity"].as_str())
-        .map(str::to_string)
-}
-
 #[test]
 fn first_sight_records_the_identity_as_managed_text() {
     let root = root("first");
@@ -33,9 +22,16 @@ fn first_sight_records_the_identity_as_managed_text() {
         check_identity(root.path(), "/Volumes/Photos", "UUID-A").unwrap(),
         IdentityCheck::FirstSight
     );
+    let file = root.path().join(SOURCE_VOLUMES_FILE_NAME);
+    let text = std::fs::read_to_string(&file).expect("the record is a text file in the data root");
+    serde_json::from_str::<serde_json::Value>(&text).expect("the record is JSON");
+    assert!(text.contains("UUID-A"), "{text}");
     assert_eq!(
-        recorded(root.path(), "/Volumes/Photos").as_deref(),
-        Some("UUID-A")
+        check_identity(root.path(), "/Volumes/Photos", "UUID-B").unwrap(),
+        IdentityCheck::Substituted {
+            recorded: "UUID-A".to_string()
+        },
+        "a later check reads the recorded identity back"
     );
 }
 
@@ -59,10 +55,6 @@ fn a_different_volume_is_reported_without_overwriting_the_record() {
         IdentityCheck::Substituted {
             recorded: "UUID-A".to_string()
         }
-    );
-    assert_eq!(
-        recorded(root.path(), "/Volumes/Photos").as_deref(),
-        Some("UUID-A")
     );
     assert_eq!(
         check_identity(root.path(), "/Volumes/Photos", "UUID-B").unwrap(),
@@ -122,10 +114,10 @@ fn identities_for_removed_sources_are_pruned() {
         1
     );
     assert_eq!(
-        recorded(root.path(), "/Volumes/Photos").as_deref(),
-        Some("UUID-A")
+        check_identity(root.path(), "/Volumes/Photos", "UUID-A").unwrap(),
+        IdentityCheck::Unchanged,
+        "the configured source keeps its identity"
     );
-    assert_eq!(recorded(root.path(), "/Volumes/Old"), None);
     assert_eq!(
         check_identity(root.path(), "/Volumes/Old", "UUID-NEW").unwrap(),
         IdentityCheck::FirstSight

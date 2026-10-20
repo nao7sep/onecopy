@@ -158,7 +158,7 @@ fn disk_backed_sequence_freezes_order_and_skips_disappeared_members() {
     let sequence_file = std::fs::read_dir(&temp_dir)
         .unwrap()
         .filter_map(Result::ok)
-        .find(|entry| entry.file_name().to_string_lossy().starts_with("viewer-sequence.sqlite3"));
+        .find(|entry| entry.file_name().to_string_lossy().contains(snapshot.token.as_str()));
     assert!(
         sequence_file.is_some(),
         "the active sequence's own temp file must exist before close"
@@ -168,7 +168,7 @@ fn disk_backed_sequence_freezes_order_and_skips_disappeared_members() {
         std::fs::read_dir(&temp_dir)
             .unwrap()
             .filter_map(Result::ok)
-            .all(|entry| !entry.file_name().to_string_lossy().starts_with("viewer-sequence.sqlite3")),
+            .all(|entry| !entry.file_name().to_string_lossy().contains(snapshot.token.as_str())),
         "close must remove its token-named temp file"
     );
 }

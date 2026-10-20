@@ -117,10 +117,16 @@ fn policy_requires_enabled_actual_work_and_a_live_application() {
             }
         }
     }
-    assert!(configured(None));
-    assert!(!configured(Some(
-        &serde_json::json!({"keepAwakeDuringIndexing": false})
-    )));
+    assert_eq!(
+        configured(None),
+        crate::storage::DefaultConfig::default().keep_awake_during_indexing
+    );
+    for setting in [false, true] {
+        assert_eq!(
+            configured(Some(&serde_json::json!({"keepAwakeDuringIndexing": setting}))),
+            setting
+        );
+    }
 }
 
 #[test]

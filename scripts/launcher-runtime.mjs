@@ -1,3 +1,12 @@
+// Shared runtime helper for the double-clickable launchers in this folder
+// (run-dev, run-built, rebuild; .command on macOS, .ps1 on Windows). It is
+// not run by hand: each launcher calls it with one subcommand, such as
+// `claim <token>` to record which launcher owns the running app, `stop` to end
+// the app, dev server and launcher processes running from this repository,
+// `dev-url` for the Vite dev server address, or `wait-http <url>` to wait for
+// that server. An unknown subcommand prints the full list. Ownership lives in
+// a temp file keyed by the repository path, so each checkout tracks its own.
+
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile, unlink, writeFile } from "node:fs/promises";

@@ -10,6 +10,11 @@ fn store() -> (tempfile::TempDir, std::path::PathBuf) {
     (dir, path)
 }
 
+/// The store's write-ahead log, beside it.
+fn wal(path: &std::path::Path) -> std::path::PathBuf {
+    std::path::PathBuf::from(format!("{}-wal", path.display()))
+}
+
 fn invalid_siblings(dir: &std::path::Path) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(dir)
         .unwrap()
@@ -22,22 +27,24 @@ fn invalid_siblings(dir: &std::path::Path) -> Vec<String> {
 
 #[test]
 fn a_malformed_store_and_its_log_are_set_aside_with_a_seconds_stamp() {
-    let (dir, path) = store();
+    let (_dir, path) = store();
     std::fs::write(&path, b"not a database at all, just bytes").unwrap();
-    std::fs::write(dir.path().join("records.sqlite3-wal"), b"old log").unwrap();
+    std::fs::write(wal(&path), b"old log").unwrap();
 
     let record = records::set_aside_if_unreadable(&path).unwrap().expect("set aside");
 
-    assert_eq!(record.file, "records.sqlite3");
+    assert_eq!(record.file, records::RECORDS_DB_FILE_NAME);
     let set_aside = std::path::PathBuf::from(&record.quarantined_to);
     let name = set_aside.file_name().unwrap().to_string_lossy().into_owned();
-    // records-yyyymmdd-hhmmss-utc.invalid
-    assert_eq!(name.len(), "records-20261009-120000-utc.invalid".len(), "{name}");
-    assert!(name.starts_with("records-") && name.ends_with("-utc.invalid"), "{name}");
+    // `<stem>-yyyymmdd-hhmmss-utc.invalid`, the quarantine name the storage-path
+    // and timestamp conventions define.
+    let stem = path.file_stem().unwrap().to_string_lossy();
+    assert_eq!(name.len(), format!("{stem}-20261009-120000-utc.invalid").len(), "{name}");
+    assert!(name.starts_with(&format!("{stem}-")) && name.ends_with("-utc.invalid"), "{name}");
     assert_eq!(std::fs::read(&set_aside).unwrap(), b"not a database at all, just bytes");
-    assert_eq!(std::fs::read(format!("{}-wal", set_aside.display())).unwrap(), b"old log");
+    assert_eq!(std::fs::read(wal(&set_aside)).unwrap(), b"old log");
     assert!(!path.exists());
-    assert!(!dir.path().join("records.sqlite3-wal").exists());
+    assert!(!wal(&path).exists());
 
     let fresh = records::open(&path).unwrap();
     let lines: i64 = fresh.query_row("SELECT COUNT(*) FROM log_lines", [], |row| row.get(0)).unwrap();
@@ -70,7 +77,7 @@ fn readable_newer_and_absent_stores_are_left_as_they_are() {
             [],
         )
         .unwrap();
-    assert!(dir.path().join("records.sqlite3-wal").exists());
+    assert!(wal(&path).exists());
     assert!(records::set_aside_if_unreadable(&path).unwrap().is_none(), "current with a log");
     drop(writer);
 
@@ -92,7 +99,7 @@ fn a_set_aside_that_cannot_be_renamed_fails_naming_the_file() {
 
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
     let error = result.expect_err("the rename cannot happen");
-    assert!(error.contains("records.sqlite3"), "{error}");
+    assert!(error.contains(records::RECORDS_DB_FILE_NAME), "{error}");
     assert_eq!(std::fs::read(&path).unwrap(), b"garbage");
 }
 

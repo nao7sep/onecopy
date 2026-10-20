@@ -255,20 +255,12 @@ fn an_unchanged_activation_relevels_without_telling_main() {
 
 #[test]
 fn a_system_close_of_a_session_window_goes_to_main() {
-    assert_eq!(session_close_event("main", true), Some("comparison://close-requested"));
+    let comparison = session_close_event("comparison-1", false).expect("a spread window holds a comparison session");
+    assert_eq!(session_close_event("comparison-12", false), Some(comparison));
+    assert_eq!(session_close_event("main", true), Some(comparison));
     assert_eq!(session_close_event("preview", true), None);
-    assert_eq!(
-        session_close_event("fullscreen-view", false),
-        Some("fullscreen-view://close-requested")
-    );
-    assert_eq!(
-        session_close_event("comparison-1", false),
-        Some("comparison://close-requested")
-    );
-    assert_eq!(
-        session_close_event("comparison-12", false),
-        Some("comparison://close-requested")
-    );
+    let fullscreen = session_close_event("fullscreen-view", false).expect("the fullscreen view holds a session");
+    assert_ne!(fullscreen, comparison, "each session hears its own close");
     for label in ["main", "preview", "records", "identify-1", "comparison-", "comparison-x"] {
         assert_eq!(session_close_event(label, false), None, "{label}");
     }

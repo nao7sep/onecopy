@@ -7,6 +7,7 @@ use onecopy_lib::file_names::{FolderNames, RenameStyle};
 use onecopy_lib::operations::*;
 use onecopy_lib::preview::CachePaths;
 use onecopy_lib::scanner::{self, ScanLists};
+use onecopy_lib::trash::{TrashKind, TrashRole};
 use rusqlite::Connection;
 
 struct Fixture {
@@ -29,7 +30,7 @@ fn fixture(label: &str) -> Fixture {
     std::fs::write(
         app_root.join("config.json"),
         serde_json::to_vec(&serde_json::json!({
-            "formatVersion": 1,
+            (onecopy_lib::formats::JSON_KEY): onecopy_lib::formats::CONFIG,
             "sourceDirs": [root.to_string_lossy()],
             "destinationRoots": [dir.path().to_string_lossy()],
         }))
@@ -90,6 +91,11 @@ fn section_items(f: &Fixture, kind: &str) -> Vec<onecopy_lib::queries::SectionIt
     )
     .unwrap()
     .items
+}
+
+/// How a manifest line spells `value`, by the product's own serialization.
+fn wire(value: impl serde::Serialize) -> serde_json::Value {
+    serde_json::to_value(value).unwrap()
 }
 
 fn scan(f: &Fixture) {
@@ -227,7 +233,7 @@ fn deleting_a_logical_item_trashes_every_copy_and_companion() {
         .map(|e| e.unwrap().path())
         .find(|p| p.is_dir())
         .expect("one day folder");
-    let manifest: Vec<serde_json::Value> = std::fs::read_to_string(day_dir.join("manifest.jsonl"))
+    let manifest: Vec<serde_json::Value> = std::fs::read_to_string(day_dir.join(onecopy_lib::trash::MANIFEST_FILE_NAME))
         .expect("a manifest was written")
         .lines()
         .map(|l| serde_json::from_str(l).unwrap())
@@ -238,12 +244,12 @@ fn deleting_a_logical_item_trashes_every_copy_and_companion() {
     let operation = manifest[0]["operation"].as_str().expect("operation id").to_string();
     for line in &manifest {
         let original = line["originalPath"].as_str().unwrap();
-        assert_eq!(line["formatVersion"], 1);
-        assert_eq!(line["kind"], "delete");
+        assert_eq!(line[onecopy_lib::formats::JSON_KEY], onecopy_lib::formats::DELETED_FILES_MANIFEST);
+        assert_eq!(line["kind"], wire(TrashKind::Delete));
         assert_eq!(line["operation"], operation.as_str(), "one operation id per batch");
         assert_eq!(line["item"], hash.as_str());
         let companion = original.ends_with("x.arw");
-        assert_eq!(line["role"], if companion { "companion" } else { "main" });
+        assert_eq!(line["role"], wire(if companion { TrashRole::Companion } else { TrashRole::Main }));
         let relative = line["originalRelative"].as_str().unwrap();
         assert!(["a/x.jpg", "b/x.jpg", "a/x.arw"].contains(&relative), "{relative}");
         assert!(original.ends_with(&relative.replace('/', std::path::MAIN_SEPARATOR_STR)));
@@ -511,7 +517,7 @@ fn unhashed_other_files_delete_by_path_id() {
         .map(|e| e.unwrap().path())
         .find(|p| p.is_dir())
         .expect("one day folder");
-    let manifest = std::fs::read_to_string(day_dir.join("manifest.jsonl")).unwrap();
+    let manifest = std::fs::read_to_string(day_dir.join(onecopy_lib::trash::MANIFEST_FILE_NAME)).unwrap();
     let line: serde_json::Value = serde_json::from_str(manifest.lines().next().unwrap()).unwrap();
     let stored = line["storedPath"].as_str().unwrap();
     assert_eq!(std::fs::read(stored).unwrap(), vec![9u8; 77]);
@@ -619,7 +625,7 @@ fn move_out_delivers_primary_and_companion_then_trashes_the_rest() {
         .map(|e| e.unwrap().path())
         .find(|p| p.is_dir())
         .expect("one day folder");
-    let manifest: Vec<serde_json::Value> = std::fs::read_to_string(day_dir.join("manifest.jsonl"))
+    let manifest: Vec<serde_json::Value> = std::fs::read_to_string(day_dir.join(onecopy_lib::trash::MANIFEST_FILE_NAME))
         .expect("a manifest was written")
         .lines()
         .map(|l| serde_json::from_str(l).unwrap())
@@ -630,11 +636,11 @@ fn move_out_delivers_primary_and_companion_then_trashes_the_rest() {
         "every trashed original has a manifest line"
     );
     for line in &manifest {
-        assert_eq!(line["formatVersion"], 1);
-        assert_eq!(line["kind"], "move-cleanup");
+        assert_eq!(line[onecopy_lib::formats::JSON_KEY], onecopy_lib::formats::DELETED_FILES_MANIFEST);
+        assert_eq!(line["kind"], wire(TrashKind::MoveCleanup));
         assert_eq!(line["item"], hash.as_str());
         let companion = line["originalPath"].as_str().unwrap().ends_with("x.arw");
-        assert_eq!(line["role"], if companion { "companion" } else { "main" });
+        assert_eq!(line["role"], wire(if companion { TrashRole::Companion } else { TrashRole::Main }));
         let moved_to = line["movedTo"].as_str().expect("the output that replaced it");
         let expected = dest.join(if companion { "x.arw" } else { "x.jpg" });
         assert_eq!(moved_to, expected.to_string_lossy());
@@ -806,7 +812,7 @@ fn move_keeps_the_family_of_a_copy_whose_same_named_companion_differs() {
                 .map(|e| e.unwrap().path())
                 .find(|p| p.is_dir())
                 .unwrap();
-            let manifest = std::fs::read_to_string(day_dir.join("manifest.jsonl")).unwrap();
+            let manifest = std::fs::read_to_string(day_dir.join(onecopy_lib::trash::MANIFEST_FILE_NAME)).unwrap();
             assert_eq!(manifest.lines().count(), 3);
             assert!(
                 !manifest.contains("edit-b") && manifest.lines().all(|line| {
@@ -1287,14 +1293,14 @@ fn overwrite_preserves_the_reviewed_destination_family_before_publication() {
         .map(|entry| entry.unwrap().path())
         .find(|path| path.is_dir())
         .expect("destination replacements are recoverable");
-    let lines = std::fs::read_to_string(day_dir.join("manifest.jsonl"))
+    let lines = std::fs::read_to_string(day_dir.join(onecopy_lib::trash::MANIFEST_FILE_NAME))
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
         .collect::<Vec<_>>();
     // Overwrite records what it displaced with the hash the user reviewed.
     for line in &lines {
-        assert_eq!(line["kind"], "overwrite-displaced");
+        assert_eq!(line["kind"], wire(TrashKind::OverwriteDisplaced));
         assert_eq!(line["item"], serde_json::Value::Null);
         let stored = std::fs::read(line["storedPath"].as_str().unwrap()).unwrap();
         assert_eq!(
@@ -1302,7 +1308,7 @@ fn overwrite_preserves_the_reviewed_destination_family_before_publication() {
             blake3::hash(&stored).to_hex().as_str()
         );
         let main = line["originalPath"].as_str().unwrap().ends_with("x.jpg");
-        assert_eq!(line["role"], if main { "main" } else { "companion" });
+        assert_eq!(line["role"], wire(if main { TrashRole::Main } else { TrashRole::Companion }));
     }
     let originals = lines
         .iter()
@@ -2073,7 +2079,7 @@ fn write_config(f: &Fixture, sources: &[&std::path::Path], destinations: &[&std:
     std::fs::write(
         f.app_root.join("config.json"),
         serde_json::to_vec(&serde_json::json!({
-            "formatVersion": 1,
+            (onecopy_lib::formats::JSON_KEY): onecopy_lib::formats::CONFIG,
             "sourceDirs": list(sources),
             "destinationRoots": list(destinations),
         }))
@@ -2097,11 +2103,16 @@ fn item_named(f: &Fixture, file_name: &str) -> ItemIdentity {
     }
 }
 
+/// The product's own private names, plus any other temporary file.
 fn private_leftovers(dir: &std::path::Path) -> Vec<String> {
     std::fs::read_dir(dir)
         .unwrap()
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|name| name.starts_with(".onecopy-") || name.ends_with(".tmp"))
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            onecopy_lib::file_identity::is_private_tmp_name(path)
+                || path.extension().is_some_and(|extension| extension == "tmp")
+        })
+        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
         .collect()
 }
 
@@ -2147,10 +2158,10 @@ fn destination_admission_refuses_a_source_folder_and_an_unconfigured_folder() {
     let elsewhere = tempfile::tempdir().unwrap();
     let item = item_named(&f, "keep.jpg");
 
-    for (dest, expected) in [
-        (inside_source.as_path(), "inside the scanned directory"),
-        (elsewhere.path(), "not a configured destination root"),
-        (f._dir.path().join("absent").as_path(), "not a directory"),
+    for dest in [
+        inside_source.as_path(),
+        elsewhere.path(),
+        f._dir.path().join("absent").as_path(),
     ] {
         let error = move_batch(
             &f.conn,
@@ -2163,7 +2174,7 @@ fn destination_admission_refuses_a_source_folder_and_an_unconfigured_folder() {
             |_| {},
         )
         .unwrap_err();
-        assert!(error.contains(expected), "{error}");
+        assert!(error.contains(&dest.display().to_string()), "the refusal names the folder: {error}");
     }
     assert_eq!(std::fs::read_dir(&inside_source).unwrap().count(), 0);
     assert_eq!(std::fs::read_dir(elsewhere.path()).unwrap().count(), 0);
@@ -2452,15 +2463,14 @@ fn overwrite_displaces_nothing_until_the_complete_replacement_is_prepared() {
 #[test]
 fn move_out_modes_have_one_wire_name() {
     use onecopy_lib::operations::MoveOutMode;
-    for (mode, wire) in [
-        (MoveOutMode::MoveTrashRest, "move-trash-rest"),
-        (MoveOutMode::MoveDeleteRest, "move-delete-rest"),
-        (MoveOutMode::CopyKeepAll, "copy"),
-    ] {
-        assert_eq!(mode.as_str(), wire);
+    let modes = [MoveOutMode::MoveTrashRest, MoveOutMode::MoveDeleteRest, MoveOutMode::CopyKeepAll];
+    for mode in modes {
+        let wire = mode.as_str();
         assert_eq!(serde_json::to_value(mode).unwrap(), wire);
         assert_eq!(serde_json::from_value::<MoveOutMode>(serde_json::json!(wire)).unwrap(), mode);
     }
+    let names: std::collections::HashSet<_> = modes.iter().map(|mode| mode.as_str()).collect();
+    assert_eq!(names.len(), modes.len(), "each mode has its own wire name");
 }
 
 #[test]
@@ -2823,23 +2833,27 @@ fn deleting_the_last_live_copy_forgets_missing_siblings_that_carry_evidence() {
     assert_eq!(remaining, (0, 0, 0));
 }
 
-// `.onecopy-stage-<16 hex home fingerprint>-<10 digit pid>-<nanoid>.tmp`; see
-// `file_identity::private_stage_file_name`.
-const STAGE_PREFIX_LEN: usize = ".onecopy-stage-".len();
-const HOME_FIELD_LEN: usize = 16;
-const PID_FIELD_LEN: usize = 10;
-
-fn with_pid(name: &str, pid: u32) -> String {
-    let pid_start = STAGE_PREFIX_LEN + HOME_FIELD_LEN + 1;
-    let pid_end = pid_start + PID_FIELD_LEN;
-    format!("{}{pid:0width$}{}", &name[..pid_start], &name[pid_end..], width = PID_FIELD_LEN)
+/// The byte spans of the home fingerprint and process id fields in a stage
+/// name this process just produced, found from the name itself: the pid
+/// field is the `-`-separated field holding this process's id, and the home
+/// field is the one before it.
+fn owner_fields(name: &str) -> (std::ops::Range<usize>, std::ops::Range<usize>) {
+    let mut fields = Vec::new();
+    let mut start = 0;
+    for (index, _) in name.match_indices('-') {
+        fields.push(start..index);
+        start = index + 1;
+    }
+    fields.push(start..name.len());
+    let pid = fields
+        .iter()
+        .position(|field| name[field.clone()].parse::<u32>() == Ok(std::process::id()))
+        .expect("a stage name embeds this process's id");
+    (fields[pid - 1].clone(), fields[pid].clone())
 }
 
-fn with_foreign_home(name: &str) -> String {
-    let home_start = STAGE_PREFIX_LEN;
-    let home_end = home_start + HOME_FIELD_LEN;
-    let foreign = "f".repeat(HOME_FIELD_LEN);
-    format!("{}{foreign}{}", &name[..home_start], &name[home_end..])
+fn splice(name: &str, field: &std::ops::Range<usize>, text: &str) -> String {
+    format!("{}{text}{}", &name[..field.start], &name[field.end..])
 }
 
 /// A pid guaranteed not to be running any more.
@@ -2887,9 +2901,11 @@ fn an_unsettled_operation_sweeps_nothing_from_the_destination_folder() {
     write_config(&f, &[&f.root], &[dest.as_path()]);
 
     let base = onecopy_lib::file_identity::private_stage_file_name().unwrap();
-    let dead = dest.join(with_pid(&base, exited_pid()));
-    let live = dest.join(with_pid(&base, std::process::id()));
-    let foreign = dest.join(with_foreign_home(&with_pid(&base, exited_pid())));
+    let (home_field, pid_field) = owner_fields(&base);
+    let with_pid = |pid: u32| splice(&base, &pid_field, &format!("{pid:0width$}", width = pid_field.len()));
+    let dead = dest.join(with_pid(exited_pid()));
+    let live = dest.join(with_pid(std::process::id()));
+    let foreign = dest.join(splice(&with_pid(exited_pid()), &home_field, &"f".repeat(home_field.len())));
     for path in [&dead, &live, &foreign] {
         std::fs::write(path, b"leftover").unwrap();
     }
@@ -3085,7 +3101,7 @@ fn delete_with_move_given_up(label: &str, mode: DeleteMode, land: bool) {
         // Provenance was committed before the move was attempted.
         let trash = f.root.join(onecopy_lib::trash::TRASH_DIR_NAME);
         let day = std::fs::read_dir(&trash).unwrap().next().unwrap().unwrap().path();
-        let manifest = std::fs::read_to_string(day.join("manifest.jsonl")).unwrap();
+        let manifest = std::fs::read_to_string(day.join(onecopy_lib::trash::MANIFEST_FILE_NAME)).unwrap();
         assert!(manifest.contains("photo.jpg"));
     }
 

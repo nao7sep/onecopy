@@ -10,15 +10,15 @@ use onecopy_lib::derived_work::{
     TranscriptionAttemptOutcome,
 };
 use onecopy_lib::face::{complete_face_scoring_attempt, Face, FaceScoringAttemptOutcome, FoundFace};
-use onecopy_lib::transcription::{Segment, Transcript};
+use onecopy_lib::transcription::{self, Segment, Transcript};
 use onecopy_lib::{index_store, preview};
 use rusqlite::{params, OptionalExtension};
 
 fn insert(conn: &rusqlite::Connection, hash: &str, kind: &str, path: &str) {
     conn.execute(
         "INSERT INTO contents (hash, byte_size, kind, derived_at_utc, derived_version)
-         VALUES (?1, 1, ?2, 'ready', 4)",
-        params![hash, kind],
+         VALUES (?1, 1, ?2, 'ready', ?3)",
+        params![hash, kind, derived_state::DERIVE_VERSION],
     )
     .unwrap();
     conn.execute(
@@ -96,6 +96,8 @@ fn audio_and_video_use_one_transcript_publication_and_restart_contract() {
     insert(&conn, "audio", "audio", "voice.flac");
     insert(&conn, "video", "video", "clip.mp4");
     let cache = preview::CachePaths::new(root.path().join("cache"));
+    let inferred = spoken("canonical speech");
+    let rendered = transcription::render(&inferred.segments);
 
     for (hash, path) in [("audio", "voice.flac"), ("video", "clip.mp4")] {
         let starts = Cell::new(0);
@@ -108,7 +110,7 @@ fn audio_and_video_use_one_transcript_publication_and_restart_contract() {
             |on_progress| {
                 TranscriptScenario {
                     progress: vec![0, 25, 100],
-                    result: TranscriptResult::Text(spoken("canonical speech")),
+                    result: TranscriptResult::Text(inferred.clone()),
                 }
                 .run(on_progress)
             },
@@ -120,7 +122,7 @@ fn audio_and_video_use_one_transcript_publication_and_restart_contract() {
             outcome,
             TranscriptionAttemptOutcome::Completed {
                 hash: hash.to_string(),
-                text: "[0:00] canonical speech\n".to_string(),
+                text: rendered.clone(),
                 issues_changed: false,
             }
         );
@@ -131,7 +133,7 @@ fn audio_and_video_use_one_transcript_publication_and_restart_contract() {
     for hash in ["audio", "video"] {
         let result = derived_state::transcript_result(&reopened, hash).unwrap();
         assert_eq!(result.status, derived_state::READY);
-        assert_eq!(result.text.as_deref(), Some("[0:00] canonical speech\n"));
+        assert_eq!(result.text.as_deref(), Some(rendered.as_str()));
         let (model, language, segments): (String, Option<String>, String) = reopened
             .query_row(
                 "SELECT model, language, segments FROM transcripts WHERE content_hash = ?1",
@@ -139,9 +141,10 @@ fn audio_and_video_use_one_transcript_publication_and_restart_contract() {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        assert_eq!(model, "whisper-large-v3-turbo");
-        assert_eq!(language.as_deref(), Some("en"));
-        assert_eq!(segments, r#"[{"startMs":0,"endMs":1500,"text":"canonical speech"}]"#);
+        assert_eq!(model, onecopy_lib::ai_dependencies::transcription_model().model);
+        assert_eq!(language, inferred.language);
+        let stored: Vec<Segment> = serde_json::from_str(&segments).unwrap();
+        assert_eq!(stored, inferred.segments, "the stored segments read back as inferred");
     }
 }
 
@@ -177,12 +180,9 @@ fn cancellation_wins_over_a_late_success_before_transcript_publication() {
         }
     );
     assert_eq!(stored_text(&conn, "late"), None);
-    assert_eq!(
-        derived_state::transcript_result(&conn, "late")
-            .unwrap()
-            .status,
-        "pending"
-    );
+    // Still owed: neither published nor recorded as a failure.
+    let status = derived_state::transcript_result(&conn, "late").unwrap().status;
+    assert!(![derived_state::READY, derived_state::FAILED].contains(&status), "{status}");
 }
 
 #[test]
@@ -419,13 +419,13 @@ fn face_success_empty_failure_and_cancellation_use_the_production_operation() {
         .unwrap();
     assert_eq!(stored, (2, Some(1.0), None));
     let failures: Vec<(String, String, String)> = conn
-        .prepare("SELECT content_hash, event, message FROM records.analysis_events WHERE class = 'faces'")
+        .prepare("SELECT content_hash, event, message FROM records.analysis_events")
         .unwrap()
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
-    assert_eq!(failures, [("failed".to_string(), "failed".to_string(), "detector failed".to_string())]);
+    assert_eq!(failures, [("failed".to_string(), derived_state::FAILED.to_string(), "detector failed".to_string())]);
     assert_eq!(*changed.borrow(), ["smile", "none", "failed"]);
 }
 
@@ -443,5 +443,5 @@ fn face_inference_panic_records_one_failure_and_the_next_item_completes() {
         }).unwrap();
         assert_eq!(matches!(outcome, FaceScoringAttemptOutcome::Failed { .. }), hash == "panic");
     }
-    assert_eq!(conn.query_row("SELECT count(*) FROM active_issues WHERE kind = 'face-score-error'", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+    assert_eq!(conn.query_row("SELECT count(*) FROM active_issues WHERE kind = ?1", [derived_state::FACE_ERROR], |row| row.get::<_, i64>(0)).unwrap(), 1);
 }

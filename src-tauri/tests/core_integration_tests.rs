@@ -94,7 +94,7 @@ fn world(label: &str) -> World {
     std::fs::write(
         home.join("config.json"),
         serde_json::to_vec(&serde_json::json!({
-            "formatVersion": 1,
+            (onecopy_lib::formats::JSON_KEY): onecopy_lib::formats::CONFIG,
             "sourceDirs": [corpus.to_string_lossy()],
             "destinationRoots": [dir.path().to_string_lossy()],
         }))
@@ -350,7 +350,7 @@ fn the_whole_promise_scan_group_cull_and_verified_move_out_cohere() {
     let trash_files = walkdir(&w.corpus.join(trash::TRASH_DIR_NAME));
     let media_bytes: u64 = trash_files
         .iter()
-        .filter(|p| p.file_name().is_none_or(|n| n != "manifest.jsonl"))
+        .filter(|p| p.file_name().is_none_or(|n| n != trash::MANIFEST_FILE_NAME))
         .map(|p| std::fs::metadata(p).unwrap().len())
         .sum();
     assert_eq!(
@@ -365,7 +365,7 @@ fn the_whole_promise_scan_group_cull_and_verified_move_out_cohere() {
     );
     let manifest_lines: usize = trash_files
         .iter()
-        .filter(|p| p.file_name().is_some_and(|n| n == "manifest.jsonl"))
+        .filter(|p| p.file_name().is_some_and(|n| n == trash::MANIFEST_FILE_NAME))
         .map(|p| std::fs::read_to_string(p).unwrap().lines().count())
         .sum();
     assert_eq!(manifest_lines, 4, "every trashed file has provenance");

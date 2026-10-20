@@ -15,7 +15,8 @@ fn a_negative_index_is_rebuilt_but_a_newer_competing_setup_is_refused() {
     let result = open_before_setup(&competing, || {
         Connection::open(&competing).unwrap().execute_batch("CREATE TABLE future(value); PRAGMA user_version = 2;").unwrap();
     });
-    assert!(result.unwrap_err().contains("newer OneCopy"));
+    let expected = crate::formats::NewerStore::check(&competing, 2, crate::formats::INDEX).unwrap();
+    assert_eq!(result.unwrap_err(), expected.to_string());
     let conn = Connection::open(&competing).unwrap();
     assert_eq!(raw_user_version(&conn).unwrap(), 2);
     assert_eq!(conn.query_row("SELECT count(*) FROM sqlite_master WHERE name = 'contents'", [], |row| row.get::<_, i64>(0)).unwrap(), 0);

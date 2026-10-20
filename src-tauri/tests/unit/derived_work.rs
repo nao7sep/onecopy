@@ -247,11 +247,15 @@ fn a_model_load_failure_keeps_transcription_retryable_and_coalesces_one_class_is
     assert!(matches!(outcome, TranscriptionAttemptOutcome::ModelUnavailable { .. }));
     let failed: i64 = conn.query_row("SELECT count(*) FROM active_issues WHERE path != ''", [], |r| r.get(0)).unwrap();
     assert_eq!(failed, 0, "a dependency failure must never blame the media file");
+    let class_issues = || -> i64 {
+        conn.query_row("SELECT count(*) FROM active_issues WHERE path = ''", [], |r| r.get(0)).unwrap()
+    };
     for _ in 0..2 {
         record_model_failure(&conn, WorkClass::VideoTranscripts, &error).unwrap();
     }
-    let count: i64 = conn.query_row("SELECT count(*) FROM active_issues WHERE kind = 'model-unavailable-video-transcripts'", [], |r| r.get(0)).unwrap();
-    assert_eq!(count, 1);
+    assert_eq!(class_issues(), 1, "repeated failures of one class coalesce");
+    record_model_failure(&conn, WorkClass::AudioTranscripts, &error).unwrap();
+    assert_eq!(class_issues(), 2, "each class keeps its own Issue");
     let automatic = transcription_report(TranscriptionRun::Automatic, &outcome);
     assert_eq!(automatic.pause_message.as_deref(), Some(error.as_str()));
     assert!(automatic.event.is_none(), "no per-file failure event for automatic work");

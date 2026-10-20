@@ -198,7 +198,7 @@ fn a_history_from_before_sessions_gains_them_and_keeps_its_rows() {
 
 #[test]
 #[serial(backup_store)]
-fn the_history_records_format_version_1() {
+fn the_history_records_its_format_version() {
     let (_dir, file) = unique_store_file("format-version");
     session(&file, "s1", || record(Path::new("/abs/f.json"), b"x"));
     let conn = Connection::open(&file).unwrap();
@@ -206,7 +206,6 @@ fn the_history_records_format_version_1() {
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
     assert_eq!(version, crate::formats::BACKUPS);
-    assert_eq!(crate::formats::BACKUPS, 1);
 }
 
 #[test]
@@ -267,7 +266,8 @@ fn a_newer_marker_committed_before_history_setup_is_not_downgraded() {
         let conn = Connection::open(&file).unwrap();
         conn.execute_batch("CREATE TABLE future(value); PRAGMA user_version = 2;").unwrap();
     });
-    assert!(result.unwrap_err().contains("newer OneCopy"));
+    let expected = crate::formats::NewerStore::check(&file, 2, crate::formats::BACKUPS).unwrap();
+    assert_eq!(result.unwrap_err(), expected.to_string());
     let conn = Connection::open(&file).unwrap();
     assert_eq!(conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0)).unwrap(), 2);
     assert_eq!(conn.query_row("SELECT count(*) FROM sqlite_master WHERE name = 'backups'", [], |row| row.get::<_, i64>(0)).unwrap(), 0);

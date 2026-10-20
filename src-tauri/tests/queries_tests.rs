@@ -147,8 +147,8 @@ fn section_window_returns_only_the_requested_ordered_rows() {
 #[test]
 fn section_window_rejects_unbounded_requests() {
     let conn = db();
-    for limit in [0, queries::MAX_SECTION_WINDOW_ITEMS + 1] {
-        let error = queries::section_window(
+    let window = |limit| {
+        queries::section_window(
             &conn,
             onecopy_lib::queries::SectionKind::Image,
             "undated",
@@ -158,8 +158,12 @@ fn section_window_rejects_unbounded_requests() {
             limit,
             projection(),
         )
-        .unwrap_err();
-        assert!(error.contains("section window limit"));
+    };
+    for limit in [1, queries::MAX_SECTION_WINDOW_ITEMS] {
+        assert!(window(limit).is_ok(), "a limit of {limit} is within the bound");
+    }
+    for limit in [0, queries::MAX_SECTION_WINDOW_ITEMS + 1] {
+        assert!(window(limit).is_err(), "a limit of {limit} is outside the bound");
     }
 }
 
@@ -1253,7 +1257,7 @@ fn identity_section_lookup_uses_current_logical_date_and_display_zone() {
     seed_at(&conn, "moved", "/photos", "photo.jpg", 1_769_889_600_000);
     let identity = queries::SectionIdentity { hash: Some("moved".into()), path_id: 0 };
     let tokyo = queries::section_for_identity(&conn, &identity, "Asia/Tokyo".parse().unwrap()).unwrap().unwrap();
-    assert_eq!(tokyo.kind, "image");
+    assert_eq!(tokyo.kind, queries::SectionKind::Image.as_str());
     assert_eq!(tokyo.month, "2026-02");
     assert_eq!(queries::section_for_identity(&conn, &identity, chrono_tz::UTC).unwrap().unwrap().month, "2026-01");
     conn.execute("UPDATE paths SET resolved_utc_ms = NULL WHERE content_hash = 'moved'", []).unwrap();
@@ -1274,7 +1278,7 @@ fn identity_section_lookup_admits_only_real_unhashed_other_items() {
         let section = queries::section_for_identity(&conn, &queries::SectionIdentity { hash: None, path_id: id }, chrono_tz::UTC).unwrap();
         assert_eq!(section.is_some(), id == 1);
         if let Some(section) = section {
-            assert_eq!(section.kind, "other");
+            assert_eq!(section.kind, queries::SectionKind::Other.as_str());
             assert_eq!(section.month, "undated");
         }
     }
@@ -1288,6 +1292,7 @@ fn diagnostic_paths_resolve_only_current_source_members_and_companion_owners() {
     let roots = vec![root.to_string_lossy().into_owned()];
     let file = |relative: &str| root.join(relative).to_string_lossy().into_owned();
     let outside = fixture.path().join("source-sibling/outside.txt").to_string_lossy().into_owned();
+    let trash = onecopy_lib::trash::TRASH_DIR_NAME;
     conn.execute("INSERT INTO contents(hash, kind, byte_size) VALUES ('image', 'image', 1)", []).unwrap();
     for (id, path, kind, hash, parent, missing) in [
         (1, file("photo.jpg"), "image", Some("image"), None, 0),
@@ -1295,10 +1300,10 @@ fn diagnostic_paths_resolve_only_current_source_members_and_companion_owners() {
         (3, file("note.txt"), "text", None, None, 0),
         (4, file("missing.txt"), "other", None, None, 1),
         (5, outside.clone(), "other", None, None, 0),
-        (6, file(".onecopy-trash/deleted.txt"), "other", None, None, 0),
+        (6, file(&format!("{trash}/deleted.txt")), "other", None, None, 0),
         (7, file("unidentified.jpg"), "image", None, None, 0),
         (8, file("bad-owner.xmp"), "other", None, Some(5), 0),
-        (9, file(".onecopy-trash-notes/note.txt"), "other", None, None, 0),
+        (9, file(&format!("{trash}-notes/note.txt")), "other", None, None, 0),
     ] {
         conn.execute("INSERT INTO paths(id, abs_path, dir_path, file_name, kind, content_hash, companion_of, missing)
             VALUES (?1, ?2, ?3, 'fixture', ?4, ?5, ?6, ?7)",
@@ -1309,14 +1314,14 @@ fn diagnostic_paths_resolve_only_current_source_members_and_companion_owners() {
         let target = resolve(&file(name)).unwrap();
         assert_eq!(target.identity.hash.as_deref(), Some("image"));
         assert_eq!(target.identity.path_id, 1);
-        assert_eq!(target.section.kind, "image");
+        assert_eq!(target.section.kind, queries::SectionKind::Image.as_str());
     }
     let other = resolve(&file("note.txt")).unwrap();
     assert_eq!(other.identity.hash, None);
     assert_eq!(other.identity.path_id, 3);
-    assert_eq!(other.section.kind, "other");
-    assert!(resolve(&file(".onecopy-trash-notes/note.txt")).is_some());
-    for path in [outside, file("missing.txt"), file(".onecopy-trash/deleted.txt"),
+    assert_eq!(other.section.kind, queries::SectionKind::Other.as_str());
+    assert!(resolve(&file(&format!("{trash}-notes/note.txt"))).is_some());
+    for path in [outside, file("missing.txt"), file(&format!("{trash}/deleted.txt")),
         file("unidentified.jpg"), file("bad-owner.xmp"), file("not-indexed.txt"),
         file("../source-sibling/outside.txt"), "relative.txt".to_string()] {
         assert!(resolve(&path).is_none(), "{path}");
@@ -1357,7 +1362,7 @@ fn diagnostic_navigation_refuses_a_hidden_only_target_and_resolves_once_the_filt
     visibility_index::apply_policy(&conn, &Policy::from_config(&serde_json::json!({})).unwrap()).unwrap();
     let target = resolve().expect("resolution recovers once the filter lifts");
     assert_eq!(target.identity.hash.as_deref(), Some("h"));
-    assert_eq!(target.section.kind, "image");
+    assert_eq!(target.section.kind, queries::SectionKind::Image.as_str());
 }
 
 #[test]

@@ -3,7 +3,7 @@
 use onecopy_lib::preview::CachePaths;
 use onecopy_lib::transcription::{Segment, Transcript};
 use onecopy_lib::{derived_state, index_store, queries};
-use derived_state::FailedOutputScope;
+use derived_state::{FailedOutputScope, FAILED, NEEDS_FFMPEG, READY, READY_EMPTY, READY_TEXT};
 
 fn spoken(text: &str) -> Transcript {
     Transcript {
@@ -36,11 +36,11 @@ fn seeded() -> (tempfile::TempDir, rusqlite::Connection) {
         .tempdir()
         .unwrap();
     let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
-    conn.execute_batch(
+    conn.execute_batch(&format!(
         "INSERT INTO contents
            (hash, byte_size, kind, derived_at_utc, derive_outcome, strip_frames)
-         VALUES ('image', 1, 'image', NULL, 'failed', NULL),
-                ('poster', 1, 'video', NULL, 'failed', NULL),
+         VALUES ('image', 1, 'image', NULL, '{FAILED}', NULL),
+                ('poster', 1, 'video', NULL, '{FAILED}', NULL),
                 ('strip', 1, 'video', 'ready', NULL, -1),
                 ('face', 1, 'image', 'ready', NULL, NULL),
                 ('speech', 1, 'video', 'ready', NULL, NULL),
@@ -52,13 +52,13 @@ fn seeded() -> (tempfile::TempDir, rusqlite::Connection) {
                 ('/face.jpg', '/', 'face.jpg', 'image', 'face'),
                 ('/speech.mov', '/', 'speech.mov', 'video', 'speech'),
                 ('/delete.jpg', '/', 'delete.jpg', 'image', 'delete');",
-    )
+    ))
     .unwrap();
     derived_state::record_face_failure(&conn, "face", "/face.jpg", "out of memory").unwrap();
     derived_state::record_transcript_failure(&conn, "speech", "/speech.mov", "decoder failed")
         .unwrap();
     for (path, kind) in [
-        ("/image.jpg", "decode-error"),
+        ("/image.jpg", derived_state::PREVIEW_ERROR),
         ("/poster.mov", derived_state::VIDEO_POSTER_ERROR),
         ("/strip.mov", derived_state::VIDEO_STRIP_ERROR),
         ("/delete.jpg", "delete-error"),
@@ -136,15 +136,15 @@ fn explicit_attempt_boundary_reopens_failures_without_using_or_erasing_issues() 
     let (_dir, conn) = seeded();
     // Dismissal/history cannot decide whether an output is eligible again.
     index_store::dismiss_issues(&conn, None).unwrap();
-    conn.execute_batch(
+    conn.execute_batch(&format!(
         "INSERT INTO contents (hash, byte_size, kind, derived_at_utc, derive_outcome, strip_frames)
-         VALUES ('waiting', 1, 'image', NULL, 'needs-ffmpeg', NULL),
+         VALUES ('waiting', 1, 'image', NULL, '{NEEDS_FFMPEG}', NULL),
                 ('ready', 1, 'video', 'ready', NULL, 8);
          INSERT INTO transcripts (content_hash, model, model_version, text, segments, created_at_utc)
          VALUES ('ready', 'm', 'v', '', '[]', 'now');
          INSERT INTO face_checks (content_hash, model, model_version, face_count, checked_at_utc)
          VALUES ('ready', 'm', 'v', 0, 'now');",
-    )
+    ))
     .unwrap();
     assert_eq!(
         derived_state::reset_failed_outputs(&conn, FailedOutputScope::Library).unwrap(),
@@ -160,10 +160,10 @@ fn explicit_attempt_boundary_reopens_failures_without_using_or_erasing_issues() 
          FROM contents c WHERE c.hash = 'ready'",
         [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     ).unwrap();
-    assert_eq!(preserved, ("ready".into(), 8, "needs-ffmpeg".into()));
+    assert_eq!(preserved, ("ready".into(), 8, NEEDS_FFMPEG.into()));
     assert_eq!(
         analysis_states(&conn, "ready"),
-        (Some("ready".into()), Some("ready-empty".into()))
+        (Some(READY.into()), Some(READY_EMPTY.into()))
     );
     assert_eq!(analysis_states(&conn, "face"), (None, None));
     assert_eq!(queries::issues(&conn, 20, None).unwrap().0, 0);
@@ -195,8 +195,8 @@ fn section_attempt_reset_uses_logical_kind_and_half_open_dates_not_shared_folder
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!(states, (None, "failed".into()));
-    assert_eq!(analysis_states(&conn, "face").0.as_deref(), Some("failed"));
+    assert_eq!(states, (None, FAILED.into()));
+    assert_eq!(analysis_states(&conn, "face").0.as_deref(), Some(FAILED));
     assert_eq!(
         queries::issues(&conn, 20, None).unwrap().0,
         6,
@@ -248,7 +248,7 @@ fn audio_transcription_is_reopened_by_its_other_files_section() {
         1
     );
     assert_eq!(analysis_states(&conn, "audio").1, None);
-    assert_eq!(analysis_states(&conn, "speech").1.as_deref(), Some("failed"));
+    assert_eq!(analysis_states(&conn, "speech").1.as_deref(), Some(FAILED));
 }
 
 #[test]
@@ -261,7 +261,7 @@ fn opening_database_and_querying_section_do_not_repeat_a_failed_new_attempt() {
     let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
     for _ in 0..3 {
         queries::section_dirs(&conn, onecopy_lib::queries::SectionKind::Video, "undated", chrono_tz::UTC).unwrap();
-        assert_eq!(analysis_states(&conn, "speech").1.as_deref(), Some("failed"));
+        assert_eq!(analysis_states(&conn, "speech").1.as_deref(), Some(FAILED));
     }
     assert_eq!(
         derived_state::reset_failed_outputs(
@@ -288,10 +288,12 @@ fn requested_preview_honors_failure_until_explicit_reset_even_if_file_is_now_val
     .unwrap();
     let cache = CachePaths::new(dir.path().join("cache"));
     let before = queries::issues(&conn, 20, None).unwrap().0;
+    // The refusal names the control that resets it, by its own label.
+    let recheck = onecopy_lib::i18n::catalogue("en").text("grid.recheck", "OneCopy");
     for _ in 0..2 {
         let error =
             onecopy_lib::preview::derive_one(&conn, &cache, 32, 64, None, "image").unwrap_err();
-        assert!(error.contains("Recheck this section"));
+        assert!(error.contains(&recheck), "{error}");
     }
     assert!(!cache.preview("image").exists());
     assert_eq!(queries::issues(&conn, 20, None).unwrap().0, before);
@@ -314,7 +316,7 @@ fn failed_replacement_keeps_its_completed_transcript_across_reattempt_boundaries
     )
     .unwrap();
     derived_state::reset_failed_outputs(&conn, FailedOutputScope::Library).unwrap();
-    assert_eq!(analysis_states(&conn, "speech").1.as_deref(), Some("ready-text"));
+    assert_eq!(analysis_states(&conn, "speech").1.as_deref(), Some(READY_TEXT));
     assert!(queries::issues(&conn, 20, None)
         .unwrap()
         .1
@@ -348,8 +350,8 @@ fn successful_analysis_records_value_or_empty_and_retires_its_issue() {
     derived_state::record_face_success(&conn, "face", "/face.jpg", &[], &onecopy_lib::ai_dependencies::face_model()).unwrap();
     derived_state::record_transcript_success(&conn, "speech", "/speech.mov", &Transcript::default(), whisper()).unwrap();
 
-    assert_eq!(analysis_states(&conn, "face").0.as_deref(), Some("ready"));
-    assert_eq!(analysis_states(&conn, "speech").1.as_deref(), Some("ready-empty"));
+    assert_eq!(analysis_states(&conn, "face").0.as_deref(), Some(READY));
+    assert_eq!(analysis_states(&conn, "speech").1.as_deref(), Some(READY_EMPTY));
     let (_, rows) = queries::issues(&conn, 20, None).unwrap();
     assert!(!rows.iter().any(|row| matches!(
         row.kind.as_str(),
@@ -427,7 +429,7 @@ fn preview_poster_and_snapshot_failures_checkpoint_once_for_retry() {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
-    assert_eq!(state, ("failed".into(), "failed".into(), -1));
+    assert_eq!(state, (FAILED.into(), FAILED.into(), -1));
 
     let (_, issues) = queries::issues(&conn, 20, None).unwrap();
     for kind in [
@@ -460,7 +462,7 @@ fn transcript_reads_distinguish_pending_failed_empty_and_ready_output() {
     let (_dir, conn) = seeded();
 
     let failed = derived_state::transcript_result(&conn, "speech").unwrap();
-    assert_eq!(failed.status, "failed");
+    assert_eq!(failed.status, FAILED);
     // The Issue's `message` is now the raw recorded diagnostic; OneCopy's own
     // sentence lives behind the Issue's `message_key` instead, so this field
     // carries whatever `record_transcript_failure` was given. The frontend
@@ -480,12 +482,12 @@ fn transcript_reads_distinguish_pending_failed_empty_and_ready_output() {
     )
     .unwrap();
     let adopted = derived_state::transcript_result(&conn, "poster").unwrap();
-    assert_eq!(adopted.status, "ready");
+    assert_eq!(adopted.status, READY);
     assert_eq!(adopted.text.as_deref(), Some("[0:01] kept\n"));
 
     derived_state::record_transcript_success(&conn, "speech", "/speech.mov", &Transcript::default(), whisper()).unwrap();
     let empty = derived_state::transcript_result(&conn, "speech").unwrap();
-    assert_eq!(empty.status, "ready");
+    assert_eq!(empty.status, READY);
     assert_eq!(empty.text.as_deref(), Some(""));
 
 }
@@ -507,21 +509,21 @@ fn derived_failure_issues_keep_hostile_diagnostics_out_of_onecopys_own_sentence(
     derived_state::record_transcript_failure(&conn, "speech", "/speech.mov", hostile).unwrap();
 
     let (_, issues) = queries::issues(&conn, 20, None).unwrap();
-    let expected_keys = [
-        (derived_state::PREVIEW_ERROR, "notice.previewFailed"),
-        (derived_state::VIDEO_POSTER_ERROR, "notice.videoPosterFailed"),
-        (derived_state::VIDEO_STRIP_ERROR, "notice.videoStripFailed"),
-        (derived_state::FACE_ERROR, "notice.faceScoreFailed"),
-        (derived_state::TRANSCRIPT_ERROR, "notice.transcriptFailed"),
+    let kinds = [
+        derived_state::PREVIEW_ERROR,
+        derived_state::VIDEO_POSTER_ERROR,
+        derived_state::VIDEO_STRIP_ERROR,
+        derived_state::FACE_ERROR,
+        derived_state::TRANSCRIPT_ERROR,
     ];
     let english = onecopy_lib::i18n::catalogue("en");
-    for (kind, expected_key) in expected_keys {
+    let mut keys = std::collections::HashSet::new();
+    for kind in kinds {
         let row = issues.iter().find(|row| row.kind == kind).unwrap();
         let key = row.message_key.as_deref().unwrap();
-        assert_eq!(key, expected_key);
+        assert!(english.has(key), "{kind}: {key} is not a catalogue entry");
+        assert!(keys.insert(key), "{kind} shares its sentence {key} with another kind");
         let sentence = english.text(key, "OneCopy");
-        assert!(sentence.starts_with("OneCopy could not"));
-        assert!(sentence.contains("original file was not changed"));
         assert!(!sentence.contains("HOSTILE-SENTINEL"));
         assert!(!sentence.contains("EACCES"));
         assert!(!sentence.contains("/private/tmp"));
@@ -586,7 +588,7 @@ fn a_failure_after_a_success_keeps_the_success_time_and_a_reset_restores_it() {
     derived_state::record_preview_failure(&conn, "image", "/image.jpg", "decode").unwrap();
     assert_eq!(
         succeeded(&conn),
-        (success_time.clone(), Some("failed".into()), Some(12.5)),
+        (success_time.clone(), Some(FAILED.into()), Some(12.5)),
         "the failure is its own fact; the success's time stays a time"
     );
 

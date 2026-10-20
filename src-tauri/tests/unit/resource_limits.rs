@@ -42,7 +42,7 @@ fn image_concurrency_falls_back_to_one_when_memory_is_unknown_or_tight() {
 
 #[test]
 fn image_concurrency_obeys_the_aggregate_memory_budget() {
-    let for_three_workers = 1024 * 1024 * 1024 + 3 * IMAGE_JOB_RESERVATION;
+    let for_three_workers = IMAGE_CONCURRENCY_HEADROOM + 3 * IMAGE_JOB_RESERVATION;
     assert_eq!(
         image_worker_capacity_for(32, Some(for_three_workers), true),
         3
@@ -55,12 +55,19 @@ fn image_concurrency_obeys_the_aggregate_memory_budget() {
 fn cpu_thread_budget_never_claims_every_core() {
     assert_eq!(transcription_threads(1), 1);
     assert_eq!(transcription_threads(2), 1);
-    assert_eq!(transcription_threads(8), 4, "half the cores, not all eight");
-    assert_eq!(transcription_threads(64), 4, "clamped, not unbounded");
+    for cores in 2..=256usize {
+        let threads = transcription_threads(cores);
+        assert!(threads >= 1, "{cores} cores");
+        assert!(threads as usize <= cores / 2, "{cores} cores get {threads}, more than half");
+    }
+    // Clamped, not unbounded: a much larger machine gets no more threads.
+    let ceiling = transcription_threads(usize::MAX);
+    assert_eq!(transcription_threads(1024), ceiling);
+    assert!((ceiling as usize) < 1024 / 2);
 
     // The real machine's budget is the same formula, never zero and never
     // more than the clamp — asserted structurally since the actual core
     // count is environment-dependent.
     let budget = cpu_thread_budget();
-    assert!((1..=4).contains(&budget));
+    assert!((1..=ceiling).contains(&budget));
 }

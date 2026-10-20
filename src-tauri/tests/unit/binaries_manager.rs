@@ -62,7 +62,7 @@ fn a_same_size_older_model_remains_update_available() {
         bytes: pinned.bytes,
     };
     let mut document = serde_json::to_value(&older).unwrap();
-    document["formatVersion"] = serde_json::json!(1);
+    document[formats::JSON_KEY] = serde_json::json!(formats::MODEL_IDENTITY);
     std::fs::write(
         model_identity_path(dir.path(), spec),
         serde_json::to_vec(&document).unwrap(),
@@ -72,7 +72,9 @@ fn a_same_size_older_model_remains_update_available() {
     let model = state_of(dir.path(), spec);
 
     assert_eq!(model.status, BinaryStatus::UpdateAvailable);
-    assert_eq!(model.installed_version.as_deref(), Some("aaaaaaaaaaaa"));
+    let installed = model.installed_version.unwrap();
+    assert!(older.sha256.starts_with(&installed), "{installed} names the installed file");
+    assert_ne!(installed, pin_version(pinned));
     assert_eq!(
         model.facts.latest_known_version.as_deref(),
         Some(pin_version(pinned).as_str())
@@ -193,7 +195,7 @@ fn verify_pinned_artifact_refuses_a_downloaded_file_that_does_not_match_its_pin(
     )
     .unwrap_err();
 
-    assert!(error.contains("checksum mismatch for test-dependency"));
+    assert!(error.contains("test-dependency"), "{error}");
     assert!(!staged.exists(), "a mismatch must publish nothing");
 }
 
@@ -266,7 +268,7 @@ fn verify_pinned_artifact_refuses_an_extracted_entry_that_does_not_match_its_pin
     )
     .unwrap_err();
 
-    assert!(error.contains("checksum mismatch for extracted test-dependency"));
+    assert!(error.contains("test-dependency"), "{error}");
     // The function returns no path to publish from on failure; the caller
     // (`install_entry_started`) never reaches `acquisition::publish_staged`
     // without one, so a mismatched entry can never be installed even though
@@ -364,15 +366,22 @@ fn files_a_newer_onecopy_wrote_read_as_absent_and_are_left_as_they_are() {
         .tempdir()
         .unwrap();
     let facts = dir.path().join(DEPENDENCIES_FILE_NAME);
-    let facts_bytes = br#"{"formatVersion":2,"managedToolUpdateLastAttemptAtUtc":"2026-10-05T00:00:00.000Z"}"#;
-    std::fs::write(&facts, facts_bytes).unwrap();
+    let newer = |format: i64, mut document: serde_json::Value| {
+        document[formats::JSON_KEY] = serde_json::json!(format + 1);
+        serde_json::to_vec(&document).unwrap()
+    };
+    let facts_bytes = newer(
+        formats::DEPENDENCIES,
+        serde_json::json!({ "managedToolUpdateLastAttemptAtUtc": "2026-10-05T00:00:00.000Z" }),
+    );
+    std::fs::write(&facts, &facts_bytes).unwrap();
     assert_eq!(load_check_attempt(dir.path(), MANAGED_TOOL_UPDATE_ATTEMPT_KEY), None);
     assert!(save_check_attempt(dir.path(), MANAGED_TOOL_UPDATE_ATTEMPT_KEY, "later").is_err());
     assert_eq!(std::fs::read(&facts).unwrap(), facts_bytes);
 
     std::fs::create_dir_all(dir.path().join(BIN_DIR_NAME)).unwrap();
-    let sidecar_bytes = br#"{"formatVersion":2,"version":"9.0"}"#;
-    std::fs::write(version_sidecar_path(dir.path()), sidecar_bytes).unwrap();
+    let sidecar_bytes = newer(formats::FFMPEG_VERSION_SIDECAR, serde_json::json!({ "version": "9.0" }));
+    std::fs::write(version_sidecar_path(dir.path()), &sidecar_bytes).unwrap();
     assert_eq!(read_version_sidecar(dir.path()), None);
     assert!(write_version_sidecar(dir.path(), "8.0").is_err());
     assert_eq!(std::fs::read(version_sidecar_path(dir.path())).unwrap(), sidecar_bytes);
@@ -380,8 +389,8 @@ fn files_a_newer_onecopy_wrote_read_as_absent_and_are_left_as_they_are() {
     let spec = spec_of("ultraface-rfb640").unwrap();
     let identity = model_identity_path(dir.path(), spec);
     std::fs::create_dir_all(identity.parent().unwrap()).unwrap();
-    let identity_bytes = br#"{"formatVersion":2,"sha256":"x","bytes":1}"#;
-    std::fs::write(&identity, identity_bytes).unwrap();
+    let identity_bytes = newer(formats::MODEL_IDENTITY, serde_json::json!({ "sha256": "x", "bytes": 1 }));
+    std::fs::write(&identity, &identity_bytes).unwrap();
     assert!(invalidate_model_identity(dir.path(), spec).is_err());
     assert_eq!(std::fs::read(&identity).unwrap(), identity_bytes);
 }

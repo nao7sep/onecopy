@@ -2,8 +2,9 @@
 // (tests-folder conventions, Rust form).
 
 use rusqlite::Connection;
-use onecopy_lib::extensions;
-use onecopy_lib::resolution::ResolutionConfig;
+use onecopy_lib::extensions::{self, Kind};
+use onecopy_lib::queries::SectionKind;
+use onecopy_lib::resolution::{ResolutionConfig, ResolvedSource};
 use onecopy_lib::scanner;
 use onecopy_lib::scanner::*;
 use onecopy_lib::index_store;
@@ -110,6 +111,13 @@ fn count(conn: &Connection, sql: &str) -> i64 {
     conn.query_row(sql, [], |r| r.get(0)).unwrap()
 }
 
+/// How many of the hashes `sql` selects are provisional identities.
+fn provisional_count(conn: &Connection, sql: &str) -> usize {
+    let mut statement = conn.prepare(sql).unwrap();
+    let hashes = statement.query_map([], |row| row.get::<_, String>(0)).unwrap();
+    hashes.map(Result::unwrap).filter(|hash| is_provisional(hash)).count()
+}
+
 fn stored_path(path: &std::path::Path) -> String {
     onecopy_lib::winpath::for_fs(path)
         .to_string_lossy()
@@ -137,7 +145,7 @@ fn walk_adds_then_skips_unchanged_then_marks_missing() {
     let s2 = walk_root(&f.conn, &f.root, &lists()).unwrap();
     assert_eq!((s2.added, s2.unchanged), (0, 2));
     assert_eq!(
-        count(&f.conn, "SELECT COUNT(*) FROM active_issues WHERE kind = 'stat-error'"),
+        count(&f.conn, &format!("SELECT COUNT(*) FROM active_issues WHERE kind = '{STAT_ERROR}'")),
         0,
         "a complete walk retires a vanished pre-insert stat failure"
     );
@@ -292,7 +300,7 @@ fn an_incomplete_walk_preserves_known_rows_and_keeps_the_root_dirty() {
     assert_eq!(count(&f.conn, "SELECT missing FROM paths"), 0);
     assert_eq!(count(&f.conn, "SELECT dirty FROM scan_dirs"), 1);
     assert_eq!(
-        count(&f.conn, "SELECT COUNT(*) FROM active_issues WHERE kind = 'walk-error'"),
+        count(&f.conn, &format!("SELECT COUNT(*) FROM active_issues WHERE kind = '{WALK_ERROR}'")),
         1
     );
 
@@ -350,7 +358,7 @@ fn source_restat_refreshes_changed_files_and_retires_missing_path_issues() {
             .unwrap(),
         1
     );
-    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM active_issues WHERE kind = 'stat-error'"), 0);
+    assert_eq!(count(&f.conn, &format!("SELECT COUNT(*) FROM active_issues WHERE kind = '{STAT_ERROR}'")), 0);
     assert!(count(&f.conn, "SELECT COUNT(*) FROM records.issue_events WHERE event = 'resolved'") > 0);
 }
 
@@ -375,7 +383,7 @@ fn the_ladder_collapses_copies_and_identifies_unique_media_without_reading() {
     // unique file; copy count over a provisional identity is 1.
     assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM contents"), 2);
     assert_eq!(
-        count(&f.conn, "SELECT COUNT(*) FROM contents WHERE hash GLOB 'p*'"),
+        provisional_count(&f.conn, "SELECT hash FROM contents"),
         1
     );
     let copies: i64 = f
@@ -411,9 +419,9 @@ fn supported_audio_gets_content_identity_but_stays_in_the_other_section() {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
-    assert_eq!(path_kind, "audio");
-    assert_eq!(content_kind, "audio");
-    assert_eq!(section_kind, "other");
+    assert_eq!(path_kind, Kind::Audio.as_str());
+    assert_eq!(content_kind, Kind::Audio.as_str());
+    assert_eq!(section_kind, SectionKind::Other.as_str());
 }
 
 #[test]
@@ -423,10 +431,7 @@ fn a_late_copy_of_known_content_collapses_and_promotes() {
     walk_root(&f.conn, &f.root, &lists()).unwrap();
     hash_pending(&f.conn, &test_cache(&f)).unwrap();
     // Unique at first sight: provisional.
-    assert_eq!(
-        count(&f.conn, "SELECT COUNT(*) FROM contents WHERE hash GLOB 'p*'"),
-        1
-    );
+    assert_eq!(provisional_count(&f.conn, "SELECT hash FROM contents"), 1);
 
     // A second identical file arrives: the size collision forces BOTH up
     // the ladder — the provisional promotes and the copies collapse.
@@ -435,7 +440,7 @@ fn a_late_copy_of_known_content_collapses_and_promotes() {
     let stats = hash_pending(&f.conn, &test_cache(&f)).unwrap();
     assert_eq!(stats.full_hashed, 2);
     assert_eq!(
-        count(&f.conn, "SELECT COUNT(*) FROM contents WHERE hash GLOB 'p*'"),
+        provisional_count(&f.conn, "SELECT hash FROM contents"),
         0,
         "the provisional identity must promote"
     );
@@ -493,7 +498,7 @@ fn diverged_copies_surface_as_a_copies_disagree_issue() {
     // One row PER FILE — (kind, path) identity needs a real anchor, and
     // naming the disagreeing files is what lets the user act on the finding.
     assert_eq!(
-        count(&f.conn, "SELECT COUNT(*) FROM active_issues WHERE kind = 'copies-disagree'"),
+        count(&f.conn, &format!("SELECT COUNT(*) FROM active_issues WHERE kind = '{COPIES_DISAGREE}'")),
         2
     );
     // Both files keep their own distinct contents rows.
@@ -504,20 +509,24 @@ fn diverged_copies_surface_as_a_copies_disagree_issue() {
     let (message_key, message): (String, String) = f
         .conn
         .query_row(
-            "SELECT message_key, message FROM active_issues WHERE kind = 'copies-disagree' LIMIT 1",
-            [],
+            "SELECT message_key, message FROM active_issues WHERE kind = ?1 LIMIT 1",
+            [COPIES_DISAGREE],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!(message_key, "notice.copiesDisagree");
-    assert!(!message.contains("bit rot"), "the recorded detail stays quantitative, not OneCopy's own prose");
+    let catalogue = onecopy_lib::i18n::catalogue("en");
+    assert!(catalogue.has(&message_key), "{message_key} names a catalogue sentence");
+    assert!(
+        !message.contains(&catalogue.text(&message_key, "OneCopy")),
+        "the recorded detail stays quantitative, not OneCopy's own prose"
+    );
 
     // Current-state: a second pass re-detects the same divergence and must
     // UPDATE the same two rows, never pile up more.
     let stats2 = hash_pending(&f.conn, &test_cache(&f)).unwrap();
     let _ = stats2;
     assert_eq!(
-        count(&f.conn, "SELECT COUNT(*) FROM active_issues WHERE kind = 'copies-disagree'"),
+        count(&f.conn, &format!("SELECT COUNT(*) FROM active_issues WHERE kind = '{COPIES_DISAGREE}'")),
         2,
         "a recurrence updates rows in place"
     );
@@ -562,7 +571,11 @@ fn resolve_uses_filename_then_filesystem_and_flags_undated() {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
-    assert_eq!(source, "undated");
+    let dated = [ResolvedSource::Metadata, ResolvedSource::Filename, ResolvedSource::FileSystem];
+    assert!(
+        dated.iter().all(|candidate| candidate.as_str() != source),
+        "the row is settled without a dated source: {source}"
+    );
     assert_eq!(ms, None, "an undated row carries no time");
 
     let (source, ms): (String, i64) = f
@@ -574,7 +587,7 @@ fn resolve_uses_filename_then_filesystem_and_flags_undated() {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
-    assert_eq!(source, "filename");
+    assert_eq!(source, ResolvedSource::Filename.as_str());
     // 2016-03-05 12:34:56 JST == 03:34:56 UTC.
     let expected = chrono::NaiveDate::from_ymd_opt(2016, 3, 5)
         .unwrap()
@@ -592,7 +605,7 @@ fn resolve_uses_filename_then_filesystem_and_flags_undated() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(source, "filesystem");
+    assert_eq!(source, ResolvedSource::FileSystem.as_str());
 }
 
 #[test]
@@ -864,8 +877,8 @@ fn source_check_continues_after_an_unavailable_root() {
     assert_eq!(
         f.conn
             .query_row(
-                "SELECT path FROM active_issues WHERE kind = 'walk-error'",
-                [],
+                "SELECT path FROM active_issues WHERE kind = ?1",
+                [WALK_ERROR],
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
@@ -918,8 +931,8 @@ fn source_check_skips_only_a_substituted_root() {
     let path = f
         .conn
         .query_row(
-            "SELECT path FROM active_issues WHERE kind = 'walk-error'",
-            [],
+            "SELECT path FROM active_issues WHERE kind = ?1",
+            [WALK_ERROR],
             |row| row.get::<_, String>(0),
         )
         .unwrap();
@@ -1097,7 +1110,9 @@ fn leftover_private_staging_from_this_homes_dead_process_is_removed() {
 
     assert_eq!(stats.added, 1, "only the real file is indexed");
     assert_eq!(
-        count(&f.conn, "SELECT COUNT(*) FROM paths WHERE file_name LIKE '.onecopy-stage-%'"),
+        f.conn
+            .query_row("SELECT COUNT(*) FROM paths WHERE file_name = ?1", [&name], |row| row.get::<_, i64>(0))
+            .unwrap(),
         0,
         "still never indexed as library content, proven or not"
     );
@@ -1126,11 +1141,16 @@ fn leftover_private_staging_from_a_live_or_foreign_process_is_never_removed() {
     let stats = walk_root(&f.conn, &f.root, &lists()).unwrap();
 
     assert_eq!(stats.added, 1, "only the real file is indexed");
-    assert_eq!(
-        count(&f.conn, "SELECT COUNT(*) FROM paths WHERE file_name LIKE '.onecopy-stage-%'"),
-        0,
-        "neither leftover is ever indexed as library content"
-    );
+    for leftover in [&live, &foreign] {
+        let name = leftover.file_name().unwrap().to_string_lossy();
+        assert_eq!(
+            f.conn
+                .query_row("SELECT COUNT(*) FROM paths WHERE file_name = ?1", [&name], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "neither leftover is ever indexed as library content"
+        );
+    }
     assert!(live.exists(), "a live process's own file is never removed");
     assert!(foreign.exists(), "a different application home's file is never removed");
 }
@@ -1457,7 +1477,10 @@ fn date_resolution_seeks_across_multiple_bounded_pages() {
     assert_eq!(
         count(
             &f.conn,
-            "SELECT COUNT(*) FROM paths WHERE resolved_source = 'filesystem'"
+            &format!(
+                "SELECT COUNT(*) FROM paths WHERE resolved_source = '{}'",
+                ResolvedSource::FileSystem.as_str()
+            )
         ),
         600
     );
@@ -1466,15 +1489,16 @@ fn date_resolution_seeks_across_multiple_bounded_pages() {
 #[test]
 fn app_trash_directories_are_never_indexed() {
     let f = fixture("trash-skip");
-    let trash = f.root.join(".onecopy-trash").join("2026-08-08");
+    use onecopy_lib::trash::TRASH_DIR_NAME;
+    let trash = f.root.join(TRASH_DIR_NAME).join("2026-08-08");
     std::fs::create_dir_all(&trash).unwrap();
     std::fs::write(trash.join("deleted.jpg"), b"gone").unwrap();
     std::fs::write(f.root.join("kept.jpg"), b"here").unwrap();
-    let lookalike = f.root.join(".onecopy-trash-notes");
+    let lookalike = f.root.join(format!("{TRASH_DIR_NAME}-notes"));
     std::fs::create_dir(&lookalike).unwrap();
     std::fs::write(lookalike.join("kept.jpg"), b"ordinary hidden copy").unwrap();
-    std::fs::write(f.root.join(".onecopy-trash.jpg"), b"ordinary filename").unwrap();
-    let nested_trash = lookalike.join(".onecopy-trash");
+    std::fs::write(f.root.join(format!("{TRASH_DIR_NAME}.jpg")), b"ordinary filename").unwrap();
+    let nested_trash = lookalike.join(TRASH_DIR_NAME);
     std::fs::create_dir(&nested_trash).unwrap();
     std::fs::write(nested_trash.join("deleted.jpg"), b"gone too").unwrap();
 
@@ -1538,7 +1562,7 @@ fn replacing_a_provisionally_identified_file_resets_its_content_facts() {
             |r| r.get(0),
         )
         .unwrap();
-    assert!(key.starts_with('p'), "unique-size video is provisional");
+    assert!(is_provisional(&key), "unique-size video is provisional");
 
     // Stand in for a completed derive: poster, strip and measurements.
     f.conn
@@ -1837,7 +1861,7 @@ fn exif_datetime_and_camera_are_extracted_and_win_resolution() {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
-    assert_eq!(source, "metadata", "in-file metadata outranks the filename");
+    assert_eq!(source, ResolvedSource::Metadata.as_str(), "in-file metadata outranks the filename");
 
     // 2016-03-05 12:34:56 +09:00 == 03:34:56 UTC. The OffsetTimeOriginal is a
     // FACT and must win over the configured default timezone.
@@ -2511,7 +2535,7 @@ fn zero_byte_files_carry_no_content_identity() {
         "empty Other files stay unhashed individual files"
     );
     assert_eq!(
-        count(&f.conn, "SELECT COUNT(DISTINCT content_hash) FROM paths WHERE content_hash GLOB 'p*'"),
+        provisional_count(&f.conn, "SELECT DISTINCT content_hash FROM paths WHERE content_hash IS NOT NULL"),
         2,
         "each empty image keeps its own provisional identity"
     );
@@ -2533,7 +2557,11 @@ fn zero_byte_files_carry_no_content_identity() {
         count(&f.conn, "SELECT COUNT(DISTINCT content_hash) FROM paths WHERE file_name IN ('x.jpg', 'y.jpg')"),
         2
     );
-    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM contents WHERE byte_size = 0 AND hash NOT GLOB 'p*'"), 0);
+    assert_eq!(
+        provisional_count(&f.conn, "SELECT hash FROM contents WHERE byte_size = 0"),
+        count(&f.conn, "SELECT COUNT(*) FROM contents WHERE byte_size = 0") as usize,
+        "no empty content carries a real identity"
+    );
 }
 
 #[cfg(unix)]

@@ -74,7 +74,7 @@ fn decoder_panics_record_one_failure_and_continue_in_serial_and_parallel() {
                 Ok((None, DerivedFacts { width: 10, height: 10, sharpness: 1.0, phash: 1 }))
             }).unwrap();
         assert_eq!((stats.failed, stats.derived), (1, 1));
-        let issues: i64 = conn.query_row("SELECT count(*) FROM active_issues WHERE kind = 'decode-error'", [], |row| row.get(0)).unwrap();
+        let issues: i64 = conn.query_row("SELECT count(*) FROM active_issues WHERE kind = ?1", [crate::derived_state::PREVIEW_ERROR], |row| row.get(0)).unwrap();
         assert_eq!(issues, 1);
         assert!(crate::derived_state::image_candidates(&conn, false, None, None).unwrap().is_empty(), "ordinary browsing must not retry the panic");
     }

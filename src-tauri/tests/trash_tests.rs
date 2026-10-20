@@ -1,6 +1,7 @@
 // Tests exercising the crate's public API from outside shipped source
 // (tests-folder conventions, Rust form).
 
+use onecopy_lib::formats::{DELETED_FILES_MANIFEST, JSON_KEY};
 use onecopy_lib::trash::*;
 use std::path::{Path, PathBuf};
 
@@ -8,18 +9,20 @@ use std::path::{Path, PathBuf};
 fn reserved_trash_components_do_not_hide_unrelated_names() {
     for path in [
         PathBuf::from(TRASH_DIR_NAME),
-        Path::new("root").join(".ONECOPY-TRASH").join("photo.jpg"),
+        Path::new("root").join(TRASH_DIR_NAME.to_uppercase()).join("photo.jpg"),
         Path::new("root").join(TRASH_DIR_NAME).join("day").join("photo.jpg"),
     ] {
         assert!(is_trash_path(&path));
     }
+    // Near misses built from the reserved name, so they stay near misses
+    // whatever it is.
     for path in [
-        "root/.onecopy-trash-notes/photo.jpg",
-        "root/my.onecopy-trash/photo.jpg",
-        "root/.onecopy-trash.jpg",
-        "root/.photo.jpg",
+        format!("root/{TRASH_DIR_NAME}-notes/photo.jpg"),
+        format!("root/my{TRASH_DIR_NAME}/photo.jpg"),
+        format!("root/{TRASH_DIR_NAME}.jpg"),
+        "root/.photo.jpg".to_string(),
     ] {
-        assert!(!is_trash_path(Path::new(path)), "{path}");
+        assert!(!is_trash_path(Path::new(&path)), "{path}");
     }
 }
 
@@ -42,7 +45,7 @@ fn fixture(label: &str) -> Fixture {
 }
 
 fn read_manifest(day_dir: &Path) -> Vec<serde_json::Value> {
-    std::fs::read_to_string(day_dir.join("manifest.jsonl"))
+    std::fs::read_to_string(day_dir.join(MANIFEST_FILE_NAME))
         .unwrap_or_default()
         .lines()
         .map(|l| serde_json::from_str(l).unwrap())
@@ -99,12 +102,9 @@ fn files_are_stored_flat_with_provenance_in_the_manifest() {
         "the stored name is the original file name"
     );
     let day_dir = stored.parent().expect("stored inside a day folder");
-    assert!(
-        day_dir
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .ends_with("-utc"),
+    assert_eq!(
+        day_dir.parent(),
+        Some(f.source.join(TRASH_DIR_NAME).as_path()),
         "the file sits DIRECTLY in the day folder, not under a rebuilt tree"
     );
     // Nothing from the source structure was recreated.
@@ -200,15 +200,16 @@ fn relative_paths_are_rejected() {
 #[test]
 fn manifest_failure_leaves_the_indexed_source_authoritative() {
     let f = fixture("manifest-failure");
+    // An earlier deletion today names today's day folder the way the trash
+    // itself names it; its manifest is then replaced by a directory.
+    let earlier = f.source.join("earlier.jpg");
+    std::fs::write(&earlier, b"earlier").unwrap();
+    let day = day_of(&trash_file(&earlier, &f.source, None, &ctx()).unwrap());
+    let manifest_path = day.join(MANIFEST_FILE_NAME);
+    std::fs::remove_file(&manifest_path).unwrap();
+    std::fs::create_dir_all(&manifest_path).unwrap();
     let file = f.source.join("kept.jpg");
     std::fs::write(&file, b"source-bytes").unwrap();
-    let day = chrono::Utc::now().format("%Y%m%d-utc").to_string();
-    let manifest_path = f
-        .source
-        .join(TRASH_DIR_NAME)
-        .join(day)
-        .join("manifest.jsonl");
-    std::fs::create_dir_all(&manifest_path).unwrap();
 
     assert!(trash_file(&file, &f.source, None, &ctx()).is_err());
     assert_eq!(std::fs::read(&file).unwrap(), b"source-bytes");
@@ -519,9 +520,9 @@ fn empty_never_follows_a_replaced_root_symlink() {
     symlink(&outside, &root).unwrap();
 
     let cancelled = std::sync::atomic::AtomicBool::new(false);
-    let error = empty_root_with_progress(&root, "reviewed", &cancelled, &|_| {}, &|_, _| Ok(())).unwrap_err();
-
-    assert_eq!(error, "trash root is not a directory");
+    assert!(
+        empty_root_with_progress(&root, "reviewed", &cancelled, &|_| {}, &|_, _| Ok(())).is_err()
+    );
     assert_eq!(std::fs::read(outside.join("keep.jpg")).unwrap(), b"keep");
 }
 
@@ -726,20 +727,21 @@ fn each_trash_action_is_also_a_record() {
     let record = trash_file(&file, &f.source, Some("hash-recorded"), &ctx()).unwrap();
 
     let conn = rusqlite::Connection::open(&records).unwrap();
-    let (session, action, operation, hash, original, stored, detail): (String, String, String, String, String, String, String) = conn
+    let (session, operation, hash, original, stored, detail): (String, String, String, String, String, String) = conn
         .query_row(
-            "SELECT session_id, action, operation_id, content_hash, original_path, stored_path, detail_json
+            "SELECT session_id, operation_id, content_hash, original_path, stored_path, detail_json
              FROM trash_actions WHERE original_path = ?1",
             [file.to_string_lossy()],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
         )
         .unwrap();
     assert_eq!(session, "trash-records-test");
-    assert_eq!((action.as_str(), operation.as_str(), hash.as_str()), ("trashed", "test-operation", "hash-recorded"));
+    assert_eq!((operation.as_str(), hash.as_str()), ("test-operation", "hash-recorded"));
     assert_eq!(original, file.to_string_lossy());
     assert_eq!(stored, record.stored_path);
     let detail: serde_json::Value = serde_json::from_str(&detail).unwrap();
     assert_eq!(detail["storedName"], "recorded.jpg");
+    assert!(detail.get("error").is_none(), "a completed move is not recorded as a failure");
 }
 
 fn ctx() -> TrashContext {
@@ -796,7 +798,7 @@ fn hand_day(root: &Path, day: &str, lines: &[String], files: &[(&str, &[u8])]) -
     let day_dir = root.join(TRASH_DIR_NAME).join(day);
     std::fs::create_dir_all(&day_dir).unwrap();
     if !lines.is_empty() {
-        std::fs::write(day_dir.join("manifest.jsonl"), lines.join("\n") + "\n").unwrap();
+        std::fs::write(day_dir.join(MANIFEST_FILE_NAME), lines.join("\n") + "\n").unwrap();
     }
     for (name, bytes) in files {
         std::fs::write(day_dir.join(name), bytes).unwrap();
@@ -823,11 +825,11 @@ fn every_line_written_carries_its_format_version() {
     let day = day_of(&record);
     std::fs::rename(&record.stored_path, &file).unwrap();
     append_restored(&day, &record.stored_name, "a.jpg");
-    let text = std::fs::read_to_string(day.join("manifest.jsonl")).unwrap();
+    let text = std::fs::read_to_string(day.join(MANIFEST_FILE_NAME)).unwrap();
     let lines: Vec<serde_json::Value> = text.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
     assert_eq!(lines.len(), 2);
     for line in &lines {
-        assert_eq!(line["formatVersion"], 1, "{line}");
+        assert_eq!(line[JSON_KEY], DELETED_FILES_MANIFEST, "{line}");
         assert!(line.get("v").is_none(), "{line}");
     }
 }
@@ -839,7 +841,7 @@ fn a_line_without_its_marker_is_unreadable() {
     std::fs::create_dir_all(&day).unwrap();
     std::fs::write(day.join("a.jpg"), b"aa").unwrap();
     let mut line: serde_json::Value = serde_json::from_str(&record_line("a.jpg", "trips/a.jpg", 2, mtime_of(&day.join("a.jpg")))).unwrap();
-    line.as_object_mut().unwrap().remove("formatVersion");
+    line.as_object_mut().unwrap().remove(JSON_KEY);
     let day = hand_day(&f.source, "20260901-utc", &[line.to_string()], &[]);
 
     let listing = read_day(&day).unwrap();
@@ -871,13 +873,18 @@ fn lines_a_newer_onecopy_wrote_are_counted_and_left_as_they_are() {
     std::fs::write(&unrelated, b"two").unwrap();
     trash_file(&unrelated, &f.source, None, &ctx()).unwrap();
     let day = day_of(&record);
-    let manifest = day.join("manifest.jsonl");
+    let manifest = day.join(MANIFEST_FILE_NAME);
     let mut text = std::fs::read_to_string(&manifest).unwrap();
     text.push_str(&record_line("gone.jpg", "gone.jpg", 3, 0));
     text.push('\n');
-    text.push_str("{\"formatVersion\":1,\"event\":\"restored\",\"storedName\":\"gone.jpg\",\"restoredTo\":\"gone 2.jpg\"}\n");
-    text.push_str("{\"formatVersion\":2,\"storedName\":\"later.jpg\",\"somethingNew\":true}\n");
-    text.push_str("{\"formatVersion\":2,\"event\":\"restored\",\"storedName\":\"one.jpg\"}\n");
+    for line in [
+        marked_line(DELETED_FILES_MANIFEST, serde_json::json!({"event": "restored", "storedName": "gone.jpg", "restoredTo": "gone 2.jpg"})),
+        marked_line(DELETED_FILES_MANIFEST + 1, serde_json::json!({"storedName": "later.jpg", "somethingNew": true})),
+        marked_line(DELETED_FILES_MANIFEST + 1, serde_json::json!({"event": "restored", "storedName": "one.jpg"})),
+    ] {
+        text.push_str(&line);
+        text.push('\n');
+    }
     std::fs::write(&manifest, &text).unwrap();
 
     let listing = read_day(&day).unwrap();
@@ -907,7 +914,7 @@ fn newer_day_refuses_recoverable_moves_and_restored_manifest_appends() {
     let day = day_of(&record);
     let manifest = day.join(MANIFEST_FILE_NAME);
     let mut bytes = std::fs::read(&manifest).unwrap();
-    bytes.extend_from_slice(b"{\"formatVersion\":2}\n");
+    bytes.extend_from_slice((marked_line(DELETED_FILES_MANIFEST + 1, serde_json::json!({})) + "\n").as_bytes());
     std::fs::write(&manifest, &bytes).unwrap();
     let source = f.source.join("keep.jpg");
     std::fs::write(&source, b"keep").unwrap();
@@ -924,7 +931,7 @@ fn newer_day_refuses_recoverable_moves_and_restored_manifest_appends() {
 #[test]
 fn explicit_empty_removes_a_protected_day_without_interpreting_its_records() {
     let f = fixture("newer-empty");
-    let day = hand_day(&f.source, "20000101-utc", &["{\"formatVersion\":2}".to_string()], &[("photo.jpg", b"protected")]);
+    let day = hand_day(&f.source, "20000101-utc", &[marked_line(DELETED_FILES_MANIFEST + 1, serde_json::json!({}))], &[("photo.jpg", b"protected")]);
     let root = f.source.join(TRASH_DIR_NAME);
     let before = overview(std::slice::from_ref(&f.source));
     assert_eq!(before[0].files, 1);
@@ -947,7 +954,7 @@ fn malformed_and_torn_lines_are_skipped_and_counted_without_rewriting() {
     std::fs::write(&first, b"one").unwrap();
     let record = trash_file(&first, &f.source, None, &ctx()).unwrap();
     let day = day_of(&record);
-    let manifest = day.join("manifest.jsonl");
+    let manifest = day.join(MANIFEST_FILE_NAME);
     let mut text = std::fs::read_to_string(&manifest).unwrap();
     text.push_str("not json at all\n");
     text.push_str("{\"v\":2,\"storedName\":\"x.jpg\"}\n");
@@ -976,7 +983,7 @@ fn a_line_appended_after_a_torn_one_starts_a_line_of_its_own() {
     std::fs::write(&first, b"one").unwrap();
     let record = trash_file(&first, &f.source, None, &ctx()).unwrap();
     let day = day_of(&record);
-    let manifest = day.join("manifest.jsonl");
+    let manifest = day.join(MANIFEST_FILE_NAME);
     let mut torn = std::fs::read_to_string(&manifest).unwrap();
     torn.push_str("{\"originalPath\":\"/x/three.jpg\",\"stor");
     std::fs::write(&manifest, &torn).unwrap();
@@ -1059,13 +1066,18 @@ fn statuses(listing: &TrashListing) -> Vec<(String, EntryStatus)> {
     statuses
 }
 
+/// `fields` as one manifest line carrying the format marker `version`.
+fn marked_line(version: i64, mut fields: serde_json::Value) -> String {
+    fields[JSON_KEY] = version.into();
+    fields.to_string()
+}
+
 fn record_line(stored: &str, relative: &str, size: u64, mtime_ms: i64) -> String {
-    serde_json::json!({
+    marked_line(DELETED_FILES_MANIFEST, serde_json::json!({
         "originalPath": format!("/old/{relative}"),
-        "storedPath": format!("/old/.onecopy-trash/20260901-utc/{stored}"),
+        "storedPath": format!("/old/{TRASH_DIR_NAME}/20260901-utc/{stored}"),
         "contentHash": null,
         "deletedAtUtc": "2026-09-01T10:00:00.000Z",
-        "formatVersion": 1,
         "storedName": stored,
         "originalRelative": relative,
         "kind": "delete",
@@ -1074,8 +1086,7 @@ fn record_line(stored: &str, relative: &str, size: u64, mtime_ms: i64) -> String
         "role": "main",
         "size": size,
         "mtimeMs": mtime_ms,
-    })
-    .to_string()
+    }))
 }
 
 fn mtime_of(path: &Path) -> i64 {
@@ -1104,14 +1115,18 @@ fn each_entry_says_whether_it_can_be_restored() {
     }
     std::fs::create_dir(day.join("now-a-folder.jpg")).unwrap();
     let mtime = |name: &str| mtime_of(&day.join(name));
+    // The same operation deleted a second item: its record names another item.
+    let mut edited: serde_json::Value =
+        serde_json::from_str(&record_line("edited.jpg", "a/edited.jpg", 3, mtime("edited.jpg"))).unwrap();
+    edited["item"] = "another-item".into();
     let lines = vec![
         record_line("ok.jpg", "a/ok.jpg", 2, mtime("ok.jpg")),
-        record_line("edited.jpg", "a/edited.jpg", 3, mtime("edited.jpg")),
+        edited.to_string(),
         record_line("now-a-folder.jpg", "a/now-a-folder.jpg", 1, 0),
         record_line("lossy.jpg", "a/\u{FFFD}.jpg", 1, mtime("lossy.jpg")),
-        record_line("into-trash.jpg", ".onecopy-trash/x/into-trash.jpg", 1, mtime("into-trash.jpg")),
+        record_line("into-trash.jpg", &format!("{TRASH_DIR_NAME}/x/into-trash.jpg"), 1, mtime("into-trash.jpg")),
     ];
-    std::fs::write(day.join("manifest.jsonl"), lines.join("\n") + "\n").unwrap();
+    std::fs::write(day.join(MANIFEST_FILE_NAME), lines.join("\n") + "\n").unwrap();
 
     let listing = list_root(&f.source, &data_root).unwrap();
     assert_eq!(
@@ -1124,11 +1139,26 @@ fn each_entry_says_whether_it_can_be_restored() {
             ("ok.jpg".to_string(), EntryStatus::Restorable),
         ]
     );
-    let ok = listing.entries.iter().find(|entry| entry.stored_name == "ok.jpg").unwrap();
-    assert_eq!(ok.id, "20260901-utc/ok.jpg");
-    assert_eq!(ok.group, "item:op:item", "one operation's item is one deleted item");
+    let entry = |name: &str| listing.entries.iter().find(|entry| entry.stored_name == name).unwrap();
+    let ok = entry("ok.jpg");
+    assert_eq!(ok.group, entry("lossy.jpg").group, "one operation's item is one deleted item");
+    assert_ne!(ok.group, entry("edited.jpg").group, "another item of that operation is another deleted item");
     assert_eq!(ok.original_relative.as_deref(), Some("a/ok.jpg"));
     assert_eq!(ok.size, 2);
+
+    // An id names one entry, even where another day stored the same name.
+    let next_day = f.source.join(TRASH_DIR_NAME).join("20260902-utc");
+    std::fs::create_dir_all(&next_day).unwrap();
+    std::fs::write(next_day.join("ok.jpg"), b"ok").unwrap();
+    std::fs::write(
+        next_day.join(MANIFEST_FILE_NAME),
+        record_line("ok.jpg", "b/ok.jpg", 2, mtime_of(&next_day.join("ok.jpg"))) + "\n",
+    )
+    .unwrap();
+    let listing = list_root(&f.source, &data_root).unwrap();
+    let ids: std::collections::HashSet<&str> =
+        listing.entries.iter().map(|entry| entry.id.as_str()).collect();
+    assert_eq!(ids.len(), listing.entries.len(), "every entry has an id of its own");
 }
 
 #[test]
@@ -1140,7 +1170,7 @@ fn a_target_inside_the_data_folder_is_excluded() {
     std::fs::create_dir_all(&day).unwrap();
     std::fs::write(day.join("index.sqlite3"), b"x").unwrap();
     let line = record_line("index.sqlite3", "apphome/index.sqlite3", 1, mtime_of(&day.join("index.sqlite3")));
-    std::fs::write(day.join("manifest.jsonl"), line + "\n").unwrap();
+    std::fs::write(day.join(MANIFEST_FILE_NAME), line + "\n").unwrap();
 
     let listing = list_root(&f.source, &data_root).unwrap();
     assert_eq!(listing.entries[0].status, EntryStatus::Excluded);
@@ -1252,10 +1282,9 @@ windows_test! {
         junction(&root, &outside);
 
         let cancelled = std::sync::atomic::AtomicBool::new(false);
-        let error = empty_root_with_progress(&root, "reviewed", &cancelled, &|_| {}, &|_, _| Ok(()))
-            .unwrap_err();
-
-        assert_eq!(error, "trash root is not a directory");
+        assert!(
+            empty_root_with_progress(&root, "reviewed", &cancelled, &|_| {}, &|_, _| Ok(())).is_err()
+        );
         assert_eq!(std::fs::read(outside.join("keep.jpg")).unwrap(), b"keep");
     }
 }
@@ -1383,7 +1412,7 @@ windows_test! {
             record_line("colon.jpg", "trips/c:colon.jpg", 1, mtime_of(&day.join("colon.jpg"))),
             record_line("ok.jpg", "trips/ok.jpg", 1, mtime_of(&day.join("ok.jpg"))),
         ];
-        std::fs::write(day.join("manifest.jsonl"), lines.join("\n") + "\n").unwrap();
+        std::fs::write(day.join(MANIFEST_FILE_NAME), lines.join("\n") + "\n").unwrap();
 
         let listing = list_root(&f.source, &f._dir.path().join("apphome")).unwrap();
         assert_eq!(

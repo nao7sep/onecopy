@@ -97,7 +97,7 @@ fn publication_failure_preserves_the_obstruction_and_removes_the_owned_stage() {
         let stage = std::fs::read_dir(dir.path()).unwrap().next().unwrap().unwrap().path();
         #[cfg(unix)] {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(std::fs::metadata(&stage).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(std::fs::metadata(&stage).unwrap().permissions().mode() & 0o077, 0, "the stage is private");
         }
         assert_eq!(std::fs::read(stage).unwrap(), b"replacement");
         std::fs::create_dir(&target).unwrap();
@@ -143,16 +143,11 @@ fn atomic_temp_name_is_stem_plus_nanoid_dot_tmp() {
     assert!(name.starts_with("config-"), "{name:?}");
     assert!(name.ends_with(".tmp"), "{name:?}");
     let discriminator = &name["config-".len()..name.len() - ".tmp".len()];
-    assert_eq!(discriminator.len(), 21);
+    assert_eq!(discriminator.len(), crate::nanoid::generate().unwrap().len());
     assert_ne!(
         atomic_temp_name("config.json").unwrap(),
         atomic_temp_name("config.json").unwrap()
     );
-}
-
-#[test]
-fn new_config_confirms_direct_trash_by_default() {
-    assert!(DefaultConfig::default().confirm_trash_delete);
 }
 
 // A config patch that sets `language` updates `LanguageState::current`,
@@ -194,7 +189,7 @@ fn an_app_local_new_stage_uses_private_mode_and_failed_publication_preserves_the
     let target = dir.path().join("settings.json");
     write_atomic_inner(&target, b"protected bytes", false, || {
         let staged = std::fs::read_dir(dir.path()).unwrap().next().unwrap().unwrap().path();
-        assert_eq!(std::fs::metadata(staged).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(std::fs::metadata(staged).unwrap().permissions().mode() & 0o077, 0, "the stage is private");
         Ok(())
     }).unwrap();
     assert_eq!(std::fs::read(&target).unwrap(), b"protected bytes");

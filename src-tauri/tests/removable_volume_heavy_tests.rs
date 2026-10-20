@@ -106,11 +106,15 @@ fn xattr_call(path: &Path, name: &str, value: Option<&[u8]>) -> Option<Vec<u8>> 
     })
 }
 
+/// Hidden names left in `dir` other than Deleted files and AppleDouble
+/// companions: an unpublished private output is a hidden name.
 fn private_leftovers(dir: &Path) -> Vec<String> {
     std::fs::read_dir(dir)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|name| name.starts_with(".onecopy-") && name != ".onecopy-trash")
+        .filter(|name| {
+            name.starts_with('.') && !name.starts_with("._") && name != onecopy_lib::trash::TRASH_DIR_NAME
+        })
         .collect()
 }
 
@@ -193,10 +197,19 @@ fn copy_move_and_delete_on(filesystem: &str) {
     assert_eq!(std::fs::metadata(&output).unwrap().modified().unwrap(), dated, "{filesystem}");
     // A time the volume cannot hold becomes the earliest it can, not the
     // unrelated one FAT32 would wrap it to.
-    assert_eq!(
-        std::fs::metadata(dest.join("old.jpg")).unwrap().modified().unwrap(),
-        std::time::UNIX_EPOCH + std::time::Duration::from_secs(315_619_200),
-        "{filesystem}"
+    // FAT's earliest time is 1980-01-01 in local time, which lies within a
+    // day of 1980-01-01T00:00:00Z in every time zone.
+    const FAT_EPOCH_UTC_SECS: u64 = 315_532_800;
+    let old_secs = std::fs::metadata(dest.join("old.jpg"))
+        .unwrap()
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    assert!(
+        (FAT_EPOCH_UTC_SECS - 86_400..=FAT_EPOCH_UTC_SECS + 2 * 86_400).contains(&old_secs),
+        "{filesystem}: {old_secs}"
     );
     assert_eq!(xattr_call(&output, "com.example.onecopy-test", None), None, "{filesystem}");
     assert_eq!(std::fs::read(dest.join("empty.bin")).unwrap(), b"");

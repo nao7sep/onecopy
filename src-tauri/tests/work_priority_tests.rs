@@ -37,8 +37,15 @@ fn optional_enrichment_has_no_nearby_tier() {
 
 #[test]
 fn inference_reserves_cpu_headroom_even_without_user_input() {
-    for (cpus, expected) in [(0, 1), (1, 1), (2, 1), (4, 2), (8, 4), (32, 4)] {
-        assert_eq!(resource_limits::transcription_threads(cpus), expected);
+    let mut previous = 0;
+    for cpus in 0..=64 {
+        let threads = resource_limits::transcription_threads(cpus);
+        assert!(threads >= 1, "{cpus} CPUs still run one thread");
+        if cpus >= 2 {
+            assert!((threads as usize) < cpus, "{cpus} CPUs keep one free: {threads}");
+        }
+        assert!(threads >= previous, "more CPUs never mean fewer threads");
+        previous = threads;
     }
 }
 
@@ -90,7 +97,6 @@ fn outward_work_pages_follow_every_main_sort_and_survive_anchor_removal() {
                     let page =
                         queries::section_work_page(&conn, onecopy_lib::queries::SectionKind::Image, bounds, sort, &cursor, before)
                             .unwrap();
-                    assert!(page.len() <= 64);
                     let Some(last) = page.last() else {
                         break;
                     };

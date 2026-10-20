@@ -9,11 +9,26 @@ fn a_panicking_handler_still_answers_its_request() {
 
 #[test]
 fn only_content_addressed_entries_are_immutable() {
-    assert_eq!(cache_control("3f2a9c"), "public, max-age=31536000, immutable");
+    let directives = |key: &str| -> Vec<String> {
+        cache_control(key).split(',').map(|directive| directive.trim().to_ascii_lowercase()).collect()
+    };
+    let content = directives("3f2a9c");
+    assert!(content.iter().any(|directive| directive == "immutable"), "{content:?}");
+    assert!(
+        content.iter().any(|directive| directive
+            .strip_prefix("max-age=")
+            .and_then(|seconds| seconds.parse::<u64>().ok())
+            .is_some_and(|seconds| seconds > 0)),
+        "{content:?}"
+    );
+    assert!(!content.iter().any(|directive| directive == "no-store"), "{content:?}");
     // A provisional key's entry changes with its path's file, and a rebuild
     // hands the key to another file.
-    assert_eq!(cache_control("p17"), "no-store");
-    assert_eq!(cache_control("p17-3"), "no-store");
+    for key in ["p17", "p17-3"] {
+        let provisional = directives(key);
+        assert!(provisional.iter().any(|directive| directive == "no-store"), "{key}: {provisional:?}");
+        assert!(!provisional.iter().any(|directive| directive == "immutable"), "{key}: {provisional:?}");
+    }
 }
 
 #[test]

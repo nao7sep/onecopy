@@ -1,3 +1,9 @@
+# Windows packaging test, run by `npm run test:full` on Windows and by the
+# release workflow: `pwsh tests/windows/package-fail-closed.ps1`. It runs a copy
+# of scripts/package.ps1 in a temporary sandbox against fake `node` and `tauri`
+# commands, and proves that a failed version read or build removes stale
+# outputs instead of shipping them, and that a successful build collects the
+# installer and a portable zip holding only the executable and LICENSE.
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 

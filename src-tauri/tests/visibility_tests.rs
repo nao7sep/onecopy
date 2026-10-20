@@ -18,15 +18,19 @@ fn lists() -> scanner::ScanLists {
 #[test]
 fn policy_defaults_empty_list_exact_names_and_native_platform_facts() {
     let defaults = Policy::from_config(&json!({})).unwrap();
-    assert!(!defaults.visible("tHuMbS.DB", false, 0));
-    assert!(defaults.visible("Thumbs.db", true, 0));
-    assert!(defaults.visible("myThumbs.db", false, 0));
+    let builtin = onecopy_lib::storage::DefaultConfig::default().ignored_file_names;
+    let first = builtin.first().expect("the built-in list names files to ignore").clone();
+    for name in &builtin {
+        assert!(!defaults.visible(&name.to_uppercase(), false, 0), "{name:?} in any case");
+        assert!(defaults.visible(name, true, 0), "a folder named {name:?} is not a file");
+        assert!(defaults.visible(&format!("my{name}"), false, 0), "only the exact name {name:?}");
+    }
     assert!(!defaults.visible("photo.jpg", false, visibility::windows_flags(2)));
     assert!(!defaults.visible("folder", true, visibility::windows_flags(4)));
     assert_eq!(visibility::macos_flags(0x8000), visibility::HIDDEN);
     assert_eq!(visibility::macos_flags(0x2), 0);
     let empty = Policy::from_config(&json!({"ignoredFileNames": []})).unwrap();
-    assert!(empty.visible("Thumbs.db", false, 0));
+    assert!(empty.visible(&first, false, 0));
     let literal = Policy::from_config(&json!({"ignoredFileNames": ["*.jpg"]})).unwrap();
     assert!(literal.visible("photo.jpg", false, 0));
     for bad in [

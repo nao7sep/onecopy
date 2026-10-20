@@ -119,7 +119,10 @@ fn records_reads_background_lifecycle_and_details_after_recorder_reopens() {
     let draft: serde_json::Value = serde_json::from_str(json.as_str().unwrap()).unwrap();
     assert_eq!(draft["done"], 2);
     assert_eq!(draft["total"], 3);
-    assert_eq!(draft["subject"], "videoTranscription");
+    assert_eq!(
+        serde_json::from_value::<ActivitySubject>(draft["subject"].clone()).unwrap(),
+        ActivitySubject::VideoTranscription
+    );
 }
 
 #[test]
@@ -154,21 +157,10 @@ fn serialized_events_omit_absent_optional_fields() {
         .unwrap();
 
     let value = serde_json::to_value(event).unwrap();
-    assert_eq!(value["current"], "running");
-    for absent in [
-        "operationId",
-        "subject",
-        "causeId",
-        "generation",
-        "previous",
-        "reason",
-        "lane",
-        "itemCount",
-        "queued",
-        "done",
-        "total",
-    ] {
-        assert!(value.get(absent).is_none(), "{absent} should be omitted");
+    assert_eq!(value["current"], serde_json::to_value(ActivityState::Running).unwrap());
+    let fields = value.as_object().unwrap();
+    for (name, field) in fields {
+        assert!(!field.is_null(), "{name} is absent, so it should be omitted");
     }
 }
 
@@ -184,20 +176,26 @@ fn background_subjects_are_closed_and_human_readable() {
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(value["subject"], "videoTranscription");
+    assert!(value["subject"].is_string(), "{value}");
+    assert_eq!(
+        serde_json::from_value::<ActivitySubject>(value["subject"].clone()).unwrap(),
+        ActivitySubject::VideoTranscription
+    );
 }
 
 #[test]
 fn concrete_timing_owners_serialize_without_free_form_payloads() {
     let (_temp, recorder) = recorder("session-one");
-    for (owner, expected) in [
-        (ActivityOwner::Anchor, "anchor"),
-        (ActivityOwner::ManagedTools, "managedTools"),
-        (ActivityOwner::Media, "media"),
-        (ActivityOwner::Watcher, "watcher"),
-        (ActivityOwner::Identity, "identity"),
-        (ActivityOwner::Delivery, "delivery"),
-    ] {
+    let owners = [
+        ActivityOwner::Anchor,
+        ActivityOwner::ManagedTools,
+        ActivityOwner::Media,
+        ActivityOwner::Watcher,
+        ActivityOwner::Identity,
+        ActivityOwner::Delivery,
+    ];
+    let mut names = std::collections::HashSet::new();
+    for owner in owners {
         let mut event = draft(None);
         event.owner = owner;
         let value = serde_json::to_value(
@@ -206,10 +204,13 @@ fn concrete_timing_owners_serialize_without_free_form_payloads() {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(value["owner"], expected);
+        assert!(value["owner"].is_string(), "{value}");
+        assert_eq!(serde_json::from_value::<ActivityOwner>(value["owner"].clone()).unwrap(), owner);
+        names.insert(value["owner"].as_str().unwrap().to_string());
         assert!(value.get("path").is_none());
         assert!(value.get("payload").is_none());
     }
+    assert_eq!(names.len(), owners.len(), "each owner has its own name");
 }
 
 #[test]

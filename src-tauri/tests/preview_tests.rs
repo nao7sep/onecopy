@@ -35,17 +35,20 @@ fn generates_thumb_and_preview_within_limits_preserving_aspect() {
     let thumb = image::open(cache.thumb("abcd1234")).unwrap();
     assert_eq!((thumb.width(), thumb.height()), (32, 16));
 
-    // Sharded layout: thumbs/ab/abcd1234.webp.
-    assert!(cache
-        .thumb("abcd1234")
-        .to_string_lossy()
-        .contains(&format!("thumbs{}ab{}", std::path::MAIN_SEPARATOR, std::path::MAIN_SEPARATOR)));
+    // Sharded inside the cache root by the hash's leading characters, so no
+    // one directory holds every entry.
+    let thumb_path = cache.thumb("abcd1234");
+    assert!(thumb_path.starts_with(dir.path().join("cache")), "{}", thumb_path.display());
+    let shard = thumb_path.parent().unwrap().file_name().unwrap().to_string_lossy();
+    assert!(
+        !shard.is_empty() && shard.len() < "abcd1234".len() && "abcd1234".starts_with(shard.as_ref()),
+        "{}",
+        thumb_path.display()
+    );
 }
 
 #[test]
 fn built_in_image_extensions_have_one_proven_decode_route() {
-    use std::collections::HashSet;
-
     let dir = tempfile::Builder::new()
         .prefix("onecopy-image-format-matrix-")
         .tempdir()
@@ -55,40 +58,21 @@ fn built_in_image_extensions_have_one_proven_decode_route() {
         2,
         image::Rgb([31, 127, 223]),
     ));
-    let native = [
-        ("jpg", image::ImageFormat::Jpeg),
-        ("jpeg", image::ImageFormat::Jpeg),
-        ("png", image::ImageFormat::Png),
-        ("webp", image::ImageFormat::WebP),
-        ("gif", image::ImageFormat::Gif),
-        ("bmp", image::ImageFormat::Bmp),
-        ("tif", image::ImageFormat::Tiff),
-        ("tiff", image::ImageFormat::Tiff),
-    ];
-    for (extension, format) in native {
+    // Every built-in extension takes exactly one route: ffmpeg for what the
+    // image crate, as built here, cannot read, and a native decode, proven by
+    // decoding a real file, for the rest.
+    for extension in onecopy_lib::extensions::IMAGE_EXTENSIONS.iter().copied() {
         let path = dir.path().join(format!("sample.{extension}"));
+        let native = image::ImageFormat::from_extension(extension).filter(|format| format.reading_enabled());
+        if needs_ffmpeg_decode(&path) {
+            assert_eq!(native, None, "{extension} goes through ffmpeg although the image crate reads it");
+            continue;
+        }
+        let format = native.unwrap_or_else(|| panic!("{extension} has neither a native decoder nor the ffmpeg route"));
         pixels.save_with_format(&path, format).unwrap();
         let (decoded, orientation) = decode_image(&path, None).unwrap();
         assert_eq!((decoded.width(), decoded.height()), (3, 2), "{extension}");
         assert_eq!(orientation, 1, "{extension}");
-    }
-
-    let ffmpeg: HashSet<&str> = ["heic", "heif", "hif", "avif"].into_iter().collect();
-    let routed: HashSet<&str> = native
-        .iter()
-        .map(|(extension, _)| *extension)
-        .chain(ffmpeg.iter().copied())
-        .collect();
-    assert_eq!(
-        routed,
-        onecopy_lib::extensions::IMAGE_EXTENSIONS
-            .iter()
-            .copied()
-            .collect(),
-        "every built-in image extension needs exactly one tested route"
-    );
-    for extension in ffmpeg {
-        assert!(needs_ffmpeg_decode(Path::new(&format!("sample.{extension}"))));
     }
 }
 
@@ -449,8 +433,8 @@ fn derive_pending_processes_images_once_and_flags_decode_failures() {
 
     let issue_count: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM active_issues WHERE kind = 'decode-error'",
-            [],
+            "SELECT COUNT(*) FROM active_issues WHERE kind = ?1",
+            [onecopy_lib::derived_state::PREVIEW_ERROR],
             |r| r.get(0),
         )
         .unwrap();
@@ -656,8 +640,8 @@ fn a_stale_derive_version_makes_a_row_pending_again() {
     // broken, not the pipeline, and retrying it every scan is the churn the
     // failed sentinel exists to prevent.
     conn.execute(
-        "UPDATE contents SET derive_outcome = 'failed', derived_version = 0 WHERE hash = 'good01'",
-        [],
+        "UPDATE contents SET derive_outcome = ?1, derived_version = 0 WHERE hash = 'good01'",
+        [onecopy_lib::derived_state::FAILED],
     )
     .unwrap();
     let failed = derive_images_pending(&conn, &cache, 320, 1600, None, None).unwrap();
@@ -683,9 +667,11 @@ fn ensure_fullres_short_circuits_and_reports_missing_ffmpeg_honestly() {
     std::fs::write(&target, b"png-bytes").unwrap();
     assert!(ensure_fullres(&conn, &cache, None, "abc123").is_ok());
 
-    // No entry and no ffmpeg: the error names the remedy.
+    // No entry and no ffmpeg: the error names the remedy, the surface that
+    // installs it, by the title that surface carries.
     let err = ensure_fullres(&conn, &cache, None, "def456").unwrap_err();
-    assert!(err.contains("Background work & tools"), "{err}");
+    let surface = onecopy_lib::i18n::catalogue("en").text("work.title", "OneCopy");
+    assert!(err.contains(&surface), "{err}");
 }
 
 #[test]
@@ -694,13 +680,21 @@ fn full_resolution_renders_last_one_session_and_previews_stay() {
         .prefix("onecopy-session-renders-")
         .tempdir()
         .unwrap();
-    let cache = CachePaths::new(dir.path().join("cache"));
+    let cache_root = dir.path().join("cache");
+    let cache = CachePaths::new(cache_root.clone());
     for path in [cache.fullres("abc123"), cache.preview("abc123")] {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, b"bytes").unwrap();
     }
+    // The cache-root child that holds full-resolution renders.
+    let renders = cache
+        .fullres("abc123")
+        .ancestors()
+        .find(|ancestor| ancestor.parent() == Some(cache_root.as_path()))
+        .unwrap()
+        .to_path_buf();
     clear_session_renders(&cache);
-    assert!(!dir.path().join("cache").join("fullres").exists());
+    assert!(!renders.exists());
     assert!(cache.preview("abc123").exists());
     // Nothing left over is not an error.
     clear_session_renders(&cache);
@@ -759,14 +753,14 @@ fn an_unwritable_cache_pauses_the_pass_instead_of_failing_every_item() {
 
     let err = result.expect_err("an unwritable cache must fail the pass, not silently succeed");
     assert!(
-        err.contains("cache storage unavailable"),
+        onecopy_lib::resource_limits::is_storage_unavailable(&err),
         "the pass must report the lifecycle condition, not a plain I/O message: {err}"
     );
 
     let failed_rows: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM contents WHERE derive_outcome = 'failed'",
-            [],
+            "SELECT COUNT(*) FROM contents WHERE derive_outcome = ?1",
+            [onecopy_lib::derived_state::FAILED],
             |r| r.get(0),
         )
         .unwrap();
