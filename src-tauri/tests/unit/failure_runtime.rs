@@ -27,6 +27,7 @@ fn every_condition_message_key_exists_in_every_embedded_catalogue() {
     let kinds = [
         "sleep-prevention-failed", "derived-worker-failed", "config-save-failed",
         "state-save-failed", "source-check-failed", "watcher-failed", "watcher-root-failed",
+        crate::watcher::WATCHER_RECOVERY_FAILED,
         "file-information-state-failed", "background-work-state-failed",
         "file-operation-state-failed", "trash-empty-entry-failed", "external-open-failed",
         "text-preview-failed", "dependency-install-failed", "update-check-failed",

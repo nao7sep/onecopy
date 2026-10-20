@@ -1,0 +1,45 @@
+{
+  "menuEvents": {
+    "openSettings": "menu://open-settings",
+    "openAbout": "menu://open-about"
+  },
+  "itemKeys": [
+    { "hash": "9f2c41d0a7", "pathId": 42, "key": "9f2c41d0a7" },
+    { "hash": null, "pathId": 7, "key": "path-7" }
+  ],
+  "backgroundWork": {
+    "classIds": [
+      "previews",
+      "snapshots",
+      "similarity",
+      "faces",
+      "video-transcripts",
+      "audio-transcripts"
+    ],
+    "classStates": ["disabled", "unavailable", "failed", "waiting", "queued", "up-to-date"],
+    "reasons": [
+      "unsupported-acceleration",
+      "waiting-for-ffmpeg",
+      "waiting-for-face-models",
+      "waiting-for-transcription-model",
+      "waiting-for-indexing",
+      "recheck-section",
+      "enable-video-snapshots",
+      "enable-similarity",
+      "enable-face-scoring",
+      "enable-video-transcription",
+      "enable-audio-transcription"
+    ]
+  },
+  "transcriptStatus": {
+    "pending": "pending",
+    "ready": "ready",
+    "failed": "failed"
+  },
+  "transcribeEvents": {
+    "progress": "transcribe://progress",
+    "done": "transcribe://done",
+    "error": "transcribe://error",
+    "cancelled": "transcribe://cancelled"
+  }
+}

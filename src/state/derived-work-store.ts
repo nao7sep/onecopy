@@ -22,11 +22,21 @@ import {
 
 const PING_EVERY_MS = 10_000;
 
-export type BackgroundClassState =
-  "disabled" | "unavailable" | "queued" | "waiting" | "running" | "stopping" | "paused" | "failed" | "up-to-date";
+/** The background-work classes the core reports, in its order. */
+export const BACKGROUND_CLASS_IDS = [
+  "previews", "snapshots", "similarity", "faces", "video-transcripts", "audio-transcripts",
+] as const;
+
+/** The row states the core reports; the frontend overlays its live
+ * running, stopping and paused states on them. */
+export const CORE_CLASS_STATES = [
+  "disabled", "unavailable", "failed", "waiting", "queued", "up-to-date",
+] as const;
+
+export type BackgroundClassState = (typeof CORE_CLASS_STATES)[number] | "running" | "stopping" | "paused";
 
 export interface BackgroundClassSnapshot {
-  id: "previews" | "snapshots" | "similarity" | "faces" | "video-transcripts" | "audio-transcripts";
+  id: (typeof BACKGROUND_CLASS_IDS)[number];
   state: BackgroundClassState;
   queued: number;
   failed: number;
@@ -214,7 +224,7 @@ export function backgroundRuntimeLine(runtime: BackgroundRuntimeSnapshot | null,
       : t("work.classRunning", { name });
   }
   if (!runtime.workerRunning) return t("work.enrichmentStopped");
-  if (runtime.pausedClasses.length === 6) return t("work.allPaused");
+  if (runtime.pausedClasses.length === BACKGROUND_CLASS_IDS.length) return t("work.allPaused");
   if (runtime.pausedClasses.length > 0) return t("work.somePaused");
   return t("work.noWorkRunning");
 }

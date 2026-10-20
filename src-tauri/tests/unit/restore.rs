@@ -27,7 +27,7 @@ fn restore_works_on_a_volume_without_exclusive_rename() {
     let occupied = without_exclusive_rename(|| {
         restore_one(&root, &entry, &file, &crate::file_identity::volume_of)
     });
-    assert!(matches!(occupied, Err(StepFailure::File(OCCUPIED, _))));
+    assert!(matches!(occupied, Err(StepFailure::File(NOTICE_OCCUPIED, _))));
     assert_eq!(std::fs::read(&file).unwrap(), b"occupied");
 
     std::fs::remove_file(&file).unwrap();

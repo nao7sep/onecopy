@@ -840,15 +840,15 @@ fn failed_scoped_recovery_retains_the_retry_issue_until_that_root_is_checked_suc
         source_dirs: vec![root.clone()], lists: lists(), resolution: resolution_config(),
         pairing_enabled: true, cache_root: f._dir.path().join("apphome/cache"),
     };
-    index_store::upsert_issue(&f.conn, Some(&root), "watcher-recovery-failed", "offline").unwrap();
+    index_store::upsert_issue(&f.conn, Some(&root), onecopy_lib::watcher::WATCHER_RECOVERY_FAILED, "offline").unwrap();
     std::fs::remove_dir(&f.root).unwrap();
     let failed = run_source_check_scoped(&f.conn, &settings, Some(&settings.source_dirs), &|_| {}).unwrap();
     assert_eq!(failed.failures, 1);
-    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM active_issues WHERE kind = 'watcher-recovery-failed'"), 1);
+    assert_eq!(count(&f.conn, &format!("SELECT COUNT(*) FROM active_issues WHERE kind = '{}'", onecopy_lib::watcher::WATCHER_RECOVERY_FAILED)), 1);
     std::fs::create_dir(&f.root).unwrap();
     let recovered = run_source_check(&f.conn, &settings, &|_| {}).unwrap();
     assert_eq!(recovered.failures, 0);
-    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM active_issues WHERE kind = 'watcher-recovery-failed'"), 0);
+    assert_eq!(count(&f.conn, &format!("SELECT COUNT(*) FROM active_issues WHERE kind = '{}'", onecopy_lib::watcher::WATCHER_RECOVERY_FAILED)), 0);
 }
 
 #[test]
@@ -1051,13 +1051,6 @@ fn with_pid(name: &str, pid: u32) -> String {
     format!("{}{pid:0width$}{}", &name[..pid_start], &name[pid_end..], width = PID_FIELD_LEN)
 }
 
-fn with_foreign_home(name: &str) -> String {
-    let home_start = STAGE_PREFIX_LEN;
-    let home_end = home_start + HOME_FIELD_LEN;
-    let foreign = "f".repeat(HOME_FIELD_LEN);
-    format!("{}{foreign}{}", &name[..home_start], &name[home_end..])
-}
-
 /// A pid guaranteed not to be running any more.
 fn exited_pid() -> u32 {
     let mut child = if cfg!(windows) {
@@ -1088,7 +1081,8 @@ fn leftover_private_staging_from_this_homes_dead_process_is_removed() {
     // real "swept" outcome end-to-end without a live Tauri startup; that
     // decision is proven directly, with an injected fingerprint, by
     // `file_identity`'s own `this_installations_dead_pid_file_is_swept` unit
-    // test (`tests/unit/file_identity.rs`). What this test proves at the
+    // test, which also proves a live or foreign leftover is never swept. What
+    // this test proves at the
     // walker level is the other, equally load-bearing half: while unsettled,
     // this home's own dead-pid-looking leftover is never indexed AND never
     // removed, exactly like a live or foreign one.
@@ -1120,39 +1114,6 @@ fn leftover_private_staging_from_this_homes_dead_process_is_removed() {
         leftover.exists(),
         "an unproven leftover is left alone rather than guessed at"
     );
-}
-
-#[test]
-fn leftover_private_staging_from_a_live_or_foreign_process_is_never_removed() {
-    // Two application homes may be configured to see the same shared root
-    // (recoverable storage and manual recovery). A live process's own staging file, or a different home's
-    // file sitting in a folder this walk also happens to visit, must never
-    // be deleted merely because the walk saw its name — 896c22f's
-    // unconditional deletion was exactly this defect. Both stay excluded
-    // from the index (never library content) but stay on disk.
-    let f = fixture("private-staging-leftover-live");
-    std::fs::write(f.root.join("IMG_0003.jpg"), b"photo").unwrap();
-    let base = onecopy_lib::file_identity::private_stage_file_name().unwrap();
-    let live = f.root.join(with_pid(&base, std::process::id()));
-    let foreign = f.root.join(with_foreign_home(&with_pid(&base, exited_pid())));
-    std::fs::write(&live, b"still being written").unwrap();
-    std::fs::write(&foreign, b"another application home's in-progress output").unwrap();
-
-    let stats = walk_root(&f.conn, &f.root, &lists()).unwrap();
-
-    assert_eq!(stats.added, 1, "only the real file is indexed");
-    for leftover in [&live, &foreign] {
-        let name = leftover.file_name().unwrap().to_string_lossy();
-        assert_eq!(
-            f.conn
-                .query_row("SELECT COUNT(*) FROM paths WHERE file_name = ?1", [&name], |row| row.get::<_, i64>(0))
-                .unwrap(),
-            0,
-            "neither leftover is ever indexed as library content"
-        );
-    }
-    assert!(live.exists(), "a live process's own file is never removed");
-    assert!(foreign.exists(), "a different application home's file is never removed");
 }
 
 #[test]

@@ -9,6 +9,10 @@ use crate::menu::SAFE_QUIT_MENU_ID;
 #[path = "../tests/support/windows_test.rs"]
 mod windows_test;
 
+#[cfg(test)]
+#[path = "../tests/unit/frontend_names.rs"]
+mod frontend_names_tests;
+
 pub mod activity;
 mod sqlite;
 pub mod ai_acceleration;

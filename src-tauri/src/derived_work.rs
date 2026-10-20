@@ -35,6 +35,12 @@ use crate::preview::CachePaths;
 
 pub const WORKER_FAILED: &str = "derived-worker-failed";
 
+// The events a transcription run sends the window that shows its transcript.
+pub(crate) const TRANSCRIBE_PROGRESS: &str = "transcribe://progress";
+pub(crate) const TRANSCRIBE_DONE: &str = "transcribe://done";
+pub(crate) const TRANSCRIBE_ERROR: &str = "transcribe://error";
+pub(crate) const TRANSCRIBE_CANCELLED: &str = "transcribe://cancelled";
+
 static LAST_ACTIVITY_MS: AtomicI64 = AtomicI64::new(0);
 /// One flag per `Lane`: whether that lane's worker is running.
 static STARTED: [AtomicBool; 2] = [AtomicBool::new(false), AtomicBool::new(false)];
@@ -2241,7 +2247,7 @@ fn transcription_report(
     let requested = matches!(run, TranscriptionRun::Requested { .. });
     let error = |hash: &str, message: &str| {
         (
-            "transcribe://error",
+            TRANSCRIBE_ERROR,
             json!({ "hash": hash, "message": message, "replacement": replacement }),
         )
     };
@@ -2249,7 +2255,7 @@ fn transcription_report(
         TranscriptionAttemptOutcome::Completed { hash, text, .. } => TranscriptionReport {
             item_hash: Some(hash.clone()),
             event: Some((
-                "transcribe://done",
+                TRANSCRIBE_DONE,
                 json!({ "hash": hash, "text": text, "replacement": replacement }),
             )),
             pause_message: None,
@@ -2257,7 +2263,7 @@ fn transcription_report(
         TranscriptionAttemptOutcome::Cancelled { hash } => TranscriptionReport {
             item_hash: Some(hash.clone()),
             event: Some((
-                "transcribe://cancelled",
+                TRANSCRIBE_CANCELLED,
                 json!({ "hash": hash, "replacement": replacement }),
             )),
             pause_message: None,
@@ -2329,7 +2335,7 @@ fn run_transcription(
             // Extraction and model loading precede Whisper's first percentage.
             crate::failure_runtime::emit_or_record(
                 context.app,
-                "transcribe://progress",
+                TRANSCRIBE_PROGRESS,
                 json!({ "hash": hash, "percent": 0, "replacement": replacement }),
             );
         },
@@ -2340,7 +2346,7 @@ fn run_transcription(
                 record_progress(&progress_handle, class, Some((percent as u64, 100)));
                 crate::failure_runtime::emit_or_record(
                     &progress_handle,
-                    "transcribe://progress",
+                    TRANSCRIBE_PROGRESS,
                     json!({
                         "hash": progress_hash,
                         "percent": percent,
@@ -2451,7 +2457,7 @@ pub fn request_transcription(
                 );
                 crate::failure_runtime::emit_or_record(
                     &handle,
-                    "transcribe://error",
+                    TRANSCRIBE_ERROR,
                     json!({ "hash": worker_hash, "message": error, "replacement": replacement }),
                 );
             }
@@ -2473,7 +2479,7 @@ pub fn request_transcription(
             );
             crate::failure_runtime::emit_or_record(
                 &handle,
-                "transcribe://error",
+                TRANSCRIBE_ERROR,
                 json!({ "hash": worker_hash, "message": error, "replacement": replacement }),
             );
         }

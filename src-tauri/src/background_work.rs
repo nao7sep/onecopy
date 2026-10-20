@@ -7,7 +7,26 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::derived_runtime::RuntimeSnapshot;
-use crate::derived_state::{WorkCapabilities, WorkClass};
+use crate::derived_state::{WorkCapabilities, WorkClass, RECHECK_SECTION, WAITING_FOR_INDEXING};
+
+/// What a class row says about its work. The frontend overlays its own live
+/// states (running, stopping, paused) on these.
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum ClassState {
+    Disabled,
+    Unavailable,
+    Failed,
+    Waiting,
+    Queued,
+    UpToDate,
+}
+
+impl ClassState {
+    #[cfg(test)]
+    pub(crate) const ALL: [Self; 6] =
+        [Self::Disabled, Self::Unavailable, Self::Failed, Self::Waiting, Self::Queued, Self::UpToDate];
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -32,7 +51,7 @@ struct BackgroundActiveItemSnapshot {
 #[serde(rename_all = "camelCase")]
 struct BackgroundClassSnapshot {
     id: &'static str,
-    state: &'static str,
+    state: ClassState,
     queued: u64,
     failed: u64,
     done: Option<u64>,
@@ -53,17 +72,17 @@ pub fn snapshot(
         let queued = debt.runnable + debt.blocked;
         // Keep availability intact; runtime overlays it without destroying it.
         let (state, reason) = if debt.disabled {
-            ("disabled", debt.reason)
+            (ClassState::Disabled, debt.reason)
         } else if debt.unavailable || (debt.runnable == 0 && debt.blocked > 0) {
-            ("unavailable", debt.reason)
+            (ClassState::Unavailable, debt.reason)
         } else if debt.runnable == 0 && debt.failed > 0 {
-            ("failed", Some("recheck-section"))
+            (ClassState::Failed, Some(RECHECK_SECTION))
         } else if debt.runnable > 0 && runtime.busy {
-            ("waiting", Some("waiting-for-indexing"))
+            (ClassState::Waiting, Some(WAITING_FOR_INDEXING))
         } else if debt.runnable > 0 {
-            ("queued", debt.reason)
+            (ClassState::Queued, debt.reason)
         } else {
-            ("up-to-date", debt.reason)
+            (ClassState::UpToDate, debt.reason)
         };
         classes.push(BackgroundClassSnapshot {
             id: class.id(),

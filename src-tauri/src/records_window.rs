@@ -1,8 +1,8 @@
 //! The Records window shows `records.sqlite3`. It is a durable secondary
 //! window with its own placement (window-conventions, Placement), and there is
 //! only ever one: opening it again brings it forward. It holds no work, so it
-//! never keeps the app from quitting, and activating the app still brings Main
-//! back (lib.rs, `RunEvent::Reopen`).
+//! never keeps the app from quitting, and activating the app from the Dock
+//! still brings Main back even while this window is showing.
 
 use std::sync::Mutex;
 

@@ -836,7 +836,7 @@ pub fn run_source_check_scoped(
             progress,
         )?;
         if stats.errors == 0 {
-            crate::index_store::clear_issues(conn, configured_root, &["watcher-recovery-failed"])?;
+            crate::index_store::clear_issues(conn, configured_root, &[crate::watcher::WATCHER_RECOVERY_FAILED])?;
         }
         if stats.added + stats.updated + stats.marked_missing > 0 {
             changed_roots.push(configured_root.to_string());

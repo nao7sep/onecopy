@@ -453,8 +453,8 @@ fn delete_targets(
                 crate::index_store::upsert_issue_with_descriptor(
                     conn,
                     Some(&target.abs_path),
-                    "copy-error",
-                    Some("notice.copySourceChanged"),
+                    COPY_ERROR,
+                    Some(COPY_SOURCE_CHANGED),
                     None,
                     &err.message,
                 )?;
@@ -493,7 +493,7 @@ fn delete_targets(
                 crate::index_store::upsert_issue_with_descriptor(
                     conn,
                     Some(&target.abs_path),
-                    "delete-error",
+                    DELETE_ERROR,
                     Some("notice.deleteFailed"),
                     None,
                     &err.message,
@@ -768,6 +768,13 @@ fn permanently_delete_file(
     })
 }
 
+/// Issue kind for a copy or move-out that failed with a known error.
+pub const COPY_ERROR: &str = "copy-error";
+/// Issue kind for a delete or trash move that failed with a known error.
+pub const DELETE_ERROR: &str = "delete-error";
+/// Message key for a source that changed between being read and being copied,
+/// which the interface explains instead of the raw error.
+pub const COPY_SOURCE_CHANGED: &str = "notice.copySourceChanged";
 /// Issue kind for a file whose delete or trash move was given up on while
 /// its volume was not responding.
 pub const DELETE_OUTCOME_UNKNOWN: &str = "delete-outcome-unknown";
@@ -2091,7 +2098,7 @@ fn execute_move_unit(
                         crate::index_store::upsert_issue_with_descriptor(
                             conn,
                             Some(output.target.to_string_lossy().as_ref()),
-                            "copy-error",
+                            COPY_ERROR,
                             Some("notice.copyReplacementUnavailable"),
                             None,
                             "",
@@ -2153,7 +2160,7 @@ fn execute_move_unit(
                 crate::index_store::upsert_issue_with_descriptor(
                     conn,
                     Some(output.target.to_string_lossy().as_ref()),
-                    "copy-error",
+                    COPY_ERROR,
                     Some("notice.copyPublishFailed"),
                     None,
                     &error.to_string(),
@@ -2302,8 +2309,8 @@ fn source_family_unchanged(
         crate::index_store::upsert_issue_with_descriptor(
             conn,
             Some(&proof.source.abs_path),
-            "copy-error",
-            Some("notice.copySourceChanged"),
+            COPY_ERROR,
+            Some(COPY_SOURCE_CHANGED),
             None,
             &detail,
         )?;
@@ -2352,7 +2359,7 @@ fn publication_given_up(
         crate::index_store::upsert_issue_with_descriptor(
             conn,
             Some(&target),
-            "copy-error",
+            COPY_ERROR,
             Some("notice.copyPublishFailed"),
             None,
             &error.to_string(),
@@ -2374,7 +2381,7 @@ fn sync_published(conn: &Connection, target: &Path) -> Result<bool, String> {
             crate::index_store::upsert_issue_with_descriptor(
                 conn,
                 Some(target.to_string_lossy().as_ref()),
-                "copy-error",
+                COPY_ERROR,
                 Some("notice.copyDirectorySyncFailed"),
                 None,
                 &error.to_string(),
@@ -2430,7 +2437,7 @@ fn preserve_reviewed_destination_family(
             let _ = crate::index_store::upsert_issue_with_descriptor(
                 conn,
                 Some(member.path.to_string_lossy().as_ref()),
-                "copy-error",
+                COPY_ERROR,
                 Some("notice.copyPreserveDestinationFailed"),
                 None,
                 &error.to_string(),
@@ -2479,8 +2486,8 @@ fn stage_delivery(
                 crate::index_store::upsert_issue_with_descriptor(
                     conn,
                     Some(&source.abs_path),
-                    "copy-error",
-                    Some("notice.copySourceChanged"),
+                    COPY_ERROR,
+                    Some(COPY_SOURCE_CHANGED),
                     None,
                     "",
                 )?;
@@ -2531,7 +2538,7 @@ fn stage_delivery(
                         let (descriptor, detail) = match verified {
                             Ok((_, None)) if mode != MoveOutMode::CopyKeepAll => {
                                 changed_families.extend(remaining.beside);
-                                ("notice.copySourceChanged", String::new())
+                                (COPY_SOURCE_CHANGED, String::new())
                             }
                             Ok((current, version)) if current == recorded => {
                                 source_proofs.extend(version.map(|version| SourceProof { source: remaining.clone(), version }));
@@ -2546,7 +2553,7 @@ fn stage_delivery(
                                 changed_sources.push(remaining.path_id);
                                 continue;
                             }
-                            Ok(_) => ("notice.copySourceChanged", String::new()),
+                            Ok(_) => (COPY_SOURCE_CHANGED, String::new()),
                             Err(error) if error.kind() == std::io::ErrorKind::Interrupted && cancelled() => {
                                 return Ok(StageResult::Cancelled);
                             }
@@ -2560,7 +2567,7 @@ fn stage_delivery(
                         crate::index_store::upsert_issue_with_descriptor(
                             conn,
                             Some(&remaining.abs_path),
-                            "copy-error",
+                            COPY_ERROR,
                             Some(descriptor),
                             None,
                             &detail,
@@ -2593,8 +2600,8 @@ fn stage_delivery(
                 crate::index_store::upsert_issue_with_descriptor(
                     conn,
                     Some(&source.abs_path),
-                    "copy-error",
-                    Some("notice.copySourceChanged"),
+                    COPY_ERROR,
+                    Some(COPY_SOURCE_CHANGED),
                     None,
                     "",
                 )?;
@@ -2608,7 +2615,7 @@ fn stage_delivery(
                 crate::index_store::upsert_issue_with_descriptor(
                     conn,
                     Some(&source.abs_path),
-                    "copy-error",
+                    COPY_ERROR,
                     Some("notice.copySourceReadFailed"),
                     None,
                     &error.to_string(),
@@ -2629,7 +2636,7 @@ fn stage_delivery(
                 crate::index_store::upsert_issue_with_descriptor(
                     conn,
                     Some(delivery.target.to_string_lossy().as_ref()),
-                    "copy-error",
+                    COPY_ERROR,
                     Some("notice.copyDestinationRefused"),
                     None,
                     &error.to_string(),

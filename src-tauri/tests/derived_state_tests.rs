@@ -471,7 +471,7 @@ fn transcript_reads_distinguish_pending_failed_empty_and_ready_output() {
     assert_eq!(failed.message.as_deref(), Some("decoder failed"));
 
     let pending = derived_state::transcript_result(&conn, "poster").unwrap();
-    assert_eq!(pending.status, "pending");
+    assert_eq!(pending.status, onecopy_lib::derived_state::PENDING);
 
     // A transcript kept through a rebuild meets its content again.
     conn.execute(

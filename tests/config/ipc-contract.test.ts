@@ -6,14 +6,19 @@
 // exactly the "this button does nothing" class of bug, and nothing could catch
 // the next one.
 //
-// This is a source-text check, deliberately: it needs no running backend and
-// no mock, so it cannot drift from the shipped files the way a hand-kept
-// mirror would.
+// The command checks read source text, deliberately: they need no running
+// backend and no mock, so they cannot drift from the shipped files the way a
+// hand-kept mirror would. The names the core sends inside events and payloads
+// are checked against the shared fixture the Rust suite also checks.
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { identityFromKey, keyOf } from "../../src/models/items";
+import { workReasonKey } from "../../src/models/workReasons";
+import { BACKGROUND_CLASS_IDS, CORE_CLASS_STATES } from "../../src/state/derived-work-store";
+import { CORE_NAMES } from "../helpers/coreNames";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -166,5 +171,24 @@ describe("command arguments", () => {
       }
     }
     expect([...new Set(mismatches)]).toEqual([]);
+  });
+});
+
+describe("names the core sends and the frontend keys on", () => {
+  it("spells and parses item keys as the core does", () => {
+    for (const { hash, pathId, key } of CORE_NAMES.itemKeys) {
+      expect(keyOf(hash, pathId)).toBe(key);
+      expect(identityFromKey(key)).toEqual(hash === null ? { hash: null, pathId } : { hash, pathId: 0 });
+    }
+  });
+
+  it("knows exactly the background-work classes and row states the core reports", () => {
+    expect([...BACKGROUND_CLASS_IDS]).toEqual(CORE_NAMES.backgroundWork.classIds);
+    expect([...CORE_CLASS_STATES].sort()).toEqual([...CORE_NAMES.backgroundWork.classStates].sort());
+  });
+
+  it("names every reason the core gives for held-back work", () => {
+    const unnamed = CORE_NAMES.backgroundWork.reasons.filter((reason) => workReasonKey(reason) === null);
+    expect(unnamed).toEqual([]);
   });
 });

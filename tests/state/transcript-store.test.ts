@@ -10,6 +10,8 @@ import {
   resetTauriMocks,
 } from "../mocks/tauri";
 import { inEnglish } from "../helpers/i18n";
+import { message } from "../../src/i18n/translate";
+import { CORE_NAMES } from "../helpers/coreNames";
 
 beforeAll(async () => {
   await installTranscriptEventWiring();
@@ -17,13 +19,13 @@ beforeAll(async () => {
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
-  fireEvent("transcribe://cancelled", {
+  fireEvent(CORE_NAMES.transcribeEvents.cancelled, {
     hash: "background-video",
     replacement: false,
   });
   useTranscriptStore.setState({ rows: {} });
   mockCommands({
-    transcript_get: () => ({ status: "pending", text: null, message: null }),
+    transcript_get: () => ({ status: CORE_NAMES.transcriptStatus.pending, text: null, message: null }),
   });
 });
 
@@ -38,7 +40,7 @@ describe("transcript projection", () => {
     });
 
     const loading = useTranscriptStore.getState().load("video");
-    fireEvent("transcribe://done", {
+    fireEvent(CORE_NAMES.transcribeEvents.done, {
       hash: "video",
       text: "finished",
       replacement: false,
@@ -63,7 +65,7 @@ describe("transcript projection", () => {
     });
 
     const starting = useTranscriptStore.getState().start("video");
-    fireEvent("transcribe://done", {
+    fireEvent(CORE_NAMES.transcribeEvents.done, {
       hash: "video",
       text: "finished",
       replacement: false,
@@ -79,7 +81,7 @@ describe("transcript projection", () => {
   });
 
   it("tracks unseen automatic work without caching every library item", async () => {
-    fireEvent("transcribe://progress", {
+    fireEvent(CORE_NAMES.transcribeEvents.progress, {
       hash: "background-video",
       percent: 23,
       replacement: false,
@@ -94,7 +96,7 @@ describe("transcript projection", () => {
       percent: 23,
     });
 
-    fireEvent("transcribe://done", {
+    fireEvent(CORE_NAMES.transcribeEvents.done, {
       hash: "background-video",
       text: "hello",
       replacement: false,
@@ -109,7 +111,7 @@ describe("transcript projection", () => {
 
   it("keeps a second manual request queued until its own progress begins", async () => {
     mockCommands({
-      transcript_get: () => ({ status: "pending", text: null, message: null }),
+      transcript_get: () => ({ status: CORE_NAMES.transcriptStatus.pending, text: null, message: null }),
       transcribe: () => null,
     });
 
@@ -119,7 +121,7 @@ describe("transcript projection", () => {
     expect(useTranscriptStore.getState().rows.first?.status).toBe("queued");
     expect(useTranscriptStore.getState().rows.second?.status).toBe("queued");
 
-    fireEvent("transcribe://progress", {
+    fireEvent(CORE_NAMES.transcribeEvents.progress, {
       hash: "first",
       percent: 0,
       replacement: false,
@@ -153,7 +155,7 @@ describe("transcript projection", () => {
       replacement: { status: "queued" },
     });
 
-    fireEvent("transcribe://progress", {
+    fireEvent(CORE_NAMES.transcribeEvents.progress, {
       hash: "video",
       percent: 40,
       replacement: true,
@@ -164,7 +166,7 @@ describe("transcript projection", () => {
       replacement: { status: "running", percent: 40 },
     });
 
-    fireEvent("transcribe://error", {
+    fireEvent(CORE_NAMES.transcribeEvents.error, {
       hash: "video",
       message: "model stopped",
       replacement: true,
@@ -192,7 +194,7 @@ describe("transcript projection", () => {
       },
     });
 
-    fireEvent("transcribe://progress", {
+    fireEvent(CORE_NAMES.transcribeEvents.progress, {
       hash: "video",
       percent: 25,
       replacement: true,
@@ -203,7 +205,7 @@ describe("transcript projection", () => {
       replacement: { status: "running", percent: 25 },
     });
 
-    fireEvent("transcribe://error", {
+    fireEvent(CORE_NAMES.transcribeEvents.error, {
       hash: "video",
       message: "model stopped",
       replacement: true,
@@ -214,13 +216,13 @@ describe("transcript projection", () => {
       replacement: { status: "failed" },
     });
 
-    fireEvent("transcribe://progress", {
+    fireEvent(CORE_NAMES.transcribeEvents.progress, {
       hash: "video",
       percent: 50,
       replacement: true,
     });
 
-    fireEvent("transcribe://cancelled", { hash: "video", replacement: true });
+    fireEvent(CORE_NAMES.transcribeEvents.cancelled, { hash: "video", replacement: true });
     // Cancellation reports the new attempt
     // rather than silently reverting to no replacement in progress.
     expect(useTranscriptStore.getState().rows.video).toMatchObject({
@@ -233,12 +235,12 @@ describe("transcript projection", () => {
   it("loads the completed receipt as replacement work when progress arrived first", async () => {
     mockCommands({
       transcript_get: () => ({
-        status: "ready",
+        status: CORE_NAMES.transcriptStatus.ready,
         text: "previous words",
         message: null,
       }),
     });
-    fireEvent("transcribe://progress", {
+    fireEvent(CORE_NAMES.transcribeEvents.progress, {
       hash: "video",
       percent: 40,
       replacement: true,
@@ -251,5 +253,26 @@ describe("transcript projection", () => {
       text: "previous words",
       replacement: { status: "running", percent: 40 },
     });
+  });
+});
+
+describe("transcript receipts the core reports", () => {
+  it("shows a ready receipt's text, a failed one's sentence and a pending one as still owed", async () => {
+    const { pending, ready, failed } = CORE_NAMES.transcriptStatus;
+    const receipts: Record<string, { status: string; text: string | null; message: string | null }> = {
+      "owed": { status: pending, text: null, message: null },
+      "done": { status: ready, text: "[0:01] words", message: null },
+      "broken": { status: failed, text: null, message: "decoder exited" },
+    };
+    mockCommands({
+      transcript_get: (args) => receipts[(args as { hash: string }).hash],
+    });
+    for (const hash of Object.keys(receipts)) await useTranscriptStore.getState().load(hash);
+
+    const rows = useTranscriptStore.getState().rows;
+    expect(rows.owed).toMatchObject({ status: "pending", text: null, message: null });
+    expect(rows.done).toMatchObject({ status: "ready", text: "[0:01] words", message: null });
+    expect(rows.broken).toMatchObject({ status: "failed" });
+    expect(inEnglish(rows.broken?.message)).toBe(inEnglish(message("transcript.couldNotFinish")));
   });
 });

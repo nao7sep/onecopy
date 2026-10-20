@@ -55,11 +55,11 @@ impl Skip {
         match self {
             // Never recorded: the file is where it belongs.
             Skip::AlreadyThere => "",
-            Skip::Changed => CHANGED,
-            Skip::Missing => MISSING,
-            Skip::Unrepresentable | Skip::Excluded => "notice.restoreUnplaceable",
-            Skip::FolderIsLink | Skip::FileInTheWay => FOLDER_BLOCKED,
-            Skip::OtherDrive => OTHER_DRIVE,
+            Skip::Changed => NOTICE_CHANGED,
+            Skip::Missing => NOTICE_MISSING,
+            Skip::Unrepresentable | Skip::Excluded => NOTICE_UNPLACEABLE,
+            Skip::FolderIsLink | Skip::FileInTheWay => NOTICE_FOLDER_BLOCKED,
+            Skip::OtherDrive => NOTICE_OTHER_DRIVE,
         }
     }
 
@@ -73,12 +73,16 @@ impl Skip {
     }
 }
 
-const MISSING: &str = "notice.restoreMissing";
-const CHANGED: &str = "notice.restoreChanged";
-const FOLDER_BLOCKED: &str = "notice.restoreFolderBlocked";
-const OTHER_DRIVE: &str = "notice.restoreOtherDrive";
-const OCCUPIED: &str = "notice.restoreOccupied";
-const FAILED: &str = "notice.restoreFailed";
+// Message keys a restore Issue carries, so the interface can say which
+// condition stopped a file in the reader's language.
+pub const NOTICE_MISSING: &str = "notice.restoreMissing";
+pub const NOTICE_CHANGED: &str = "notice.restoreChanged";
+pub const NOTICE_FOLDER_BLOCKED: &str = "notice.restoreFolderBlocked";
+pub const NOTICE_OTHER_DRIVE: &str = "notice.restoreOtherDrive";
+pub const NOTICE_OCCUPIED: &str = "notice.restoreOccupied";
+pub const NOTICE_FAILED: &str = "notice.restoreFailed";
+pub const NOTICE_OUTCOME_UNKNOWN: &str = "notice.restoreOutcomeUnknown";
+pub const NOTICE_UNPLACEABLE: &str = "notice.restoreUnplaceable";
 
 /// What planning found at the original path of one selected file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -602,37 +606,37 @@ fn ensure_folder(folder: &Path, root: &Path) -> Result<(), StepFailure> {
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             // The folder above went away since planning.
-            return Err(StepFailure::File(MISSING, error.to_string()));
+            return Err(StepFailure::File(NOTICE_MISSING, error.to_string()));
         }
         Err(error) => {
             let message = format!("could not create {}: {error}", folder.display());
             return Err(if stops_remainder(&error, root) {
                 StepFailure::Stop(message)
             } else {
-                StepFailure::File(FAILED, message)
+                StepFailure::File(NOTICE_FAILED, message)
             });
         }
     }
     match volume_io::symlink_metadata(folder) {
         Ok(metadata) if metadata.file_type().is_symlink() => Err(StepFailure::File(
-            FOLDER_BLOCKED,
+            NOTICE_FOLDER_BLOCKED,
             format!("{} is a link", folder.display()),
         )),
         Ok(metadata) if metadata.is_dir() => {
             match crate::path_identity::directory_is_within(folder, root) {
                 Ok(true) => Ok(()),
                 Ok(false) => Err(StepFailure::File(
-                    FOLDER_BLOCKED,
+                    NOTICE_FOLDER_BLOCKED,
                     format!("{} leads outside its root", folder.display()),
                 )),
-                Err(error) => Err(StepFailure::File(FOLDER_BLOCKED, error)),
+                Err(error) => Err(StepFailure::File(NOTICE_FOLDER_BLOCKED, error)),
             }
         }
         Ok(_) => Err(StepFailure::File(
-            FOLDER_BLOCKED,
+            NOTICE_FOLDER_BLOCKED,
             format!("{} is not a folder", folder.display()),
         )),
-        Err(error) => Err(StepFailure::File(FOLDER_BLOCKED, error.to_string())),
+        Err(error) => Err(StepFailure::File(NOTICE_FOLDER_BLOCKED, error.to_string())),
     }
 }
 
@@ -644,23 +648,23 @@ fn restore_one(
 ) -> Result<(), StepFailure> {
     let stored = Path::new(&entry.stored_path);
     let day_dir = stored.parent().unwrap_or(root);
-    trash::refuse_newer_day(day_dir).map_err(|error| StepFailure::File(FAILED, error))?;
+    trash::refuse_newer_day(day_dir).map_err(|error| StepFailure::File(NOTICE_FAILED, error))?;
     // The stored file must still be the one the record describes.
     match volume_io::symlink_metadata(stored) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Err(StepFailure::File(MISSING, error.to_string()))
+            return Err(StepFailure::File(NOTICE_MISSING, error.to_string()))
         }
         Err(error) if stops_remainder(&error, root) => {
             return Err(StepFailure::Stop(error.to_string()))
         }
-        Err(error) => return Err(StepFailure::File(CHANGED, error.to_string())),
+        Err(error) => return Err(StepFailure::File(NOTICE_CHANGED, error.to_string())),
         Ok(metadata) => {
             let unchanged = metadata.file_type().is_file()
                 && metadata.len() == entry.size
                 && Some(trash::mtime_ms(&metadata)) == entry.mtime_ms;
             if !unchanged {
                 return Err(StepFailure::File(
-                    CHANGED,
+                    NOTICE_CHANGED,
                     "the stored file changed since it was deleted".to_string(),
                 ));
             }
@@ -679,14 +683,14 @@ fn restore_one(
         match volume_io::symlink_metadata(folder) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
                 return Err(StepFailure::File(
-                    FOLDER_BLOCKED,
+                    NOTICE_FOLDER_BLOCKED,
                     format!("{} is a link", folder.display()),
                 ))
             }
             Ok(metadata) if metadata.is_dir() => {}
             Ok(_) => {
                 return Err(StepFailure::File(
-                    FOLDER_BLOCKED,
+                    NOTICE_FOLDER_BLOCKED,
                     format!("{} is not a folder", folder.display()),
                 ))
             }
@@ -694,7 +698,7 @@ fn restore_one(
             Err(error) if stops_remainder(&error, root) => {
                 return Err(StepFailure::Stop(error.to_string()))
             }
-            Err(error) => return Err(StepFailure::File(FOLDER_BLOCKED, error.to_string())),
+            Err(error) => return Err(StepFailure::File(NOTICE_FOLDER_BLOCKED, error.to_string())),
         }
     }
     let same_drive = match (volume(parent), volume(day_dir)) {
@@ -703,17 +707,17 @@ fn restore_one(
             return Err(if stops_remainder(&error, root) {
                 StepFailure::Stop(error.to_string())
             } else {
-                StepFailure::File(OTHER_DRIVE, error.to_string())
+                StepFailure::File(NOTICE_OTHER_DRIVE, error.to_string())
             })
         }
     };
     if !same_drive {
         return Err(StepFailure::File(
-            OTHER_DRIVE,
+            NOTICE_OTHER_DRIVE,
             format!("a different drive is at {}", parent.display()),
         ));
     }
-    trash::refuse_newer_day(day_dir).map_err(|error| StepFailure::File(FAILED, error))?;
+    trash::refuse_newer_day(day_dir).map_err(|error| StepFailure::File(NOTICE_FAILED, error))?;
     match crate::fs_publish::rename_no_replace(stored, target) {
         Ok(()) => {}
         Err(error) if volume_io::outcome_unknown(&error) => {
@@ -721,19 +725,19 @@ fn restore_one(
         }
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
             return Err(StepFailure::File(
-                OCCUPIED,
+                NOTICE_OCCUPIED,
                 format!("{} was occupied after the review", target.display()),
             ))
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Err(StepFailure::File(MISSING, error.to_string()))
+            return Err(StepFailure::File(NOTICE_MISSING, error.to_string()))
         }
         Err(error) if stops_remainder(&error, root) => {
             return Err(StepFailure::Stop(error.to_string()))
         }
         Err(error) => {
             return Err(StepFailure::File(
-                FAILED,
+                NOTICE_FAILED,
                 format!("could not restore to {}: {error}", target.display()),
             ))
         }
@@ -827,7 +831,7 @@ pub fn execute(
                     record(conn, &stored, RESTORE_ERROR, key, &message)
                 }
                 StepFailure::Stop(message) => {
-                    let recorded = record(conn, &stored, RESTORE_ERROR, FAILED, &message);
+                    let recorded = record(conn, &stored, RESTORE_ERROR, NOTICE_FAILED, &message);
                     stop = Some(message);
                     recorded
                 }
@@ -837,7 +841,7 @@ pub fn execute(
                         conn,
                         &stored,
                         RESTORE_OUTCOME_UNKNOWN,
-                        "notice.restoreOutcomeUnknown",
+                        NOTICE_OUTCOME_UNKNOWN,
                         &message,
                     );
                     stop = Some(message);

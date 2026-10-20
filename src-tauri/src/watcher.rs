@@ -24,6 +24,9 @@ use std::time::Duration;
 /// already going to need a full recheck, so overflow is treated the same as
 /// `notify`'s own `need_rescan()` rather than growing without bound.
 const EVENT_QUEUE_CAPACITY: usize = 4096;
+/// Issue kind for a source folder whose watch could not be re-established;
+/// a later successful scan or recovery clears it.
+pub const WATCHER_RECOVERY_FAILED: &str = "watcher-recovery-failed";
 
 use serde_json::json;
 
@@ -520,14 +523,14 @@ fn recover_roots(app: &tauri::AppHandle, roots: &[String], generation: u64) {
         if !owns_generation(generation) { return; }
         match result {
             Ok(summary) if summary.failures == 0 => {
-                crate::failure_runtime::clear("watcher-recovery-failed", Some(root));
+                crate::failure_runtime::clear(WATCHER_RECOVERY_FAILED, Some(root));
             }
             result => {
                 let detail = match result {
                     Err(error) => error,
                     Ok(summary) => format!("{} source entries could not be checked", summary.failures),
                 };
-                if crate::failure_runtime::record_active(app, "watcher-recovery-failed", Some(root), &detail).is_err() {
+                if crate::failure_runtime::record_active(app, WATCHER_RECOVERY_FAILED, Some(root), &detail).is_err() {
                     return;
                 }
             }
@@ -538,11 +541,11 @@ fn recover_roots(app: &tauri::AppHandle, roots: &[String], generation: u64) {
     // another root, or claim that a watcher which stopped is running again.
     let unresolved = crate::paths::data_root().and_then(|root| {
         let conn = crate::index_store::open(&root.join(crate::storage::INDEX_DB_FILE_NAME))?;
-        conn.query_row("SELECT EXISTS(SELECT 1 FROM active_issues WHERE kind IN ('watcher-recovery-failed', 'watcher-failed', 'watcher-root-failed'))", [], |row| row.get::<_, bool>(0)).map_err(|error| error.to_string())
+        conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM active_issues WHERE kind IN ('{WATCHER_RECOVERY_FAILED}', 'watcher-failed', 'watcher-root-failed'))"), [], |row| row.get::<_, bool>(0)).map_err(|error| error.to_string())
     });
     let rescan_needed = match unresolved {
         Ok(value) => value,
-        Err(error) => { crate::scan_runtime::record_runtime_failure(app, "watcher-recovery-failed", &error); true }
+        Err(error) => { crate::scan_runtime::record_runtime_failure(app, WATCHER_RECOVERY_FAILED, &error); true }
     };
     crate::failure_runtime::emit_or_record(app, "watch://recovered", json!({ "roots": roots, "rescanNeeded": rescan_needed, "sections": sections.sections() }));
 }
@@ -614,7 +617,7 @@ pub fn reconcile_source_conditions(
     }
     for root in configured {
         if unavailable.contains(root) {
-            crate::index_store::clear_issues(&conn, root, &["watcher-root-failed", "watcher-recovery-failed", scanner::WALK_ERROR])?;
+            crate::index_store::clear_issues(&conn, root, &["watcher-root-failed", WATCHER_RECOVERY_FAILED, scanner::WALK_ERROR])?;
             let key = if substituted.contains(root) { "source.substitutedTitle" } else {
                 crate::volume::unavailable_message_with(data_root, root, &crate::volume::volume_identity)
             };

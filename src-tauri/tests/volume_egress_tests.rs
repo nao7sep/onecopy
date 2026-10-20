@@ -1,13 +1,14 @@
 // Keeps filesystem calls on user volumes inside the bounded owner
-// (`volume_io`). PLAYBOOK "Bound every external wait": a filesystem call has
-// no native timeout, so every call on a configured source or destination runs
-// through the one owner that can give up on it; this test is that rule's
-// enforcement in code rather than by review.
+// (`volume_io`). A filesystem call has no native timeout, so every call on a
+// configured source or destination runs through the one owner that can give
+// up on it when a drive stops responding; this test enforces that in code
+// rather than by review.
 //
 // A shipped source file may name a raw filesystem primitive only when:
 // - it is `volume_io.rs`, the owner itself;
-// - it is a module that touches only OneCopy's own data folder (assumed local
-//   and not routed through the owner — plan decision), listed below with why;
+// - it is a module that touches only OneCopy's own data folder, listed below
+//   with why: that folder is on the local disk, so a stalled removable or
+//   network drive cannot hold its calls;
 // - the line carries `// data root` (a mixed module's cache or temp access) or
 //   `// volume_io worker` (code that runs inside a `volume_io` call).
 
@@ -15,26 +16,21 @@ use std::path::Path;
 
 /// Modules whose filesystem access is only OneCopy's own data folder.
 const DATA_ROOT_MODULES: &[(&str, &str)] = &[
-    ("ai_acceleration.rs", "managed runtime files"),
     ("ai_dependencies.rs", "managed model files"),
     ("backup_store.rs", "managed-text backups"),
     ("binaries.rs", "managed tools"),
     ("binaries_acquisition.rs", "managed tool downloads"),
     ("binaries_manager.rs", "managed tools"),
     ("face.rs", "preview cache and face models"),
-    ("i18n.rs", "config language"),
     ("index_store.rs", "index database"),
     ("instance_owner.rs", "instance lock"),
     ("logging.rs", "records fallback log files"),
     ("paths.rs", "data folder layout"),
     ("records.rs", "records database"),
     ("sqlite.rs", "index database"),
-    ("startup.rs", "data folder preparation"),
     ("storage.rs", "config and state files"),
-    ("theme.rs", "config theme"),
     ("transcription.rs", "transcription temp audio"),
     ("viewer_sequence.rs", "viewer temp files"),
-    ("window_placement.rs", "window state"),
 ];
 
 const MARKERS: &[&str] = &["// data root", "// volume_io worker"];
@@ -149,6 +145,68 @@ fn raw_primitive(code: &str, prev: &str) -> Option<&'static str> {
     None
 }
 
+/// One raw filesystem call found in a source file.
+struct RawCall<'a> {
+    line_number: usize,
+    primitive: &'static str,
+    line: &'a str,
+    /// The line, or the one above it, carries one of `MARKERS`.
+    marked: bool,
+}
+
+/// Every raw filesystem call in `text`, whole-line comments skipped and
+/// trailing comments ignored. Both the violation scan and the stale-entry
+/// check read source through this, so they cannot disagree on what a raw call
+/// is.
+fn raw_calls(text: &str) -> Vec<RawCall<'_>> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut calls = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") {
+            continue;
+        }
+        let code = line.split("//").next().unwrap_or("");
+        let prev = if index > 0 {
+            lines[index - 1].split("//").next().unwrap_or("")
+        } else {
+            ""
+        };
+        let Some(primitive) = raw_primitive(code, prev) else {
+            continue;
+        };
+        let marked = MARKERS.iter().any(|marker| {
+            line.contains(marker) || index > 0 && lines[index - 1].contains(marker)
+        });
+        calls.push(RawCall {
+            line_number: index + 1,
+            primitive,
+            line: line.trim(),
+            marked,
+        });
+    }
+    calls
+}
+
+/// Listed data-folder modules whose exemption no longer matches anything:
+/// the file is gone, or it no longer makes a raw filesystem call. `read`
+/// returns a module's source, or `None` when the file does not exist.
+fn stale_data_root_modules(
+    modules: &[(&str, &str)],
+    read: impl Fn(&str) -> Option<String>,
+) -> Vec<String> {
+    modules
+        .iter()
+        .filter_map(|(module, _)| match read(module) {
+            None => Some(format!("{module} is listed but gone")),
+            Some(text) if raw_calls(&text).is_empty() => Some(format!(
+                "{module} is listed but makes no raw filesystem call"
+            )),
+            Some(_) => None,
+        })
+        .collect()
+}
+
 fn source_dir() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
 }
@@ -168,26 +226,12 @@ fn only_the_bounded_owner_touches_user_volumes() {
             continue;
         }
         let text = std::fs::read_to_string(&path).unwrap();
-        let lines: Vec<&str> = text.lines().collect();
-        for (index, line) in lines.iter().enumerate() {
-            let trimmed = line.trim_start();
-            if trimmed.starts_with("//") {
-                continue;
-            }
-            let code = line.split("//").next().unwrap_or("");
-            let prev = if index > 0 {
-                lines[index - 1].split("//").next().unwrap_or("")
-            } else {
-                ""
-            };
-            let Some(primitive) = raw_primitive(code, prev) else {
-                continue;
-            };
-            let marked = MARKERS.iter().any(|marker| {
-                line.contains(marker) || index > 0 && lines[index - 1].contains(marker)
-            });
-            if !marked {
-                offenders.push(format!("{name}:{}: {primitive}: {}", index + 1, line.trim()));
+        for call in raw_calls(&text) {
+            if !call.marked {
+                offenders.push(format!(
+                    "{name}:{}: {}: {}",
+                    call.line_number, call.primitive, call.line
+                ));
             }
         }
     }
@@ -200,10 +244,41 @@ fn only_the_bounded_owner_touches_user_volumes() {
 }
 
 #[test]
-fn every_listed_data_root_module_still_exists() {
-    for (module, _) in DATA_ROOT_MODULES {
-        assert!(source_dir().join(module).is_file(), "{module} is listed but gone");
-    }
+fn every_listed_data_root_module_still_makes_a_raw_call() {
+    let stale = stale_data_root_modules(DATA_ROOT_MODULES, |module| {
+        std::fs::read_to_string(source_dir().join(module)).ok()
+    });
+    assert!(
+        stale.is_empty(),
+        "remove these from DATA_ROOT_MODULES:\n{}",
+        stale.join("\n")
+    );
+}
+
+#[test]
+fn the_stale_check_flags_a_listed_module_without_raw_calls() {
+    // Planted modules: one that still reads a file, one whose only filesystem
+    // mentions are a comment and an accessor on metadata already read, and
+    // one whose file is gone.
+    let modules = [
+        ("reads.rs", "still reads"),
+        ("no_calls.rs", "reads nothing now"),
+        ("gone.rs", "deleted"),
+    ];
+    let stale = stale_data_root_modules(&modules, |module| match module {
+        "reads.rs" => Some("let text = std::fs::read_to_string(path)?;".to_owned()),
+        "no_calls.rs" => Some(
+            "// std::fs::read(path) used to live here\nif metadata.is_dir() {}".to_owned(),
+        ),
+        _ => None,
+    });
+    assert_eq!(
+        stale,
+        [
+            "no_calls.rs is listed but makes no raw filesystem call",
+            "gone.rs is listed but gone",
+        ]
+    );
 }
 
 #[test]

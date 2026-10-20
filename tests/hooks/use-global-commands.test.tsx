@@ -24,6 +24,7 @@ import {
   setFocus,
 } from "../mocks/tauri";
 import { effectiveConfig } from "../helpers/config";
+import { CORE_NAMES } from "../helpers/coreNames";
 
 const ITEM: SectionItem = {
   hash: "image-hash",
@@ -326,14 +327,14 @@ describe("native Settings menu item", () => {
     render(<Harness />);
 
     await act(async () => {
-      fireBackendEvent("menu://open-settings");
+      fireBackendEvent(CORE_NAMES.menuEvents.openSettings);
     });
     expect(useAppShellStore.getState().utilitySurface).toBe("settings");
 
     useAppShellStore.setState({ utilitySurface: null });
     pushModal({});
     await act(async () => {
-      fireBackendEvent("menu://open-settings");
+      fireBackendEvent(CORE_NAMES.menuEvents.openSettings);
     });
     expect(useAppShellStore.getState().utilitySurface).toBeNull();
   });
@@ -347,14 +348,14 @@ describe("native About menu item", () => {
     render(<Harness />);
 
     await act(async () => {
-      fireBackendEvent("menu://open-about");
+      fireBackendEvent(CORE_NAMES.menuEvents.openAbout);
     });
     expect(useAppShellStore.getState().utilitySurface).toBe("about");
 
     useAppShellStore.setState({ utilitySurface: null });
     pushModal({});
     await act(async () => {
-      fireBackendEvent("menu://open-about");
+      fireBackendEvent(CORE_NAMES.menuEvents.openAbout);
     });
     expect(useAppShellStore.getState().utilitySurface).toBeNull();
   });

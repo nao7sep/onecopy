@@ -22,7 +22,7 @@ fn presentation_for(kind: &str) -> &'static str {
             "Preparation and enrichment stopped unexpectedly. Resume a row in Background work to restart processing.",
         "config-save-failed" | "state-save-failed" =>
             "OneCopy could not save an application setting. Your library files were not changed.",
-        "source-check-failed" | "watcher-failed" | "watcher-root-failed" | "watcher-recovery-failed" =>
+        "source-check-failed" | "watcher-failed" | "watcher-root-failed" | crate::watcher::WATCHER_RECOVERY_FAILED =>
             "OneCopy could not monitor a source folder. Check that the folder is available, then retry the scan.",
         "file-information-state-failed" | "background-work-state-failed" =>
             "OneCopy could not save background-work progress. Restart OneCopy before continuing.",
@@ -55,15 +55,15 @@ fn presentation_for(kind: &str) -> &'static str {
 /// The catalogue key `condition_message_key(kind)` names, so the sentence a
 /// notice or Issue shows for this condition follows the interface language
 /// instead of freezing at whatever language was current when it was recorded.
-/// Every key here is one `noticeConditions.ts` used to name the
-/// same conditions from the frontend side; the two lists must stay in step,
-/// checked by `every_condition_message_key_matches_the_frontend_list`.
+/// The frontend renders whatever key the record carries, so every key here
+/// must exist in every shipped catalogue, or the reader sees the bare key;
+/// `every_condition_message_key_exists_in_every_embedded_catalogue` checks it.
 pub(crate) fn condition_message_key(kind: &str) -> &'static str {
     match kind {
         "sleep-prevention-failed" => "notice.sleepPreventionFailed",
         "derived-worker-failed" => "notice.derivedWorkerFailed",
         "config-save-failed" | "state-save-failed" => "notice.configSaveFailed",
-        "source-check-failed" | "watcher-failed" | "watcher-root-failed" | "watcher-recovery-failed" =>
+        "source-check-failed" | "watcher-failed" | "watcher-root-failed" | crate::watcher::WATCHER_RECOVERY_FAILED =>
             "notice.sourceCheckFailed",
         "file-information-state-failed" | "background-work-state-failed" =>
             "notice.fileInformationStateFailed",

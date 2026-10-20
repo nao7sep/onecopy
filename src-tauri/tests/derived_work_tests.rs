@@ -201,7 +201,7 @@ fn transcription_attempt_owns_cached_publication_and_dependency_classification()
         TranscriptionAttemptOutcome::Unavailable { ref hash, .. } if hash == "uncached"
     ));
     let pending = derived_state::transcript_result(&conn, "uncached").unwrap();
-    assert_eq!(pending.status, "pending");
+    assert_eq!(pending.status, onecopy_lib::derived_state::PENDING);
     assert_eq!(pending.message, None);
     assert_eq!(starts.get(), 0);
 

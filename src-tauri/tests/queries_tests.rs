@@ -718,7 +718,7 @@ fn item_work_projection_preserves_completed_truth_without_current_tools() {
     assert!(photo.derived_work.faces.as_ref().unwrap().has_value);
     assert_eq!(photo.face_score, Some(0.75));
     assert_eq!(serde_json::to_value(&photo).unwrap()["faceScore"], 0.75);
-    assert_eq!(photo.derived_work.similarity.as_ref().unwrap().state, "pending");
+    assert_eq!(photo.derived_work.similarity.as_ref().unwrap().state, onecopy_lib::derived_state::PENDING);
     assert!(photo.derived_work.similarity.as_ref().unwrap().has_value);
 
     let video = queries::item_by_hash(&conn, "video", projection)
@@ -808,7 +808,7 @@ fn stale_preview_is_pending_everywhere_and_is_not_advertised_as_current() {
     .unwrap()
     .unwrap();
     assert!(!item.has_thumb);
-    assert_eq!(item.derived_work.preview.as_ref().unwrap().state, "pending");
+    assert_eq!(item.derived_work.preview.as_ref().unwrap().state, onecopy_lib::derived_state::PENDING);
     assert!(item.derived_work.preview.as_ref().unwrap().has_value);
     assert_eq!(item.derived_work.faces.as_ref().unwrap().state, "waiting");
     assert_eq!(item.derived_work.similarity.as_ref().unwrap().state, "waiting");

@@ -150,26 +150,26 @@ impl WorkClass {
             // item (see `preview_pending_predicates`).
             Self::Previews => ClassGate::Runnable,
             Self::Snapshots if !capabilities.video_snapshots_enabled => {
-                ClassGate::Disabled("enable-video-snapshots")
+                ClassGate::Disabled(ENABLE_VIDEO_SNAPSHOTS)
             }
-            Self::Snapshots if !capabilities.ffmpeg => ClassGate::Unavailable("waiting-for-ffmpeg"),
+            Self::Snapshots if !capabilities.ffmpeg => ClassGate::Unavailable(WAITING_FOR_FFMPEG),
             Self::Snapshots => ClassGate::Runnable,
             Self::Similarity if !capabilities.similarity_enabled => {
-                ClassGate::Disabled("enable-similarity")
+                ClassGate::Disabled(ENABLE_SIMILARITY)
             }
             Self::Similarity => ClassGate::Runnable,
-            Self::Faces if !capabilities.face_enabled => ClassGate::Disabled("enable-face-scoring"),
+            Self::Faces if !capabilities.face_enabled => ClassGate::Disabled(ENABLE_FACE_SCORING),
             Self::Faces if !capabilities.faces_runnable() => {
                 ClassGate::Unavailable(face_unavailable_reason(capabilities))
             }
             Self::Faces => ClassGate::Runnable,
             Self::VideoTranscripts => transcription(
                 capabilities.video_transcription_enabled,
-                "enable-video-transcription",
+                ENABLE_VIDEO_TRANSCRIPTION,
             ),
             Self::AudioTranscripts => transcription(
                 capabilities.audio_transcription_enabled,
-                "enable-audio-transcription",
+                ENABLE_AUDIO_TRANSCRIPTION,
             ),
         }
     }
@@ -291,7 +291,35 @@ impl WorkCapabilities {
     }
 }
 
+// The reason codes a class or item carries when its work is held back. The
+// interface names each condition in the reader's language, so it keys on
+// these codes rather than on prose.
 pub const UNSUPPORTED_ACCELERATION: &str = "unsupported-acceleration";
+pub(crate) const WAITING_FOR_FFMPEG: &str = "waiting-for-ffmpeg";
+pub(crate) const WAITING_FOR_FACE_MODELS: &str = "waiting-for-face-models";
+pub(crate) const WAITING_FOR_TRANSCRIPTION_MODEL: &str = "waiting-for-transcription-model";
+pub(crate) const WAITING_FOR_INDEXING: &str = "waiting-for-indexing";
+pub(crate) const RECHECK_SECTION: &str = "recheck-section";
+pub(crate) const ENABLE_VIDEO_SNAPSHOTS: &str = "enable-video-snapshots";
+pub(crate) const ENABLE_SIMILARITY: &str = "enable-similarity";
+pub(crate) const ENABLE_FACE_SCORING: &str = "enable-face-scoring";
+pub(crate) const ENABLE_VIDEO_TRANSCRIPTION: &str = "enable-video-transcription";
+pub(crate) const ENABLE_AUDIO_TRANSCRIPTION: &str = "enable-audio-transcription";
+/// Every reason code above, for the check that the interface can name each.
+#[cfg(test)]
+pub(crate) const WORK_REASONS: [&str; 11] = [
+    UNSUPPORTED_ACCELERATION,
+    WAITING_FOR_FFMPEG,
+    WAITING_FOR_FACE_MODELS,
+    WAITING_FOR_TRANSCRIPTION_MODEL,
+    WAITING_FOR_INDEXING,
+    RECHECK_SECTION,
+    ENABLE_VIDEO_SNAPSHOTS,
+    ENABLE_SIMILARITY,
+    ENABLE_FACE_SCORING,
+    ENABLE_VIDEO_TRANSCRIPTION,
+    ENABLE_AUDIO_TRANSCRIPTION,
+];
 
 // A saved backend this binary does not offer is named first: installing a
 // missing tool would not make that engine runnable.
@@ -299,7 +327,7 @@ fn face_unavailable_reason(capabilities: WorkCapabilities) -> &'static str {
     if !capabilities.face_acceleration {
         UNSUPPORTED_ACCELERATION
     } else {
-        "waiting-for-face-models"
+        WAITING_FOR_FACE_MODELS
     }
 }
 
@@ -413,7 +441,7 @@ pub(crate) fn work_debts(
             runnable: image_previews,
             blocked,
             failed: preview_failures,
-            reason: (blocked > 0).then_some("waiting-for-ffmpeg"),
+            reason: (blocked > 0).then_some(WAITING_FOR_FFMPEG),
             ..WorkDebt::default()
         }
     };
@@ -461,6 +489,9 @@ pub const TRANSCRIPT_ERROR: &str = "transcription-error";
 pub const VIDEO_POSTER_ERROR: &str = "video-poster-error";
 pub const VIDEO_STRIP_ERROR: &str = "video-strip-error";
 
+/// Work, an item state or a transcript that is still owed: nothing has
+/// settled it yet.
+pub const PENDING: &str = "pending";
 pub const READY: &str = "ready";
 pub const READY_TEXT: &str = "ready-text";
 pub const READY_EMPTY: &str = "ready-empty";
@@ -476,9 +507,9 @@ fn transcript_unavailable_reason(capabilities: WorkCapabilities) -> &'static str
     if !capabilities.transcription_acceleration {
         UNSUPPORTED_ACCELERATION
     } else if capabilities.ffmpeg && !capabilities.transcription_model {
-        "waiting-for-transcription-model"
+        WAITING_FOR_TRANSCRIPTION_MODEL
     } else {
-        "waiting-for-ffmpeg"
+        WAITING_FOR_FFMPEG
     }
 }
 
@@ -533,13 +564,13 @@ pub(crate) fn item_work_states(
     similarity_dirty: bool,
 ) -> ItemWorkStates {
     let media = matches!(facts.kind, "image" | "video");
-    let waiting_for_ffmpeg = || item_state("unavailable", false, Some("waiting-for-ffmpeg"));
+    let waiting_for_ffmpeg = || item_state("unavailable", false, Some(WAITING_FOR_FFMPEG));
     let preview = media.then(|| match (facts.derive_outcome, facts.derived_at) {
         (Some(FAILED), _) => item_state("failed", false, Some("Preview generation failed")),
         (Some(_), _) if !capabilities.ffmpeg => waiting_for_ffmpeg(),
         (None, None) if facts.kind == "video" && !capabilities.ffmpeg => waiting_for_ffmpeg(),
-        (Some(_), _) | (None, None) => item_state("pending", false, None),
-        (None, Some(_)) if facts.derived_version < DERIVE_VERSION => item_state("pending", true, None),
+        (Some(_), _) | (None, None) => item_state(PENDING, false, None),
+        (None, Some(_)) if facts.derived_version < DERIVE_VERSION => item_state(PENDING, true, None),
         (None, Some(_)) => item_state("ready", true, None),
     });
     let preview_ready = preview.as_ref().is_some_and(|state| state.state == "ready");
@@ -553,7 +584,7 @@ pub(crate) fn item_work_states(
         ClassGate::Runnable if !class.prerequisite().holds(preview_ready, duration_known) => {
             class.prerequisite().unmet(preview_failed, has_value)
         }
-        ClassGate::Runnable => item_state("pending", has_value, None),
+        ClassGate::Runnable => item_state(PENDING, has_value, None),
     };
 
     let snapshots = (facts.kind == "video").then(|| {
@@ -569,7 +600,7 @@ pub(crate) fn item_work_states(
     let similarity = (facts.kind == "image").then(|| {
         let has_value = facts.similar_group_id.is_some();
         match gated(WorkClass::Similarity, has_value) {
-            pending if pending.state == "pending" && !similarity_dirty => {
+            pending if pending.state == PENDING && !similarity_dirty => {
                 item_state("ready", has_value, None)
             }
             state => state,
@@ -1025,7 +1056,7 @@ pub fn transcript_result(conn: &Connection, hash: &str) -> Result<TranscriptResu
         .unwrap_or(false);
     if !failed {
         return Ok(TranscriptResult {
-            status: "pending",
+            status: PENDING,
             text: None,
             message: None,
         });

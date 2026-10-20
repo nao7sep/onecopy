@@ -1459,7 +1459,7 @@ fn a_failed_copy_keeps_its_row_and_records_an_issue() {
     let issues: i64 = f
         .conn
         .query_row(
-            "SELECT COUNT(*) FROM active_issues WHERE kind = 'delete-error'",
+            &format!("SELECT COUNT(*) FROM active_issues WHERE kind = '{DELETE_ERROR}'"),
             [],
             |r| r.get(0),
         )
@@ -1632,7 +1632,7 @@ fn destination_write_failure_stops_the_unstarted_remainder_and_records_an_issue(
     let issues: i64 = f
         .conn
         .query_row(
-            "SELECT COUNT(*) FROM active_issues WHERE kind = 'copy-error'",
+            &format!("SELECT COUNT(*) FROM active_issues WHERE kind = '{COPY_ERROR}'"),
             [],
             |row| row.get(0),
         )
@@ -1957,7 +1957,7 @@ fn move_skips_a_changed_copy_and_never_destroys_the_unchanged_one() {
         assert_eq!(outcome.post_action.deleted_files, 1);
         let issues: Vec<String> = f
             .conn
-            .prepare("SELECT path FROM active_issues WHERE kind = 'copy-error'")
+            .prepare(&format!("SELECT path FROM active_issues WHERE kind = '{COPY_ERROR}'"))
             .unwrap()
             .query_map([], |row| row.get(0))
             .unwrap()
@@ -2513,7 +2513,7 @@ fn move_keeps_a_later_changed_copy_and_all_its_companions() {
         assert_eq!(outcome.exported, 2);
         assert_eq!(outcome.post_action.deleted_files, 2);
         let issues: i64 = f.conn.query_row(
-            "SELECT COUNT(*) FROM active_issues WHERE kind = 'copy-error' AND path = ?1",
+            &format!("SELECT COUNT(*) FROM active_issues WHERE kind = '{COPY_ERROR}' AND path = ?1"),
             [f.root.join("b/r.jpg").to_string_lossy().as_ref()],
             |row| row.get(0),
         ).unwrap();
@@ -2559,10 +2559,10 @@ fn move_keeps_a_family_replaced_after_main_publication() {
             assert_eq!(outcome.post_action.deleted_files, 0);
             assert!(outcome.post_action.failed_files > 0, "{outcome:?}");
             let descriptor: String = f.conn.query_row(
-                "SELECT message_key FROM active_issues WHERE kind = 'copy-error' AND path = ?1",
+                &format!("SELECT message_key FROM active_issues WHERE kind = '{COPY_ERROR}' AND path = ?1"),
                 [f.root.join(changed_name).to_string_lossy().as_ref()], |row| row.get(0),
             ).unwrap();
-            assert_eq!(descriptor, "notice.copySourceChanged");
+            assert_eq!(descriptor, COPY_SOURCE_CHANGED);
         }
     }
 }
@@ -2733,7 +2733,7 @@ fn move_keeps_companions_of_an_unreadable_main_before_or_after_the_healthy_copy(
             assert_eq!(outcome.exported, 2);
             assert_eq!(outcome.post_action.deleted_files, 2);
             let issues: i64 = f.conn.query_row(
-                "SELECT COUNT(*) FROM active_issues WHERE kind = 'copy-error' AND path = ?1",
+                &format!("SELECT COUNT(*) FROM active_issues WHERE kind = '{COPY_ERROR}' AND path = ?1"),
                 [f.root.join(unreadable).join("r.jpg").to_string_lossy().as_ref()],
                 |row| row.get(0),
             ).unwrap();
@@ -2981,10 +2981,10 @@ fn move_refuses_a_replacement_while_the_final_source_removal_is_held() {
         assert_eq!(outcome.post_action.failed_files, 1);
         assert_eq!(outcome.post_action.unknown_files, 0);
         let descriptor: String = f.conn.query_row(
-            "SELECT message_key FROM active_issues WHERE kind = 'copy-error' AND path = ?1",
+            &format!("SELECT message_key FROM active_issues WHERE kind = '{COPY_ERROR}' AND path = ?1"),
             [source.to_string_lossy().as_ref()], |row| row.get(0),
         ).unwrap();
-        assert_eq!(descriptor, "notice.copySourceChanged");
+        assert_eq!(descriptor, COPY_SOURCE_CHANGED);
     }
 }
 
@@ -3250,7 +3250,7 @@ fn copy_uses_an_available_duplicate_while_move_requires_every_copy() {
     assert_eq!(result.exported, 1);
     assert!(second.exists());
     assert_eq!(std::fs::read(dest.join("a.jpg")).unwrap(), b"same");
-    assert_eq!(f.conn.query_row("SELECT count(*) FROM active_issues WHERE kind = 'copy-error'", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    assert_eq!(f.conn.query_row(&format!("SELECT count(*) FROM active_issues WHERE kind = '{COPY_ERROR}'"), [], |row| row.get::<_, i64>(0)).unwrap(), 0);
     let refused = delete_batch(&f.conn, &f.app_root, &f.cache, &items, DeleteMode::Trash, &|| false, |_| {});
     assert!(refused.is_err());
     assert!(second.exists());
@@ -3289,7 +3289,7 @@ fn a_move_whose_destination_flush_fails_keeps_its_source() {
     assert_eq!(outcome.post_action.deleted_files, 0);
     assert_eq!(std::fs::read(f.root.join("photo.jpg")).unwrap(), b"image-bytes");
     assert_eq!(row_state(&f, "photo.jpg"), Some(0));
-    assert_eq!(open_issue_kinds(&f, &target), vec!["copy-error".to_string()]);
+    assert_eq!(open_issue_kinds(&f, &target), vec![COPY_ERROR.to_string()]);
     volume.fail();
     assert!(volume.wait_until_settled(SETTLE));
     assert!(private_leftovers(&dest).is_empty(), "{:?}", private_leftovers(&dest));
@@ -3444,7 +3444,7 @@ windows_test! {
         assert_eq!(outcome.error, None);
         assert_eq!((outcome.deleted_files, outcome.failed_files), (1, 1));
         let stored = onecopy_lib::winpath::for_fs(&held_path).into_owned();
-        assert_eq!(open_issue_kinds(&f, &stored), ["delete-error"]);
+        assert_eq!(open_issue_kinds(&f, &stored), [DELETE_ERROR]);
         assert_eq!(
             f.conn
                 .query_row(
@@ -3498,7 +3498,7 @@ windows_test! {
         assert!(private_leftovers(&dest).is_empty(), "{:?}", private_leftovers(&dest));
         assert_eq!(
             open_issue_kinds(&f, &onecopy_lib::winpath::for_fs(&held_path)),
-            ["copy-error"]
+            [COPY_ERROR]
         );
         drop(held);
         assert_eq!(std::fs::read(&held_path).unwrap(), b"held-image", "the held source is untouched");

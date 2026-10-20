@@ -434,6 +434,40 @@ fn observe_normal(window: &Window<Wry>, state: &PlacementState) {
     }
 }
 
+/// The windows whose placement survives a relaunch, each with its own record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PlacedWindow {
+    Main,
+    Preview,
+    Records,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PlacementAction {
+    /// Update the in-memory normal rectangle; nothing is written.
+    ObserveNormal,
+    /// Choose the final mode for the next launch.
+    CaptureAtClose,
+}
+
+/// Which placement record a window event updates, and how. Every placed
+/// window observes both moves and resizes, because close cannot recover the
+/// normal rectangle that preceded a maximization.
+fn placement_step(label: &str, event: &WindowEvent) -> Option<(PlacedWindow, PlacementAction)> {
+    let action = match event {
+        WindowEvent::Moved(_) | WindowEvent::Resized(_) => PlacementAction::ObserveNormal,
+        WindowEvent::CloseRequested { .. } => PlacementAction::CaptureAtClose,
+        _ => return None,
+    };
+    let window = match label {
+        "main" => PlacedWindow::Main,
+        "preview" => PlacedWindow::Preview,
+        crate::records_window::LABEL => PlacedWindow::Records,
+        _ => return None,
+    };
+    Some((window, action))
+}
+
 /// Keep a complete normal rectangle in memory so maximizing after a move or
 /// resize cannot lose it. Native facts are sampled together on the event
 /// thread; separate event payloads must not be merged into a rectangle.
@@ -447,20 +481,20 @@ pub(crate) fn on_window_event(
     preview_state: &PlacementState,
     records_state: &PlacementState,
 ) {
-    match event {
-        WindowEvent::Moved(_) | WindowEvent::Resized(_) => match window.label() {
-            "main" => observe_normal(window, main_state),
-            "preview" => observe_normal(window, preview_state),
-            crate::records_window::LABEL => observe_normal(window, records_state),
-            _ => {}
-        },
-        WindowEvent::CloseRequested { .. } => match window.label() {
-            "main" => capture(window, main_state),
-            "preview" => capture_preview(window, preview_state),
-            crate::records_window::LABEL => capture(window, records_state),
-            _ => {}
-        },
-        _ => {}
+    let Some((placed, action)) = placement_step(window.label(), event) else {
+        return;
+    };
+    let state = match placed {
+        PlacedWindow::Main => main_state,
+        PlacedWindow::Preview => preview_state,
+        PlacedWindow::Records => records_state,
+    };
+    match (action, placed) {
+        (PlacementAction::ObserveNormal, _) => observe_normal(window, state),
+        (PlacementAction::CaptureAtClose, PlacedWindow::Preview) => capture_preview(window, state),
+        (PlacementAction::CaptureAtClose, PlacedWindow::Main | PlacedWindow::Records) => {
+            capture(window, state)
+        }
     }
 }
 
@@ -514,9 +548,11 @@ pub(crate) fn save_preview(state: &PlacementState) {
 
 #[cfg(test)]
 mod tests {
+    use tauri::{PhysicalPosition, PhysicalSize, WindowEvent};
+
     use super::{
-        closing_state_for, placement_after_close, placement_after_observation, ClosingState,
-        NormalRectangle, Placement,
+        closing_state_for, placement_after_close, placement_after_observation, placement_step,
+        ClosingState, NormalRectangle, Placement, PlacedWindow, PlacementAction,
     };
 
     const OLD: NormalRectangle = NormalRectangle {
@@ -596,6 +632,36 @@ mod tests {
                     closing_state_for(minimized, fullscreen, comparison, maximized, LATEST);
                 assert_eq!(placement_after_observation(previous, observed), previous);
             }
+        }
+    }
+
+    #[test]
+    fn every_placed_window_observes_both_moves_and_resizes_into_its_own_record() {
+        let moved = WindowEvent::Moved(PhysicalPosition::new(-900, 70));
+        let resized = WindowEvent::Resized(PhysicalSize::new(1000, 750));
+        for (label, placed) in [
+            ("main", PlacedWindow::Main),
+            ("preview", PlacedWindow::Preview),
+            (crate::records_window::LABEL, PlacedWindow::Records),
+        ] {
+            for event in [&moved, &resized] {
+                assert_eq!(
+                    placement_step(label, event),
+                    Some((placed, PlacementAction::ObserveNormal)),
+                    "{label} {event:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn transient_windows_and_unrelated_events_touch_no_placement() {
+        let moved = WindowEvent::Moved(PhysicalPosition::new(0, 0));
+        for label in ["fullscreen-view", "comparison-1", "identify-1-1"] {
+            assert_eq!(placement_step(label, &moved), None, "{label}");
+        }
+        for event in [WindowEvent::Focused(true), WindowEvent::Destroyed] {
+            assert_eq!(placement_step("main", &event), None, "{event:?}");
         }
     }
 

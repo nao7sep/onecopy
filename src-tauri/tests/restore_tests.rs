@@ -558,7 +558,7 @@ fn a_folder_that_became_a_link_is_refused_and_never_followed() {
     let outcome = f.restore(&[id]);
     assert_eq!(outcome.failed, 1);
     assert!(std::fs::read_dir(&elsewhere).unwrap().next().is_none(), "nothing went through the link");
-    assert_eq!(f.issue_keys(), [(RESTORE_ERROR.to_string(), "notice.restoreFolderBlocked".to_string())]);
+    assert_eq!(f.issue_keys(), [(RESTORE_ERROR.to_string(), NOTICE_FOLDER_BLOCKED.to_string())]);
 }
 
 windows_test! {
@@ -580,7 +580,7 @@ windows_test! {
         let outcome = f.restore(&[id]);
         assert_eq!(outcome.failed, 1);
         assert!(std::fs::read_dir(&elsewhere).unwrap().next().is_none(), "nothing went through the junction");
-        assert_eq!(f.issue_keys(), [(RESTORE_ERROR.to_string(), "notice.restoreFolderBlocked".to_string())]);
+        assert_eq!(f.issue_keys(), [(RESTORE_ERROR.to_string(), NOTICE_FOLDER_BLOCKED.to_string())]);
     }
 }
 
@@ -625,7 +625,7 @@ fn a_stored_file_changed_after_the_review_is_refused() {
     let outcome = f.execute(&plan);
     assert_eq!(outcome.failed, 1);
     assert!(!f.root.join("a.jpg").exists());
-    assert_eq!(f.issue_keys(), [(RESTORE_ERROR.to_string(), "notice.restoreChanged".to_string())]);
+    assert_eq!(f.issue_keys(), [(RESTORE_ERROR.to_string(), NOTICE_CHANGED.to_string())]);
 }
 
 #[test]
@@ -641,7 +641,7 @@ fn a_path_occupied_after_the_review_fails_that_file_and_is_never_renamed_silentl
     assert_eq!(outcome.failed, 1);
     assert_eq!(std::fs::read(f.root.join("a.jpg")).unwrap(), b"arrived meanwhile");
     assert!(!f.root.join("a 2.jpg").exists());
-    assert_eq!(f.issue_keys(), [(RESTORE_ERROR.to_string(), "notice.restoreOccupied".to_string())]);
+    assert_eq!(f.issue_keys(), [(RESTORE_ERROR.to_string(), NOTICE_OCCUPIED.to_string())]);
 }
 
 #[test]
@@ -653,7 +653,7 @@ fn a_stored_file_taken_by_someone_else_fails_as_missing() {
     std::fs::rename(f.root.join(TRASH_DIR_NAME).join(&id), f.dir.path().join("taken.jpg")).unwrap();
     let outcome = f.execute(&plan);
     assert_eq!(outcome.failed, 1);
-    assert_eq!(f.issue_keys(), [(RESTORE_ERROR.to_string(), "notice.restoreMissing".to_string())]);
+    assert_eq!(f.issue_keys(), [(RESTORE_ERROR.to_string(), NOTICE_MISSING.to_string())]);
 }
 
 #[test]
@@ -678,7 +678,7 @@ fn a_folder_that_refuses_writes_fails_its_file_and_others_continue() {
     std::fs::set_permissions(f.root.join("locked"), std::fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!((outcome.failed, outcome.restored.len()), (1, 1));
     assert!(outcome.error.is_none(), "one folder's refusal does not stop the rest");
-    assert_eq!(f.issue_keys(), [(RESTORE_ERROR.to_string(), "notice.restoreFailed".to_string())]);
+    assert_eq!(f.issue_keys(), [(RESTORE_ERROR.to_string(), NOTICE_FAILED.to_string())]);
 }
 
 #[test]
@@ -840,7 +840,7 @@ fn restore_with_rename_given_up_on(label: &str, land: bool) {
     assert!(outcome.error.is_some());
     assert_eq!(
         f.issue_keys(),
-        [(RESTORE_OUTCOME_UNKNOWN.to_string(), "notice.restoreOutcomeUnknown".to_string())]
+        [(RESTORE_OUTCOME_UNKNOWN.to_string(), NOTICE_OUTCOME_UNKNOWN.to_string())]
     );
     if land {
         volume.release();
@@ -888,7 +888,7 @@ fn a_drive_that_stops_answering_before_the_move_says_the_file_is_still_in_delete
     assert!(outcome.error.is_some());
     assert_eq!(
         f.issue_keys(),
-        [(RESTORE_ERROR.to_string(), "notice.restoreFailed".to_string())]
+        [(RESTORE_ERROR.to_string(), NOTICE_FAILED.to_string())]
     );
     assert_eq!(list_root(&f.root, &f.data).unwrap().entries.len(), 2, "nothing moved");
 }

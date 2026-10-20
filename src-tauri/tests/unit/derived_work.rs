@@ -103,7 +103,7 @@ fn requested_and_automatic_runs_publish_completion_the_same_way() {
         assert_eq!(
             report_event(&report),
             Some((
-                "transcribe://done",
+                TRANSCRIBE_DONE,
                 serde_json::json!({ "hash": "exact", "text": "hello", "replacement": replacement })
             ))
         );
@@ -121,7 +121,7 @@ fn cancelled_and_failed_runs_reproject_the_item_for_every_caller() {
             &TranscriptionAttemptOutcome::Cancelled { hash: "exact".to_string() },
         );
         assert_eq!(cancelled.item_hash.as_deref(), Some("exact"));
-        assert_eq!(report_event(&cancelled).unwrap().0, "transcribe://cancelled");
+        assert_eq!(report_event(&cancelled).unwrap().0, TRANSCRIBE_CANCELLED);
 
         let failed = transcription_report(
             run,
@@ -133,7 +133,7 @@ fn cancelled_and_failed_runs_reproject_the_item_for_every_caller() {
         );
         assert_eq!(failed.item_hash.as_deref(), Some("exact"));
         let (event, payload) = report_event(&failed).unwrap();
-        assert_eq!(event, "transcribe://error");
+        assert_eq!(event, TRANSCRIBE_ERROR);
         assert_eq!(payload["hash"], "exact");
         assert_eq!(payload["message"], "broken");
     }
@@ -154,7 +154,7 @@ fn only_a_requested_run_reports_a_missing_tool_or_a_pause_to_its_requester() {
     assert_eq!(automatic.item_hash.as_deref(), Some("exact"));
     let requested =
         transcription_report(TranscriptionRun::Requested { replacement: false }, &unavailable);
-    assert_eq!(report_event(&requested).unwrap().0, "transcribe://error");
+    assert_eq!(report_event(&requested).unwrap().0, TRANSCRIBE_ERROR);
 
     for run in [
         TranscriptionRun::Automatic,
@@ -260,7 +260,7 @@ fn a_model_load_failure_keeps_transcription_retryable_and_coalesces_one_class_is
     assert_eq!(automatic.pause_message.as_deref(), Some(error.as_str()));
     assert!(automatic.event.is_none(), "no per-file failure event for automatic work");
     let requested = transcription_report(TranscriptionRun::Requested { replacement: false }, &outcome);
-    assert_eq!(requested.event.unwrap().0, "transcribe://error");
+    assert_eq!(requested.event.unwrap().0, TRANSCRIBE_ERROR);
     let paused = crate::derived_runtime::changed_pause_classes(0, Some(WorkClass::VideoTranscripts.id()), true).unwrap();
     assert_eq!(paused & WorkClass::VideoTranscripts.bit(), WorkClass::VideoTranscripts.bit());
     assert_eq!(paused & WorkClass::Similarity.bit(), 0);
