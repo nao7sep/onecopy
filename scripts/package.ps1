@@ -70,6 +70,6 @@ Copy-Item $Setups[0].FullName "artifacts/$AppName-$Version-setup.exe"
 if (-not (Test-Path -PathType Leaf $PortableExecutable)) {
     throw "tauri build did not produce the portable onecopy.exe"
 }
-Compress-Archive -Path "src-tauri/target/release/onecopy.exe", "LICENSE", "THIRD_PARTY_NOTICES" -DestinationPath "artifacts/$AppName-$Version-win.zip" -Force
+Compress-Archive -Path "src-tauri/target/release/onecopy.exe", "LICENSE" -DestinationPath "artifacts/$AppName-$Version-win.zip" -Force
 
 Get-ChildItem artifacts

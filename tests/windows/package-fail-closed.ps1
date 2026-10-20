@@ -69,7 +69,37 @@ try {
     Invoke-PackageExpectFailure
     Assert-StaleOutputsRemoved
 
-    Write-Host "Windows package failure handling passed."
+    # A build that succeeds yields the installer and a portable zip that
+    # carries the application licence beside the executable.
+    Copy-Item (Join-Path $Repo "LICENSE") (Join-Path $Sandbox "LICENSE")
+    Write-Command -Path $FakeNode -Lines @("@echo off", "echo 0.1.0", "exit /b 0")
+    Write-Command -Path $FakeTauri -Lines @(
+        "@echo off",
+        "mkdir src-tauri\target\release\bundle\nsis 2>nul",
+        "echo setup> src-tauri\target\release\bundle\nsis\OneCopy_0.1.0_x64-setup.exe",
+        "echo portable> src-tauri\target\release\onecopy.exe",
+        "exit /b 0"
+    )
+    & pwsh -NoProfile -NonInteractive -File (Join-Path $Sandbox "scripts/package.ps1") | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Package script failed for a successful build."
+    }
+    if (-not (Test-Path -PathType Leaf (Join-Path $Sandbox "artifacts/OneCopy-0.1.0-setup.exe"))) {
+        throw "Package script did not collect the setup.exe."
+    }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $Zip = [System.IO.Compression.ZipFile]::OpenRead((Join-Path $Sandbox "artifacts/OneCopy-0.1.0-win.zip"))
+    try {
+        $Entries = @($Zip.Entries | ForEach-Object { $_.FullName } | Sort-Object)
+    }
+    finally {
+        $Zip.Dispose()
+    }
+    if (($Entries -join ",") -ne "LICENSE,onecopy.exe") {
+        throw "Portable zip must hold onecopy.exe and LICENSE; found: $($Entries -join ', ')"
+    }
+
+    Write-Host "Windows package handling passed."
 }
 finally {
     $env:Path = $OriginalPath
