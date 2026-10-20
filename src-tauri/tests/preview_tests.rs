@@ -108,6 +108,29 @@ fn oversized_native_preview_retries_once_through_scaled_ffmpeg() {
     assert!(cache.preview("large").is_file());
 }
 
+/// The decoder reads the format from the bytes, so a BMP saved as `.jpg`
+/// decodes. Copying it would cache bytes the protocol labels WebP and a
+/// webview may not show; it must be re-encoded like any other format.
+#[test]
+fn a_small_original_whose_bytes_are_not_displayable_is_reencoded_despite_its_name() {
+    let dir = tempfile::Builder::new()
+        .prefix("onecopy-preview-misnamed-")
+        .tempdir()
+        .unwrap();
+    let src = dir.path().join("scan.jpg");
+    image::RgbImage::from_fn(200, 100, |x, y| image::Rgb([x as u8, y as u8, 0]))
+        .save_with_format(&src, image::ImageFormat::Bmp)
+        .unwrap();
+    let cache = CachePaths::new(dir.path().join("cache"));
+
+    generate_for_image(&src, "bmp00001", &cache, 320, 1600, None).unwrap();
+
+    let preview = std::fs::read(cache.preview("bmp00001")).unwrap();
+    assert_eq!(image::guess_format(&preview).unwrap(), image::ImageFormat::WebP);
+    let decoded = image::load_from_memory(&preview).unwrap();
+    assert_eq!((decoded.width(), decoded.height()), (200, 100));
+}
+
 #[test]
 fn small_images_are_never_upscaled_and_skip_the_reencode() {
     let dir = tempfile::Builder::new()

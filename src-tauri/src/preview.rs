@@ -308,17 +308,27 @@ fn derive_from_decoded(
     })
 }
 
-/// Formats the webview renders directly, making the preview byte-copy safe.
-/// HEIC/TIFF/AVIF and friends stay on the WebP encode path — load-bearing for
-/// the ffmpeg-decoded formats, since byte-copying a HEIC into the cache would
-/// hand the webview the one thing it cannot display.
+/// Whether the original's bytes are a format the webview renders directly,
+/// making the preview byte-copy safe. The content decides, not the name: the
+/// decoder guesses the format from the bytes, so a TIFF or BMP saved as
+/// `.jpg` decodes and would otherwise be copied into an entry the webview
+/// cannot show, and the serving protocol reports any unrecognised bytes as
+/// WebP. HEIC/TIFF/AVIF and friends stay on the WebP encode path — the
+/// webview cannot display them.
 fn displayable_as_is(src: &Path) -> bool {
-    let ext = src
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_lowercase())
-        .unwrap_or_default();
-    matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "webp" | "gif")
+    use std::io::Read;
+
+    // Enough for the longest signature among these formats (WebP's 12).
+    let mut head = Vec::with_capacity(16);
+    let read = crate::volume_io::open_read(src).and_then(|file| file.take(16).read_to_end(&mut head));
+    read.is_ok()
+        && matches!(
+            image::guess_format(&head),
+            Ok(image::ImageFormat::Jpeg
+                | image::ImageFormat::Png
+                | image::ImageFormat::WebP
+                | image::ImageFormat::Gif)
+        )
 }
 
 /// Atomic byte-copy into the cache (temp sibling + rename), the no-re-encode
