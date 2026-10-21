@@ -293,33 +293,29 @@ impl WorkCapabilities {
 
 // The reason codes a class or item carries when its work is held back. The
 // interface names each condition in the reader's language, so it keys on
-// these codes rather than on prose.
-pub const UNSUPPORTED_ACCELERATION: &str = "unsupported-acceleration";
-pub(crate) const WAITING_FOR_FFMPEG: &str = "waiting-for-ffmpeg";
-pub(crate) const WAITING_FOR_FACE_MODELS: &str = "waiting-for-face-models";
-pub(crate) const WAITING_FOR_TRANSCRIPTION_MODEL: &str = "waiting-for-transcription-model";
-pub(crate) const WAITING_FOR_INDEXING: &str = "waiting-for-indexing";
-pub(crate) const RECHECK_SECTION: &str = "recheck-section";
-pub(crate) const ENABLE_VIDEO_SNAPSHOTS: &str = "enable-video-snapshots";
-pub(crate) const ENABLE_SIMILARITY: &str = "enable-similarity";
-pub(crate) const ENABLE_FACE_SCORING: &str = "enable-face-scoring";
-pub(crate) const ENABLE_VIDEO_TRANSCRIPTION: &str = "enable-video-transcription";
-pub(crate) const ENABLE_AUDIO_TRANSCRIPTION: &str = "enable-audio-transcription";
-/// Every reason code above, for the check that the interface can name each.
-#[cfg(test)]
-pub(crate) const WORK_REASONS: [&str; 11] = [
-    UNSUPPORTED_ACCELERATION,
-    WAITING_FOR_FFMPEG,
-    WAITING_FOR_FACE_MODELS,
-    WAITING_FOR_TRANSCRIPTION_MODEL,
-    WAITING_FOR_INDEXING,
-    RECHECK_SECTION,
-    ENABLE_VIDEO_SNAPSHOTS,
-    ENABLE_SIMILARITY,
-    ENABLE_FACE_SCORING,
-    ENABLE_VIDEO_TRANSCRIPTION,
-    ENABLE_AUDIO_TRANSCRIPTION,
-];
+// these codes rather than on prose. Each is written once here; the macro also
+// lists them for the check that the interface can name every one.
+macro_rules! work_reasons {
+    ($($vis:vis $name:ident = $code:literal;)*) => {
+        $($vis const $name: &str = $code;)*
+        #[cfg(test)]
+        pub(crate) const WORK_REASONS: &[&str] = &[$($name),*];
+    };
+}
+
+work_reasons! {
+    pub UNSUPPORTED_ACCELERATION = "unsupported-acceleration";
+    pub(crate) WAITING_FOR_FFMPEG = "waiting-for-ffmpeg";
+    pub(crate) WAITING_FOR_FACE_MODELS = "waiting-for-face-models";
+    pub(crate) WAITING_FOR_TRANSCRIPTION_MODEL = "waiting-for-transcription-model";
+    pub(crate) WAITING_FOR_INDEXING = "waiting-for-indexing";
+    pub(crate) RECHECK_SECTION = "recheck-section";
+    pub(crate) ENABLE_VIDEO_SNAPSHOTS = "enable-video-snapshots";
+    pub(crate) ENABLE_SIMILARITY = "enable-similarity";
+    pub(crate) ENABLE_FACE_SCORING = "enable-face-scoring";
+    pub(crate) ENABLE_VIDEO_TRANSCRIPTION = "enable-video-transcription";
+    pub(crate) ENABLE_AUDIO_TRANSCRIPTION = "enable-audio-transcription";
+}
 
 // A saved backend this binary does not offer is named first: installing a
 // missing tool would not make that engine runnable.
