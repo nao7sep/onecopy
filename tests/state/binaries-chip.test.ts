@@ -10,7 +10,7 @@
 // models stay off the chip; their features surface the need at point of use.
 
 import { describe, expect, it } from "vitest";
-import { toolsChip, type DependencyState } from "../../src/state/binaries-store";
+import { runningToolOperation, toolsChip, type DependencyState } from "../../src/state/binaries-store";
 import { message } from "../../src/i18n/translate";
 import { inEnglish } from "../helpers/i18n";
 
@@ -111,5 +111,26 @@ describe("the footer's managed-tools chip", () => {
       const chip = toolsChip(null, [entry("ffmpeg", status)]);
       if (chip !== null) expect(inEnglish(chip.text)).not.toMatch(/\d+\.\d+/);
     }
+  });
+});
+
+// Closing Background work & tools never stops a running install or Check, so
+// the standing chip narrates either until it ends: an install first, ffmpeg's
+// ahead of a model's, then the set-wide Check.
+describe("the running managed-tool operation", () => {
+  const install = { progress: null, cancelling: false };
+
+  it("is ffmpeg's install, then any other install, then the Check, else none", () => {
+    const model = { progress: null, cancelling: true };
+    expect(runningToolOperation({ "whisper-large-v3-turbo": model, ffmpeg: install }, true)).toEqual({ install });
+    expect(runningToolOperation({ "whisper-large-v3-turbo": model }, true)).toEqual({ install: model });
+    expect(runningToolOperation({}, true)).toEqual({ check: true });
+    expect(runningToolOperation({}, false)).toBeNull();
+  });
+
+  it("outranks every standing state on the chip, neutral while it runs", () => {
+    const chip = toolsChip(message("binaries.checkingTools"), [entry("ffmpeg", "not-installed")]);
+    expect(chip).toEqual({ text: message("binaries.checkingTools"), role: "neutral" });
+    expect(inEnglish(chip!.text)).toBe("Checking managed tools…");
   });
 });

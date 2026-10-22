@@ -36,7 +36,6 @@ const SAME_AS_ENGLISH: Partial<Record<Language, readonly string[]>> = {
     "section.videos",
     "quarantine.ok",
     "binaries.build",
-    "binaries.title",
     "binaries.downloadSize",
     "about.version",
     "common.name",

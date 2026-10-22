@@ -640,7 +640,8 @@ export function installBinariesEventWiring(): Promise<void> {
  * registry outgrew ffmpeg, so the text must not read as if ffmpeg were the
  * only tool):
  *
- * - Installing: the live progress line, neutral.
+ * - Installing or checking: the live line, neutral. Closing the surface
+ *   never stops either, so this standing line shows it until it ends.
  * - ffmpeg absent: a WARNING (developer, 2026-08-17, overruling the earlier
  *   neutral: without it every video and every HEIC is a placeholder — that
  *   is a capability hole, not an FYI) with appealing, remedy-shaped copy.
@@ -655,8 +656,19 @@ export interface ToolsChip {
   role: "neutral" | "warning";
 }
 
-/** A live install line is itself the signal that one is running, so it is the
- * only thing this needs to be told about one. */
+/** The managed-tool operation the chip narrates while one runs: an install
+ * first (ffmpeg's ahead of a model's), then the set-wide Check. */
+export function runningToolOperation(
+  installing: Record<string, ManagedInstallActivity>,
+  checking: boolean,
+): { install: ManagedInstallActivity } | { check: true } | null {
+  const install = installing["ffmpeg"] ?? Object.values(installing)[0];
+  if (install !== undefined) return { install };
+  return checking ? { check: true } : null;
+}
+
+/** A live install or check line is itself the signal that one is running, so
+ * it is the only thing this needs to be told about one. */
 export function toolsChip(
   progress: Message | null,
   entries: DependencyState[],

@@ -36,6 +36,7 @@ import { Menu as MenuIcon, Minus, Plus, X } from "lucide-react";
 import { useWizardStore } from "./state/wizard-store";
 import { useIssuesStore } from "./state/issues-store";
 import {
+  runningToolOperation,
   toolsChip,
   useBinariesStore,
 } from "./state/binaries-store";
@@ -135,9 +136,10 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
   const presenceUnknown = useWizardStore((s) => s.presenceUnknown);
   const issuesTotal = useIssuesStore((s) => s.total);
   const binariesEntries = useBinariesStore((s) => s.entries);
-  // The chip narrates ffmpeg's own install only; a model download in flight
-  // is the modal's story.
-  const ffmpegProgress = useBinariesStore((s) => s.installing["ffmpeg"]);
+  // The chip narrates every running install and the set-wide Check, so work
+  // that continues after Background work & tools closes stays visible.
+  const toolInstalls = useBinariesStore((s) => s.installing);
+  const toolsChecking = useBinariesStore((s) => s.checking);
   const utilitySurface = useAppShellStore((s) => s.utilitySurface);
   const openUtility = useAppShellStore((s) => s.openUtility);
   const closeUtility = useAppShellStore((s) => s.closeUtility);
@@ -528,10 +530,13 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
           {/* The managed-tools chip (toolsChip owns the words and the
               loudness — see its rules); clicking always opens the modal. */}
           {(() => {
+            const running = runningToolOperation(toolInstalls, toolsChecking);
             const chip = toolsChip(
-              ffmpegProgress === undefined
+              running === null
                 ? null
-                : managedInstallActivityLine(ffmpegProgress, number, percent),
+                : "install" in running
+                  ? managedInstallActivityLine(running.install, number, percent)
+                  : message("binaries.checkingTools"),
               binariesEntries,
             );
             return chip !== null ? (
