@@ -389,7 +389,6 @@ impl Publisher {
     }
 
     fn error(&mut self, progress: &Progress, error: &str, sections: Option<Vec<SectionLocation>>) {
-        if let Some(trace) = &mut self.trace { trace.finish(crate::activity::ActivityState::Failed, None); }
         let started = progress.items_done.saturating_add(u64::from(
             progress.phase != Phase::Planning && progress.items_done < progress.items_total,
         ));
@@ -404,6 +403,14 @@ impl Publisher {
             false,
             Some(error.to_string()),
         );
+        self.error_with_summary(progress, error, summary, sections);
+    }
+
+    fn error_with_summary(&mut self, progress: &Progress, error: &str, summary: ResultSummary, sections: Option<Vec<SectionLocation>>) {
+        if let Some(trace) = &mut self.trace {
+            trace.finish(if summary.files_unknown > 0 { crate::activity::ActivityState::OutcomeUnknown }
+                else { crate::activity::ActivityState::Failed }, None);
+        }
         crate::failure_runtime::emit_or_record(
             &self.app,
             "mutation://error",
@@ -1059,6 +1066,7 @@ pub(crate) fn empty_trash(
     let mutation = begin_reported(app)?;
     let operation_id = mutation.id();
     let publisher = std::cell::RefCell::new(Publisher::new(app));
+    let unknown = std::cell::Cell::new(0);
     let progress = std::cell::RefCell::new(Progress {
         operation_id,
         kind: Kind::TrashEmpty,
@@ -1093,6 +1101,7 @@ pub(crate) fn empty_trash(
                 &plan_token,
                 &mutation.cancelled,
                 &|trash_progress| {
+                    unknown.set(trash_progress.unknown);
                     let next = Progress {
                         operation_id,
                         kind: Kind::TrashEmpty,
@@ -1168,7 +1177,7 @@ pub(crate) fn empty_trash(
                     terminal.files_total,
                     terminal.files_done,
                     terminal.failures,
-                    0,
+                    unknown.get(),
                     false,
                     None,
                 )),
@@ -1177,7 +1186,12 @@ pub(crate) fn empty_trash(
                 Some(Vec::new()),
             );
         }
-        Err(error) => publisher.borrow_mut().error(&progress.borrow(), error, Some(Vec::new())),
+        Err(error) => {
+            let latest = progress.borrow();
+            let summary = result_summary(1, u64::from(latest.phase != Phase::Planning), 0,
+                latest.files_total, latest.files_done, latest.failures, unknown.get(), false, Some(error.clone()));
+            publisher.borrow_mut().error_with_summary(&latest, error, summary, Some(Vec::new()));
+        }
     }
     result
 }

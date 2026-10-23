@@ -1425,3 +1425,68 @@ windows_test! {
         );
     }
 }
+
+#[test]
+fn empty_publishes_unknown_removal_before_stopping_and_keeps_its_manifest_through_late_settlement() {
+    use onecopy_lib::volume_io::{FakeStallingVolume, Op};
+    use std::{cell::RefCell, sync::atomic::AtomicBool, time::Duration};
+    for lands in [false, true] {
+        let f = fixture("empty-unknown-receipt");
+        let source = f.source.join("photo.jpg");
+        std::fs::write(&source, b"photo bytes").unwrap();
+        let record = trash_file(&source, &f.source, None, &ctx()).unwrap();
+        let stored = PathBuf::from(&record.stored_path);
+        let manifest = stored.parent().unwrap().join(MANIFEST_FILE_NAME);
+        let root = f.source.join(TRASH_DIR_NAME);
+        let token = reviewed_token(&root);
+        let volume = FakeStallingVolume::mount(&f.source, Duration::from_millis(100));
+        volume.stall(&[Op::Remove], Some(&stored));
+        let latest = RefCell::new(EmptyProgress::default());
+        let result = empty_root_with_progress(&root, &token, &AtomicBool::new(false),
+            &|progress| *latest.borrow_mut() = progress,
+            &|_, _| {
+                assert_eq!(latest.borrow().done, 1);
+                assert_eq!(latest.borrow().unknown, 1);
+                if lands { Err("Issues unavailable".into()) } else { Ok(()) }
+            });
+        let before_settlement = latest.into_inner();
+        assert!(result.is_err());
+        assert_eq!(before_settlement.total, 1);
+        assert_eq!(before_settlement.done, 1);
+        assert_eq!(before_settlement.failures, 1);
+        assert_eq!(before_settlement.unknown, 1);
+        assert_eq!(before_settlement.bytes_done, b"photo bytes".len() as u64);
+        assert!(manifest.exists());
+        assert!(stored.exists());
+        if lands { volume.release(); } else { volume.fail(); }
+        assert!(volume.wait_until_settled(Duration::from_secs(5)));
+        assert_eq!(stored.exists(), !lands);
+        assert!(manifest.exists(), "late settlement cannot discard recovery provenance");
+    }
+}
+
+#[test]
+fn empty_bookkeeping_failure_does_not_relabel_completed_files_as_failed_or_unknown() {
+    use onecopy_lib::volume_io::{FakeStallingVolume, Op};
+    use std::{cell::RefCell, sync::atomic::AtomicBool, time::Duration};
+    let f = fixture("empty-bookkeeping-receipt");
+    let source = f.source.join("photo.jpg");
+    std::fs::write(&source, b"photo bytes").unwrap();
+    let record = trash_file(&source, &f.source, None, &ctx()).unwrap();
+    let stored = PathBuf::from(&record.stored_path);
+    let manifest = stored.parent().unwrap().join(MANIFEST_FILE_NAME);
+    let root = f.source.join(TRASH_DIR_NAME);
+    let token = reviewed_token(&root);
+    let volume = FakeStallingVolume::mount(&f.source, Duration::from_millis(100));
+    volume.stall(&[Op::Remove], Some(&manifest));
+    let latest = RefCell::new(EmptyProgress::default());
+    let result = empty_root_with_progress(&root, &token, &AtomicBool::new(false),
+        &|progress| *latest.borrow_mut() = progress, &|_, _| Ok(()));
+    volume.fail();
+    assert!(volume.wait_until_settled(Duration::from_secs(5)));
+    assert!(result.is_err());
+    let latest = latest.into_inner();
+    assert_eq!((latest.done, latest.total, latest.failures, latest.unknown), (1, 1, 0, 0));
+    assert!(!stored.exists());
+    assert!(manifest.exists());
+}

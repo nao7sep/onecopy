@@ -1210,6 +1210,8 @@ pub struct EmptyProgress {
     pub bytes_done: u64,
     pub bytes_total: u64,
     pub failures: u64,
+    /// Attempted removals that may still settle on their volume worker.
+    pub unknown: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -1303,6 +1305,17 @@ pub fn empty_root_with_progress(
             continue;
         }
         let removed = volume_io::remove_file(&path);
+        if recoverable {
+            snapshot.done += 1;
+            snapshot.bytes_done = snapshot.bytes_done.saturating_add(bytes);
+            if let Err(error) = &removed {
+                snapshot.failures += 1;
+                snapshot.unknown += u64::from(volume_io::outcome_unknown(error));
+            }
+            // Physical outcomes survive a stopped volume or a subsequent
+            // failure to record the Issue. Neither makes this file unstarted.
+            progress(snapshot.clone());
+        }
         if recoverable || removed.is_err() {
             crate::records::trash_action(crate::records::TrashAction {
                 action: if removed.is_ok() { "removed" } else { "remove-failed" },
@@ -1318,7 +1331,6 @@ pub fn empty_root_with_progress(
             });
         }
         if let Err(error) = removed {
-            snapshot.failures += 1;
             record_failure(&path, &error.to_string())?;
             crate::logging::warn(
                 "trash entry removal failed",
@@ -1330,14 +1342,9 @@ pub fn empty_root_with_progress(
             // A volume that stopped answering ends the Empty here with its
             // partial totals; removal is idempotent, so emptying again is
             // safe once the drive answers.
-            if volume_io::wait_failure(&error).is_some() {
+            if volume_io::wait_failure(&error).is_some() || !recoverable {
                 return Err(error.to_string());
             }
-        }
-        if recoverable {
-            snapshot.done += 1;
-            snapshot.bytes_done = snapshot.bytes_done.saturating_add(bytes);
-            progress(snapshot.clone());
         }
     }
     for directory in directories {
