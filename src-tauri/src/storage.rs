@@ -512,7 +512,21 @@ fn register_volume_roots(config: Option<&JsonValue>) {
 /// a save installs a new snapshot whole, so every read that starts after a
 /// save sees it and work already running keeps the settings it started with.
 type HeldConfig = Option<(PathBuf, Arc<JsonValue>)>;
-static HELD_CONFIG: std::sync::Mutex<HeldConfig> = std::sync::Mutex::new(None);
+#[derive(Default)]
+struct ConfigStore {
+    held: std::sync::Mutex<HeldConfig>,
+    // Writers serialize their read/modify/publish sequence; snapshot readers
+    // never acquire this lock and keep the last committed Arc during I/O.
+    writer: std::sync::Mutex<()>,
+}
+static CONFIG: std::sync::LazyLock<ConfigStore> = std::sync::LazyLock::new(ConfigStore::default);
+
+impl ConfigStore {
+    fn read(&self, root: &Path) -> Result<(Arc<JsonValue>, Option<QuarantineRecord>), String> {
+        let mut held = self.held.lock().unwrap_or_else(|p| p.into_inner());
+        held_or_read(&mut held, root)
+    }
+}
 
 /// The held settings for `root`, reading and holding them first when another
 /// root or nothing is held, with the quarantine that read performed, if any.
@@ -535,10 +549,7 @@ fn held_or_read(held: &mut HeldConfig, root: &Path) -> Result<(Arc<JsonValue>, O
 /// the record for Main's `load_from_root` to report. Every later call returns
 /// the held snapshot; the file is not read again.
 pub fn config(root: &Path) -> Result<Arc<JsonValue>, String> {
-    let (effective, quarantined) = {
-        let mut held = HELD_CONFIG.lock().unwrap_or_else(|p| p.into_inner());
-        held_or_read(&mut held, root)?
-    };
+    let (effective, quarantined) = CONFIG.read(root)?;
     if let Some(record) = quarantined {
         PENDING_QUARANTINES
             .lock()
@@ -556,7 +567,7 @@ pub fn config(root: &Path) -> Result<Arc<JsonValue>, String> {
 /// stopping the launch belong to the lock owner's load; the built-ins answer
 /// until that load holds what it recovers.
 pub fn held_config(root: &Path) -> JsonValue {
-    let mut held = HELD_CONFIG.lock().unwrap_or_else(|p| p.into_inner());
+    let mut held = CONFIG.held.lock().unwrap_or_else(|p| p.into_inner());
     if let Some((held_root, effective)) = held.as_ref() {
         if held_root == root {
             return JsonValue::clone(effective);
@@ -586,34 +597,49 @@ pub struct SaveOutcome {
 /// built-in and nothing else (config-sets conventions), plus the
 /// interpretation zone always.
 pub fn save_config(root: &Path, changes: &JsonValue) -> Result<SaveOutcome, String> {
-    // records: config.json is durable user settings — managed text, recorded on
-    // every save (data-backup conventions).
-    let fields = changes
-        .as_object()
-        .ok_or_else(|| "settings changes must be a JSON object".to_string())?;
-    let mut held = HELD_CONFIG.lock().unwrap_or_else(|p| p.into_inner());
-    let (current, quarantined) = held_or_read(&mut held, root)?;
-    let mut effective = JsonValue::clone(&current);
-    let builtins = effective_config(None);
-    for (key, value) in fields {
-        let Some(builtin) = builtins.get(key) else { continue };
-        effective[key] = held_set(key, value, builtin).ok_or_else(|| format!("the {key} setting is not valid"))?;
-    }
-    let mut stored = serde_json::Map::new();
-    for (key, builtin) in builtins.as_object().expect("defaults are an object") {
-        if key.as_str() == INTERPRETATION_ZONE || !same_set(key, &effective[key.as_str()], builtin) {
-            stored.insert(key.clone(), effective[key.as_str()].clone());
-        } else {
-            // Held as the built-in it equals, so the settings read the same
-            // now as after the next launch (a reordered list included).
-            effective[key.as_str()] = builtin.clone();
+    CONFIG.save_with(root, changes, |stored| {
+        write_json_file(&root.join(CONFIG_FILE_NAME), stored, formats::CONFIG, true)
+    })
+}
+
+impl ConfigStore {
+    fn save_with(
+        &self,
+        root: &Path,
+        changes: &JsonValue,
+        publish: impl FnOnce(&JsonValue) -> Result<(), String>,
+    ) -> Result<SaveOutcome, String> {
+        // records: config.json is durable user settings — managed text, recorded on
+        // every save (data-backup conventions).
+        let fields = changes
+            .as_object()
+            .ok_or_else(|| "settings changes must be a JSON object".to_string())?;
+        let _writer = self.writer.lock().unwrap_or_else(|p| p.into_inner());
+        let (current, quarantined) = self.read(root)?;
+        let mut effective = JsonValue::clone(&current);
+        let builtins = effective_config(None);
+        for (key, value) in fields {
+            let Some(builtin) = builtins.get(key) else { continue };
+            effective[key] = held_set(key, value, builtin).ok_or_else(|| format!("the {key} setting is not valid"))?;
         }
+        let mut stored = serde_json::Map::new();
+        for (key, builtin) in builtins.as_object().expect("defaults are an object") {
+            if key.as_str() == INTERPRETATION_ZONE || !same_set(key, &effective[key.as_str()], builtin) {
+                stored.insert(key.clone(), effective[key.as_str()].clone());
+            } else {
+                // Held as the built-in it equals, so the settings read the same
+                // now as after the next launch (a reordered list included).
+                effective[key.as_str()] = builtin.clone();
+            }
+        }
+        publish(&JsonValue::Object(stored))?;
+        crate::sleep_prevention::configure(&effective);
+        // Register new roots before exposing them to snapshot readers.
+        register_volume_roots(Some(&effective));
+        *self.held.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some((root.to_path_buf(), Arc::new(effective.clone())));
+        Ok(SaveOutcome { effective, quarantined })
     }
-    write_json_file(&root.join(CONFIG_FILE_NAME), &JsonValue::Object(stored), formats::CONFIG, true)?;
-    *held = Some((root.to_path_buf(), Arc::new(effective.clone())));
-    crate::sleep_prevention::configure(&effective);
-    register_volume_roots(Some(&effective));
-    Ok(SaveOutcome { effective, quarantined })
 }
 
 /// Whether a set equals another as the set means it: ignored file names as a

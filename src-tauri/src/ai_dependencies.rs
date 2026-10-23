@@ -2,7 +2,6 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::binaries::BinaryStatus;
 use crate::binaries_manager::{self, DependencyKind};
 
 const FFMPEG: &str = "ffmpeg";
@@ -33,7 +32,7 @@ fn production_path(root: &Path, id: &str) -> Option<PathBuf> {
         // invocation problem only if that file cannot run.
         DependencyKind::Binary => path.is_file(),
         DependencyKind::Runtime | DependencyKind::Model => {
-            binaries_manager::state_of(root, spec).status != BinaryStatus::NotInstalled
+            binaries_manager::artifact_present(&path, spec)
         }
     };
     available.then_some(path)

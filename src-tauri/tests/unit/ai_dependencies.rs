@@ -36,3 +36,27 @@ fn absent_evidence_is_unknown_and_face_components_keep_independent_versions() {
     assert_eq!(face_model_with_versions(Some("a".repeat(64)), None).version,
         format!("{}+unknown", "a".repeat(64)));
 }
+
+#[test]
+fn runtime_model_presence_requires_exact_artifact_size_but_not_status_or_provenance() {
+    let root = tempfile::tempdir().unwrap();
+    let spec = binaries_manager::spec_of(ULTRAFACE).unwrap();
+    let path = binaries_manager::installed_path(root.path(), spec);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let expected = spec.pinned.as_ref().unwrap().bytes;
+    assert!(production_path(root.path(), ULTRAFACE).is_none());
+    let file = std::fs::File::create(&path).unwrap();
+    file.set_len(expected - 1).unwrap();
+    assert!(production_path(root.path(), ULTRAFACE).is_none());
+    file.set_len(expected).unwrap();
+    // A full installed model remains usable without check facts or a digest.
+    assert_eq!(production_path(root.path(), ULTRAFACE), Some(path.clone()));
+    assert_eq!(ModelObservation::before(&path).after_load(), None);
+    assert_eq!(binaries_manager::state_of(root.path(), spec).status, crate::binaries::BinaryStatus::InstalledUnchecked);
+    file.set_len(expected + 1).unwrap();
+    assert!(production_path(root.path(), ULTRAFACE).is_none());
+    drop(file);
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    assert!(production_path(root.path(), ULTRAFACE).is_none());
+}

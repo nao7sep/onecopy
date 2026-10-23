@@ -198,3 +198,53 @@ fn an_app_local_new_stage_uses_private_mode_and_failed_publication_preserves_the
     assert_eq!(std::fs::read(&target).unwrap(), b"protected bytes");
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
 }
+
+#[test]
+fn a_blocked_settings_publication_keeps_readers_on_the_committed_snapshot() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(ConfigStore::default());
+    let (original, _) = store.read(root.path()).unwrap();
+    let (publishing, ready) = std::sync::mpsc::channel();
+    let (release, blocked) = std::sync::mpsc::channel();
+    let writer_store = store.clone();
+    let writer_root = root.path().to_path_buf();
+    let writer = std::thread::spawn(move || {
+        writer_store.save_with(&writer_root, &serde_json::json!({ "theme": "dark" }), |stored| {
+            publishing.send(()).unwrap();
+            blocked.recv().unwrap();
+            write_json_file(&writer_root.join(CONFIG_FILE_NAME), stored, formats::CONFIG, false)
+        }).unwrap()
+    });
+    ready.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+
+    let next_store = store.clone();
+    let next_root = root.path().to_path_buf();
+    let next_writer = std::thread::spawn(move || {
+        next_store.save_with(&next_root, &serde_json::json!({ "soundEnabled": false }), |stored| {
+            write_json_file(&next_root.join(CONFIG_FILE_NAME), stored, formats::CONFIG, false)
+        }).unwrap()
+    });
+    let reader_store = store.clone();
+    let reader_root = root.path().to_path_buf();
+    let (read, reading) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || read.send(reader_store.read(&reader_root).unwrap().0).unwrap());
+    let during = reading.recv_timeout(std::time::Duration::from_secs(5));
+    // Release before assertions so a broken lock boundary cannot strand a worker.
+    release.send(()).unwrap();
+    let first = writer.join().unwrap();
+    let second = next_writer.join().unwrap();
+    reader.join().unwrap();
+    let during = during.expect("snapshot reads must finish while publication is still blocked");
+    assert!(Arc::ptr_eq(&during, &original));
+    assert_eq!(first.effective["theme"], "dark");
+    assert_eq!(second.effective["theme"], "dark", "the next writer must merge from committed settings");
+    assert_eq!(second.effective["soundEnabled"], false);
+    let committed = store.read(root.path()).unwrap().0;
+    assert_eq!(*committed, second.effective);
+    assert_eq!(original["theme"], "system", "an existing reader retains its original snapshot");
+    assert!(store.save_with(root.path(), &serde_json::json!({ "theme": "light" }), |_| Err("disk unavailable".into())).is_err());
+    assert!(Arc::ptr_eq(&committed, &store.read(root.path()).unwrap().0));
+    let persisted: JsonValue = serde_json::from_slice(&std::fs::read(root.path().join(CONFIG_FILE_NAME)).unwrap()).unwrap();
+    assert_eq!(persisted["theme"], "dark");
+    assert_eq!(persisted["soundEnabled"], false);
+}

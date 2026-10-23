@@ -931,7 +931,7 @@ async fn ensure_preview(
             || {
                 let data_root = paths::data_root()?;
                 let config = storage::config(&data_root)?;
-                derived_work::ensure_preview(&app, &data_root, Some(&config), &hash)
+                derived_work::ensure_preview(&app, &data_root, &config, &hash)
             },
             |result| {
                 json!({

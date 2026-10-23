@@ -1145,10 +1145,11 @@ pub struct DependencyState {
     pub label: String,
     pub kind: DependencyKind,
     pub status: BinaryStatus,
-    /// Read from the artifact on every status — the binary's own banner, the
-    /// sidecar beside it, or a model's verified-install identity. None on a
-    /// present entry means the version could not be read: not absent, and never
-    /// dressed up as up to date.
+    /// Model provenance is read from verified-install evidence. Successful
+    /// ffmpeg observations are cached against the executable's file version;
+    /// failed probes retry on an explicit status read. Windows build tags come
+    /// from a sidecar bound to that file version. None means unknown identity,
+    /// independently of whether the artifact is present.
     pub installed_version: Option<String>,
     pub facts: BinaryFacts,
     pub path: String,
@@ -1170,6 +1171,20 @@ pub struct DependencyState {
     pub download_bytes: Option<u64>,
 }
 
+/// Presence only: no status facts, identity-sidecar reads or executable probe.
+/// Model/runtime sizes refer to the installed artifact, not its download archive.
+pub(crate) fn artifact_present(path: &Path, spec: &DependencySpec) -> bool {
+    match spec.kind {
+        DependencyKind::Binary => binaries::is_usable_binary(path),
+        DependencyKind::Runtime | DependencyKind::Model => {
+            let expected = spec.pinned.as_ref().map(installed_bytes);
+            std::fs::metadata(path)
+                .map(|m| m.is_file() && Some(m.len()) == expected)
+                .unwrap_or(false)
+        }
+    }
+}
+
 /// One entry's live state; presence re-scanned from disk, never persisted.
 /// A model's presence check is size-exact — a truncated download that somehow
 /// reached the models dir reads not-installed. Identity is separate: a full-
@@ -1185,15 +1200,7 @@ pub fn state_of(root: &Path, spec: &DependencySpec) -> DependencyState {
     if let Some(pinned) = spec.pinned.as_ref() {
         facts.latest_known_version = Some(pin_version(pinned));
     }
-    let present = match spec.kind {
-        DependencyKind::Binary => binaries::is_usable_binary(&path),
-        DependencyKind::Runtime | DependencyKind::Model => {
-            let expected = spec.pinned.as_ref().map(installed_bytes);
-            std::fs::metadata(&path)
-                .map(|m| m.is_file() && Some(m.len()) == expected)
-                .unwrap_or(false)
-        }
-    };
+    let present = artifact_present(&path, spec);
     // Presence and identity stay separate: exact size rejects truncation, while
     // the colocated verified-install record says which digest was published.
     // Missing or malformed identity remains honestly unreadable.

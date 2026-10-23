@@ -259,20 +259,23 @@ impl Settings {
     }
 }
 
+/// Normalizes raw or partial inputs; live callers use the held snapshot converter.
 pub fn settings_from_config(config: Option<&serde_json::Value>, data_root: &Path) -> Settings {
     let effective = crate::storage::effective_config(config);
-    let config = Some(&effective);
-    let defaults = crate::storage::DefaultConfig::default();
-    let get = |key: &str| config.and_then(|c| c.get(key));
-    let transcription_dependencies = crate::ai_dependencies::production_transcription(data_root);
-    let score_faces = get("scoreFaces")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(defaults.score_faces);
-    let bool_of = |key: &str, fallback: bool| {
-        get(key)
-            .and_then(|value| value.as_bool())
-            .unwrap_or(fallback)
+    settings_from_effective_config(&effective, data_root)
+}
+
+/// Converts the validated snapshot held by storage without rebuilding defaults
+/// or revalidating user settings on every projection and media pass.
+pub fn settings_from_effective_config(effective: &serde_json::Value, data_root: &Path) -> Settings {
+    let config = Some(effective);
+    let get = |key: &str| effective.get(key);
+    let bool_of = |key: &str| {
+        get(key).and_then(serde_json::Value::as_bool)
+            .expect("held configuration contains validated boolean settings")
     };
+    let transcription_dependencies = crate::ai_dependencies::production_transcription(data_root);
+    let score_faces = bool_of("scoreFaces");
 
     Settings {
         data_root: data_root.to_path_buf(),
@@ -282,11 +285,8 @@ pub fn settings_from_config(config: Option<&serde_json::Value>, data_root: &Path
         thumb_edge: crate::preview::THUMBNAIL_EDGE_PX,
         preview_long_edge: crate::preview::PREVIEW_LONG_EDGE_PX,
         ffmpeg: transcription_dependencies.ffmpeg,
-        video_snapshots_enabled: bool_of("videoSnapshotsEnabled", defaults.video_snapshots_enabled),
-        similarity_enabled: bool_of(
-            "similarPhotoAnalysisEnabled",
-            defaults.similar_photo_analysis_enabled,
-        ),
+        video_snapshots_enabled: bool_of("videoSnapshotsEnabled"),
+        similarity_enabled: bool_of("similarPhotoAnalysisEnabled"),
         face_enabled: score_faces,
         face_models: score_faces
             .then(|| crate::ai_dependencies::production_face_scoring(data_root))
@@ -300,14 +300,8 @@ pub fn settings_from_config(config: Option<&serde_json::Value>, data_root: &Path
             config,
             crate::ai_acceleration::FACE_SCORING,
         ),
-        video_transcription_enabled: bool_of(
-            "videoTranscriptionEnabled",
-            defaults.video_transcription_enabled,
-        ),
-        audio_transcription_enabled: bool_of(
-            "audioTranscriptionEnabled",
-            defaults.audio_transcription_enabled,
-        ),
+        video_transcription_enabled: bool_of("videoTranscriptionEnabled"),
+        audio_transcription_enabled: bool_of("audioTranscriptionEnabled"),
         temp_dir: data_root.join(crate::binaries_manager::TEMP_DIR_NAME),
     }
 }
@@ -316,7 +310,7 @@ pub fn work_capabilities(
     data_root: &Path,
 ) -> Result<crate::derived_state::WorkCapabilities, String> {
     let config = crate::storage::config(data_root)?;
-    Ok(settings_from_config(Some(&config), data_root).capabilities())
+    Ok(settings_from_effective_config(&config, data_root).capabilities())
 }
 
 /// The work capabilities every item projection reads its preparation state
@@ -678,7 +672,7 @@ fn join_finished(workers: &mut Vec<JoinHandle<()>>) {
 pub fn ensure_preview(
     app: &AppHandle,
     data_root: &Path,
-    config: Option<&serde_json::Value>,
+    config: &serde_json::Value,
     hash: &str,
 ) -> Result<EnsurePreviewResult, String> {
     let (canonical_hash, coalesced) =
@@ -712,11 +706,11 @@ pub struct EnsurePreviewResult {
 fn ensure_preview_once(
     app: &AppHandle,
     data_root: &Path,
-    config: Option<&serde_json::Value>,
+    config: &serde_json::Value,
     hash: &str,
 ) -> Result<String, String> {
     let _active = crate::derived_runtime::begin_requested_preview(app, hash)?;
-    let settings = settings_from_config(config, data_root);
+    let settings = settings_from_effective_config(config, data_root);
     let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
     let cache = CachePaths::new(settings.cache_root.clone());
     let result = crate::preview::derive_one(
@@ -854,7 +848,7 @@ struct Pass {
 fn open_pass() -> Result<Pass, String> {
     let data_root = crate::paths::data_root()?;
     let config = crate::storage::config(&data_root)?;
-    let settings = settings_from_config(Some(&config), &data_root);
+    let settings = settings_from_effective_config(&config, &data_root);
     let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
     let cache = CachePaths::new(settings.cache_root.clone());
     let projection = crate::queries::ItemProjectionContext {
