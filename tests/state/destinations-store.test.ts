@@ -5,7 +5,7 @@
 // be exactly what the confirm changes.
 
 import { beforeEach, describe, expect, it } from "vitest";
-import { useDestinationsStore } from "../../src/state/destinations-store";
+import { useDestinationsStore, type DirListing } from "../../src/state/destinations-store";
 import { useItemsStore } from "../../src/state/items-store";
 import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import {
@@ -64,12 +64,12 @@ it("invalidates old visibility listings and removes a now-hidden destination", a
   const entry = (path: string) => ({ path, name: path.split("/").at(-1)!, hasChildren: false, isEmpty: false });
   useDestinationsStore.setState({ roots: ["/dest"], activePath: "/dest/.hidden", expanded: new Set(["/dest", "/dest/.hidden"]),
     children: { "/dest": [entry("/dest/.hidden"), entry("/dest/visible")] }, listing: {}, emptiness: {} });
-  let oldResolve!: (entries: ReturnType<typeof entry>[]) => void;
-  mockCommands({ list_subdirs: () => new Promise<ReturnType<typeof entry>[]>((resolve) => { oldResolve = resolve; }) });
+  let oldResolve!: (listing: DirListing) => void;
+  mockCommands({ list_subdirs: () => new Promise<DirListing>((resolve) => { oldResolve = resolve; }) });
   const stale = useDestinationsStore.getState().refreshNode("/dest");
-  mockCommands({ list_subdirs: () => [entry("/dest/visible")] });
+  mockCommands({ list_subdirs: () => ({ entries: [entry("/dest/visible")], isEmpty: false }) });
   await useDestinationsStore.getState().reconcileVisibility();
-  oldResolve([entry("/dest/.hidden")]);
+  oldResolve({ entries: [entry("/dest/.hidden")], isEmpty: true });
   await stale;
   expect(useDestinationsStore.getState().activePath).toBeNull();
   expect([...useDestinationsStore.getState().expanded]).toEqual(["/dest"]);
@@ -136,6 +136,11 @@ beforeEach(() => {
     result: null,
     confirmation: null,
     expanded: new Set(),
+    roots: [],
+    children: {},
+    emptiness: {},
+    listing: {},
+    activePath: null,
   });
   selectAll(["h1", "h2", "h3"]);
 });
@@ -151,43 +156,31 @@ describe("loaded destination projection", () => {
 });
 
 describe("destination listing freshness", () => {
-  it("does not let an older folder response overwrite a newer refresh", async () => {
-    let finishOlder: ((rows: never[]) => void) | undefined;
-    let calls = 0;
-    mockCommands({
-      list_subdirs: () => {
-        calls += 1;
-        if (calls === 1) {
-          return new Promise<never[]>((resolve) => {
-            finishOlder = resolve;
-          });
-        }
-        return [
-          {
-            name: "new",
-            path: "/dest/new",
-            hasChildren: false,
-            isEmpty: true,
-          },
-        ];
-      },
-    });
-
+  it("does not let an older folder response overwrite newer children or own emptiness", async () => {
+    let finishOlder!: (listing: DirListing) => void;
+    mockCommands({ list_subdirs: () => new Promise<DirListing>((resolve) => { finishOlder = resolve; }) });
     const older = useDestinationsStore.getState().refreshNode("/dest");
+    const entries = [{ name: "new", path: "/dest/new", hasChildren: false, isEmpty: true }];
+    mockCommands({ list_subdirs: () => ({ entries, isEmpty: false }) });
     await useDestinationsStore.getState().refreshNode("/dest");
-    finishOlder?.([
-      {
-        name: "old",
-        path: "/dest/old",
-        hasChildren: false,
-        isEmpty: true,
-      } as never,
-    ]);
+    finishOlder({ entries: [], isEmpty: true });
     await older;
 
-    expect(useDestinationsStore.getState().children["/dest"]?.map((row) => row.name)).toEqual([
-      "new",
-    ]);
+    expect(useDestinationsStore.getState().children["/dest"]).toEqual(entries);
+    expect(useDestinationsStore.getState().emptiness).toMatchObject({ "/dest": false, "/dest/new": true });
+  });
+
+  it("invalidates an in-flight listing when its root is removed", async () => {
+    useDestinationsStore.getState().init({ destinationRoots: ["/dest"] });
+    let finish!: (listing: DirListing) => void;
+    mockCommands({ list_subdirs: () => new Promise<DirListing>((resolve) => { finish = resolve; }) });
+    const pending = useDestinationsStore.getState().refreshNode("/dest");
+    useDestinationsStore.getState().init({ destinationRoots: ["/other"] });
+    finish({ entries: [], isEmpty: true });
+    await pending;
+    expect(useDestinationsStore.getState().children["/dest"]).toBeUndefined();
+    expect(useDestinationsStore.getState().emptiness["/dest"]).toBeUndefined();
+    expect(useDestinationsStore.getState().listing["/dest"]).toBeUndefined();
   });
 });
 
@@ -594,20 +587,21 @@ describe("a folder created inside the app is immediately usable", () => {
     // like a tree". The folder existed on disk; the tree could not show it.
     mockCommands({
       create_subdir: () => "/dest/photos/2026",
-      list_subdirs: () => [
+      list_subdirs: () => ({ entries: [
         {
           name: "2026",
           path: "/dest/photos/2026",
           hasChildren: false,
           isEmpty: true,
         },
-      ],
+      ], isEmpty: false }),
     });
     useDestinationsStore.setState({
       roots: ["/dest/photos"],
       children: {},
       expanded: new Set(),
       activePath: "/dest/photos",
+      emptiness: { "/dest/photos": true },
     });
 
     await useDestinationsStore.getState().createFolder("/dest/photos", "2026");
@@ -618,6 +612,8 @@ describe("a folder created inside the app is immediately usable", () => {
     ]);
     expect(state.expanded.has("/dest/photos")).toBe(true);
     expect(state.activePath).toBe("/dest/photos/2026");
+    expect(state.emptiness["/dest/photos"]).toBe(false);
+    expect(state.emptiness["/dest/photos/2026"]).toBe(true);
   });
 });
 
@@ -643,4 +639,98 @@ describe("expandability reads the live children map", () => {
     expect(nodeHasChildren({ path: "/x", hasChildren: true }, {})).toBe(true);
     expect(nodeHasChildren({ path: "/x", hasChildren: false }, {})).toBe(false);
   });
+});
+
+describe("destination folder mutations", () => {
+  it.each([true, false])("refreshes the parent's actual emptiness after deleting its last child: %s", async (isEmpty) => {
+    mockCommands({ delete_empty_dir: () => null, list_subdirs: () => ({ entries: [], isEmpty }) });
+    useDestinationsStore.setState({
+      activePath: "/dest/child",
+      expanded: new Set(["/dest", "/dest/child", "/dest/child/nested", "/dest/childish"]),
+      children: { "/dest/child": [], "/dest/child/nested": [], "/dest/childish": [] },
+      emptiness: { "/dest": false, "/dest/child": true, "/dest/child/nested": true, "/dest/childish": true },
+    });
+    await useDestinationsStore.getState().deleteFolder("/dest/child", "/dest");
+    const state = useDestinationsStore.getState();
+    expect(state.activePath).toBe("/dest");
+    expect(state.emptiness).toEqual({ "/dest": isEmpty, "/dest/childish": true });
+    expect(state.children).toEqual({ "/dest": [], "/dest/childish": [] });
+    expect([...state.expanded]).toEqual(["/dest", "/dest/childish"]);
+  });
+
+  it.each(["create", "delete"])("preserves a selection changed during %s", async (operation) => {
+    let finish!: (value: string | null) => void;
+    mockCommands({
+      create_subdir: () => new Promise((resolve) => { finish = resolve; }),
+      delete_empty_dir: () => new Promise((resolve) => { finish = resolve; }),
+      list_subdirs: () => ({ entries: [], isEmpty: true }),
+    });
+    useDestinationsStore.getState().setActive("/dest/child");
+    const pending = operation === "create"
+      ? useDestinationsStore.getState().createFolder("/dest", "new")
+      : useDestinationsStore.getState().deleteFolder("/dest/child", "/dest");
+    useDestinationsStore.getState().setActive("/other");
+    finish(operation === "create" ? "/dest/new" : null);
+    await pending;
+    expect(useDestinationsStore.getState().activePath).toBe("/other");
+  });
+
+  it.each(["create", "delete"])("preserves a selection changed during the parent refresh after %s", async (operation) => {
+    let finish!: (listing: DirListing) => void;
+    let started!: () => void;
+    const refreshing = new Promise<void>((resolve) => { started = resolve; });
+    mockCommands({
+      create_subdir: () => "/dest/new",
+      delete_empty_dir: () => null,
+      list_subdirs: () => {
+        started();
+        return new Promise<DirListing>((resolve) => { finish = resolve; });
+      },
+    });
+    useDestinationsStore.getState().setActive("/dest/child");
+    const pending = operation === "create"
+      ? useDestinationsStore.getState().createFolder("/dest", "new")
+      : useDestinationsStore.getState().deleteFolder("/dest/child", "/dest");
+    await refreshing;
+    useDestinationsStore.getState().setActive("/other");
+    finish({ entries: [], isEmpty: true });
+    await pending;
+    expect(useDestinationsStore.getState().activePath).toBe("/other");
+  });
+
+  it("does not resurrect a deleted subtree from a pending listing", async () => {
+    let finish!: (listing: DirListing) => void;
+    mockCommands({ list_subdirs: () => new Promise<DirListing>((resolve) => { finish = resolve; }) });
+    const listing = useDestinationsStore.getState().refreshNode("/dest/child");
+    mockCommands({ delete_empty_dir: () => null, list_subdirs: () => ({ entries: [], isEmpty: true }) });
+    await useDestinationsStore.getState().deleteFolder("/dest/child", "/dest");
+    finish({ entries: [], isEmpty: true });
+    await listing;
+    expect(useDestinationsStore.getState().children["/dest/child"]).toBeUndefined();
+    expect(useDestinationsStore.getState().emptiness["/dest/child"]).toBeUndefined();
+  });
+
+  it("does not activate a created folder after the roots change", async () => {
+    let finish!: (path: string) => void;
+    mockCommands({ create_subdir: () => new Promise<string>((resolve) => { finish = resolve; }) });
+    useDestinationsStore.getState().init({ destinationRoots: ["/dest"] });
+    useDestinationsStore.getState().setActive("/dest");
+    const pending = useDestinationsStore.getState().createFolder("/dest", "new");
+    useDestinationsStore.getState().init({ destinationRoots: ["/other"] });
+    finish("/dest/new");
+    await pending;
+    expect(useDestinationsStore.getState().activePath).toBe("/dest");
+    expect(invokeCalls.some((call) => call.command === "list_subdirs")).toBe(false);
+  });
+});
+
+it("does not replace a newly refreshed node fact with an older parent's child fact", async () => {
+  let finish!: (listing: DirListing) => void;
+  mockCommands({ list_subdirs: () => new Promise<DirListing>((resolve) => { finish = resolve; }) });
+  const parent = useDestinationsStore.getState().refreshNode("/dest");
+  mockCommands({ list_subdirs: () => ({ entries: [], isEmpty: false }) });
+  await useDestinationsStore.getState().refreshNode("/dest/child");
+  finish({ entries: [{ path: "/dest/child", name: "child", hasChildren: false, isEmpty: true }], isEmpty: false });
+  await parent;
+  expect(useDestinationsStore.getState().emptiness["/dest/child"]).toBe(false);
 });

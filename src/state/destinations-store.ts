@@ -22,6 +22,11 @@ export interface DirEntry {
   isEmpty: boolean;
 }
 
+export interface DirListing {
+  entries: DirEntry[];
+  isEmpty: boolean;
+}
+
 /** One fact of a destination outcome. A fact about several files also keeps
  * their paths: its `names` value is the whole list as text, and the receiver
  * names a few of `paths` and counts the rest in its place
@@ -42,6 +47,10 @@ export interface DestinationResult {
 let nextListingGeneration = 0;
 const listingGenerations = new Map<string, number>();
 let visibilityGeneration = 0;
+
+function isInSubtree(candidate: string, path: string): boolean {
+  return candidate === path || candidate.startsWith(`${path}/`) || candidate.startsWith(`${path}\\`);
+}
 
 interface DestinationsState {
   roots: string[];
@@ -120,8 +129,11 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
 
   init: (config) => {
     const roots = stringArrayField(config, "destinationRoots");
-    if (JSON.stringify(roots) !== JSON.stringify(get().roots)) visibilityGeneration++;
-    set({ roots });
+    if (JSON.stringify(roots) !== JSON.stringify(get().roots)) {
+      visibilityGeneration++;
+      listingGenerations.clear();
+      set({ roots, listing: {} });
+    }
   },
 
   toggleExpand: async (path) => {
@@ -142,7 +154,7 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
     listingGenerations.set(path, generation);
     set({ listing: { ...get().listing, [path]: "loading" } });
     try {
-      const entries = await invoke<DirEntry[]>("list_subdirs", { path });
+      const { entries, isEmpty } = await invoke<DirListing>("list_subdirs", { path });
       if (listingGenerations.get(path) !== generation) {
         recordActivity({
           kind: "stale",
@@ -153,12 +165,15 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
         });
         return;
       }
-      const emptiness = Object.fromEntries(entries.map((entry) => [entry.path, entry.isEmpty]));
+      // A child refreshed directly after this read began owns its newer fact.
+      const emptiness = Object.fromEntries(entries
+        .filter((entry) => (listingGenerations.get(entry.path) ?? 0) <= generation)
+        .map((entry) => [entry.path, entry.isEmpty]));
       const listing = { ...get().listing };
       delete listing[path];
       set({
         children: { ...get().children, [path]: entries },
-        emptiness: { ...get().emptiness, ...emptiness },
+        emptiness: { ...get().emptiness, ...emptiness, [path]: isEmpty },
         listing,
       });
     } catch (error) {
@@ -214,16 +229,20 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
   },
 
   createFolder: async (parent, name) => {
+    const generation = visibilityGeneration;
+    const activePath = get().activePath;
     try {
       const created = await invoke<string>("create_subdir", { parent, name });
+      if (generation !== visibilityGeneration) return;
       await get().refreshNode(parent);
+      if (generation !== visibilityGeneration) return;
       // The new folder must be VISIBLE and active immediately — before this,
       // a subfolder made under a collapsed leaf existed only on disk (the
       // leaf's stale hasChildren said there was nothing to expand) and the
       // developer read the feature as broken.
       set({
         expanded: new Set(get().expanded).add(parent),
-        activePath: created,
+        activePath: get().activePath === activePath ? created : get().activePath,
         message: null,
       });
     } catch (error) {
@@ -238,10 +257,28 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
   },
 
   deleteFolder: async (path, parent) => {
+    const generation = visibilityGeneration;
+    const activePath = get().activePath;
     try {
       await invoke("delete_empty_dir", { path });
+      if (generation !== visibilityGeneration) return;
+      for (const key of listingGenerations.keys()) {
+        if (isInSubtree(key, path)) listingGenerations.delete(key);
+      }
+      const current = get();
+      const outsideDeleted = <T,>(values: Record<string, T>) => Object.fromEntries(
+        Object.entries(values).filter(([key]) => !isInSubtree(key, path)),
+      );
+      set({
+        children: outsideDeleted(current.children),
+        emptiness: outsideDeleted(current.emptiness),
+        listing: outsideDeleted(current.listing),
+        expanded: new Set([...current.expanded].filter((key) => !isInSubtree(key, path))),
+        activePath: current.activePath === activePath && activePath !== null && isInSubtree(activePath, path)
+          ? parent : current.activePath,
+        message: null,
+      });
       await get().refreshNode(parent);
-      set({ message: null });
     } catch (error) {
       log.error("destination folder deletion failed", toErrorFields(error));
       set({ message: message("destinations.folderDeleteFailed") });

@@ -16,7 +16,14 @@ pub struct DirEntry {
     is_empty: bool,
 }
 
-pub fn list_subdirs(data_root: &Path, path: &str) -> Result<Vec<DirEntry>, String> {
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirListing {
+    entries: Vec<DirEntry>,
+    is_empty: bool,
+}
+
+pub fn list_subdirs(data_root: &Path, path: &str) -> Result<DirListing, String> {
     let policy = visibility::Policy::from_config(&*storage::config(data_root)?)?;
     list_subdirs_at(Path::new(path), &policy, data_root)
 }
@@ -25,14 +32,20 @@ fn list_subdirs_at(
     path: &Path,
     policy: &visibility::Policy,
     data_root: &Path,
-) -> Result<Vec<DirEntry>, String> {
+) -> Result<DirListing, String> {
     if trash::is_trash_path(path) || paths::is_within_data_root(path, data_root) {
-        return Ok(Vec::new());
+        return Ok(DirListing {
+            entries: Vec::new(),
+            is_empty: false,
+        });
     }
     let mut entries: Vec<DirEntry> = Vec::new();
     // Every listing is one bounded call; a drive that does not answer fails
     // the request instead of leaving the tree waiting.
-    for entry in crate::volume_io::read_dir(path, true).map_err(|e| e.to_string())? {
+    let raw_entries = crate::volume_io::read_dir(path, true).map_err(|e| e.to_string())?;
+    // Files and hidden entries still make this folder unsafe to delete.
+    let is_empty = raw_entries.is_empty();
+    for entry in raw_entries {
         if !is_browsable_destination_child(&entry, policy, data_root)? {
             continue;
         }
@@ -46,7 +59,7 @@ fn list_subdirs_at(
         });
     }
     entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    Ok(entries)
+    Ok(DirListing { entries, is_empty })
 }
 
 fn is_browsable_destination_child(

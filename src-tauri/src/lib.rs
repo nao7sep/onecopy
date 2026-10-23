@@ -635,7 +635,7 @@ async fn move_items_out(
 
 // Destination-tree support: see `destinations`.
 #[tauri::command]
-async fn list_subdirs(path: String) -> Result<Vec<destinations::DirEntry>, String> {
+async fn list_subdirs(path: String) -> Result<destinations::DirListing, String> {
     dispatch(move || destinations::list_subdirs(&paths::data_root()?, &path)).await
 }
 

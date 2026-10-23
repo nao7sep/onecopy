@@ -122,7 +122,7 @@ describe("destination folder states", () => {
     expect(view.container.textContent).toContain("Couldn’t read this folder.");
     expect(view.container.textContent).not.toContain("No subfolders");
 
-    mockCommands({ list_subdirs: () => [] });
+    mockCommands({ list_subdirs: () => ({ entries: [], isEmpty: true }) });
     await act(async () => useDestinationsStore.getState().refreshNode("/dest"));
     expect(view.container.textContent).toContain("No subfolders");
   });
@@ -189,7 +189,7 @@ describe("destination folder states", () => {
   });
 
   it("uses Enter and double-click only to expand or collapse", async () => {
-    mockCommands({ list_subdirs: () => [] });
+    mockCommands({ list_subdirs: () => ({ entries: [], isEmpty: true }) });
     useDestinationsStore.setState({
       roots: ["/dest"],
       expanded: new Set(),
