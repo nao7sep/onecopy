@@ -354,6 +354,21 @@ fn derive_videos_pending_limit(
     Ok(stats)
 }
 
+// A snapshot set is usable only after its complete receipt commits. Keep
+// just this attempt's published frames owned through every early return,
+// including source changes and failed index writes. Subprocess staging has
+// its own physical-writer lifetime and is not removed by this owner.
+#[derive(Default)]
+struct PendingStripOutputs(Vec<PathBuf>);
+
+impl Drop for PendingStripOutputs {
+    fn drop(&mut self) {
+        for path in &self.0 {
+            crate::fs_recovery::remove_file(path, "incomplete video snapshot cleanup");
+        }
+    }
+}
+
 /// The optional derived-work half: scene strips for videos the poster pass already
 /// postered, found through their NULL `strip_frames`. The coordinator supplies
 /// cancellation for pause and foreground preemption; index owners run while
@@ -410,6 +425,7 @@ pub fn derive_strips_pending(
         let src = available.as_path();
         let duration_ms = duration_ms.max(0) as u64;
         let count = strip_frame_count(duration_ms, strip);
+        let mut outputs = PendingStripOutputs::default();
         // ffmpeg runs outside the index share. A strip whose content changed
         // meanwhile is cleaned up and discarded like a cancelled one.
         let computed = crate::derived_state::compute_outside_share(conn, &hash, || -> Result<(), String> {
@@ -420,7 +436,9 @@ pub fn derive_strips_pending(
                 let frame_result = crate::failure_runtime::contain_item(|| extract_frame(ffmpeg, src, *at_ms, frame_edge, Arc::clone(&staged)).and_then(|()| {
                     let img = crate::resource_limits::decode_file(staged.path())?;
                     let target = strip_path(cache, &hash, index as u32);
-                    preview::write_webp(&img, &target, 76.0)
+                    preview::write_webp(&img, &target, 76.0)?;
+                    outputs.0.push(target);
+                    Ok(())
                 }));
                 frame_result?;
                 trace.progress(index as u64 + 1, count as u64);
@@ -432,6 +450,7 @@ pub fn derive_strips_pending(
             Ok(()) => {
                 stats.issues_changed |=
                     crate::derived_state::record_strip_success(conn, &hash, &path, count)?;
+                outputs.0.clear();
                 trace.finish(crate::activity::ActivityState::Succeeded, None);
                 on_change(&hash);
                 stats.completed += 1;
@@ -439,12 +458,6 @@ pub fn derive_strips_pending(
             }
             Err(err) if err.starts_with(crate::scanner::CANCELLED) => {
                 trace.finish(crate::activity::ActivityState::Cancelled, None);
-                for index in 0..count {
-                    crate::fs_recovery::remove_file(
-                        &strip_path(cache, &hash, index),
-                        "cancelled video snapshot cleanup",
-                    );
-                }
                 return Err(crate::scanner::CANCELLED.to_string());
             }
             Err(err) if crate::resource_limits::is_storage_unavailable(&err) => {
@@ -454,12 +467,6 @@ pub fn derive_strips_pending(
                 // cancellation, and let the derived-work owner pause the
                 // class with one Issue instead of failing every video.
                 trace.finish(crate::activity::ActivityState::Waiting, None);
-                for index in 0..count {
-                    crate::fs_recovery::remove_file(
-                        &strip_path(cache, &hash, index),
-                        "storage-unavailable video snapshot cleanup",
-                    );
-                }
                 return Err(err);
             }
             Err(err) => {

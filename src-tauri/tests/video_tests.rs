@@ -168,3 +168,68 @@ fn poster_frames_stream_through_stdout_and_release_their_staging_file() {
     assert!(cache.preview("v1").is_file());
     assert_eq!(std::fs::read_dir(&temp).unwrap().count(), 0);
 }
+
+#[cfg(unix)]
+#[test]
+fn incomplete_snapshot_attempts_remove_only_their_published_frames() {
+    use std::os::unix::fs::PermissionsExt;
+    for terminal in ["extract", "decode", "record", "success"] {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = onecopy_lib::index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+        let source = dir.path().join("clip.mov");
+        std::fs::write(&source, b"video-source").unwrap();
+        conn.execute(
+            "INSERT INTO contents (hash, byte_size, kind, duration_ms, derived_at_utc, derived_version)
+             VALUES ('v1', 12, 'video', 10000, '2026-01-01T00:00:00.000Z', ?1)",
+            [onecopy_lib::derived_state::DERIVE_VERSION],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, missing)
+             VALUES (?1, ?2, 'clip.mov', 'video', 'v1', 0)",
+            rusqlite::params![source.to_string_lossy(), dir.path().to_string_lossy()],
+        ).unwrap();
+        if terminal == "record" {
+            conn.execute_batch("CREATE TRIGGER refuse_strip_receipt BEFORE UPDATE OF strip_frames ON contents
+                WHEN NEW.strip_frames > 0 BEGIN SELECT RAISE(ABORT, 'injected receipt failure'); END;").unwrap();
+        }
+        let frame = dir.path().join("frame.jpg");
+        image::DynamicImage::new_rgb8(8, 8).save(&frame).unwrap();
+        let ffmpeg = dir.path().join("ffmpeg");
+        let later = match terminal {
+            "extract" => "echo 'damaged later frame' >&2; exit 1",
+            "decode" => "printf 'invalid image'; exit 0",
+            _ => ":",
+        };
+        std::fs::write(&ffmpeg, format!(
+            "#!/bin/sh\nif [ -e \"$0.calls\" ]; then\necho later >> \"$0.calls\"\n{later}\nfi\necho frame >> \"$0.calls\"\ncat '{}'\n", frame.display(),
+        )).unwrap();
+        std::fs::set_permissions(&ffmpeg, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let cache = CachePaths::new(dir.path().join("cache"));
+        // Other completed sets, and paths this attempt never writes, survive.
+        let prior = strip_path(&cache, "prior", 0);
+        let untouched = strip_path(&cache, "v1", 8);
+        for path in [&prior, &untouched] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"retained previous output").unwrap();
+        }
+        let temp = dir.path().join("temp");
+        let result = derive_strips_pending(&conn, &cache, &ffmpeg, &temp,
+            &StripConfig { seconds_per_frame: 20, min_frames: 2, max_frames: 2 },
+            64, &[], &|_| {}, &|_| {}, None, &|| false, &|_, _| {});
+        if terminal == "record" { assert!(result.unwrap_err().contains("injected receipt failure")); }
+        else {
+            let stats = result.unwrap();
+            assert_eq!(stats.attempted, 1);
+            assert_eq!(stats.completed, u64::from(terminal == "success"));
+            assert_eq!(stats.failed, u64::from(terminal != "success"));
+        }
+        assert!(std::fs::read_to_string(ffmpeg.with_extension("calls")).unwrap().contains("later"),
+            "the first frame must succeed before testing the later terminal path");
+        for index in 0..2 {
+            assert_eq!(strip_path(&cache, "v1", index).exists(), terminal == "success", "{terminal}, frame {index}");
+        }
+        assert_eq!(std::fs::read(prior).unwrap(), b"retained previous output");
+        assert_eq!(std::fs::read(untouched).unwrap(), b"retained previous output");
+        assert_eq!(std::fs::read_dir(&temp).unwrap().count(), 0);
+    }
+}
