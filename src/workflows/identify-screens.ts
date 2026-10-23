@@ -1,3 +1,4 @@
+import { randomId } from "../utils/randomId";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type { Monitor } from "@tauri-apps/api/window";
 import { waitForWindowCreated } from "../utils/windowCreation";
@@ -12,7 +13,7 @@ let pending: Promise<void> | null = null;
  * closing. */
 export function identifyScreens(monitors: readonly Monitor[]): Promise<void> {
   if (pending !== null) return pending;
-  const batch = crypto.randomUUID();
+  const batch = randomId();
   const operation = Promise.allSettled(monitors.map(async (monitor, index) => {
     const scale = monitor.scaleFactor || 1;
     const window = new WebviewWindow(`identify-${batch}-${index + 1}`, {

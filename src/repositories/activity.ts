@@ -1,3 +1,4 @@
+import { randomId } from "../utils/randomId";
 import { invoke } from "@tauri-apps/api/core";
 import { isDebugLoggingEnabled, log, toErrorFields } from "./logging";
 
@@ -111,7 +112,7 @@ export function newActivityOperationId(owner: ActivityOwner): string {
   // Every webview has its own JavaScript realm, so a module-local counter can
   // collide across Main, Preview, and Comparison. The UUID keeps operation
   // correlation unique within the Rust-owned app session without an IPC wait.
-  const id = `${owner}:${crypto.randomUUID()}`;
+  const id = `${owner}:${randomId()}`;
   latestOperations.set(owner, id);
   return id;
 }

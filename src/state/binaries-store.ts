@@ -7,6 +7,7 @@
 // modal's one check button and the config-gated launch check are the only
 // triggers (the honest-state model's UI counterpart).
 
+import { randomId } from "../utils/randomId";
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { message, type Message } from "../i18n/translate";
@@ -81,10 +82,6 @@ export type BinaryInstallResult =
       state: DependencyState;
       error: string;
     };
-
-function operationId(): string {
-  return globalThis.crypto.randomUUID();
-}
 
 function replaceEntry(
   entries: DependencyState[],
@@ -456,7 +453,7 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
     let failures = 0;
     let cancelled = false;
     for (const entry of installed) {
-      const currentOperationId = operationId();
+      const currentOperationId = randomId();
       set({ checkingId: entry.id, checkingOperationId: currentOperationId });
       try {
         const outcome = await invoke<BinaryCheckOutcome>("binaries_check", {
