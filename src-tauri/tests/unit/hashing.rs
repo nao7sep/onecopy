@@ -60,3 +60,24 @@ fn move_proof_rejects_an_inplace_change_during_the_source_read() {
     assert!(!stage.exists(), "the changed read cannot become a cleanup proof");
     assert_eq!(std::fs::read(&source).unwrap(), b"new-authored-bytes");
 }
+
+#[test]
+fn read_back_rejects_corrupted_output_and_preserves_the_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.bin");
+    let stage = dir.path().join("stage.tmp");
+    let original = vec![7u8; 2 * BUF_SIZE];
+    std::fs::write(&source, &original).unwrap();
+    let copied = hash_while_copying_detailed(
+        &source, &stage, &|| false, &mut |_, _| {}, false,
+        |path| std::fs::write(path, vec![8u8; original.len()]).unwrap(),
+    );
+    match copied {
+        Err(CopyFailure::Destination(error)) => assert_eq!(
+            error.to_string(), "staged destination read-back did not match the copied bytes",
+        ),
+        _ => panic!("corrupted output must fail read-back verification"),
+    }
+    assert!(!stage.exists(), "rejected output must remain private and be removed");
+    assert_eq!(std::fs::read(&source).unwrap(), original);
+}
