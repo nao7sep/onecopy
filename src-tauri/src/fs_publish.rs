@@ -17,9 +17,10 @@ use std::path::Path;
 
 use crate::volume_io::{self, Op};
 
-/// Flushes a directory's entries to the device, bounded. Windows' no-replace
-/// move is journaled by the filesystem and Rust has no portable directory
-/// handle, so there it does nothing.
+/// Flushes a directory's entries on Unix, bounded. Windows has no directory
+/// barrier here: its publication requests write-through and file callers flush
+/// their actual descriptors. A successful Windows no-op is not independent
+/// evidence of rename durability on a particular filesystem.
 pub fn sync_directory(path: &Path) -> io::Result<()> {
     volume_io::sync_dir(path)
 }
@@ -179,7 +180,7 @@ fn rename_no_replace_raw(
     source_version: Option<crate::file_identity::FileVersion>,
 ) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
 
     require_source_version(source, source_version)?;
     let source: Vec<u16> = crate::winpath::for_fs(source)
@@ -193,9 +194,13 @@ fn rename_no_replace_raw(
         .chain(std::iter::once(0))
         .collect();
     // SAFETY: both path buffers are NUL-terminated and remain alive for the
-    // call. Zero flags deliberately omit MOVEFILE_REPLACE_EXISTING, so an
-    // exact-boundary winner is preserved instead of overwritten.
-    let succeeded = unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), 0) }; // volume_io worker
+    // call. Write-through requests disk completion without permitting either
+    // replacement or a cross-volume copy/delete fallback. Its exact power-loss
+    // contract still depends on the destination filesystem; it is not a
+    // substitute for flushing the actual file before source cleanup.
+    let succeeded = unsafe {
+        MoveFileExW(source.as_ptr(), target.as_ptr(), MOVEFILE_WRITE_THROUGH) // volume_io worker
+    };
     if succeeded == 0 {
         Err(io::Error::last_os_error())
     } else {
