@@ -145,7 +145,7 @@ pub struct Face {
 
 /// One face as both models saw it: the detector's box and confidence, and the
 /// expression model's probabilities in [`EXPRESSION_CLASSES`] order, absent
-/// when the face could not be read.
+/// when the detected box has no usable crop.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FoundFace {
     pub face: Face,
@@ -301,21 +301,14 @@ impl FaceScorer {
 
     /// The expression probabilities for one face crop — the expression
     /// model's contract: 260×260 RGB, 1/255 then ImageNet-normalized, eight
-    /// AffectNet logits out.
-    pub fn expression(&mut self, img: &DynamicImage, face: &Face) -> Result<[f32; 8], String> {
-        let (w, h) = (img.width() as f32, img.height() as f32);
-        // A 15% margin each side: FER+ was trained on loose crops, and the
-        // detector's boxes hug the face tightly.
-        let (bw, bh) = (face.x2 - face.x1, face.y2 - face.y1);
-        let x1 = ((face.x1 - bw * 0.15) * w).max(0.0) as u32;
-        let y1 = ((face.y1 - bh * 0.15) * h).max(0.0) as u32;
-        let x2 = (((face.x2 + bw * 0.15) * w) as u32).min(img.width());
-        let y2 = (((face.y2 + bh * 0.15) * h) as u32).min(img.height());
-        if x2 <= x1 || y2 <= y1 {
-            return Err("degenerate face box".to_string());
-        }
+    /// AffectNet logits out. An unusable crop has no expression; inference
+    /// and output failures fail the image's scoring attempt.
+    pub fn expression(&mut self, img: &DynamicImage, face: &Face) -> Result<Option<[f32; 8]>, String> {
+        let Some((x1, y1, width, height)) = expression_crop_bounds(img.width(), img.height(), face) else {
+            return Ok(None);
+        };
         let crop = img
-            .crop_imm(x1, y1, x2 - x1, y2 - y1)
+            .crop_imm(x1, y1, width, height)
             .resize_exact(EXPRESSION_EDGE, EXPRESSION_EDGE, image::imageops::FilterType::Triangle)
             .to_rgb8();
         let edge = EXPRESSION_EDGE as usize;
@@ -347,7 +340,7 @@ impl FaceScorer {
         // An artifact that changed shape has almost certainly changed its
         // class ORDER too, and storing the wrong emotion silently is the
         // failure this refuses to risk.
-        <[f32; 8]>::try_from(softmax(logits)).map_err(|probabilities| {
+        <[f32; 8]>::try_from(softmax(logits)).map(Some).map_err(|probabilities| {
             format!(
                 "expression model returned {} classes, not {}",
                 probabilities.len(),
@@ -364,12 +357,32 @@ impl FaceScorer {
                 return Err(crate::scanner::CANCELLED.to_string());
             }
             // A face whose crop cannot be read is still a real face.
-            let expression = self.expression(img, &face).ok();
+            let expression = self.expression(img, &face)?;
             found.push(FoundFace { face, expression });
         }
         Ok(found)
     }
 }
+
+fn expression_crop_bounds(width: u32, height: u32, face: &Face) -> Option<(u32, u32, u32, u32)> {
+    let (w, h) = (width as f32, height as f32);
+    // A 15% margin each side: FER+ was trained on loose crops, and the
+    // detector's boxes hug the face tightly.
+    let (bw, bh) = (face.x2 - face.x1, face.y2 - face.y1);
+    let x1 = ((face.x1 - bw * 0.15) * w).max(0.0) as u32;
+    let y1 = ((face.y1 - bh * 0.15) * h).max(0.0) as u32;
+    let x2 = (((face.x2 + bw * 0.15) * w) as u32).min(width);
+    let y2 = (((face.y2 + bh * 0.15) * h) as u32).min(height);
+    if x2 <= x1 || y2 <= y1 {
+        None
+    } else {
+        Some((x1, y1, x2 - x1, y2 - y1))
+    }
+}
+
+#[cfg(test)]
+#[path = "../tests/unit/face.rs"]
+mod tests;
 
 /// Greedy NMS, best-first: keeps each face and suppresses every remaining
 /// candidate overlapping it beyond [`NMS_MAX_IOU`].

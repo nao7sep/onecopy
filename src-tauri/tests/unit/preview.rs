@@ -223,3 +223,15 @@ fn an_identity_promotion_waiting_for_the_sweep_never_holds_sqlites_writer() {
     assert!(cache.thumb("real1").exists(), "promotion keeps its derived cache after the sweep finishes");
     assert!(!thumb.exists());
 }
+
+#[test]
+fn orientation_read_distinguishes_missing_metadata_from_failed_source_io() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("plain.png");
+    DynamicImage::new_rgb8(8, 6).save(&path).unwrap();
+    assert_eq!(read_orientation(&path).unwrap(), 1);
+    // The decode can have finished before a removable source disappears.
+    let _decoded = crate::resource_limits::decode_file(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert!(read_orientation(&path).is_err());
+}

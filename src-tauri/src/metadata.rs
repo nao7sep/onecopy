@@ -305,6 +305,9 @@ pub fn parse_utc_offset_minutes(text: &str) -> Option<i32> {
         ("-", rest) => (-1, rest),
         _ => return None,
     };
+    if !rest.bytes().all(|byte| byte.is_ascii_digit() || byte == b':') {
+        return None;
+    }
     let (hours, minutes) = match rest.split_once(':') {
         Some((h, m)) => (h.parse::<i32>().ok()?, m.parse::<i32>().ok()?),
         None if rest.len() == 4 => (

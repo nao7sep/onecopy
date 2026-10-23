@@ -146,6 +146,7 @@ struct CandidateCursor {
 
 #[derive(Default)]
 struct CandidateCursors {
+    previews_exhausted: bool,
     snapshots: CandidateCursor,
     faces: CandidateCursor,
     video_transcripts: CandidateCursor,
@@ -172,7 +173,20 @@ impl SectionCursor {
 }
 
 impl CandidateCursors {
+    fn run_preview_search(
+        &mut self,
+        search: impl FnOnce() -> Result<(bool, bool), String>,
+    ) -> Result<bool, String> {
+        if self.previews_exhausted { return Ok(false); }
+        let (worked, searched) = search()?;
+        // Denied or paused turns do not prove the queue empty. Debt changes
+        // invalidate this cursor; urgent preview tiers bypass it.
+        self.previews_exhausted = searched && !worked;
+        Ok(worked)
+    }
+
     fn invalidate(&mut self) {
+        self.previews_exhausted = false;
         self.snapshots = CandidateCursor::default();
         self.faces = CandidateCursor::default();
         self.video_transcripts = CandidateCursor::default();
@@ -1035,7 +1049,9 @@ fn run_lane_tiers(
                     SECTION_PREVIEW_TURN,
                 )?
             }
-            (Lane::Previews, _) => derive_global_required(app, conn, cache, settings, projection)?,
+            (Lane::Previews, _) => cursors.run_preview_search(|| {
+                derive_global_required(app, conn, cache, settings, projection)
+            })?,
             (Lane::Heavy, Tier::Visible) => run_priority_optional_turn(
                 app,
                 conn,
@@ -1243,16 +1259,19 @@ fn derive_global_required(
     cache: &CachePaths,
     settings: &Settings,
     projection: crate::queries::ItemProjectionContext,
-) -> Result<bool, String> {
+) -> Result<(bool, bool), String> {
     if !available() {
-        return Ok(false);
+        return Ok((false, false));
     }
     let generation = ATTENTION_GENERATION.load(Ordering::SeqCst);
+    let mut image_searched = false;
+    let mut video_searched = false;
     let image = active_or_pause_for_storage(
         app,
         conn,
         WorkClass::Previews,
         with_active(app, WorkClass::Previews, || {
+            image_searched = true;
             crate::preview::derive_next_images(
                 conn,
                 cache,
@@ -1273,13 +1292,14 @@ fn derive_global_required(
         }
     }
     if !available() || ATTENTION_GENERATION.load(Ordering::SeqCst) != generation {
-        return Ok(did_work);
+        return Ok((did_work, false));
     }
     let video = active_or_pause_for_storage(
         app,
         conn,
         WorkClass::Previews,
         with_active(app, WorkClass::Previews, || {
+            video_searched = true;
             crate::video::derive_next_video(
                 conn,
                 cache,
@@ -1299,7 +1319,7 @@ fn derive_global_required(
         }
         did_work = true;
     }
-    Ok(did_work)
+    Ok((did_work, image_searched && video_searched && available() && !class_paused(WorkClass::Previews)))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1985,29 +2005,52 @@ fn finish_transcription_attempt(
 /// generation, durable-result, and terminal-classification boundary, and
 /// [`run_transcription`] publishes its events for both.
 pub fn complete_transcription_attempt(
+    attempt: TranscriptionAttempt<'_>,
+    on_identity: impl FnMut(&str),
+    on_started: impl FnOnce(&str),
+    on_progress: impl FnMut(&str, i32) + 'static,
+) -> Result<TranscriptionAttemptOutcome, String> {
+    complete_transcription_attempt_core(attempt, on_identity, on_started, on_progress, |attempt| {
+        let dependencies = crate::ai_dependencies::production_transcription(attempt.data_root);
+        let model = dependencies.model.ok_or_else(||
+            "the transcription model is not installed — install it from Background work & tools".to_string())?;
+        let ffmpeg = dependencies.ffmpeg.ok_or_else(||
+            "ffmpeg is not installed — install it from Background work & tools".to_string())?;
+        let temp_dir = attempt.temp_dir.clone();
+        let source_path = PathBuf::from(attempt.source_path);
+        let acceleration = attempt.acceleration;
+        Ok(move |claim: &crate::transcription::TranscriptionClaim,
+                 _: &TranscriptionAttempt<'_>, progress: TranscriptionProgress<'static>| {
+            crate::transcription::generate_transcript_claimed(
+                claim, &temp_dir, &model, &ffmpeg, &source_path, acceleration, progress,
+            )
+        })
+    })
+}
+
+type TranscriptionProgress<'p> = Box<dyn FnMut(i32) + 'p>;
+
+/// Dependency resolution and native inference are the only substituted edge;
+/// admission, cancellation, activity, and publication have one owner.
+fn complete_transcription_attempt_core<'p, Engine>(
     mut attempt: TranscriptionAttempt<'_>,
     mut on_identity: impl FnMut(&str),
     on_started: impl FnOnce(&str),
-    mut on_progress: impl FnMut(&str, i32) + 'static,
-) -> Result<TranscriptionAttemptOutcome, String> {
+    mut on_progress: impl FnMut(&str, i32) + 'p,
+    resolve: impl FnOnce(&TranscriptionAttempt<'_>) -> Result<Engine, String>,
+) -> Result<TranscriptionAttemptOutcome, String>
+where
+    Engine: FnOnce(&crate::transcription::TranscriptionClaim, &TranscriptionAttempt<'_>, TranscriptionProgress<'p>)
+        -> Result<crate::transcription::Transcript, String>,
+{
     let hash = match prepare_transcription_attempt(&attempt, &mut on_identity)? {
         TranscriptionPreparation::Ready(hash) => hash,
         TranscriptionPreparation::Terminal(outcome) => return Ok(outcome),
     };
 
-    let dependencies = crate::ai_dependencies::production_transcription(attempt.data_root);
-    let Some(model) = dependencies.model else {
-        return Ok(TranscriptionAttemptOutcome::Unavailable {
-            hash,
-            message: "the transcription model is not installed — install it from Background work & tools"
-                .to_string(),
-        });
-    };
-    let Some(ffmpeg) = dependencies.ffmpeg else {
-        return Ok(TranscriptionAttemptOutcome::Unavailable {
-            hash,
-            message: "ffmpeg is not installed — install it from Background work & tools".to_string(),
-        });
+    let engine = match resolve(&attempt) {
+        Ok(engine) => engine,
+        Err(message) => return Ok(TranscriptionAttemptOutcome::Unavailable { hash, message }),
     };
     if attempt.cancel_when.as_ref().is_some_and(|stop| stop()) {
         return Ok(TranscriptionAttemptOutcome::Cancelled { hash });
@@ -2036,11 +2079,13 @@ pub fn complete_transcription_attempt(
             std::thread::Builder::new()
                 .name("onecopy-transcription-cancel-watch".to_string())
                 .spawn(move || loop {
-                    if finished.load(Ordering::SeqCst) {
-                        return;
-                    }
+                    // Observe cancellation even when inference just finished:
+                    // settlement must not publish a result the caller retired.
                     if cancel_when() {
                         crate::transcription::request_cancel();
+                        return;
+                    }
+                    if finished.load(Ordering::SeqCst) {
                         return;
                     }
                     if let Err(error) = crate::resource_limits::require_available(
@@ -2066,17 +2111,13 @@ pub fn complete_transcription_attempt(
     // Extraction and inference run outside the index share; a transcript
     // whose content changed meanwhile is discarded like a cancelled one.
     let computed = crate::derived_state::compute_outside_share(attempt.conn, &hash, || {
-        crate::failure_runtime::contain_item(|| crate::transcription::generate_transcript_claimed(
+        crate::failure_runtime::contain_item(|| engine(
             &claim,
-            &attempt.temp_dir,
-            &model,
-            &ffmpeg,
-            Path::new(attempt.source_path),
-            attempt.acceleration,
-            move |percent| {
+            &attempt,
+            Box::new(move |percent| {
                 activity_progress(percent.clamp(0, 100) as u64, 100);
                 on_progress(&progress_hash, percent);
-            },
+            }),
         ))
     });
     drop(finish_signal);
@@ -2121,27 +2162,17 @@ pub fn complete_transcription_attempt(
 /// second persistence workflow or a runtime-selectable test provider.
 pub fn complete_transcription_attempt_with_inference(
     attempt: TranscriptionAttempt<'_>,
-    mut on_identity: impl FnMut(&str),
+    on_identity: impl FnMut(&str),
     on_started: impl FnOnce(&str),
-    mut on_progress: impl FnMut(&str, i32),
+    on_progress: impl FnMut(&str, i32),
     inference: impl FnOnce(&mut dyn FnMut(i32)) -> Result<crate::transcription::Transcript, String>,
 ) -> Result<TranscriptionAttemptOutcome, String> {
-    let hash = match prepare_transcription_attempt(&attempt, &mut on_identity)? {
-        TranscriptionPreparation::Ready(hash) => hash,
-        TranscriptionPreparation::Terminal(outcome) => return Ok(outcome),
-    };
-    on_started(&hash);
-    let progress_hash = hash.clone();
-    let mut progress = |percent| on_progress(&progress_hash, percent);
-    let computed =
-        crate::derived_state::compute_outside_share(attempt.conn, &hash, || inference(&mut progress))?;
-    let Some(result) = computed else {
-        return Ok(TranscriptionAttemptOutcome::Cancelled { hash });
-    };
-    if attempt.cancel_when.as_ref().is_some_and(|stop| stop()) {
-        return Ok(TranscriptionAttemptOutcome::Cancelled { hash });
-    }
-    finish_transcription_attempt(&attempt, hash, result)
+    complete_transcription_attempt_core(attempt, on_identity, on_started, on_progress, |_| {
+        Ok(move |_: &crate::transcription::TranscriptionClaim,
+                 _: &TranscriptionAttempt<'_>, mut progress: TranscriptionProgress<'_>| {
+            inference(progress.as_mut())
+        })
+    })
 }
 
 fn transcribe_next(

@@ -6,10 +6,24 @@ fn offset_parser_handles_common_forms() {
     assert_eq!(parse_utc_offset_minutes("-05:30"), Some(-330));
     assert_eq!(parse_utc_offset_minutes("Z"), Some(0));
     assert_eq!(parse_utc_offset_minutes("+0200"), Some(120));
+    assert_eq!(parse_utc_offset_minutes("-0530"), Some(-330));
     assert_eq!(parse_utc_offset_minutes("+02"), Some(120));
+    assert_eq!(parse_utc_offset_minutes("-5"), Some(-300));
+    assert_eq!(parse_utc_offset_minutes(" +2:3 "), Some(123));
+    assert_eq!(parse_utc_offset_minutes("z"), Some(0));
+    assert_eq!(parse_utc_offset_minutes("+14:59"), Some(899));
+    assert_eq!(parse_utc_offset_minutes("-00:00"), Some(0));
     assert_eq!(parse_utc_offset_minutes(""), None);
     assert_eq!(parse_utc_offset_minutes("+25:00"), None);
     assert_eq!(parse_utc_offset_minutes("09:00"), None);
+    assert_eq!(parse_utc_offset_minutes("+00:60"), None);
+}
+
+#[test]
+fn offset_parser_rejects_non_ascii_and_signed_numeric_fields() {
+    for offset in ["+1€", "+€a", "+１:00", "+01:０", "++1", "+1:+2", "+1:-2"] {
+        assert_eq!(parse_utc_offset_minutes(offset), None, "{offset}");
+    }
 }
 
 #[test]

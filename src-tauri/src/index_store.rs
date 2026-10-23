@@ -7,8 +7,8 @@
 //! The unit model: `contents` holds one row per unique content hash (the
 //! logical file every view shows); `paths` holds one row per physical path,
 //! N of which share a `content_hash` — the copy count is a COUNT over this
-//! join. Timestamp evidence lands per path (filename and filesystem sources
-//! differ per copy) with content-level EXIF evidence keyed by hash; a logical
+//! join. Timestamp evidence, including EXIF, is written and resolved per
+//! physical path because evidence can differ between copies; a logical
 //! item's display time becomes the earliest acceptable resolved time only
 //! after every live path has completed date checking.
 

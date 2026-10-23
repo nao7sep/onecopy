@@ -1793,8 +1793,21 @@ fn tiff_fallback_reads_the_separate_explicit_offset() {
         assert_eq!(facts.taken, Some(MetadataTimestamp::Absolute { unix_ms: wall - minutes * 60_000 }));
         assert_eq!(facts.make.as_deref(), Some("TestCam"));
     }
-    std::fs::write(&path, tiff_with_exif(b"invalid\0")).unwrap();
-    assert!(matches!(read_tiff_metadata(&path).unwrap().unwrap().taken, Some(MetadataTimestamp::Naive { .. })));
+    for offset in ["invalid\0", "+1€\0", "+€a\0"] {
+        std::fs::write(&path, tiff_with_exif(offset.as_bytes())).unwrap();
+        assert_eq!(
+            read_tiff_metadata(&path).unwrap().unwrap().taken,
+            Some(MetadataTimestamp::Naive {
+                year: 2016,
+                month: 3,
+                day: 5,
+                hour: 12,
+                minute: 34,
+                second: 56,
+            }),
+            "{offset:?}",
+        );
+    }
 }
 
 #[test]

@@ -8,8 +8,8 @@
 //! collisions get the full hash — the single-copy user's library is hardly
 //! read at all. Media with nothing to compare against get a PROVISIONAL
 //! identity (`p<path_id>`) so the cache and UI have a key; it promotes to the
-//! real hash wherever a full read happens anyway (image derive tees the
-//! decode, move-out tees the copy) or the ladder later demands one. Same size
+//! real hash when image derivation streams a hash before bounded decoding,
+//! move-out hashes its copy stream, or the ladder later demands one. Same size
 //! + same prehash + different full hash among supposed copies is recorded as
 //! a `copies-disagree` issue.
 //!
@@ -1562,7 +1562,7 @@ pub struct HashStats {
 /// and impossible to mistake for a real 64-hex blake3 hash. It exists so the
 /// cache and the UI have a key before any full read happens, and it promotes
 /// in place the first time a real hash appears (a size collision forcing the
-/// ladder up, an image-derive tee, or a move-out tee).
+/// ladder up, an image-derivation hash read, or a move-out copy stream).
 pub fn provisional_key(path_id: i64) -> String {
     format!("p{path_id}")
 }

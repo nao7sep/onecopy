@@ -188,7 +188,7 @@ pub fn decode_image(src: &Path, ffmpeg: Option<&Path>) -> Result<(DynamicImage, 
         return Ok((decode_via_ffmpeg(ffmpeg, src)?, 1));
     }
     let decoded = crate::resource_limits::decode_file(src)?;
-    Ok((decoded, read_orientation(src)))
+    Ok((decoded, read_orientation(src)?))
 }
 
 /// Decodes one image, applies its EXIF orientation, writes the thumbnail and
@@ -233,9 +233,8 @@ fn decode_for_preview(
     }
 }
 
-/// The tee variant for a provisionally-identified image: the derive was going
-/// to read every byte anyway, so the REAL full hash comes free — read once,
-/// hash the bytes, decode from memory, and write the cache under the real
+/// Derives a provisionally identified image by streaming its full hash, then
+/// decoding it separately within the decode limits. The cache uses the real
 /// key. Returns (real_hash, facts); the caller promotes the identity.
 pub fn generate_for_image_teeing(
     src: &Path,
@@ -1247,15 +1246,17 @@ fn fit_long_edge(img: &DynamicImage, long_edge: u32, filter: image::imageops::Fi
     img.resize_exact(nw, nh, filter)
 }
 
-/// EXIF orientation (1–8) via nom-exif; 1 (or unreadable) means as-stored.
-fn read_orientation(src: &Path) -> u16 {
+/// Missing optional orientation means as-stored; failed source I/O must not
+/// publish an incorrectly oriented cache as a successful derivation.
+fn read_orientation(src: &Path) -> Result<u16, String> {
     match crate::metadata::read_exif(src) {
-        Ok(exif) => match exif.get(nom_exif::ExifTag::Orientation) {
+        Ok(exif) => Ok(match exif.get(nom_exif::ExifTag::Orientation) {
             Some(nom_exif::EntryValue::U16(v)) => *v,
             Some(nom_exif::EntryValue::U32(v)) => *v as u16,
             _ => 1,
-        },
-        Err(_) => 1,
+        }),
+        Err(nom_exif::Error::Io(error)) => Err(error.to_string()),
+        Err(_) => Ok(1),
     }
 }
 

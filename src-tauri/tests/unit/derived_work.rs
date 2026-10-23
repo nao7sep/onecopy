@@ -283,3 +283,18 @@ fn a_transcription_panic_becomes_a_durable_item_failure() {
     assert!(matches!(outcome, TranscriptionAttemptOutcome::Failed { .. }));
     assert_eq!(crate::derived_state::transcript_result(&conn, "media").unwrap().status, crate::derived_state::FAILED);
 }
+
+#[test]
+fn settled_global_preview_search_waits_for_new_debt_but_denied_turns_do_not_settle() {
+    let mut cursors = CandidateCursors::default();
+    assert!(!cursors.run_preview_search(|| Ok((false, false))).unwrap());
+    assert!(cursors.run_preview_search(|| Ok((true, true))).unwrap());
+    assert!(!cursors.run_preview_search(|| Ok((false, true))).unwrap());
+    for _ in 0..10 {
+        assert!(!cursors.run_preview_search(|| panic!("idle wake searched a settled library")).unwrap());
+    }
+    cursors.invalidate();
+    assert!(cursors.run_preview_search(|| Ok((true, true))).unwrap());
+    assert!(cursors.run_preview_search(|| Err("interrupted".to_string())).is_err());
+    assert!(cursors.run_preview_search(|| Ok((true, true))).unwrap());
+}

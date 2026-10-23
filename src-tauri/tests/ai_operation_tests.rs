@@ -89,6 +89,7 @@ fn transcript_attempt<'a>(
 }
 
 #[test]
+#[serial_test::serial(transcription)]
 fn audio_and_video_use_one_transcript_publication_and_restart_contract() {
     let root = tempfile::tempdir().unwrap();
     let db = root.path().join("index.sqlite3");
@@ -149,6 +150,7 @@ fn audio_and_video_use_one_transcript_publication_and_restart_contract() {
 }
 
 #[test]
+#[serial_test::serial(transcription)]
 fn cancellation_wins_over_a_late_success_before_transcript_publication() {
     let root = tempfile::tempdir().unwrap();
     let conn = index_store::open(&root.path().join("index.sqlite3")).unwrap();
@@ -186,6 +188,7 @@ fn cancellation_wins_over_a_late_success_before_transcript_publication() {
 }
 
 #[test]
+#[serial_test::serial(transcription)]
 fn transcript_empty_failure_cancellation_retry_and_replacement_share_one_owner() {
     let root = tempfile::tempdir().unwrap();
     let conn = index_store::open(&root.path().join("index.sqlite3")).unwrap();
@@ -444,4 +447,31 @@ fn face_inference_panic_records_one_failure_and_the_next_item_completes() {
         assert_eq!(matches!(outcome, FaceScoringAttemptOutcome::Failed { .. }), hash == "panic");
     }
     assert_eq!(conn.query_row("SELECT count(*) FROM active_issues WHERE kind = ?1", [derived_state::FACE_ERROR], |row| row.get::<_, i64>(0)).unwrap(), 1);
+}
+
+#[test]
+#[serial_test::serial(transcription)]
+fn cancellation_during_inference_fences_the_late_success_and_receipt() {
+    let root = tempfile::tempdir().unwrap();
+    let conn = index_store::open(&root.path().join("index.sqlite3")).unwrap();
+    let cache = preview::CachePaths::new(root.path().join("cache"));
+    insert(&conn, "late-inference", "audio", "late-inference.flac");
+    let outcome = complete_transcription_attempt_with_inference(
+        transcript_attempt(&conn, &cache, root.path(), "late-inference", "late-inference.flac", false),
+        |_| {}, |_| {}, |_, _| {}, |_| {
+            assert!(transcription::request_cancel(), "the shared core owns the real transcription claim");
+            Ok(spoken("late success must be discarded"))
+        },
+    ).unwrap();
+    assert_eq!(outcome, TranscriptionAttemptOutcome::Cancelled { hash: "late-inference".to_string() });
+    assert_eq!(stored_text(&conn, "late-inference"), None);
+    // The transcript row is the durable success receipt, including for empty speech.
+    let receipts: i64 = conn.query_row(
+        "SELECT count(*) FROM transcripts WHERE content_hash = ?1",
+        ["late-inference"], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(receipts, 0);
+    let status = derived_state::transcript_result(&conn, "late-inference").unwrap().status;
+    assert!(![derived_state::READY, derived_state::FAILED].contains(&status), "{status}");
+    assert!(!transcription::is_cancelled(), "the core releases its claim after settlement");
 }

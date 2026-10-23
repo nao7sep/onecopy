@@ -165,6 +165,47 @@ fn model_less_pass_is_a_silent_no_op_leaving_scores_null() {
 }
 
 #[test]
+fn expression_failures_record_failure_without_publishing_face_success() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    let cache = onecopy_lib::preview::CachePaths::new(dir.path().join("cache"));
+    for (hash, message) in [
+        ("runtime", "expression inference failed: runtime failure"),
+        ("shape", "expression model returned 7 classes, not 8"),
+    ] {
+        seed_image(&conn, hash, &format!("{hash}.jpg"));
+        let preview = cache.preview(hash);
+        std::fs::create_dir_all(preview.parent().unwrap()).unwrap();
+        image::DynamicImage::new_rgb8(2, 2).save(preview).unwrap();
+        let mut changed = Vec::new();
+        let outcome = face::complete_face_scoring_attempt(
+            &conn,
+            &cache,
+            hash,
+            &format!("/pics/{hash}.jpg"),
+            &|| false,
+            |hash| changed.push(hash.to_string()),
+            |_| Err(message.to_string()),
+        )
+        .unwrap();
+        assert_eq!(outcome, face::FaceScoringAttemptOutcome::Failed {
+            message: message.to_string(), issues_changed: true,
+        });
+        assert_eq!(changed, [hash]);
+        let counts: (i64, i64, i64, i64) = conn.query_row(
+            "SELECT (SELECT count(*) FROM face_checks WHERE content_hash = ?1),
+                    (SELECT count(*) FROM faces WHERE content_hash = ?1),
+                    (SELECT count(*) FROM face_scores WHERE content_hash = ?1),
+                    (SELECT count(*) FROM records.analysis_events
+                     WHERE content_hash = ?1 AND event = ?2 AND message = ?3)",
+            params![hash, onecopy_lib::derived_state::FAILED, message],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        ).unwrap();
+        assert_eq!(counts, (0, 0, 0, 1));
+    }
+}
+
+#[test]
 fn nms_keeps_the_best_of_an_overlapping_pile_and_all_distinct_faces() {
     let at = |x: f32, confidence: f32| Face { confidence, x1: x, y1: 0.1, x2: x + 0.2, y2: 0.3 };
     let kept = face::non_max_suppression(vec![
