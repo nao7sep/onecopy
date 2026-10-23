@@ -1389,21 +1389,22 @@ async fn binaries_check(
 // currently present (an unmounted volume manifests as a missing directory).
 #[tauri::command]
 async fn check_source_dirs() -> Result<volume::SourceDirsStatus, String> {
-    let result = dispatch(move || {
-        let root = paths::data_root()?;
-        let status = volume::verify_source_dirs(&root)?;
-        let config = storage::config(&root)?;
-        let settings = scanner::settings_from_config(Some(&config), &root, 0);
-        watcher::reconcile_source_conditions(&root, &settings.source_dirs, &status.missing, &status.substituted)?;
-        watcher::reconcile_unidentified_sources(&root, &settings.source_dirs, &status.unidentified)?;
-        Ok(status)
-    }).await;
-    logging::boundary(
-        "check_source_dirs",
-        json!({}),
-        || result,
-        |status| json!({ "missing": status.missing.len(), "substituted": status.substituted.len() }),
-    )
+    dispatch(move || {
+        logging::boundary(
+            "check_source_dirs",
+            json!({}),
+            || {
+                let root = paths::data_root()?;
+                let status = volume::verify_source_dirs(&root)?;
+                let config = storage::config(&root)?;
+                let settings = scanner::settings_from_config(Some(&config), &root, 0);
+                watcher::reconcile_source_conditions(&root, &settings.source_dirs, &status.missing, &status.substituted)?;
+                watcher::reconcile_unidentified_sources(&root, &settings.source_dirs, &status.unidentified)?;
+                Ok(status)
+            },
+            |status| json!({ "missing": status.missing.len(), "substituted": status.substituted.len() }),
+        )
+    }).await
 }
 
 // The comparison view's group members for one item, best-first.
