@@ -203,8 +203,36 @@ fn a_walk_that_goes_quiet_is_abandoned_after_the_entries_it_produced() {
     assert_eq!(failure(&error), Some(WaitFailure::NotResponding));
     assert!(seen.iter().all(|path| !path.starts_with(dir.path().join("zz-stalls"))));
     assert!(volume.is_stalled());
+    drop(walk); // An already-abandoned producer must not be counted twice.
     volume.release();
     assert!(volume.wait_until_settled(Duration::from_secs(5)));
+}
+
+#[test]
+fn an_early_dropped_walk_owns_its_blocked_producer_until_settlement() {
+    let dir = tempfile::tempdir().unwrap();
+    let child = dir.path().join("child");
+    std::fs::write(&child, b"x").unwrap();
+    let volume = FakeStallingVolume::mount(dir.path(), Duration::from_secs(30));
+    volume.stall(&[Op::List], Some(&child));
+    let mut walk = volume_io::walk(dir.path(), |_, _| true).unwrap();
+    assert!(volume.wait_until_held(1, Duration::from_secs(5)));
+    // A buffered root is returned even when cancellation has been requested.
+    assert_eq!(walk.next(Some(&|| true)).unwrap().unwrap().unwrap().path, dir.path());
+    drop(walk);
+    assert!(volume.is_stalled());
+    let error = match volume_io::walk(dir.path(), |_, _| true) {
+        Err(error) => error,
+        Ok(_) => panic!("a replacement must not admit another producer"),
+    };
+    assert_eq!(failure(&error), Some(WaitFailure::Stalled));
+    volume.release();
+    assert!(volume.wait_until_walks_returned(1, Duration::from_secs(5)));
+    assert!(volume.wait_until_settled(Duration::from_secs(5)));
+    let mut replacement = volume_io::walk(dir.path(), |_, _| true).unwrap();
+    while let Some(entry) = replacement.next(None) { entry.unwrap().unwrap(); }
+    drop(replacement);
+    assert!(!volume.is_stalled());
 }
 
 #[test]

@@ -1290,24 +1290,15 @@ impl Walk {
             } else {
                 continue;
             };
-            let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
-            if *state == CallState::Done {
+            if !self.abandon() {
                 // The walk finished between the last poll and this check: its
                 // remaining entries and its end are queued, never dropped, so
                 // a walk cut short is still never read as a complete one.
-                drop(state);
                 self.producer_done = true;
                 let message = self.receiver.recv().ok();
                 return self.deliver(message);
             }
             self.finished = true;
-            self.stop.store(true, Ordering::Release);
-            *state = CallState::Abandoned;
-            *registry()
-                .abandoned
-                .entry(self.lane.key.clone())
-                .or_insert(0) += 1;
-            drop(state);
             let wait = VolumeWait {
                 failure,
                 volume: self.lane.display.clone(),
@@ -1325,6 +1316,23 @@ impl Walk {
                 }),
             );
             return Some(Err(wait.into_io()));
+        }
+    }
+
+    // Dropping a consumer does not settle its filesystem call. Count the
+    // producer once until it physically returns, including early drops with
+    // buffered entries that never entered next()'s timeout path.
+    fn abandon(&self) -> bool {
+        self.stop.store(true, Ordering::Release);
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        match *state {
+            CallState::Done => false,
+            CallState::Abandoned => true,
+            CallState::Running => {
+                *state = CallState::Abandoned;
+                *registry().abandoned.entry(self.lane.key.clone()).or_insert(0) += 1;
+                true
+            }
         }
     }
 
@@ -1362,7 +1370,7 @@ impl Walk {
 
 impl Drop for Walk {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
+        self.abandon();
     }
 }
 
