@@ -397,7 +397,22 @@ pub fn save_records_window_state(root: &Path, state: &JsonValue) -> Result<(), S
 /// this read sets aside is returned beside the value for its caller to report.
 pub fn read_state(root: &Path) -> Result<(Option<JsonValue>, Option<QuarantineRecord>), String> {
     let read = read_json_optional(&root.join(STATE_FILE_NAME), formats::STATE)?;
-    Ok((read.value, read.quarantined))
+    Ok((normalize_presentation_state(read.value), read.quarantined))
+}
+
+// Optional presentation state is untrusted even inside a valid format envelope.
+// Discard only unusable fields so unrelated placement and selection survive.
+fn normalize_presentation_state(state: Option<JsonValue>) -> Option<JsonValue> {
+    let mut state = state?;
+    let object = state.as_object_mut()?;
+    if let Some(section) = object.get("lastSection") {
+        let valid = section.as_object().is_some_and(|section| {
+            matches!(section.get("kind").and_then(JsonValue::as_str), Some("image" | "video" | "other"))
+                && section.get("month").is_some_and(JsonValue::is_string)
+        });
+        if !valid { object.remove("lastSection"); }
+    }
+    Some(state)
 }
 
 pub fn load_from_root(root: &Path) -> Result<LoadedAppData, String> {
@@ -410,7 +425,7 @@ pub fn load_from_root(root: &Path) -> Result<LoadedAppData, String> {
     Ok(LoadedAppData {
         config,
         config_defaults: effective_config(None),
-        state: state_read.value,
+        state: normalize_presentation_state(state_read.value),
         data_root: root.to_string_lossy().into_owned(),
         debug_enabled: false,
         ai_acceleration_capabilities: crate::ai_acceleration::capabilities(None)

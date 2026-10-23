@@ -706,3 +706,27 @@ fn volatile_state_written_by_a_newer_onecopy_reads_as_absent_and_is_not_saved_ov
     assert_eq!(std::fs::read(dir.join(STATE_FILE_NAME)).unwrap(), state);
     assert_eq!(std::fs::read(dir.join(WINDOW_FILE_NAME)).unwrap(), window);
 }
+
+#[test]
+#[serial(quarantine_journal)]
+fn malformed_optional_section_is_absent_at_both_state_read_boundaries() {
+    let root = temp_dir("optional-section");
+    for section in [serde_json::Value::Null, serde_json::json!(42),
+        serde_json::json!({"kind":"image"}),
+        serde_json::json!({"kind":"unknown","month":"2026-10"})] {
+        let value = serde_json::json!({"formatVersion":1,"lastSection":section,"zoomLevel":1.2});
+        std::fs::write(root.path().join(STATE_FILE_NAME), serde_json::to_vec(&value).unwrap()).unwrap();
+        for state in [read_state(root.path()).unwrap().0, load_from_root(root.path()).unwrap().state] {
+            let state = state.unwrap();
+            assert!(state.get("lastSection").is_none());
+            assert_eq!(state["zoomLevel"], 1.2);
+        }
+    }
+    for kind in ["image", "video", "other"] {
+        let section = serde_json::json!({"kind":kind,"month":"2026-10"});
+        let value = serde_json::json!({"formatVersion":1,"lastSection":section});
+        std::fs::write(root.path().join(STATE_FILE_NAME), serde_json::to_vec(&value).unwrap()).unwrap();
+        assert_eq!(read_state(root.path()).unwrap().0.unwrap()["lastSection"], section);
+        assert_eq!(load_from_root(root.path()).unwrap().state.unwrap()["lastSection"], section);
+    }
+}
