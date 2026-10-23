@@ -36,6 +36,11 @@ use std::time::{Duration, Instant};
 use tauri::AppHandle;
 
 static ACTIVE_OWNER: AtomicU8 = AtomicU8::new(0);
+// Owner publication, cancellation and retirement change one logical state.
+// Keep the atomics for readers, but serialize their writes so a cancellation
+// observed for an old owner cannot reach a successor's cancellation bit.
+// Never acquire the index mutex or run owner callbacks under this lock.
+static OWNER_TRANSITION: Mutex<()> = Mutex::new(());
 static FOREGROUND_WAITERS: AtomicUsize = AtomicUsize::new(0);
 static BACKGROUND_WAITERS: AtomicUsize = AtomicUsize::new(0);
 static URGENT_WAITERS: AtomicUsize = AtomicUsize::new(0);
@@ -208,16 +213,22 @@ struct ActiveOwner {
 
 impl Drop for ActiveOwner {
     fn drop(&mut self) {
-        // Retire the addressable owner before clearing its cancellation bit.
-        // A concurrent stop then either targets this turn and is cleared here,
-        // or observes no owner; it cannot strand cancellation for the next.
-        // A yielded owner that never resumed no longer owns the bit.
-        if ACTIVE_OWNER
-            .compare_exchange(self.owner as u8, 0, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            crate::scanner::SCAN_CANCEL.store(false, Ordering::SeqCst);
-        }
+        retire(self.owner);
+    }
+}
+
+fn owner_transition() -> MutexGuard<'static, ()> {
+    OWNER_TRANSITION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn retire(owner: Owner) {
+    let _transition = owner_transition();
+    // A yielded owner that never resumed no longer owns the bit.
+    if ACTIVE_OWNER.load(Ordering::SeqCst) == owner as u8 {
+        ACTIVE_OWNER.store(0, Ordering::SeqCst);
+        crate::scanner::SCAN_CANCEL.store(false, Ordering::SeqCst);
     }
 }
 
@@ -225,10 +236,14 @@ fn publish(owner: Owner, cancelled: &dyn Fn() -> bool) {
     // Sample on both sides of publication. Before ACTIVE_OWNER is visible the
     // owner-specific stop flag is authoritative; afterwards request_cancel
     // can target this turn directly. No stop can fall between the two owners.
-    crate::scanner::SCAN_CANCEL.store(cancelled(), Ordering::SeqCst);
-    ACTIVE_OWNER.store(owner as u8, Ordering::SeqCst);
+    let initially_cancelled = cancelled();
+    {
+        let _transition = owner_transition();
+        crate::scanner::SCAN_CANCEL.store(initially_cancelled, Ordering::SeqCst);
+        ACTIVE_OWNER.store(owner as u8, Ordering::SeqCst);
+    }
     if cancelled() {
-        crate::scanner::SCAN_CANCEL.store(true, Ordering::SeqCst);
+        request_cancel(owner);
     }
 }
 
@@ -238,7 +253,19 @@ fn enter(owner: Owner, cancelled: &dyn Fn() -> bool) -> ActiveOwner {
 }
 
 pub(crate) fn request_cancel(owner: Owner) {
+    #[cfg(test)]
+    cancel_at_transition(owner, || {});
+    #[cfg(not(test))]
+    cancel_at_transition(owner);
+}
+
+fn cancel_at_transition(owner: Owner, #[cfg(test)] before_write: impl FnOnce()) {
+    let _transition = owner_transition();
     if ACTIVE_OWNER.load(Ordering::SeqCst) == owner as u8 {
+        // Tests pause at the formerly racy read/write boundary. Production
+        // performs only the atomic state transition while holding the lock.
+        #[cfg(test)]
+        before_write();
         crate::scanner::SCAN_CANCEL.store(true, Ordering::SeqCst);
     }
 }
@@ -405,12 +432,7 @@ pub(crate) fn yield_at_safe_point() -> Result<bool, String> {
     let Some((owner, claim, epoch, cancelled, on_yield)) = parked else {
         return Ok(false);
     };
-    if ACTIVE_OWNER
-        .compare_exchange(owner as u8, 0, Ordering::SeqCst, Ordering::SeqCst)
-        .is_ok()
-    {
-        crate::scanner::SCAN_CANCEL.store(false, Ordering::SeqCst);
-    }
+    retire(owner);
     on_yield(true);
     let idle = crate::sleep_prevention::idle_while_parked();
     {

@@ -15,6 +15,42 @@ fn wait_until(condition: impl Fn() -> bool) {
 }
 
 #[test]
+fn cancellation_cannot_carry_an_old_owners_bit_into_a_successor() {
+    let _serial = serial_test();
+    let old = enter(Owner::SourceCheck, &|| false);
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let (finish_tx, finish_rx) = mpsc::channel();
+    let cancelling = std::thread::spawn(move || {
+        cancel_at_transition(Owner::SourceCheck, || {
+            observed_tx.send(()).unwrap();
+            finish_rx.recv().unwrap();
+        });
+    });
+    observed_rx.recv().unwrap();
+
+    // Cancellation has observed the old owner but has not written its bit.
+    // The successor cannot retire or publish through this same boundary
+    // until that write finishes; this checks the lock, not elapsed time.
+    let transition_held = matches!(
+        OWNER_TRANSITION.try_lock(),
+        Err(std::sync::TryLockError::WouldBlock)
+    );
+    finish_tx.send(()).unwrap();
+    cancelling.join().unwrap();
+    assert!(transition_held);
+    assert!(crate::scanner::SCAN_CANCEL.load(Ordering::SeqCst));
+
+    drop(old);
+    let successor = enter(Owner::Foreground, &|| false);
+    request_cancel(Owner::SourceCheck);
+    assert_eq!(ACTIVE_OWNER.load(Ordering::SeqCst), Owner::Foreground as u8);
+    assert!(!crate::scanner::SCAN_CANCEL.load(Ordering::SeqCst));
+    drop(successor);
+    assert_eq!(ACTIVE_OWNER.load(Ordering::SeqCst), 0);
+    assert!(!crate::scanner::SCAN_CANCEL.load(Ordering::SeqCst));
+}
+
+#[test]
 fn cancellation_is_revalidated_after_the_projection_lock_is_owned() {
     let _serial = serial_test();
     let ran = std::cell::Cell::new(false);

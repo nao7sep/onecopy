@@ -304,19 +304,21 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
             return Ok(());
         }
         if std::time::Instant::now() >= next_presence {
-            let verified = crate::volume::verify_source_dirs(&data_root);
-            let (missing, substituted, unidentified, unknown) = match verified {
-                Ok(status) => (status.missing, status.substituted, status.unidentified, false),
+            let verified = crate::volume::probe_source_dirs(&data_root);
+            let (missing, substituted, unidentified, uncertain, all_unknown) = match verified {
+                Ok(status) => (status.missing, status.substituted, status.unidentified, status.uncertain, false),
                 Err(error) => {
                     logging::warn("source availability verification failed", json!({"error": {"message": error}}));
-                    (source_dirs.clone(), Vec::new(), Vec::new(), true)
+                    (source_dirs.clone(), Vec::new(), Vec::new(), Vec::new(), true)
                 }
             };
+            let unknown = all_unknown || !uncertain.is_empty();
             if !owns_generation(generation) { return Ok(()); }
             let recovering = last_status.is_some();
-            let status = (missing.clone(), substituted.clone(), unidentified.clone(), unknown);
+            let status = (missing.clone(), substituted.clone(), unidentified.clone(), uncertain.clone(), all_unknown);
             if last_status.as_ref() != Some(&status) {
-                reconcile_source_conditions(&data_root, &source_dirs, &missing, &substituted)?;
+                let unavailable: Vec<String> = missing.iter().chain(&uncertain).cloned().collect();
+                reconcile_source_conditions(&data_root, &source_dirs, &unavailable, &substituted)?;
                 if !unknown {
                     reconcile_unidentified_sources(&data_root, &source_dirs, &unidentified)?;
                 }
@@ -324,7 +326,7 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
                     json!({"missing": missing, "substituted": substituted, "presenceUnknown": unknown}));
                 last_status = Some(status);
             }
-            let registrations = reconcile_watches(&source_dirs, &mut watchers, &missing, &substituted, unknown, &mut |index, root| {
+            let registrations = reconcile_watches(&source_dirs, &mut watchers, &missing, &substituted, &uncertain, all_unknown, &mut |index, root| {
                 let sender = tx.clone();
                 let overflow = recovery_flags[index].1.clone();
                 watch_root(Path::new(root), move |event| forward_or_flag_overflow(&sender, &overflow, event))
@@ -356,11 +358,8 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
             continue;
         }
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while let Ok(event) =
-            rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
-        {
-            collect(event, &mut dirty, &mut overflowed, &data_root);
-        }
+        drain_events(&rx, deadline, std::time::Instant::now, || owns_generation(generation),
+            |event| collect(event, &mut dirty, &mut overflowed, &data_root));
 
         if !owns_generation(generation) {
             return Ok(());
@@ -425,15 +424,32 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
     }
 }
 
+/// A busy queue must still reach the batch deadline and generation boundary.
+/// Stop before receiving so pending events remain owned by the next batch.
+fn drain_events<T>(
+    receiver: &mpsc::Receiver<T>, deadline: std::time::Instant,
+    mut now: impl FnMut() -> std::time::Instant,
+    mut live: impl FnMut() -> bool, mut collect: impl FnMut(T),
+) {
+    while live() {
+        let current = now();
+        if current >= deadline { break; }
+        match receiver.recv_timeout(deadline.duration_since(current)) {
+            Ok(event) => collect(event),
+            Err(_) => break,
+        }
+    }
+}
+
 /// Registration belongs to the availability transition, including when no
 /// watch has ever existed. Failed registration stays owed for the next probe.
 fn reconcile_watches<W>(
-    roots: &[String], watches: &mut [Option<W>], missing: &[String], substituted: &[String], unknown: bool,
+    roots: &[String], watches: &mut [Option<W>], missing: &[String], substituted: &[String], uncertain: &[String], all_unknown: bool,
     register: &mut dyn FnMut(usize, &str) -> Result<W, String>,
 ) -> Vec<(usize, Result<(), String>)> {
     let mut results = Vec::new();
     for (index, root) in roots.iter().enumerate() {
-        if unknown || missing.contains(root) || substituted.contains(root) {
+        if all_unknown || missing.contains(root) || substituted.contains(root) || uncertain.contains(root) {
             watches[index] = None;
         } else if watches[index].is_none() {
             let result = register(index, root).map(|watch| { watches[index] = Some(watch); });

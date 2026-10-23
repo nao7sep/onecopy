@@ -113,20 +113,20 @@ fn sources_offline_at_launch_register_on_return_and_retry_failed_registration() 
     let mut watches = vec![None, None];
     let mut calls = Vec::new();
     let mut register = |_: usize, root: &str| { calls.push(root.to_string()); Ok(root.to_string()) };
-    assert!(super::reconcile_watches(&roots, &mut watches, &roots, &[], false, &mut register).is_empty());
-    let returned = super::reconcile_watches(&roots, &mut watches, &[], &[], false, &mut register);
+    assert!(super::reconcile_watches(&roots, &mut watches, &roots, &[], &[], false, &mut register).is_empty());
+    let returned = super::reconcile_watches(&roots, &mut watches, &[], &[], &[], false, &mut register);
     assert_eq!(returned.len(), 2);
     assert!(returned.iter().all(|(_, result)| result.is_ok()));
-    assert!(super::reconcile_watches(&roots, &mut watches, &[], &[], false, &mut register).is_empty());
-    super::reconcile_watches(&roots, &mut watches, &roots, &[], false, &mut register);
-    let refused = super::reconcile_watches(&roots, &mut watches, &[], &roots, false, &mut register);
+    assert!(super::reconcile_watches(&roots, &mut watches, &[], &[], &[], false, &mut register).is_empty());
+    super::reconcile_watches(&roots, &mut watches, &roots, &[], &[], false, &mut register);
+    let refused = super::reconcile_watches(&roots, &mut watches, &[], &roots, &[], false, &mut register);
     assert!(refused.is_empty(), "a substituted drive never registers");
-    assert!(super::reconcile_watches(&roots, &mut watches, &[], &[], true, &mut register).is_empty());
+    assert!(super::reconcile_watches(&roots, &mut watches, &[], &[], &[], true, &mut register).is_empty());
     assert_eq!(calls, roots);
-    let failed = super::reconcile_watches(&roots, &mut watches, &[], &[], false, &mut |_, _| Err("busy".to_string()));
+    let failed = super::reconcile_watches(&roots, &mut watches, &[], &[], &[], false, &mut |_, _| Err("busy".to_string()));
     assert!(failed.iter().all(|(_, result)| result.is_err()));
     assert!(watches.iter().all(Option::is_none));
-    assert_eq!(super::reconcile_watches(&roots, &mut watches, &[], &[], false, &mut |_, root| Ok(root.to_string())).len(), 2);
+    assert_eq!(super::reconcile_watches(&roots, &mut watches, &[], &[], &[], false, &mut |_, root| Ok(root.to_string())).len(), 2);
 }
 
 // The event fold and the callback's queue hand-off are private; these tests
@@ -287,4 +287,88 @@ mod events {
         assert!(!other_root.load(Ordering::SeqCst));
         assert!(rx.try_recv().is_err(), "the root's flag drives recovery even on an idle queue");
     }
+}
+
+#[test]
+fn uncertain_sources_retire_only_their_watch_and_recover_without_interrupting_healthy_roots() {
+    let data = tempfile::tempdir().unwrap();
+    let roots = vec!["uncertain".to_string(), "healthy".to_string(), "missing".to_string(), "substituted".to_string()];
+    let mut watches = vec![Some(10), Some(20), Some(30), Some(40)];
+    let uncertain = &roots[..1];
+    let missing = &roots[2..3];
+    let substituted = &roots[3..];
+    assert!(super::reconcile_watches(&roots, &mut watches, missing, substituted, uncertain, false,
+        &mut |_, _| panic!("healthy watch stays registered")).is_empty());
+    assert_eq!(watches, vec![None, Some(20), None, None]);
+    let unavailable: Vec<_> = missing.iter().chain(uncertain).cloned().collect();
+    super::reconcile_source_conditions(data.path(), &roots, &unavailable, substituted).unwrap();
+    let conn = crate::index_store::open(&data.path().join(crate::storage::INDEX_DB_FILE_NAME)).unwrap();
+    let affected = || {
+        let mut statement = conn.prepare("SELECT path FROM active_issues WHERE kind = 'source-unavailable' ORDER BY path").unwrap();
+        let rows = statement.query_map([], |row| row.get::<_, String>(0)).unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>().unwrap();
+        rows
+    };
+    assert_eq!(affected(), vec!["missing", "substituted", "uncertain"]);
+    let recovered = super::reconcile_watches(&roots, &mut watches, missing, substituted, &[], false,
+        &mut |index, _| Ok(index));
+    assert_eq!(recovered, vec![(0, Ok(()))]);
+    assert_eq!(watches, vec![Some(0), Some(20), None, None]);
+    super::reconcile_source_conditions(data.path(), &roots, missing, substituted).unwrap();
+    assert_eq!(affected(), vec!["missing", "substituted"]);
+    super::reconcile_watches(&roots, &mut watches, &[], &[], &[], true,
+        &mut |_, _| panic!("whole-store uncertainty disables all watches"));
+    assert!(watches.iter().all(Option::is_none));
+}
+
+#[test]
+fn a_nonempty_event_queue_stops_at_the_deadline_and_retains_its_backlog() {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(3);
+    for event in 0..3 { sender.send(event).unwrap(); }
+    let start = std::time::Instant::now();
+    let deadline = start + std::time::Duration::from_secs(2);
+    let mut ticks = 0;
+    let mut collected = Vec::new();
+    super::drain_events(&receiver, deadline, || {
+        let now = start + std::time::Duration::from_secs(ticks);
+        ticks += 1;
+        now
+    }, || true, |event| collected.push(event));
+    assert_eq!(collected, vec![0, 1]);
+    assert_eq!(receiver.try_recv().unwrap(), 2);
+}
+
+#[test]
+fn a_retired_generation_stops_before_receiving_queued_events() {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(2);
+    sender.send(0).unwrap();
+    sender.send(1).unwrap();
+    let now = std::time::Instant::now();
+    let mut checks = 0;
+    let mut collected = Vec::new();
+    super::drain_events(&receiver, now + std::time::Duration::from_secs(2), || now, || {
+        checks += 1;
+        checks == 1
+    }, |event| collected.push(event));
+    assert_eq!(collected, vec![0]);
+    assert_eq!(receiver.try_recv().unwrap(), 1);
+}
+
+#[test]
+fn stopping_a_batch_preserves_collected_overflow_and_queued_events() {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(2);
+    sender.send(Err(notify::Error::generic("events lost"))).unwrap();
+    sender.send(Err(notify::Error::generic("next batch"))).unwrap();
+    let start = std::time::Instant::now();
+    let mut ticks = 0;
+    let mut dirty = std::collections::HashSet::new();
+    let mut overflowed = false;
+    super::drain_events(&receiver, start + std::time::Duration::from_secs(1), || {
+        let now = start + std::time::Duration::from_secs(ticks);
+        ticks += 1;
+        now
+    }, || true, |event| super::collect(event, &mut dirty, &mut overflowed, &std::path::PathBuf::from("/onecopy-test-data-root-never-used")));
+    assert!(overflowed);
+    assert!(dirty.is_empty());
+    assert!(receiver.try_recv().unwrap().is_err());
 }

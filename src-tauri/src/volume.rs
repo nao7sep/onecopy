@@ -313,6 +313,10 @@ mod tests;
 #[serde(rename_all = "camelCase")]
 pub struct SourceDirsStatus {
     pub missing: Vec<String>,
+    /// Recorded identities that could not be checked; internal watcher scoping
+    /// retains healthy sources while the public verification gate stays closed.
+    #[serde(skip)]
+    pub(crate) uncertain: Vec<String>,
     pub substituted: Vec<String>,
     /// Present folders whose drive has no identity OneCopy can read (some
     /// network shares): a different drive mounted there would go unnoticed.
@@ -360,6 +364,23 @@ pub fn verify_source_dirs_with(
     data_root: &Path,
     identity_of_path: &dyn Fn(&Path) -> Option<String>,
 ) -> Result<SourceDirsStatus, String> {
+    let status = probe_source_dirs_with(data_root, identity_of_path)?;
+    if !status.uncertain.is_empty() {
+        return Err(format!("could not verify the recorded volume for {}", status.uncertain.join(", ")));
+    }
+    Ok(status)
+}
+
+pub(crate) fn probe_source_dirs(data_root: &Path) -> Result<SourceDirsStatus, String> {
+    probe_source_dirs_with(data_root, &volume_identity)
+}
+
+/// Collect every source's result even when another recorded identity cannot
+/// be read. Store/configuration failures still leave the entire probe unknown.
+fn probe_source_dirs_with(
+    data_root: &Path,
+    identity_of_path: &dyn Fn(&Path) -> Option<String>,
+) -> Result<SourceDirsStatus, String> {
     let config = storage::config(data_root)?;
     let settings = crate::scanner::settings_from_config(Some(&config), data_root, 0);
     let recorded = {
@@ -377,7 +398,8 @@ pub fn verify_source_dirs_with(
         }
         let Some(current) = identity_of_path(path) else {
             if recorded.contains_key(dir) {
-                return Err(format!("could not verify the recorded volume for {dir}"));
+                status.uncertain.push(dir.clone());
+                continue;
             }
             logging::debug(
                 "no volume identity readable; presence-only verification",
