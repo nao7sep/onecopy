@@ -1980,18 +1980,22 @@ pub fn extract_pending(conn: &Connection) -> Result<ExtractStats, String> {
     extract_pending_with_progress(conn, &|_| {})
 }
 
+// Bound owned native-path/name strings independently of pending library size.
+const EXTRACT_PAGE_SIZE: usize = 256;
+
 fn extract_pending_with_progress(
     conn: &Connection,
     progress: &dyn Fn(ScanProgress),
 ) -> Result<ExtractStats, String> {
     let mut stats = ExtractStats::default();
 
-    let rows: Vec<(i64, String, String, String)> = collect_rows_4(
-        conn,
-        "SELECT id, abs_path, file_name, kind FROM paths \
+    check_cancel()?;
+    let (total, upper_id): (i64, i64) = conn.query_row(
+        "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM paths
          WHERE missing = 0 AND indexed_at_utc IS NULL AND metadata_attempt_failed = 0",
-    )?;
-    let total = rows.len() as u64;
+        [], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).map_err(|error| error.to_string())?;
+    let total = total as u64;
     let mut done = 0u64;
     progress(ScanProgress::phase(
         ScanPhase::Extract,
@@ -1999,103 +2003,125 @@ fn extract_pending_with_progress(
         Some(ScanPhase::Resolve),
     ));
 
-    for (id, abs, file_name, kind) in rows {
+    let mut after_id = 0i64;
+    while after_id < upper_id {
         check_cancel()?;
-        progress(ScanProgress::at_path(
-            ScanPhase::Extract,
-            done,
-            total,
-            &abs,
-            stats.failed,
-            ScanPhase::Resolve,
-        ));
-        let native_path = crate::native_path::from_text(&abs);
-        let path = native_path.as_ref();
-        let meta = match kind.as_str() {
-            "image" => metadata::read_image_metadata(path).map(Some),
-            "video" => metadata::read_video_metadata(path).map(Some),
-            // Companion RAW files are TIFF containers with readable EXIF.
-            "companion" => metadata::read_image_metadata(path).map(Some),
-            _ => Ok(None),
+        // A captured upper bound leaves arrivals to the next pass. Re-read
+        // eligibility on each page so removed or already-completed rows do
+        // not receive stale work, and release the reader before file I/O.
+        let rows: Vec<(i64, String, String, String)> = {
+            let mut statement = conn.prepare_cached(
+                "SELECT id, abs_path, file_name, kind FROM paths
+                 WHERE id > ?1 AND id <= ?2 AND missing = 0
+                   AND indexed_at_utc IS NULL AND metadata_attempt_failed = 0
+                 ORDER BY id LIMIT ?3",
+            ).map_err(|error| error.to_string())?;
+            let page = statement.query_map(params![after_id, upper_id, EXTRACT_PAGE_SIZE as i64], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            }).map_err(|error| error.to_string())?
+                .collect::<rusqlite::Result<Vec<_>>>().map_err(|error| error.to_string())?;
+            page
         };
-        let meta = match meta {
-            Ok(meta) => meta,
-            Err(error) => {
-                crate::information_attempts::failed(
-                    conn,
-                    id,
-                    &abs,
-                    crate::information_attempts::Stage::Metadata,
-                    &error.to_string(),
-                )?;
-                stats.failed += 1;
-                done += 1;
-                continue;
+        let Some(last) = rows.last() else { break; };
+        after_id = last.0;
+        for (id, abs, file_name, kind) in rows {
+            check_cancel()?;
+            progress(ScanProgress::at_path(
+                ScanPhase::Extract,
+                done,
+                total,
+                &abs,
+                stats.failed,
+                ScanPhase::Resolve,
+            ));
+            let native_path = crate::native_path::from_text(&abs);
+            let path = native_path.as_ref();
+            let meta = match kind.as_str() {
+                "image" => metadata::read_image_metadata(path).map(Some),
+                "video" => metadata::read_video_metadata(path).map(Some),
+                // Companion RAW files are TIFF containers with readable EXIF.
+                "companion" => metadata::read_image_metadata(path).map(Some),
+                _ => Ok(None),
+            };
+            let meta = match meta {
+                Ok(meta) => meta,
+                Err(error) => {
+                    crate::information_attempts::failed(
+                        conn,
+                        id,
+                        &abs,
+                        crate::information_attempts::Stage::Metadata,
+                        &error.to_string(),
+                    )?;
+                    stats.failed += 1;
+                    done += 1;
+                    continue;
+                }
+            };
+
+            // Re-extraction replaces this path's evidence wholesale.
+            execute_cached(conn, "DELETE FROM evidence WHERE path_id = ?1", [id])?;
+
+            if let Some(meta) = &meta {
+                store_media_facts(conn, id, meta)?;
+                if let Some(taken) = meta.taken {
+                    let raw = serde_json::to_string(&taken).map_err(|e| e.to_string())?;
+                    execute_cached(
+                        conn,
+                        "INSERT INTO evidence (path_id, source, raw, offset_known) \
+                         VALUES (?1, 'metadata', ?2, ?3)",
+                        params![
+                            id,
+                            raw,
+                            matches!(taken, metadata::MetadataTimestamp::Absolute { .. }) as i64
+                        ],
+                    )?;
+                }
+                if kind == "image" || kind == "video" {
+                    execute_cached(
+                        conn,
+                        "INSERT INTO evidence (path_id, source, raw, offset_known) \
+                         VALUES (?1, 'live-photo-identifier', ?2, 0)",
+                        params![id, meta.live_photo_identifier.as_deref()],
+                    )?;
+                }
             }
-        };
 
-        // Re-extraction replaces this path's evidence wholesale.
-        execute_cached(conn, "DELETE FROM evidence WHERE path_id = ?1", [id])?;
-
-        if let Some(meta) = &meta {
-            store_media_facts(conn, id, meta)?;
-            if let Some(taken) = meta.taken {
-                let raw = serde_json::to_string(&taken).map_err(|e| e.to_string())?;
+            if let Some(token) = timestamps::from_filename(&file_name) {
+                let raw = serde_json::to_string(&token).map_err(|e| e.to_string())?;
                 execute_cached(
                     conn,
                     "INSERT INTO evidence (path_id, source, raw, offset_known) \
-                     VALUES (?1, 'metadata', ?2, ?3)",
+                     VALUES (?1, 'filename', ?2, ?3)",
                     params![
                         id,
                         raw,
-                        matches!(taken, metadata::MetadataTimestamp::Absolute { .. }) as i64
+                        matches!(token, timestamps::FilenameTimestamp::EpochMillis(_)) as i64
                     ],
                 )?;
             }
-            if kind == "image" || kind == "video" {
-                execute_cached(
-                    conn,
-                    "INSERT INTO evidence (path_id, source, raw, offset_known) \
-                     VALUES (?1, 'live-photo-identifier', ?2, 0)",
-                    params![id, meta.live_photo_identifier.as_deref()],
-                )?;
-            }
-        }
 
-        if let Some(token) = timestamps::from_filename(&file_name) {
-            let raw = serde_json::to_string(&token).map_err(|e| e.to_string())?;
             execute_cached(
                 conn,
-                "INSERT INTO evidence (path_id, source, raw, offset_known) \
-                 VALUES (?1, 'filename', ?2, ?3)",
-                params![
-                    id,
-                    raw,
-                    matches!(token, timestamps::FilenameTimestamp::EpochMillis(_)) as i64
-                ],
+                "UPDATE paths SET indexed_at_utc = ?2 WHERE id = ?1",
+                params![id, logging::now_iso_millis()],
             )?;
+            crate::index_store::clear_issues(
+                conn,
+                &abs,
+                &[crate::information_attempts::Stage::Metadata.issue_kind()],
+            )?;
+            stats.extracted += 1;
+            done += 1;
+            progress(ScanProgress::at_path(
+                ScanPhase::Extract,
+                done,
+                total,
+                &abs,
+                stats.failed,
+                ScanPhase::Resolve,
+            ));
         }
-
-        execute_cached(
-            conn,
-            "UPDATE paths SET indexed_at_utc = ?2 WHERE id = ?1",
-            params![id, logging::now_iso_millis()],
-        )?;
-        crate::index_store::clear_issues(
-            conn,
-            &abs,
-            &[crate::information_attempts::Stage::Metadata.issue_kind()],
-        )?;
-        stats.extracted += 1;
-        done += 1;
-        progress(ScanProgress::at_path(
-            ScanPhase::Extract,
-            done,
-            total,
-            &abs,
-            stats.failed,
-            ScanPhase::Resolve,
-        ));
     }
 
     progress(ScanProgress::completed(
@@ -2706,8 +2732,8 @@ fn pair_companions_with_progress(
 
 #[cfg(test)]
 // EXCEPTION to tests-folder conventions: these assertions exercise the
-// private SQL builders used verbatim by pairing. Duplicating the queries in
-// an integration test could pass after production regressed.
+// private pairing SQL builders and extraction progress boundary. Duplicating
+// those decisions in an integration test could pass after production regressed.
 #[path = "../tests/unit/scanner.rs"]
 mod pairing_plan_tests;
 
@@ -2792,21 +2818,6 @@ fn record_issue(
         message,
     )
     .map(|_| ())
-}
-
-fn collect_rows_4(
-    conn: &Connection,
-    sql: &str,
-) -> Result<Vec<(i64, String, String, String)>, String> {
-    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-        })
-        .map_err(|e| e.to_string())?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|e| e.to_string())?;
-    Ok(rows)
 }
 
 fn ensure_trailing_separator(path: &str) -> String {

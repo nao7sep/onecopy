@@ -196,3 +196,58 @@ fn discovery_keeps_case_only_siblings_of_the_data_root() {
     assert!(!is_excluded_from_discovery(Path::new("/archive/OneCopy"), true, Some(root)));
     assert!(!is_excluded_from_discovery(Path::new("/archive/OneCopy/image.jpg"), false, Some(root)));
 }
+
+#[test]
+fn extraction_reads_only_a_page_and_leaves_new_arrivals_for_the_next_pass() {
+    use rusqlite::params;
+    let _serial = crate::scan_runtime::serial_test();
+    super::SCAN_CANCEL.store(false, std::sync::atomic::Ordering::SeqCst);
+    let temp = tempfile::tempdir().unwrap();
+    let conn = crate::index_store::open(&temp.path().join("index.sqlite3")).unwrap();
+    let total = 2 * super::EXTRACT_PAGE_SIZE as i64 + 5;
+    for id in 1..=total {
+        conn.execute(
+            "INSERT INTO paths(id, abs_path, dir_path, file_name, kind) VALUES (?1, ?2, '/fixture', ?3, 'other')",
+            params![id, format!("/fixture/{id}.txt"), format!("{id}.txt")],
+        ).unwrap();
+    }
+    let next_page = super::EXTRACT_PAGE_SIZE as i64 + 1;
+    // A deliberately unreadable SQL type detects eager string materialization
+    // beyond the page. It becomes a valid current row after processing starts.
+    conn.execute("UPDATE paths SET abs_path = CAST(abs_path AS BLOB) WHERE id = ?1", [next_page]).unwrap();
+    let changed = std::cell::Cell::new(false);
+    let stats = super::extract_pending_with_progress(&conn, &|progress| {
+        if progress.done == 1 && !changed.replace(true) {
+            conn.execute("UPDATE paths SET abs_path = CAST(abs_path AS TEXT), file_name = '20260101.txt' WHERE id = ?1", [next_page]).unwrap();
+            conn.execute("DELETE FROM paths WHERE id = ?1", [next_page + 1]).unwrap();
+            conn.execute("UPDATE paths SET missing = 1 WHERE id = ?1", [next_page + 2]).unwrap();
+            conn.execute("INSERT INTO paths(id, abs_path, dir_path, file_name, kind) VALUES (?1, '/fixture/new.txt', '/fixture', 'new.txt', 'other')", [total + 1]).unwrap();
+        }
+    }).unwrap();
+    assert!(changed.get());
+    assert_eq!(stats.extracted, (total - 2) as u64);
+    assert_eq!(stats.failed, 0);
+    assert_eq!(conn.query_row("SELECT count(*) FROM evidence WHERE path_id = ?1 AND source = 'filename'", [next_page], |row| row.get::<_, i64>(0)).unwrap(), 1);
+    assert!(conn.query_row("SELECT indexed_at_utc IS NULL FROM paths WHERE id = ?1", [total + 1], |row| row.get::<_, bool>(0)).unwrap());
+    assert!(conn.query_row("SELECT indexed_at_utc IS NULL FROM paths WHERE id = ?1", [next_page + 2], |row| row.get::<_, bool>(0)).unwrap());
+    assert_eq!(super::extract_pending(&conn).unwrap().extracted, 1);
+}
+
+#[test]
+fn cancelling_extraction_leaves_remaining_pages_eligible_for_resume() {
+    let _serial = crate::scan_runtime::serial_test();
+    super::SCAN_CANCEL.store(false, std::sync::atomic::Ordering::SeqCst);
+    let temp = tempfile::tempdir().unwrap();
+    let conn = crate::index_store::open(&temp.path().join("index.sqlite3")).unwrap();
+    let total = super::EXTRACT_PAGE_SIZE as i64 + 3;
+    for id in 1..=total {
+        conn.execute("INSERT INTO paths(id, abs_path, dir_path, file_name, kind) VALUES (?1, ?2, '/fixture', 'item.txt', 'other')", rusqlite::params![id, format!("/fixture/{id}.txt")]).unwrap();
+    }
+    let result = super::extract_pending_with_progress(&conn, &|progress| {
+        if progress.done == 1 { super::SCAN_CANCEL.store(true, std::sync::atomic::Ordering::SeqCst); }
+    });
+    super::SCAN_CANCEL.store(false, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(result.unwrap_err(), super::CANCELLED);
+    assert_eq!(conn.query_row("SELECT count(*) FROM paths WHERE indexed_at_utc IS NOT NULL", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+    assert_eq!(super::extract_pending(&conn).unwrap().extracted, (total - 1) as u64);
+}
