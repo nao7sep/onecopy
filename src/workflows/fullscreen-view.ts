@@ -370,28 +370,63 @@ export function handleSpaceFullscreenView(event: {
   return openFullscreenView();
 }
 
-export function moveFullscreenView(move: ViewerMove): void {
-  const session = useFullscreenViewStore.getState().session;
-  if (session === null) return;
+interface ViewerNavigation {
+  token: string;
+  request: number;
+  jump: "first" | "last" | null;
+  step: "previous" | "next" | null;
+}
+let navigation: ViewerNavigation | null = null;
+
+function queueViewerMove(owner: ViewerNavigation, move: ViewerMove): void {
+  const current = () => owner.request === viewerOpenRequest &&
+    useFullscreenViewStore.getState().session?.token === owner.token;
   enqueueViewerSequence(async () => {
-    if (useFullscreenViewStore.getState().session?.token !== session.token) return;
     try {
+      if (!current()) return;
       const snapshot = await invoke<ViewerSequenceSnapshot>("viewer_sequence_move", {
-        token: session.token,
+        token: owner.token,
         movement: move,
       });
-      if (useFullscreenViewStore.getState().session?.token !== session.token) return;
+      if (!current()) return;
       useFullscreenViewStore.getState().update(snapshot);
       useFullscreenViewStore.getState().setFailure(null);
       await syncMainAnchor();
     } catch (error) {
       log.error("fullscreen view navigation failed", toErrorFields(error));
-      if (useFullscreenViewStore.getState().session?.token !== session.token) return;
+      if (!current()) return;
       const failure = message("fullscreenView.navigationFailed");
       useFullscreenViewStore.getState().setFailure(failure);
       recordActionFailure("fullscreen-view-navigation-failed", failure, error);
+    } finally {
+      if (navigation === owner) {
+        const next = owner.jump ?? owner.step;
+        if (next !== null && current()) {
+          if (owner.jump !== null) owner.jump = null;
+          else owner.step = null;
+          // Rejoin the lifecycle queue after settlement, so reconciliation or
+          // retirement already admitted is never trapped behind key repeats.
+          queueViewerMove(owner, next);
+        } else navigation = null;
+      }
     }
   });
+}
+
+export function moveFullscreenView(move: ViewerMove): void {
+  const session = useFullscreenViewStore.getState().session;
+  if (session === null) return;
+  if (navigation?.token === session.token && navigation.request === viewerOpenRequest) {
+    // Retain the latest destination jump and at most one subsequent step.
+    // A direction change replaces repeat debt; a jump supersedes earlier steps.
+    if (move === "first" || move === "last") {
+      navigation.jump = move;
+      navigation.step = null;
+    } else navigation.step = move;
+    return;
+  }
+  navigation = { token: session.token, request: viewerOpenRequest, jump: null, step: null };
+  queueViewerMove(navigation, move);
 }
 
 export async function closeFullscreenView({ restoreFocus = true } = {}): Promise<void> {

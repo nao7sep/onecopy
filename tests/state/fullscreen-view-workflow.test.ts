@@ -130,6 +130,91 @@ beforeEach(() => {
 });
 
 describe("fullscreen view workflow", () => {
+  it.each(["direction", "jump", "failure", "close"])(
+    "bounds repeat debt while a native move is held and honors the latest %s intent",
+    async (intent) => {
+      openFullscreenView();
+      await vi.waitFor(() => expect(useFullscreenViewStore.getState().session).not.toBeNull());
+      const movements: unknown[] = [];
+      let settle!: () => void;
+      mockCommand("viewer_sequence_move", ({ movement }) => {
+        movements.push(movement);
+        if (movement === "next") sequenceIndex = Math.min(sequence.length - 1, sequenceIndex + 1);
+        if (movement === "previous") sequenceIndex = Math.max(0, sequenceIndex - 1);
+        if (movement === "first") sequenceIndex = 0;
+        if (movement === "last") sequenceIndex = sequence.length - 1;
+        if (movements.length === 1) return new Promise((resolve, reject) => {
+          settle = () => intent === "failure" ? reject(new Error("read interrupted")) : resolve(sequenceSnapshot());
+        });
+        return sequenceSnapshot();
+      });
+      moveFullscreenView("next");
+      await vi.waitFor(() => expect(movements).toEqual(["next"]));
+      for (let index = 0; index < 500; index += 1) moveFullscreenView("next");
+      if (intent === "jump") moveFullscreenView("first");
+      moveFullscreenView("previous");
+      if (intent === "close") await closeFullscreenView({ restoreFocus: false });
+      expect(movements).toEqual(["next"]);
+      settle();
+      // Let every queued continuation drain, including a regressed repeat FIFO.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(movements).toEqual(intent === "close" ? ["next"] : intent === "jump"
+        ? ["next", "first", "previous"] : ["next", "previous"]);
+      if (intent === "close") {
+        expect(useFullscreenViewStore.getState().session).toBeNull();
+        expect(invokeCalls.some((call) => call.command === "viewer_sequence_close")).toBe(true);
+      } else {
+        expect(useFullscreenViewStore.getState().currentKey()).toBe(intent === "jump" ? "a" : "b");
+        expect(useFullscreenViewStore.getState().failure).toBeNull();
+      }
+    },
+  );
+
+  it("drops pending navigation when a replacement session is admitted", async () => {
+    openFullscreenView();
+    await vi.waitFor(() => expect(useFullscreenViewStore.getState().session).not.toBeNull());
+    let release!: () => void;
+    let reads = 0;
+    mockCommand("viewer_sequence_move", () => {
+      if (++reads > 1) return sequenceSnapshot("fullscreen-view-token", 0);
+      return new Promise((resolve) => {
+        release = () => resolve(sequenceSnapshot("fullscreen-view-token", 2));
+      });
+    });
+    moveFullscreenView("next");
+    await vi.waitFor(() => expect(release).toBeDefined());
+    moveFullscreenView("previous");
+    openFullscreenView();
+    release();
+    await vi.waitFor(() => expect(invokeCalls.filter((call) => call.command === "viewer_sequence_start")).toHaveLength(2));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(invokeCalls.filter((call) => call.command === "viewer_sequence_move")).toHaveLength(1);
+    expect(useFullscreenViewStore.getState().currentKey()).toBe("b");
+    mockCommand("viewer_sequence_move", () => sequenceSnapshot("fullscreen-view-token", 0));
+    moveFullscreenView("previous");
+    await vi.waitFor(() => expect(useFullscreenViewStore.getState().currentKey()).toBe("a"));
+  });
+
+  it("coalesces repeats through the Main anchor lookup as well as native movement", async () => {
+    openFullscreenView();
+    await vi.waitFor(() => expect(useFullscreenViewStore.getState().session).not.toBeNull());
+    await useItemsStore.getState().select({ kind: "other", month: "undated" });
+    let release!: () => void;
+    mockCommand("get_item_section", () => new Promise((resolve) => {
+      release = () => resolve({ kind: "image", month: "2026-01" });
+    }));
+    moveFullscreenView("next");
+    await vi.waitFor(() => expect(release).toBeDefined());
+    for (let index = 0; index < 500; index += 1) moveFullscreenView("next");
+    moveFullscreenView("previous");
+    expect(invokeCalls.filter((call) => call.command === "viewer_sequence_move")).toHaveLength(1);
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(invokeCalls.filter((call) => call.command === "viewer_sequence_move")
+      .map((call) => call.args.movement)).toEqual(["next", "previous"]);
+    expect(useItemsStore.getState().selectedItem).toBe("b");
+  });
+
   it("keeps the latest open navigable when an earlier native start settles late", async () => {
     sequence = [item("a", 1), item("b", 2), item("c", 3)];
     let active: ViewerSequenceSnapshot | null = null;
