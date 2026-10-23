@@ -16,11 +16,11 @@ import { useI18n } from "../i18n/I18nContext";
 import { message, type Message } from "../i18n/translate";
 
 // Deleted files: one permission-preserving location below each configured
-// source or destination root, with per-root sizes, Reveal, and the deliberately
-// destructive convenience: Empty. Sizes are remeasured while operations change
+// source or destination root, with per-root sizes, Reveal, Browse/Restore and
+// the deliberately destructive Empty action. Sizes are remeasured as operations change
 // them; a confirmation retains exactly the measurement the user reviewed.
 // Emptying is PERMANENT, so it confirms with the exact totals it is about to
-// destroy. The storage stays write-only otherwise: the app never purges it.
+// destroy. Stored files are never purged automatically.
 
 interface TrashRootInfo {
   root: string;

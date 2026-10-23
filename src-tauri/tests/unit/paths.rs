@@ -94,12 +94,12 @@ fn is_within_data_root_matches_the_root_and_its_descendants_only() {
 // earlier build left too open must be tightened, not just a freshly created
 // one. Unix mode-bit assertions live here; Windows ACL coverage lives with
 // the Windows data-root privacy owner.
-// A freshly created root must be born owner-only, not merely
-// tightened afterward. Uses a throwaway home so a broad umask (e.g. 022)
-// cannot leave the directory briefly world-readable before any tightening.
+// This observes final Unix permissions. Restrictive creation itself is a
+// source-level guarantee of DirBuilderExt::mode; a final stat cannot establish
+// whether permissions were temporarily broader during creation.
 #[cfg(unix)]
 #[test]
-fn resolve_data_root_creates_a_fresh_root_owner_only() {
+fn a_fresh_data_root_has_owner_only_permissions() {
     use std::os::unix::fs::PermissionsExt;
 
     let home = tempfile::tempdir().unwrap();
@@ -110,7 +110,7 @@ fn resolve_data_root_creates_a_fresh_root_owner_only() {
     let mode = std::fs::metadata(&root).unwrap().permissions().mode() & 0o777;
     assert_eq!(
         mode, 0o700,
-        "the data root must be created owner-only, not just tightened after the fact"
+        "the finished data root must have owner-only permissions"
     );
 }
 

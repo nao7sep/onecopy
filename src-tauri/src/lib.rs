@@ -1026,8 +1026,6 @@ fn place_preview_window(
     )
 }
 
-/// Closes the Preview window after sampling its placement. `destroy()` sends
-/// no close request, so this is the one place that close is observed.
 /// The picked folders OneCopy refuses as source folders: those inside or
 /// equal to a library or app package (`packages`).
 #[tauri::command]
@@ -1038,6 +1036,8 @@ fn package_source_dirs(paths: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+/// Samples Preview placement before destruction, which bypasses the native
+/// close-request handler, then returns focus to Main when appropriate.
 #[tauri::command]
 fn close_preview_window(
     app: AppHandle,
@@ -1201,9 +1201,9 @@ async fn transcribe_cancel() -> Result<bool, String> {
     dispatch(|| Ok(derived_runtime::cancel_active_transcription())).await
 }
 
-// The Trash surface: standing sizes per trash root and the one deliberately
-// destructive convenience — emptying a root. The trash is otherwise
-// write-only; these are the only two readers the design allows.
+// Deleted files: root sizes, Reveal, Browse and Restore, plus explicitly
+// confirmed permanent Empty. Stored files remain under their configured
+// roots until the user restores or removes them; there is no automatic purge.
 #[tauri::command]
 async fn trash_overview() -> Result<Vec<trash::TrashRootInfo>, String> {
     dispatch(move || {
