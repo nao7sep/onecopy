@@ -1132,6 +1132,7 @@
   "records.loading": "Loading records…",
   "records.empty": "No records match these filters.",
   "records.loadFailed": "The records could not be read.",
+  "records.liveFailed": "Records may be out of date. Live updates have stopped.",
   "records.noSelection": "Select a record to see everything it holds.",
   "records.detailFailed": "This record could not be read.",
   "records.resizeList": "Resize list pane",

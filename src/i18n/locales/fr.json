@@ -1132,6 +1132,7 @@
   "records.loading": "Chargement du journal…",
   "records.empty": "Aucune entrée ne correspond à ces filtres.",
   "records.loadFailed": "Le journal n’a pas pu être lu.",
+  "records.liveFailed": "Les entrées du journal ne sont peut-être plus à jour. Les mises à jour en direct sont arrêtées.",
   "records.noSelection": "Sélectionnez une entrée pour voir tout ce qu’elle contient.",
   "records.detailFailed": "Cette entrée n’a pas pu être lue.",
   "records.resizeList": "Redimensionner la liste",

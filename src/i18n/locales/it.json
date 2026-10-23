@@ -1132,6 +1132,7 @@
   "records.loading": "Caricamento del log…",
   "records.empty": "Nessuna voce corrisponde a questi filtri.",
   "records.loadFailed": "Impossibile leggere il log.",
+  "records.liveFailed": "Le voci del log potrebbero non essere aggiornate. Gli aggiornamenti in tempo reale sono stati interrotti.",
   "records.noSelection": "Seleziona una voce per vedere tutto ciò che contiene.",
   "records.detailFailed": "Impossibile leggere questa voce.",
   "records.resizeList": "Ridimensiona l’elenco",

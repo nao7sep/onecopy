@@ -25,7 +25,7 @@ import {
   readRecordDetail,
   readRecordSources,
   readRecordsListWidth,
-  readRecordsPage,
+  RecordsPageReader,
   saveRecordsListWidth,
 } from "../repositories/records";
 import {
@@ -53,6 +53,7 @@ import { isComposingEvent } from "../hooks/useComposing";
 import { useDisplayZone } from "../hooks/useDisplayZone";
 import { displayTimeZone } from "../repositories/display-zone";
 import OperationResult from "../components/ui/OperationResult";
+import Button from "../components/ui/Button";
 import BoundedText from "../components/ui/BoundedText";
 import { Select, TextInput } from "../components/ui/Field";
 import {
@@ -111,7 +112,7 @@ const LIVE_INTERVAL_MS = 1000;
 type ListState =
   | { status: "loading" }
   | { status: "failed" }
-  | { status: "ready"; records: RecordSummary[]; more: boolean; loadingMore: boolean; moreFailed: boolean };
+  | { status: "ready"; records: RecordSummary[]; more: boolean; loadingMore: boolean; moreFailed: boolean; stale: boolean };
 
 type DetailState =
   | { status: "none" }
@@ -153,8 +154,7 @@ export function RecordsWindow({ initialListWidth }: { initialListWidth: number }
   const [dragWidth, setDragWidth] = useState<number | null>(null);
   const [shellWidth, setShellWidth] = useState<number | null>(null);
   const listGeneration = useRef(0);
-  // The busy claim for the next page (PLAYBOOK, Own the work in flight).
-  const fetchingMore = useRef(false);
+  const [pageReader] = useState(() => new RecordsPageReader());
   // The filters the current list was read for, for the live reads below.
   const filtersRef = useRef(filters);
   // New records arrived while the list was scrolled away from the top.
@@ -222,14 +222,14 @@ export function RecordsWindow({ initialListWidth }: { initialListWidth: number }
   useEffect(() => {
     filtersRef.current = filters;
     const generation = ++listGeneration.current;
-    fetchingMore.current = false;
+    pageReader.clearPending();
     newestPending.current = false;
     setList({ status: "loading" });
-    void readRecordsPage({ ...filters, after: null }).then(
+    pageReader.read({ ...filters, after: null },
       (page) => {
         if (generation !== listGeneration.current) return;
         liveSuspended.current = false;
-        setList({ status: "ready", records: page.records, more: page.more, loadingMore: false, moreFailed: false });
+        setList({ status: "ready", records: page.records, more: page.more, loadingMore: false, moreFailed: false, stale: false });
       },
       (error: unknown) => {
         if (generation !== listGeneration.current) return;
@@ -238,31 +238,38 @@ export function RecordsWindow({ initialListWidth }: { initialListWidth: number }
         setList({ status: "failed" });
       },
     );
-  }, [filters]);
+    return () => {
+      ++listGeneration.current;
+      pageReader.clearPending();
+    };
+  }, [filters, pageReader]);
 
   // The newest page read again for new records. It joins the rows already
   // shown rather than replacing them, so the list never falls back to the
   // loading note and the pages already read stay. It reads only refs, so one
   // copy serves the live subscription below.
-  const readNewest = useCallback((): void => {
+  const readNewest = useCallback((automatic = true): void => {
+    if (automatic && liveSuspended.current) return;
     const generation = listGeneration.current;
-    void readRecordsPage({ ...filtersRef.current, after: null }).then(
+    pageReader.read({ ...filtersRef.current, after: null },
       (page) => {
         if (generation !== listGeneration.current) return;
         liveSuspended.current = false;
         setList((current) =>
           current.status === "ready"
-            ? { ...current, ...mergeNewestPage(current.records, current.more, page) }
-            : { status: "ready", records: page.records, more: page.more, loadingMore: false, moreFailed: false },
+            ? { ...current, stale: false, ...mergeNewestPage(current.records, current.more, page) }
+            : { status: "ready", records: page.records, more: page.more, loadingMore: false, moreFailed: false, stale: false },
         );
       },
       (error: unknown) => {
         if (generation !== listGeneration.current) return;
         liveSuspended.current = true;
         log.warn("records read failed", toErrorFields(error));
+        setList((current) => current.status === "ready" ? { ...current, stale: true } : { status: "failed" });
       },
+      automatic,
     );
-  }, []);
+  }, [pageReader]);
 
   // A stored record reaches the list at once while it is scrolled to the top;
   // otherwise it waits until the list is back there, so the list never moves
@@ -321,24 +328,21 @@ export function RecordsWindow({ initialListWidth }: { initialListWidth: number }
   // Loading more: composite-control-conventions, Integration Points. A failed
   // page is read again when the end is reached again.
   const loadMore = (): void => {
-    if (list.status !== "ready" || !list.more || fetchingMore.current) return;
-    fetchingMore.current = true;
+    if (list.status !== "ready" || !list.more || pageReader.busy) return;
     const generation = listGeneration.current;
     setList((current) => (current.status === "ready" ? { ...current, loadingMore: true, moreFailed: false } : current));
-    void readRecordsPage({ ...filters, after: cursorAfter(list.records) }).then(
+    pageReader.read({ ...filters, after: cursorAfter(list.records) },
       (page) => {
         if (generation !== listGeneration.current) return;
-        fetchingMore.current = false;
         liveSuspended.current = false;
         setList((current) =>
           current.status === "ready"
-            ? { ...current, records: [...current.records, ...page.records], more: page.more, loadingMore: false }
+            ? { ...current, records: [...current.records, ...page.records], more: page.more, loadingMore: false, stale: false }
             : current,
         );
       },
       (error: unknown) => {
         if (generation !== listGeneration.current) return;
-        fetchingMore.current = false;
         liveSuspended.current = true;
         log.warn("records read failed", toErrorFields(error));
         setList((current) => (current.status === "ready" ? { ...current, loadingMore: false, moreFailed: true } : current));
@@ -538,8 +542,13 @@ export function RecordsWindow({ initialListWidth }: { initialListWidth: number }
           aria-busy={list.status === "loading"}
           onScroll={onListScroll}
         >
+          {list.status === "ready" && list.stale ? (
+            <OperationResult level="warning" className="m-2" actions={<Button size="xs" onClick={() => readNewest(false)}>{t("common.retry")}</Button>}>
+              {t("records.liveFailed")}
+            </OperationResult>
+          ) : null}
           {list.status === "failed" ? (
-            <OperationResult level="error" className="m-2">{t("records.loadFailed")}</OperationResult>
+            <OperationResult level="error" className="m-2" actions={<Button size="xs" onClick={() => readNewest(false)}>{t("common.retry")}</Button>}>{t("records.loadFailed")}</OperationResult>
           ) : list.status === "loading" ? (
             <p className="px-2 py-3 text-sm text-ink-muted">{t("records.loading")}</p>
           ) : records.length === 0 ? (

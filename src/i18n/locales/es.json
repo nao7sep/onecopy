@@ -1132,6 +1132,7 @@
   "records.loading": "Cargando registros…",
   "records.empty": "Ningún registro coincide con estos filtros.",
   "records.loadFailed": "No se pudieron leer los registros.",
+  "records.liveFailed": "Los registros pueden estar desactualizados. Las actualizaciones en directo se han detenido.",
   "records.noSelection": "Selecciona un registro para ver todo lo que contiene.",
   "records.detailFailed": "No se pudo leer este registro.",
   "records.resizeList": "Cambiar el ancho de la lista",

@@ -568,3 +568,114 @@ it("shows pending detail loading and keeps it while an older selection settles",
   expect(pane.textContent).toContain("Selected detail");
   expect(pane.textContent).not.toContain("Loading records…");
 });
+
+
+it("shows a stale snapshot after live failure and resumes live updates after Retry", async () => {
+  await mount();
+  vi.useFakeTimers();
+  pages.push(new Error("busy"));
+  await signal();
+  await tick();
+  expect(document.body.textContent).toContain("Records may be out of date. Live updates have stopped.");
+  expect(options()).toHaveLength(2);
+  pages.push({ records: [newer, issue, line], more: false });
+  fireEvent.click(Array.from(document.querySelectorAll("button")).find((button) => button.textContent === "Retry")!);
+  await settle();
+  expect(document.body.textContent).not.toContain("Live updates have stopped.");
+  expect(titles()[0]).toBe("app later");
+  await signal();
+  await tick();
+  expect(pageCalls()).toHaveLength(4);
+});
+
+it("holds physical admission after timeout, coalesces retry clicks, and ignores the expired result", async () => {
+  await mount();
+  vi.useFakeTimers();
+  const blocked = deferred<RecordsPage>();
+  const retry = deferred<RecordsPage>();
+  pages.push(blocked.promise, retry.promise);
+  await signal();
+  await tick();
+  for (let n = 0; n < 3; n++) { await signal(); await tick(); }
+  expect(pageCalls()).toHaveLength(2);
+  await tick(RECORDS_READ_TIMEOUT_MS);
+  const button = Array.from(document.querySelectorAll("button")).find((value) => value.textContent === "Retry")!;
+  fireEvent.click(button);
+  fireEvent.click(button);
+  await settle();
+  expect(pageCalls()).toHaveLength(2);
+  await act(async () => blocked.resolve({ records: [newer], more: false }));
+  await settle();
+  expect(pageCalls()).toHaveLength(3);
+  expect(titles()).toEqual(["preview-failed occurred", "boundary failed"]);
+  await act(async () => retry.resolve({ records: [newer, issue, line], more: false }));
+  await settle();
+  expect(titles()[0]).toBe("app later");
+  expect(pageCalls()).toHaveLength(3);
+});
+
+it("queues one live refresh behind the initial read instead of racing it", async () => {
+  const initial = deferred<RecordsPage>();
+  pages.push(initial.promise, { records: [newer, issue, line], more: false });
+  await mount();
+  vi.useFakeTimers();
+  for (let n = 0; n < 3; n++) { await signal(); await tick(); }
+  expect(pageCalls()).toHaveLength(1);
+  await act(async () => initial.resolve({ records: [issue, line], more: false }));
+  await settle();
+  expect(pageCalls()).toHaveLength(2);
+  expect(titles()[0]).toBe("app later");
+});
+
+it("keeps only the newest filter intent behind an old read and ignores its late failure", async () => {
+  let reject!: (error: Error) => void;
+  pages.push(new Promise((_resolve, fail) => { reject = fail; }), { records: [newer], more: false });
+  await mount();
+  const kinds = document.querySelectorAll("select")[1]!;
+  fireEvent.change(kinds, { target: { value: "trash" } });
+  await settle();
+  fireEvent.change(kinds, { target: { value: "log" } });
+  await settle();
+  expect(pageCalls()).toHaveLength(1);
+  await act(async () => reject(new Error("old read failed")));
+  await settle();
+  expect(pageCalls()).toHaveLength(2);
+  expect(lastQuery().kind).toBe("log");
+  expect(titles()).toEqual(["app later"]);
+  expect(document.body.textContent).not.toContain("The records could not be read.");
+});
+
+
+it("reports a queued filter's timeout without admitting another native read", async () => {
+  vi.useFakeTimers();
+  const blocked = deferred<RecordsPage>();
+  pages.push(blocked.promise);
+  await mount();
+  fireEvent.change(document.querySelectorAll("select")[1]!, { target: { value: "log" } });
+  await settle();
+  await tick(RECORDS_READ_TIMEOUT_MS);
+  expect(pageCalls()).toHaveLength(1);
+  expect(document.body.textContent).toContain("The records could not be read.");
+  await act(async () => blocked.resolve(defaultPage));
+  await settle();
+  expect(pageCalls()).toHaveLength(1);
+  expect(document.body.textContent).toContain("The records could not be read.");
+});
+
+
+it("serializes historical paging with a live refresh", async () => {
+  const older = deferred<RecordsPage>();
+  pages.push({ records: [issue], more: true }, older.promise, { records: [newer, issue, line], more: false });
+  await mount();
+  await scrollTo(800);
+  expect(pageCalls()).toHaveLength(2);
+  await scrollTo(0);
+  vi.useFakeTimers();
+  await signal();
+  await tick();
+  expect(pageCalls()).toHaveLength(2);
+  await act(async () => older.resolve({ records: [line], more: false }));
+  await settle();
+  expect(pageCalls()).toHaveLength(3);
+  expect(titles()).toEqual(["app later", "preview-failed occurred", "boundary failed"]);
+});

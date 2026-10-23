@@ -30,8 +30,74 @@ async function bounded<T>(read: Promise<T>, what: string): Promise<T> {
   }
 }
 
-export function readRecordsPage(query: RecordsQuery): Promise<RecordsPage> {
-  return bounded(invoke<RecordsPage>("records_page", { query }), "records page read");
+type PageRequest = {
+  query: RecordsQuery;
+  success: (page: RecordsPage) => void;
+  failure: (error: unknown) => void;
+  automatic: boolean;
+};
+
+/** One physical page read and one coalesced next intent. A display timeout
+ * reports failure without releasing the in-flight native read. */
+export class RecordsPageReader {
+  private active = false;
+  private pending: PageRequest | null = null;
+  private pendingTimer: ReturnType<typeof setTimeout> | undefined;
+
+  get busy(): boolean { return this.active; }
+
+  clearPending(): void {
+    clearTimeout(this.pendingTimer);
+    this.pendingTimer = undefined;
+    this.pending = null;
+  }
+
+  read(query: RecordsQuery, success: PageRequest["success"], failure: PageRequest["failure"], automatic = false): void {
+    const request = { query, success, failure, automatic };
+    if (this.active) {
+      // Live signals cannot displace an explicit filter change or retry.
+      if (!automatic || this.pending === null || this.pending.automatic) {
+        this.clearPending();
+        this.pending = request;
+        this.pendingTimer = setTimeout(() => {
+          this.clearPending();
+          request.failure(new Error("records page read is still waiting for the previous read"));
+        }, RECORDS_READ_TIMEOUT_MS);
+      }
+      return;
+    }
+    this.start(request);
+  }
+
+  private start(request: PageRequest): void {
+    this.active = true;
+    let expired = false;
+    const fail = (error: unknown) => {
+      if (this.pending?.automatic) this.clearPending();
+      request.failure(error);
+    };
+    const timer = setTimeout(() => {
+      expired = true;
+      fail(new Error("records page read timed out"));
+    }, RECORDS_READ_TIMEOUT_MS);
+    const complete = (deliver: () => void) => {
+      clearTimeout(timer);
+      this.active = false;
+      const next = this.pending;
+      this.clearPending();
+      if (next !== null) this.start(next);
+      // Release physical admission before publishing a settled result: React
+      // can immediately request another page to fill an underfull viewport.
+      if (!expired) deliver();
+    };
+    void invoke<RecordsPage>("records_page", { query: request.query }).then(
+      (page) => complete(() => request.success(page)),
+      (error: unknown) => {
+        if (!expired && this.pending?.automatic) this.clearPending();
+        complete(() => request.failure(error));
+      },
+    );
+  }
 }
 
 export function readRecordDetail(kind: RecordKind, id: number): Promise<RecordDetail | null> {

@@ -1132,6 +1132,7 @@
   "records.loading": "ログを読み込み中…",
   "records.empty": "条件に一致する項目はありません。",
   "records.loadFailed": "ログを読み込めませんでした。",
+  "records.liveFailed": "ログが最新でない可能性があります。自動更新は停止しています。",
   "records.noSelection": "項目を選択すると、その内容がすべて表示されます。",
   "records.detailFailed": "この項目を読み込めませんでした。",
   "records.resizeList": "リストの幅を変更",

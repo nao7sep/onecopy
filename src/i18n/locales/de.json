@@ -1132,6 +1132,7 @@
   "records.loading": "Protokoll wird geladen\u00a0…",
   "records.empty": "Keine Einträge entsprechen diesen Filtern.",
   "records.loadFailed": "Das Protokoll konnte nicht gelesen werden.",
+  "records.liveFailed": "Die Einträge sind möglicherweise nicht aktuell. Live-Aktualisierungen wurden angehalten.",
   "records.noSelection": "Wählen Sie einen Eintrag aus, um alles zu sehen, was er enthält.",
   "records.detailFailed": "Dieser Eintrag konnte nicht gelesen werden.",
   "records.resizeList": "Breite der Liste ändern",
