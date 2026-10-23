@@ -27,7 +27,6 @@ const RecordsWindow = lazy(() => import("./windows/RecordsWindow"));
 // each renderer's initial load.
 const params = new URLSearchParams(window.location.search);
 const view = params.get("view");
-if (view === null) void installQuitWorkflow().catch((error) => log.error("quit workflow installation failed", toErrorFields(error)));
 const slice = Number.parseInt(params.get("slice") ?? "0", 10) || 0;
 
 // Learn the core's debug gate as early as possible. Fire-and-forget: emit()
@@ -89,7 +88,7 @@ window.addEventListener("unhandledrejection", (event) => {
   presentEscapedFailure(presentation);
 });
 
-void Promise.all([installMediaUseBoundary(), installWindowAppearance()])
+void Promise.all([installMediaUseBoundary(), installWindowAppearance(), ...(view === null ? [installQuitWorkflow()] : [])])
   .then(() => {
     ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
       <React.StrictMode>
@@ -117,7 +116,7 @@ void Promise.all([installMediaUseBoundary(), installWindowAppearance()])
     );
   })
   .catch((error) => {
-    log.error("media ownership bootstrap failed", toErrorFields(error));
+    log.error("window bootstrap failed", toErrorFields(error));
     const presentation = message("crash.startUnsafe");
     recordInterfaceFailure(presentation, error);
     presentEscapedFailure(presentation);

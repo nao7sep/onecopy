@@ -20,7 +20,10 @@ import { effectiveConfig } from "../helpers/config";
 import { fireEvent, invokeCalls, mockCommands, resetTauriMocks, setCurrentWindowShown } from "../mocks/tauri";
 
 // The native events reach listeners installed once, as at launch.
-beforeAll(installQuitWorkflow);
+beforeAll(async () => {
+  mockCommands({ quit_workflow_ready: () => null });
+  await installQuitWorkflow();
+});
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
   useDerivedWorkStore.setState({ runtime: null, snapshot: null, activeItem: null });

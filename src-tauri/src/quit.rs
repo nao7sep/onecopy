@@ -5,6 +5,24 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use serde_json::json;
 
+/// Per-document readiness, reset before Main reloads. Backend readiness alone
+/// does not prove any renderer exists to save settings or answer quit consent.
+#[derive(Default)]
+pub(crate) struct RendererReadiness(AtomicBool);
+
+impl RendererReadiness {
+    pub(crate) fn document_started(&self) { self.0.store(false, Ordering::SeqCst); }
+    pub(crate) fn listeners_ready(&self) { self.0.store(true, Ordering::SeqCst); }
+    fn may_ask(&self, data_ready: bool) -> bool {
+        data_ready && self.0.load(Ordering::SeqCst)
+    }
+}
+
+fn renderer_can_answer(app: &AppHandle) -> bool {
+    let data_ready = app.try_state::<crate::startup::StartupGate>().is_some_and(|gate| gate.ready());
+    app.state::<RendererReadiness>().may_ask(data_ready)
+}
+
 const SAVE_WAIT: Duration = Duration::from_millis(1500);
 
 /// The OS session-end handshake with Main's required save. One save request
@@ -81,7 +99,7 @@ pub(crate) fn session_ending() -> bool {
 
 pub(crate) fn request_quit(app: &AppHandle) {
     if SESSION.ending() || crate::app_lifecycle::shutting_down() { return; }
-    if app.try_state::<crate::startup::StartupGate>().is_some_and(|gate| !gate.ready()) {
+    if !renderer_can_answer(app) {
         // Bootstrap has admitted no editable workspace. Quit must work even
         // before the renderer installs its save/consent listeners.
         let handle = app.clone();
@@ -99,7 +117,7 @@ pub(crate) fn request_quit(app: &AppHandle) {
 
 fn prepare_session_end(app: &AppHandle) {
     SESSION.prepare(|id| {
-        if app.try_state::<crate::startup::StartupGate>().is_some_and(|gate| !gate.ready()) { return false; }
+        if !renderer_can_answer(app) { return false; }
         if app.get_webview_window("main").is_none() { return false; }
         match app.emit_to("main", "app://session-ending", id) {
             Ok(()) => true,

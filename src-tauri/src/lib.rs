@@ -1580,6 +1580,16 @@ async fn request_app_exit(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn quit_workflow_ready(
+    window: tauri::WebviewWindow,
+    readiness: tauri::State<'_, quit::RendererReadiness>,
+) -> Result<(), String> {
+    if window.label() != "main" { return Err("only Main owns application quit".into()); }
+    readiness.listeners_ready();
+    Ok(())
+}
+
+#[tauri::command]
 fn session_end_saved(id: u64) {
     quit::session_end_saved(id);
 }
@@ -1631,6 +1641,12 @@ pub fn run() {
         .manage(window_placement::RecordsPlacementState(
             records_placement_state.clone(),
         ))
+        .manage(quit::RendererReadiness::default())
+        .on_page_load(|webview, payload| {
+            if webview.label() == "main" && matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                webview.state::<quit::RendererReadiness>().document_started();
+            }
+        })
         .manage(theme::ThemeState::default())
         .manage(language)
         .on_window_event(move |window, event| {
@@ -1848,6 +1864,7 @@ pub fn run() {
             records_sources,
             records_list_width,
             request_app_exit,
+            quit_workflow_ready,
             session_end_saved,
             quit_question
         ]))

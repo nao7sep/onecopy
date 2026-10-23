@@ -137,3 +137,17 @@ windows_test! {
         }
     }
 }
+
+
+#[test]
+fn native_quit_requires_both_data_and_current_document_listeners() {
+    let readiness = super::RendererReadiness::default();
+    assert!(!readiness.may_ask(true));
+    readiness.listeners_ready();
+    assert!(!readiness.may_ask(false));
+    assert!(readiness.may_ask(true));
+    readiness.document_started();
+    assert!(!readiness.may_ask(true));
+    readiness.listeners_ready();
+    assert!(readiness.may_ask(true));
+}

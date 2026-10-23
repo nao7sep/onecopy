@@ -88,7 +88,7 @@ impl StartupGate {
 /// the pending/blocked shell can still log diagnostics and quit.
 fn may_run_before_ready(command: &str) -> bool {
     matches!(command, "load_app_data" | "appearance_preferences" | "logging_debug_enabled"
-        | "log_event" | "system_theme" | "media_use_current" | "media_use_released" | "request_app_exit" | "session_end_saved" | "quit_question")
+        | "log_event" | "system_theme" | "media_use_current" | "media_use_released" | "request_app_exit" | "quit_workflow_ready" | "session_end_saved" | "quit_question")
 }
 
 pub(crate) fn gate_commands(

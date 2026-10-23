@@ -194,6 +194,7 @@ fn pending_shell_allows_bootstrap_and_quit_but_not_normal_effects() {
     assert!(may_run_before_ready("load_app_data"));
     assert!(may_run_before_ready("appearance_preferences"));
     assert!(may_run_before_ready("request_app_exit"));
+    assert!(may_run_before_ready("quit_workflow_ready"));
     for command in ["save_config", "patch_state", "start_source_check", "delete_items", "ensure_preview"] {
         assert!(!may_run_before_ready(command), "{command}");
     }

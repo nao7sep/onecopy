@@ -49,6 +49,7 @@ beforeEach(() => {
     binaries_state: () => null,
     patch_state: () => ({}),
     request_app_exit: () => null,
+    quit_workflow_ready: () => null,
     log_event: () => null,
     logging_debug_enabled: () => false,
   });

@@ -1,7 +1,7 @@
 // One renderer save attempt for every application quit. The native owner
 // retains the process and handles an OS takeover independently of this page.
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { createEventInstaller } from "../utils/eventInstallation";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { create } from "zustand";
 import { flushConfigForShutdown, flushStatePatchesForShutdown, reportStatePatchFailure, resumeStatePatchesAfterFailedShutdown } from "../state/app-store";
@@ -278,8 +278,13 @@ export function cancelSessionEnd(): void {
   resumeStatePatchesAfterFailedShutdown();
 }
 
-export async function installQuitWorkflow(): Promise<void> {
-  await listen("app://quit-request", () => { void requestQuit(); });
-  await listen<number>("app://session-ending", (event) => { void endSession(event.payload); });
-  await listen("app://session-end-cancelled", cancelSessionEnd);
-}
+export const installQuitWorkflow = createEventInstaller(async (listeners) => {
+  await listeners.listen("app://quit-request", () => { void requestQuit(); });
+  await listeners.listen<number>("app://session-ending", (event) => { void endSession(event.payload); });
+  await listeners.listen("app://session-end-cancelled", cancelSessionEnd);
+  // Native close may delegate to this renderer only after every quit route
+  // can answer. Rejection rolls back the listeners and blocks usable startup.
+  await invoke("quit_workflow_ready");
+}, () => {
+  // Main bootstrap owns the diagnostic and independent recovery surface.
+}, { propagateFailure: true });
