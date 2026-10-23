@@ -101,6 +101,19 @@ describe("Settings save boundary", () => {
     expect(invokeCalls.find((call) => call.command === "save_config")?.args).toMatchObject({
       reportFailure: false,
     });
+    await settleUntil(() => invokeCalls.some((call) => call.command === "activity_record" &&
+      (call.args.draft as { kind: string }).kind === "failed"));
+    // The native save boundary owns the diagnostic; the renderer retains
+    // the separate operation outcome, Issue and inline recovery state.
+    expect(invokeCalls.filter((call) => call.command === "log_event")).toEqual([]);
+    expect(invokeCalls.filter((call) => call.command === "record_recent_notification")
+      .map((call) => call.args.request)).toEqual([expect.objectContaining({
+        kind: "settings-save-failed", messageKey: "settings.saveFailedNotice",
+      })]);
+    const outcomes = invokeCalls.filter((call) => call.command === "activity_record")
+      .map((call) => call.args.draft as { kind: string; operationId: string });
+    expect(outcomes.map((outcome) => outcome.kind)).toEqual(["started", "failed"]);
+    expect(outcomes[1].operationId).toBe(outcomes[0].operationId);
   });
 
   it("closes the committed draft before a large index projection finishes", async () => {

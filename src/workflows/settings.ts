@@ -49,7 +49,6 @@ export async function saveSettings(): Promise<void> {
       message: message("settings.saveFailed"),
       messageLevel: "error",
     });
-    log.error("settings save failed", toErrorFields(error));
     recordActionFailure("settings-save-failed", message("settings.saveFailedNotice"), error);
     recordActivity({
       kind: "failed",

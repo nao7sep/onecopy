@@ -87,13 +87,9 @@ function enqueueConfigWrite(
     const patch = typeof changes === "function" ? changes(config) : changes;
     if (patch === null) return null;
     const sequence = ++configSequence;
-    let saved: Record<string, unknown>;
-    try {
-      saved = await saveConfigFile(patch, reportFailure);
-    } catch (error) {
-      log.error("config save failed", toErrorFields(error));
-      throw error;
-    }
+    // The native protected-operation boundary records write failures. Keep
+    // this queue responsible for ordering and committed projection only.
+    const saved = await saveConfigFile(patch, reportFailure);
     for (const [key, value] of Object.entries(patch)) {
       const authored = unsettledConfig.get(key);
       if (authored !== undefined && authored.sequence < sequence && Object.is(authored.value, value)) {
