@@ -2,12 +2,32 @@ use super::*;
 
 
 #[test]
-fn orientation_transforms_swap_dimensions_where_they_should() {
-    let img = DynamicImage::new_rgb8(40, 20);
-    assert_eq!(apply_orientation(img.clone(), 1).dimensions_tuple(), (40, 20));
-    assert_eq!(apply_orientation(img.clone(), 3).dimensions_tuple(), (40, 20));
-    assert_eq!(apply_orientation(img.clone(), 6).dimensions_tuple(), (20, 40));
-    assert_eq!(apply_orientation(img, 8).dimensions_tuple(), (20, 40));
+fn every_exif_orientation_places_asymmetric_pixels_correctly() {
+    // Stored rows are A B C / D E F. Fixed expected rows distinguish every
+    // corner and both axes without deriving the oracle from image transforms.
+    let colors = [
+        [255, 0, 0], [0, 255, 0], [0, 0, 255],
+        [255, 255, 0], [255, 0, 255], [0, 255, 255],
+    ];
+    let img = DynamicImage::ImageRgb8(image::RgbImage::from_fn(3, 2, |x, y| {
+        image::Rgb(colors[(y * 3 + x) as usize])
+    }));
+    let cases = [
+        (1, (3, 2), [0, 1, 2, 3, 4, 5]), // A B C / D E F
+        (2, (3, 2), [2, 1, 0, 5, 4, 3]), // C B A / F E D
+        (3, (3, 2), [5, 4, 3, 2, 1, 0]), // F E D / C B A
+        (4, (3, 2), [3, 4, 5, 0, 1, 2]), // D E F / A B C
+        (5, (2, 3), [0, 3, 1, 4, 2, 5]), // A D / B E / C F
+        (6, (2, 3), [3, 0, 4, 1, 5, 2]), // D A / E B / F C
+        (7, (2, 3), [5, 2, 4, 1, 3, 0]), // F C / E B / D A
+        (8, (2, 3), [2, 5, 1, 4, 0, 3]), // C F / B E / A D
+    ];
+    for (orientation, dimensions, order) in cases {
+        let result = apply_orientation(img.clone(), orientation).to_rgb8();
+        assert_eq!(result.dimensions(), dimensions, "orientation {orientation}");
+        let pixels: Vec<_> = result.pixels().map(|pixel| pixel.0).collect();
+        assert_eq!(pixels, order.map(|index| colors[index]), "orientation {orientation}");
+    }
 }
 
 #[test]
@@ -41,16 +61,6 @@ fn a_downscaled_copy_never_outranks_its_original_on_sharpness() {
     assert!(laplacian_variance(&copy.to_luma8()) > laplacian_variance(&original.to_luma8()));
     let (original, copy) = (sharpness(&original), sharpness(&copy));
     assert!(copy <= original * 1.1, "copy {copy} outranks original {original}");
-}
-
-// Small helper so the orientation test reads naturally.
-trait DimTuple {
-    fn dimensions_tuple(&self) -> (u32, u32);
-}
-impl DimTuple for DynamicImage {
-    fn dimensions_tuple(&self) -> (u32, u32) {
-        (self.width(), self.height())
-    }
 }
 
 #[test]
