@@ -350,3 +350,17 @@ fn storage_pauses_are_shared_and_only_requested_runs_report_to_the_item() {
         assert_eq!(report.event.is_some(), run != TranscriptionRun::Automatic);
     }
 }
+
+
+#[test]
+fn idle_budget_uses_monotonic_elapsed_time_and_resets_after_input() {
+    let input = Instant::now();
+    assert!(idle_since(None, input));
+    assert!(!idle_since(Some(input), input));
+    assert!(!idle_since(Some(input), input + IDLE_AFTER - Duration::from_nanos(1)));
+    assert!(idle_since(Some(input), input + IDLE_AFTER));
+    let later_input = input + Duration::from_secs(24 * 60 * 60);
+    assert!(idle_since(Some(input), later_input));
+    assert!(!idle_since(Some(later_input), later_input));
+    assert!(idle_since(Some(later_input), later_input + IDLE_AFTER));
+}

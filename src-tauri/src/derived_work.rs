@@ -15,9 +15,10 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, LazyLock, Mutex, OnceLock};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use rusqlite::Connection;
 use serde_json::json;
@@ -41,7 +42,7 @@ pub(crate) const TRANSCRIBE_DONE: &str = "transcribe://done";
 pub(crate) const TRANSCRIBE_ERROR: &str = "transcribe://error";
 pub(crate) const TRANSCRIBE_CANCELLED: &str = "transcribe://cancelled";
 
-static LAST_ACTIVITY_MS: AtomicI64 = AtomicI64::new(0);
+static LAST_ACTIVITY: Mutex<Option<Instant>> = Mutex::new(None);
 /// One flag per `Lane`: whether that lane's worker is running.
 static STARTED: [AtomicBool; 2] = [AtomicBool::new(false), AtomicBool::new(false)];
 static AUTOMATIC_ADMITTED: AtomicBool = AtomicBool::new(false);
@@ -106,7 +107,7 @@ struct RequestedPreviewFlight {
     ready: Condvar,
 }
 
-const IDLE_AFTER_MS: i64 = 60_000;
+const IDLE_AFTER: Duration = Duration::from_secs(60);
 const POLL_SECONDS: u64 = 15;
 const VISIBLE_PREVIEW_TURN: usize = 8;
 const SECTION_PREVIEW_TURN: usize = 1;
@@ -322,20 +323,22 @@ pub fn item_projection(data_root: &Path) -> Result<crate::queries::ItemProjectio
 }
 
 pub fn note_activity() {
-    LAST_ACTIVITY_MS.store(now_ms(), Ordering::SeqCst);
+    let mut last = LAST_ACTIVITY.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    *last = Some(Instant::now());
 }
 
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+fn idle_since(last: Option<Instant>, now: Instant) -> bool {
+    // Before the first input, retain the initial idle budget. Wall-clock
+    // corrections cannot change an elapsed interval within this process.
+    last.is_none_or(|last| now.saturating_duration_since(last) >= IDLE_AFTER)
 }
 
 pub fn is_idle() -> bool {
-    now_ms() - LAST_ACTIVITY_MS.load(Ordering::SeqCst) >= IDLE_AFTER_MS
-        && !crate::derived_runtime::exclusive()
-        && !crate::scan_runtime::running()
+    let idle = {
+        let last = LAST_ACTIVITY.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        idle_since(*last, Instant::now())
+    };
+    idle && !crate::derived_runtime::exclusive() && !crate::scan_runtime::running()
 }
 
 /// Whether automatic work may be admitted at all: the launch decision opened
