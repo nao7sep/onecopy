@@ -473,15 +473,17 @@ fn parse_private_tmp_owner(name: &str) -> Option<PrivateTmpOwner> {
         .strip_prefix(STAGE_PREFIX)
         .or_else(|| name.strip_prefix(CLAIM_PREFIX))?
         .strip_suffix(PRIVATE_TMP_SUFFIX)?;
-    if body.len() < HOME_FINGERPRINT_HEX_LEN + 1 + PID_DECIMAL_LEN + 1 {
-        return None;
-    }
-    let (home_fingerprint, rest) = body.split_at(HOME_FINGERPRINT_HEX_LEN);
+    // These are byte-width ASCII fields in an otherwise arbitrary filename.
+    // A Unicode lookalike may straddle either boundary and proves no owner.
+    let (home_fingerprint, rest) = body.split_at_checked(HOME_FINGERPRINT_HEX_LEN)?;
     if !home_fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return None;
     }
     let rest = rest.strip_prefix('-')?;
-    let (pid_field, rest) = rest.split_at(PID_DECIMAL_LEN);
+    let (pid_field, rest) = rest.split_at_checked(PID_DECIMAL_LEN)?;
+    if !pid_field.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
     rest.strip_prefix('-')?; // The nanoid follows; its exact contents are not checked.
     let pid: u32 = pid_field.parse().ok()?;
     Some(PrivateTmpOwner {

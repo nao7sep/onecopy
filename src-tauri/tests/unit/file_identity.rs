@@ -142,3 +142,37 @@ fn sweep_removes_only_this_installations_dead_leftover() {
     assert!(foreign.exists(), "a different installation's file is never removed");
     assert!(ordinary.exists(), "ordinary content is never touched");
 }
+
+#[test]
+fn malformed_private_names_prove_no_owner_and_survive_sweeping() {
+    let directory = tempfile::tempdir().unwrap();
+    let fingerprint = "a".repeat(HOME_FINGERPRINT_HEX_LEN);
+    for prefix in [STAGE_PREFIX, CLAIM_PREFIX] {
+        for character in ["é", "🙂"] {
+            for position in 0..HOME_FINGERPRINT_HEX_LEN {
+                let field = format!("{}{character}{}", "a".repeat(position), "a".repeat(HOME_FINGERPRINT_HEX_LEN - position - 1));
+                let name = format!("{prefix}{field}-0000000001-x.tmp");
+                assert!(parse_private_tmp_owner(&name).is_none(), "{name}");
+                std::fs::write(directory.path().join(name), b"preserve").unwrap();
+            }
+            for position in 0..PID_DECIMAL_LEN {
+                let field = format!("{}{character}{}", "0".repeat(position), "0".repeat(PID_DECIMAL_LEN - position - 1));
+                let name = format!("{prefix}{fingerprint}-{field}-x.tmp");
+                assert!(parse_private_tmp_owner(&name).is_none(), "{name}");
+                std::fs::write(directory.path().join(name), b"preserve").unwrap();
+            }
+        }
+        for field in ["+000000001", "000000001", "00000000001", "9999999999", ""] {
+            assert!(parse_private_tmp_owner(&format!("{prefix}{fingerprint}-{field}-x.tmp")).is_none());
+        }
+        let valid = parse_private_tmp_owner(&format!("{prefix}{fingerprint}-0000000001-x.tmp")).unwrap();
+        assert_eq!(valid.home_fingerprint, fingerprint);
+        assert_eq!(valid.pid, 1);
+    }
+    let count = std::fs::read_dir(directory.path()).unwrap().count();
+    sweep_private_tmp_leftovers_against(directory.path(), Some(&fingerprint));
+    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), count);
+    for entry in std::fs::read_dir(directory.path()).unwrap() {
+        assert_eq!(std::fs::read(entry.unwrap().path()).unwrap(), b"preserve");
+    }
+}
