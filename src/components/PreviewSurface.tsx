@@ -291,7 +291,7 @@ function VideoSurface({
           // The player's own bar is opaque: its controls and times stay
           // readable whatever frame plays behind them.
           <div
-            className="absolute inset-x-2 bottom-2 flex h-10 items-center gap-2 rounded-lg border border-border bg-surface px-1 shadow-sm"
+            className="absolute inset-x-2 bottom-2 flex min-h-10 flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-border bg-surface px-1 py-1 shadow-sm"
             onPointerDown={(event) => event.stopPropagation()}
           >
             <IconButton
@@ -300,7 +300,7 @@ function VideoSurface({
             >
               {playing ? <Pause size={16} /> : <Play size={16} />}
             </IconButton>
-            <span className="w-10 text-right font-mono text-[11px] text-ink-muted">
+            <span className="min-w-10 shrink-0 whitespace-nowrap text-right font-mono text-[11px] text-ink-muted">
               {timestampLabel(position * 1000)}
             </span>
             <input
@@ -310,10 +310,10 @@ function VideoSurface({
               max={Math.max(duration, 0.01)}
               step={0.1}
               value={Math.min(position, Math.max(duration, 0.01))}
-              className="min-w-16 flex-1"
+              className="min-w-16 flex-[1_1_6rem]"
               onChange={(event) => playback.seek(Number(event.target.value))}
             />
-            <span className="w-10 font-mono text-[11px] text-ink-muted">
+            <span className="min-w-10 shrink-0 whitespace-nowrap font-mono text-[11px] text-ink-muted">
               {timestampLabel(duration * 1000)}
             </span>
             <IconButton

@@ -269,11 +269,11 @@ export default function TextOrAttributesSurface({
   return (
     <div className="flex h-full min-h-0 w-full flex-col gap-2 p-3">
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
-        {/* One line that takes what the controls leave: the name never
-            pushes them onto a row of their own. */}
+        {/* The name yields space; the actions can wrap independently when
+            the split pane cannot fit their translated labels on one row. */}
         <IdentifyingText value={detail.fileName} className="flex-[1_1_8rem] text-sm text-ink" />
-        <span className="flex items-center gap-2">
-          <label className="flex items-center gap-2 text-xs text-ink-muted">
+        <span className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
+          <label className="flex min-w-0 max-w-full flex-wrap items-center gap-2 text-xs text-ink-muted">
             {t("textPreview.encoding")}
             <Select
               size="toolbar"

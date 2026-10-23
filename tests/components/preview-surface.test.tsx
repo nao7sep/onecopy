@@ -125,6 +125,31 @@ afterEach(() => {
 });
 
 describe("shared video presentation", () => {
+  it("keeps playback actions and complete long time labels in the split preview", async () => {
+    const view = render(<div style={{ width: 260 }}>
+      <PreviewSurface surface="preview-split" hash="video-hash" detail={{ ...DETAIL, durationMs: 36_000_000 }} />
+    </div>);
+    await act(async () => {});
+    const video = view.container.querySelector("video")!;
+    video.currentTime = 35_999;
+    fireEvent.timeUpdate(video);
+    expect(screen.getByText("599:59")).toBeTruthy();
+    expect(screen.getByText("600:00")).toBeTruthy();
+    const [position, volume] = screen.getAllByRole("slider");
+    fireEvent.change(position, { target: { value: "18000" } });
+    await waitFor(() => expect(emitCalls).toContainEqual({
+      event: "playback://seek", payload: { key: "video-hash", position: 18000, play: false },
+    }));
+    fireEvent.change(volume, { target: { value: "0.42" } });
+    expect(video.volume).toBe(0.42);
+    fireEvent.click(screen.getByRole("button", { name: "Turn sound off" }));
+    expect(video.muted).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Play" }));
+    await waitFor(() => expect(emitCalls).toContainEqual({
+      event: "playback://toggle", payload: { key: "video-hash" },
+    }));
+  });
+
   it.each([2, 3, 4])("shows one noticeable video failure for media error %s and keeps native diagnostics out of the UI", async (code) => {
     const view = render(<PreviewSurface surface="fullscreen-view" hash="video-hash" detail={DETAIL} />);
     const video = view.container.querySelector("video")!;
