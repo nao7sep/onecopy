@@ -130,6 +130,86 @@ beforeEach(() => {
 });
 
 describe("fullscreen view workflow", () => {
+  it("refreshes completed fullscreen snapshots without a Main reconciliation and coalesces bursts", async () => {
+    await installFullscreenViewWorkflow();
+    openFullscreenView();
+    await vi.waitFor(() => expect(useFullscreenViewStore.getState().session).not.toBeNull());
+    const original = useFullscreenViewStore.getState().session!;
+    useFullscreenViewStore.setState({ session: { ...original, detail: { ...original.detail, kind: "video" } } });
+    // Fullscreen remains authoritative even if Main is looking elsewhere.
+    useItemsStore.setState({ selectedItem: "unrelated" });
+    const requests: Array<(detail: typeof original.detail) => void> = [];
+    let active = 0;
+    let maximum = 0;
+    mockCommand("get_item_detail", () => {
+      active += 1;
+      maximum = Math.max(maximum, active);
+      return new Promise<typeof original.detail>((resolve) => requests.push(resolve))
+        .finally(() => { active -= 1; });
+    });
+    const reconcileBefore = invokeCalls.filter((call) => call.command === "viewer_sequence_reconcile").length;
+    const publish = () => fireEvent("derived://item", { previousHash: "b", item: { ...item("b", 2), hasThumb: true } });
+    publish();
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    for (let index = 0; index < 500; index += 1) publish();
+    expect(requests).toHaveLength(1);
+    requests[0]({ ...original.detail, kind: "video", stripFrames: 4 });
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+    requests[1]({ ...original.detail, kind: "video", stripFrames: 8 });
+    await vi.waitFor(() => expect(fullscreenViewBroadcast().detail?.stripFrames).toBe(8));
+    expect(maximum).toBe(1);
+    expect(useFullscreenViewStore.getState().session).toMatchObject({
+      token: original.token, index: original.index, length: original.length, scope: original.scope,
+    });
+    expect(invokeCalls.filter((call) => call.command === "viewer_sequence_reconcile")).toHaveLength(reconcileBefore);
+    expect(useItemsStore.getState().selectedItem).toBe("unrelated");
+  });
+
+  it.each(["navigation", "return", "replacement", "close", "failure", "retry"])(
+    "fences a derived detail read through %s",
+    async (transition) => {
+      await installFullscreenViewWorkflow();
+      openFullscreenView();
+      await vi.waitFor(() => expect(useFullscreenViewStore.getState().session).not.toBeNull());
+      const original = useFullscreenViewStore.getState().session!;
+      let resolve!: (detail: typeof original.detail) => void;
+      let reject!: (error: Error) => void;
+      mockCommand("get_item_detail", ({ hash }) => hash !== "b" || resolve !== undefined
+        ? { ...original.detail, fileName: `${String(hash)}.jpg` }
+        : new Promise((success, failure) => { resolve = success; reject = failure; }));
+      fireEvent("derived://item", { previousHash: "b", item: item("b", 2) });
+      await vi.waitFor(() => expect(resolve).toBeDefined());
+      if (transition === "navigation" || transition === "return") {
+        moveFullscreenView("next");
+        await vi.waitFor(() => expect(useFullscreenViewStore.getState().currentKey()).toBe("c"));
+        if (transition === "return") {
+          moveFullscreenView("previous");
+          await vi.waitFor(() => expect(useFullscreenViewStore.getState().currentKey()).toBe("b"));
+        }
+      } else if (transition === "replacement") {
+        openFullscreenView();
+        await vi.waitFor(() => expect(invokeCalls.filter((call) => call.command === "viewer_sequence_start")).toHaveLength(2));
+      } else if (transition === "close") await closeFullscreenView({ restoreFocus: false });
+      if (transition === "failure" || transition === "retry") reject(new Error("index unavailable"));
+      else resolve({ ...original.detail, stripFrames: 99 });
+      await new Promise((done) => setTimeout(done, 0));
+      if (transition === "close") expect(fullscreenViewBroadcast().detail).toBeNull();
+      else if (transition === "navigation") {
+        expect(fullscreenViewBroadcast().item?.hash).toBe("c");
+        expect(fullscreenViewBroadcast().detail?.stripFrames).not.toBe(99);
+      } else if (transition === "return" || transition === "replacement") {
+        expect(fullscreenViewBroadcast().item?.hash).toBe("b");
+        expect(fullscreenViewBroadcast().detail?.stripFrames).not.toBe(99);
+      } else expect(useFullscreenViewStore.getState().failure?.key).toBe("fullscreenView.refreshFailed");
+      if (transition === "retry") {
+        mockCommand("get_item_detail", () => ({ ...original.detail, stripFrames: 8 }));
+        fireEvent("derived://item", { previousHash: "b", item: item("b", 2) });
+        await vi.waitFor(() => expect(fullscreenViewBroadcast().detail?.stripFrames).toBe(8));
+        expect(useFullscreenViewStore.getState().failure).toBeNull();
+      }
+    },
+  );
+
   it.each(["direction", "jump", "failure", "close"])(
     "bounds repeat debt while a native move is held and honors the latest %s intent",
     async (intent) => {

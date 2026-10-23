@@ -208,6 +208,9 @@ const install = createEventInstaller(
     listeners.retain(useFullscreenViewStore.subscribe((state, previous) => {
       if (state.session !== null || previous.session !== null) broadcastFullscreenView();
     }));
+    await listeners.listen<{ previousHash: string; item: SectionItem }>("derived://item", ({ payload }) => {
+      applyFullscreenDerivedItem(payload.previousHash, payload.item);
+    });
     listeners.retain(useItemsStore.subscribe((state, previous) => {
       if (state.reconciliationId === previous.reconciliationId || itemReconcileQueued) return;
       itemReconcileQueued = true;
@@ -219,6 +222,63 @@ const install = createEventInstaller(
   },
   (error) => log.error("fullscreen view workflow wiring failed", toErrorFields(error)),
 );
+
+interface DerivedDetailRequest {
+  token: string;
+  request: number;
+  item: SectionItem;
+}
+let pendingDerivedDetail: DerivedDetailRequest | null = null;
+let derivedDetailReader: Promise<void> | null = null;
+
+function readDerivedDetail(): void {
+  if (derivedDetailReader !== null) return;
+  derivedDetailReader = Promise.resolve().then(async () => {
+    while (pendingDerivedDetail !== null) {
+      const requested = pendingDerivedDetail;
+      pendingDerivedDetail = null;
+      const current = () => {
+        const session = useFullscreenViewStore.getState().session;
+        return requested.request === viewerOpenRequest && session?.token === requested.token &&
+          session.item === requested.item ? session : null;
+      };
+      if (current() === null) continue;
+      try {
+        const detail = await invoke<ItemDetail>("get_item_detail", {
+          hash: requested.item.hash, pathId: null,
+        });
+        const session = current();
+        if (session === null) continue;
+        useFullscreenViewStore.setState((state) => ({
+          session: { ...session, detail },
+          failure: state.failure?.key === "fullscreenView.refreshFailed" ? null : state.failure,
+        }));
+      } catch (error) {
+        if (current() === null) continue;
+        log.error("fullscreen view derived detail failed", toErrorFields(error));
+        const failure = message("fullscreenView.refreshFailed");
+        useFullscreenViewStore.getState().setFailure(failure);
+        recordActionFailure("fullscreen-view-detail-failed", failure, error);
+      }
+    }
+  }).finally(() => {
+    derivedDetailReader = null;
+    if (pendingDerivedDetail !== null) readDerivedDetail();
+  });
+}
+
+function applyFullscreenDerivedItem(previousHash: string, item: SectionItem): void {
+  const session = useFullscreenViewStore.getState().session;
+  if (session === null || item.hash === null || previousHash !== item.hash ||
+    identityKey(session.member) !== item.hash) return;
+  // Frozen membership does not freeze a member's newly completed previews.
+  // Publish its row immediately and coalesce the detail read independently of
+  // Main's current anchor. Navigation/reconciliation replaces the row identity
+  // and thereby fences an older detail response, even after moving back.
+  useFullscreenViewStore.setState({ session: { ...session, item } });
+  pendingDerivedDetail = { token: session.token, request: viewerOpenRequest, item };
+  readDerivedDetail();
+}
 
 /** Installs the cross-window handshake and disappearance reconciliation once. */
 export function installFullscreenViewWorkflow(): Promise<void> {
