@@ -1451,6 +1451,43 @@ fn similar_group_of_returns_live_members_best_first_and_drops_the_rest() {
 }
 
 #[test]
+fn similarity_lookup_cannot_follow_a_group_id_reused_during_regrouping() {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    let conn = db();
+    for hash in ["anchor", "sibling", "unrelated"] {
+        seed_image(&conn, hash, Some("2026-01-02T03:04:05.000Z"), &format!("{hash}.jpg"));
+    }
+    conn.execute_batch(
+        "INSERT INTO similar_groups (id, bucket, created_at_utc) VALUES (1, 'undated', 'x'), (2, 'undated', 'x');
+         INSERT INTO similar_group_members (group_id, content_hash) VALUES (1, 'anchor'), (1, 'sibling'), (2, 'unrelated');"
+    ).unwrap();
+    let writer = index_store::open(&conn._dir.path().join("index.sqlite3")).unwrap();
+    let regrouped = Arc::new(AtomicBool::new(false));
+    let observed = regrouped.clone();
+    // Prepare the member projection only after the writer reuses the old id.
+    // The former two-query implementation had already read that id here.
+    conn.authorizer(Some(move |context: AuthContext<'_>| {
+        if matches!(context.action, AuthAction::Read { table_name: "contents", .. })
+            && !observed.swap(true, Ordering::SeqCst)
+        {
+            writer.execute_batch(
+                "BEGIN IMMEDIATE;
+                 DELETE FROM similar_group_members;
+                 INSERT INTO similar_group_members (group_id, content_hash) VALUES (2, 'anchor'), (2, 'sibling'), (1, 'unrelated');
+                 COMMIT;"
+            ).unwrap();
+        }
+        Authorization::Allow
+    })).unwrap();
+    let members = queries::similar_group_of(&conn, "anchor", true).unwrap();
+    conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>).unwrap();
+    assert!(regrouped.load(Ordering::SeqCst));
+    assert_eq!(members.iter().map(|member| member.hash.as_str()).collect::<Vec<_>>(), ["anchor", "sibling"]);
+    assert!(queries::similar_group_of(&conn, "ungrouped", true).unwrap().is_empty());
+}
+
+#[test]
 fn comparison_admission_checks_selected_members_outside_the_loaded_window() {
     let conn = db();
     for hash in ["a", "b", "c"] {

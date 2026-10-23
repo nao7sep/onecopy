@@ -1696,18 +1696,8 @@ pub fn similar_group_of(
     hash: &str,
     use_face_score: bool,
 ) -> Result<Vec<GroupMember>, String> {
-    let group_id: Option<i64> = conn
-        .query_row(
-            "SELECT group_id FROM similar_group_members WHERE content_hash = ?1",
-            [hash],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?;
-    let Some(group_id) = group_id else {
-        return Ok(Vec::new());
-    };
-
+    // Group ids are reused by regrouping. Resolve the anchor and its members
+    // in one statement so they belong to the same committed snapshot.
     let preview_available = crate::derived_state::preview_available_predicate("c");
     let face_score = crate::derived_state::face_score_sql("c");
     let mut stmt = conn
@@ -1720,7 +1710,7 @@ pub fn similar_group_of(
              JOIN contents c ON c.hash = m.content_hash \
              JOIN review_contents logical ON logical.content_hash = c.hash \
              JOIN paths representative ON representative.id = logical.representative_path_id \
-             WHERE m.group_id = ?1 \
+             WHERE m.group_id = (SELECT group_id FROM similar_group_members WHERE content_hash = ?1) \
              ORDER BY CASE WHEN ?2 THEN COALESCE({face_score}, 0) ELSE 0 END DESC, \
                       c.sharpness DESC NULLS LAST, \
                       representative.abs_path COLLATE onecopy_nocase, \
@@ -1728,7 +1718,7 @@ pub fn similar_group_of(
         ))
         .map_err(|e| e.to_string())?;
     let members: Vec<GroupMember> = stmt
-        .query_map(rusqlite::params![group_id, use_face_score], |r| {
+        .query_map(rusqlite::params![hash, use_face_score], |r| {
             Ok(GroupMember {
                 hash: r.get(0)?,
                 file_name: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
