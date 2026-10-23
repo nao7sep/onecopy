@@ -17,6 +17,9 @@ import type { ComparisonBroadcast } from "../../src/state/comparison-store";
 import { useWindowPreferencesStore } from "../../src/state/window-preferences-store";
 import {
   emitCalls,
+  emit,
+  listen,
+  listenerCount,
   fireEvent,
   mockCommands,
   resetTauriMocks,
@@ -49,7 +52,35 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => cleanup());
+const registerListener = listen.getMockImplementation()!;
+const publishEvent = emit.getMockImplementation()!;
+
+afterEach(() => {
+  cleanup();
+  listen.mockImplementation(registerListener);
+  emit.mockImplementation(publishEvent);
+});
+
+/** Registration has not happened until the gate opens. Main replies inside
+ * the readiness emission, leaving no extra turn to install a late listener. */
+function holdHandshake(prefix: string, channel: string, payload: unknown) {
+  const pending: Array<() => Promise<void>> = [];
+  listen.mockImplementation((event, callback) => {
+    if (!event.startsWith(`${prefix}://`)) return registerListener(event, callback);
+    return new Promise((resolve) => {
+      pending.push(async () => resolve(await registerListener(event, callback)));
+    });
+  });
+  emit.mockImplementation(async (event, value) => {
+    const sent = publishEvent(event, value);
+    if (event === `${prefix}://ready`) fireEvent(channel, payload);
+    await sent;
+  });
+  return async () => {
+    expect(pending.length).toBeGreaterThan(0);
+    await Promise.all(pending.map((register) => register()));
+  };
+}
 
 describe("the preview window", () => {
   it("mounts without throwing and shows its placeholder", () => {
@@ -60,11 +91,17 @@ describe("the preview window", () => {
   });
 
   it("announces itself only AFTER its listener is registered", async () => {
-    render(<PreviewWindow />);
-    // Let the async listen settle.
+    const allowRegistration = holdHandshake("preview", "preview://show", {
+      hash: "abc", pathId: null, detail: DETAIL, selectedCount: 1,
+    });
+    const view = render(<PreviewWindow />);
     await act(async () => {});
-    const ready = emitCalls.find((c) => c.event === "preview://ready");
-    expect(ready).toBeDefined();
+    expect(listenerCount("preview://show")).toBe(0);
+    expect(emitCalls.some((call) => call.event === "preview://ready")).toBe(false);
+    await act(allowRegistration);
+    expect(emitCalls.some((call) => call.event === "preview://ready")).toBe(true);
+    expect(view.container.querySelector("footer")?.textContent).toContain("IMG_1.jpg");
+    expect(view.container.querySelector("img")?.getAttribute("src")).toContain("preview-abc");
   });
 
   it("names the shown item in its footer, with the selection count when more than one is selected", async () => {
@@ -386,9 +423,15 @@ describe("a comparison window", () => {
   });
 
   it("announced readiness after listening, so the reply can be heard", async () => {
-    render(<ComparisonWindow slice={1} />);
+    const allowRegistration = holdHandshake("comparison", "comparison://state", broadcast);
+    const view = render(<ComparisonWindow slice={1} />);
     await act(async () => {});
-    expect(emitCalls.some((c) => c.event === "comparison://ready")).toBe(true);
+    expect(listenerCount("comparison://state")).toBe(0);
+    expect(emitCalls.some((call) => call.event === "comparison://ready")).toBe(false);
+    await act(allowRegistration);
+    expect(emitCalls.some((call) => call.event === "comparison://ready")).toBe(true);
+    expect(view.container.textContent).toContain("a.jpg");
+    expect(view.container.textContent).not.toContain("Waiting for the comparison");
   });
 });
 
