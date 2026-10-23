@@ -3988,3 +3988,114 @@ fn conflict_rename_stops_after_a_failed_name_probe_and_honors_cancel_during_that
         assert!(private_leftovers(&destination).is_empty());
     }
 }
+
+#[test]
+fn conflict_hash_cancellation_is_quiet_for_destination_source_and_companion() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    for subject in ["destination", "source", "companion"] {
+        let f = fixture("cancel-conflict-hash");
+        std::fs::write(f.root.join("x.jpg"), b"new-primary").unwrap();
+        scan(&f);
+        let items = [item_named(&f, "x.jpg")];
+        let dest = f._dir.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        std::fs::write(dest.join("x.jpg"), b"old-primary").unwrap();
+        std::fs::write(dest.join("x.xmp"), b"old-sidecar").unwrap();
+        let blocked = match subject {
+            "source" => f.root.join("x.jpg"),
+            "companion" => dest.join("x.xmp"),
+            _ => dest.join("x.jpg"),
+        };
+        let volume = FakeStallingVolume::mount(f._dir.path(), SETTLE);
+        volume.stall(&[Op::Read], Some(&blocked));
+        let cancel = AtomicBool::new(false);
+        let result = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                assert!(volume.wait_until_held(1, SETTLE), "{subject}");
+                cancel.store(true, Ordering::SeqCst);
+            });
+            let result = move_batch(&f.conn, &f.app_root, &f.cache, &items, &dest,
+                MoveOutMode::CopyKeepAll, &|| cancel.load(Ordering::SeqCst), |_| {});
+            volume.release();
+            result
+        }).unwrap();
+        assert!(volume.wait_until_settled(SETTLE));
+        assert!(result.cancelled, "{subject}");
+        assert!(result.error.is_none());
+        assert_eq!(result.exported, 0);
+        assert_eq!(result.trashed_destination_files, 0);
+        assert_eq!(std::fs::read(dest.join("x.jpg")).unwrap(), b"old-primary");
+        assert_eq!(std::fs::read(f.root.join("x.jpg")).unwrap(), b"new-primary");
+        assert!(private_leftovers(&dest).is_empty());
+    }
+}
+
+#[test]
+fn overwrite_cancellation_during_revalidation_keeps_existing_files_and_abandons_staging() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let f = fixture("cancel-overwrite-revalidation");
+    std::fs::write(f.root.join("x.jpg"), b"new-primary").unwrap();
+    scan(&f);
+    let items = [item_named(&f, "x.jpg")];
+    let dest = f._dir.path().join("dest");
+    std::fs::create_dir(&dest).unwrap();
+    std::fs::write(dest.join("x.jpg"), b"old-primary").unwrap();
+    let review = move_batch(&f.conn, &f.app_root, &f.cache, &items, &dest,
+        MoveOutMode::CopyKeepAll, &|| false, |_| {}).unwrap();
+    let accepted = AcceptedFiles::capture(&f.conn, &items).unwrap();
+    let volume = FakeStallingVolume::mount(&dest, SETTLE);
+    // Review and execution equality each seek, read data and read EOF.
+    // Hold the following preservation rehash, after the replacement is staged.
+    volume.stall_after(&[Op::Read], Some(&dest.join("x.jpg")), 6);
+    let cancel = AtomicBool::new(false);
+    let result = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            assert!(volume.wait_until_held(1, SETTLE));
+            assert!(!private_leftovers(&dest).is_empty(), "replacement must already be staged");
+            cancel.store(true, Ordering::SeqCst);
+        });
+        let result = move_batch_reviewed(&f.conn, &f.app_root, &f.cache, &items, &accepted, &dest,
+            MoveOutMode::CopyKeepAll, Some(DestinationConflictPolicy::Overwrite), review.plan_token.as_deref(),
+            RenameStyle::SpaceNumber, &|| cancel.load(Ordering::SeqCst), |_| {});
+        volume.release();
+        result
+    }).unwrap();
+    assert!(volume.wait_until_settled(SETTLE));
+    assert!(result.cancelled);
+    assert!(result.error.is_none());
+    assert_eq!(result.trashed_destination_files, 0);
+    assert_eq!(result.exported, 0);
+    assert_eq!(std::fs::read(dest.join("x.jpg")).unwrap(), b"old-primary");
+    assert!(private_leftovers(&dest).is_empty());
+}
+
+#[test]
+fn overwrite_cancellation_retains_each_already_preserved_member_in_the_receipt() {
+    let f = fixture("cancel-overwrite-partial-preservation");
+    std::fs::write(f.root.join("x.jpg"), b"new-primary").unwrap();
+    scan(&f);
+    let items = [item_named(&f, "x.jpg")];
+    let dest = f._dir.path().join("dest");
+    std::fs::create_dir(&dest).unwrap();
+    std::fs::write(dest.join("x.jpg"), b"old-primary").unwrap();
+    std::fs::write(dest.join("x.xmp"), b"old-sidecar").unwrap();
+    let review = move_batch(&f.conn, &f.app_root, &f.cache, &items, &dest,
+        MoveOutMode::CopyKeepAll, &|| false, |_| {}).unwrap();
+    let accepted = AcceptedFiles::capture(&f.conn, &items).unwrap();
+    let result = move_batch_reviewed(&f.conn, &f.app_root, &f.cache, &items, &accepted, &dest,
+        MoveOutMode::CopyKeepAll, Some(DestinationConflictPolicy::Overwrite), review.plan_token.as_deref(),
+        RenameStyle::SpaceNumber, &|| !dest.join("x.jpg").exists(), |_| {}).unwrap();
+    assert!(result.cancelled);
+    assert!(result.error.is_none());
+    assert_eq!(result.exported, 0);
+    assert_eq!(result.trashed_destination_files, 1);
+    assert_eq!(result.items.len(), 1);
+    assert_eq!(result.items[0].outcome.trashed_destination_files, 1);
+    assert_eq!(std::fs::read(dest.join("x.xmp")).unwrap(), b"old-sidecar");
+    assert_eq!(std::fs::read(f.root.join("x.jpg")).unwrap(), b"new-primary");
+    let recovered = walkdir::WalkDir::new(f._dir.path().join(onecopy_lib::trash::TRASH_DIR_NAME))
+        .into_iter().filter_map(Result::ok).filter(|entry| entry.file_type().is_file())
+        .any(|entry| std::fs::read(entry.path()).is_ok_and(|bytes| bytes == b"old-primary"));
+    assert!(recovered);
+    assert!(private_leftovers(&dest).is_empty());
+}

@@ -790,6 +790,7 @@ fn permanently_delete_file(
         message: error.to_string(),
         outcome_unknown: volume_io::outcome_unknown(&error),
         source_changed: crate::file_identity::source_version_changed(&error),
+        cancelled: false,
     })
 }
 
@@ -1202,7 +1203,7 @@ pub fn move_batch_reviewed(
     }
     let review = match review_destination_conflicts(&mut plan, names, cancelled) {
         Ok(review) => review,
-        Err(error) if error == crate::scanner::CANCELLED => {
+        Err(ConflictStop::Cancelled) => {
             return Ok(MoveBatchOutcome {
                 cancelled: true,
                 files_total: plan.files_total,
@@ -1210,7 +1211,7 @@ pub fn move_batch_reviewed(
                 ..MoveBatchOutcome::default()
             });
         }
-        Err(error) => return Err(error),
+        Err(ConflictStop::Failed(error)) => return Err(error),
     };
     let plan_token = move_plan_token(&plan, mode, &review);
     if expected_plan_token.is_some_and(|expected| expected != plan_token) {
@@ -1371,6 +1372,7 @@ pub fn move_batch_reviewed(
         }
         let has_effect = outcome.exported > 0
             || outcome.skipped_identical > 0
+            || outcome.trashed_destination_files > 0
             || !outcome.conflicts.is_empty()
             || !outcome.undelivered.is_empty()
             || !outcome.unknown.is_empty()
@@ -1524,16 +1526,32 @@ fn move_plan_token(plan: &MovePlan, mode: MoveOutMode, review: &DestinationRevie
     hasher.finalize().to_hex().to_string()
 }
 
+// Keep user cancellation distinct while read-only conflict work crosses helpers.
+#[derive(Debug)]
+enum ConflictStop { Cancelled, Failed(String) }
+
+impl From<String> for ConflictStop {
+    fn from(message: String) -> Self { Self::Failed(message) }
+}
+
+impl ConflictStop {
+    fn from_io(error: std::io::Error, cancelled: &dyn Fn() -> bool) -> Self {
+        if error.kind() == std::io::ErrorKind::Interrupted && cancelled() {
+            Self::Cancelled
+        } else { Self::Failed(error.to_string()) }
+    }
+}
+
 fn review_destination_conflicts(
     plan: &mut MovePlan,
     names: FolderNames,
     cancelled: &dyn Fn() -> bool,
-) -> Result<DestinationReview, String> {
+) -> Result<DestinationReview, ConflictStop> {
     let mut review = DestinationReview::default();
     let mut claimed = HashSet::new();
     for delivery in plan.units.iter_mut().flat_map(|unit| &mut unit.deliveries) {
         if cancelled() {
-            return Err(crate::scanner::CANCELLED.to_string());
+            return Err(ConflictStop::Cancelled);
         }
         if !claimed.insert(names.key(&delivery.target)) {
             delivery.rename_required = true;
@@ -1596,7 +1614,8 @@ fn review_destination_conflicts(
 fn observe_destination(
     path: &Path,
     cancelled: &dyn Fn() -> bool,
-) -> Result<DestinationObservation, String> {
+) -> Result<DestinationObservation, ConflictStop> {
+    if cancelled() { return Err(ConflictStop::Cancelled); }
     let metadata = match volume_io::symlink_metadata(path) {
         Ok(metadata) => metadata,
         // A name the destination cannot hold holds nothing; publishing it
@@ -1610,7 +1629,7 @@ fn observe_destination(
             return Err(format!(
                 "could not inspect destination {}: {error}",
                 crate::native_path::label(&path)
-            ))
+            ).into())
         }
     };
     if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
@@ -1623,7 +1642,7 @@ fn observe_destination(
     let bytes = file.metadata().map_err(|error| error.to_string())?.len();
     let hash =
         crate::hashing::full_hash_file_cancellable(&mut file, bytes, cancelled, &mut |_, _| {})
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| ConflictStop::from_io(error, cancelled))?;
     Ok(DestinationObservation::Regular { bytes, hash })
 }
 
@@ -1632,7 +1651,7 @@ fn delivery_matches_hash(
     destination_hash: &str,
     destination_bytes: u64,
     cancelled: &dyn Fn() -> bool,
-) -> Result<bool, String> {
+) -> Result<bool, ConflictStop> {
     for source in &delivery.sources {
         let (mut source_file, _) = match crate::file_identity::open_regular_nofollow(
             crate::native_path::from_text(&source.abs_path).as_ref(),
@@ -1653,7 +1672,7 @@ fn delivery_matches_hash(
             cancelled,
             &mut |_, _| {},
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| ConflictStop::from_io(error, cancelled))?;
         return Ok(source_hash == destination_hash);
     }
     Ok(false)
@@ -1666,7 +1685,7 @@ fn reviewed_replacement_family(
     target_bytes: u64,
     target_hash: String,
     cancelled: &dyn Fn() -> bool,
-) -> Result<(Vec<ReviewedDestinationFile>, Vec<String>, bool), String> {
+) -> Result<(Vec<ReviewedDestinationFile>, Vec<String>, bool), ConflictStop> {
     let mut paths = vec![target.to_path_buf()];
     if include_companions {
         let parent = target
@@ -2203,16 +2222,20 @@ fn execute_move_steps(
                         false
                     }
                     Some(_) if conflict_policy == Some(DestinationConflictPolicy::Overwrite) => {
-                        preserve_reviewed_destination_family(
+                        match preserve_reviewed_destination_family(
                             conn,
                             &delivery.replacement_family,
                             &output.target,
                             destination_root,
                             operation,
-                        )?;
-                        outcome.trashed_destination_files = outcome
-                            .trashed_destination_files
-                            .saturating_add(delivery.replacement_family.len() as u64);
+                            cancelled,
+                            &mut outcome.trashed_destination_files,
+                        ) {
+                            Ok(()) => {}
+                            Err(ConflictStop::Cancelled) => return Ok(MoveUnitStop::Cancelled),
+                            Err(ConflictStop::Failed(error)) => return Err(error),
+                        }
+                        if cancelled() { return Ok(MoveUnitStop::Cancelled); }
                         match output.private.publish(&output.target) {
                             Ok(()) => {}
                             Err(error) if volume_io::wait_failure(&error).is_some() => {
@@ -2502,19 +2525,21 @@ fn preserve_reviewed_destination_family(
     replaced: &Path,
     destination_root: &Path,
     operation: &str,
-) -> Result<(), String> {
+    cancelled: &dyn Fn() -> bool,
+    preserved: &mut u64,
+) -> Result<(), ConflictStop> {
     if family.is_empty() {
-        return Err("a new unreviewed destination conflict appeared".to_string());
+        return Err("a new unreviewed destination conflict appeared".to_string().into());
     }
     for member in family {
-        match observe_destination(&member.path, &|| false)? {
+        match observe_destination(&member.path, cancelled)? {
             DestinationObservation::Regular { bytes, hash }
                 if bytes == member.bytes && hash == member.hash => {}
             _ => {
                 return Err(format!(
                     "the reviewed destination changed before replacement: {}",
                     crate::native_path::label(&member.path)
-                ))
+                ).into())
             }
         }
     }
@@ -2528,13 +2553,17 @@ fn preserve_reviewed_destination_family(
         } else {
             trash::TrashRole::Companion
         };
-        crate::trash::trash_file(
+        if cancelled() { return Err(ConflictStop::Cancelled); }
+        crate::trash::trash_file_cancellable(
             &member.path,
             destination_root,
             Some(&member.hash),
             &context.clone().role(role),
+            None,
+            cancelled,
         )
         .map_err(|error| {
+            if error.cancelled && !error.outcome_unknown { return ConflictStop::Cancelled; }
             let message = format!(
                 "could not preserve the existing destination {} in Deleted files: {error}",
                 crate::native_path::label(&member.path)
@@ -2547,8 +2576,9 @@ fn preserve_reviewed_destination_family(
                 None,
                 &error.to_string(),
             );
-            message
+            ConflictStop::Failed(message)
         })?;
+        *preserved = preserved.saturating_add(1);
     }
     Ok(())
 }

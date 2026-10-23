@@ -925,8 +925,10 @@ impl VolumeFile {
         self.file.is_some()
     }
 
-    /// What to do with the file if a call on it is abandoned and later
-    /// returns: runs on the worker, where calls run inline.
+    pub(crate) fn clear_settle(&mut self) { self.settle = None; }
+
+    /// Cleanup when the file closes or an abandoned call later returns.
+    /// Runs on the worker, where calls run inline.
     pub fn set_settle(&mut self, settle: Arc<dyn Fn(File) + Send + Sync>) {
         self.settle = Some(settle);
     }
@@ -990,6 +992,10 @@ impl VolumeFile {
         self.with(Op::Sync, Some(sync_bound(bytes)), cancel, |file| file.sync_all())
     }
 
+    pub fn seek_cancellable(&mut self, position: SeekFrom, cancel: Option<&dyn Fn() -> bool>) -> io::Result<u64> {
+        self.with(Op::Read, None, cancel, move |file| file.seek(position))
+    }
+
     /// One bounded read of up to `buf.len()` bytes.
     pub fn read_cancellable(
         &mut self,
@@ -1034,7 +1040,7 @@ impl Read for VolumeFile {
 
 impl Seek for VolumeFile {
     fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
-        self.with(Op::Read, None, None, move |file| file.seek(position))
+        self.seek_cancellable(position, None)
     }
 }
 
@@ -1058,13 +1064,15 @@ impl Drop for VolumeFile {
         // "answered again" waits for it exactly like any other abandoned
         // call.
         if let Some(file) = self.file.take() {
-            if let Err((_, file)) =
-                call_with(&self.path, Op::Read, IO_BOUND, None, file, |file| {
-                    drop(file);
+            let op = if self.settle.is_some() { Op::Remove } else { Op::Read };
+            let carrier = Carrier { file: Some(file), settle: self.settle.take() };
+            if let Err((_, carrier)) =
+                call_with(&self.path, op, IO_BOUND, None, carrier, |carrier| {
+                    drop(carrier);
                     Ok(())
                 })
             {
-                abandon_now(&self.path, Op::Read, file, |file| drop(file));
+                abandon_now(&self.path, op, carrier, |carrier| drop(carrier));
             }
         }
     }

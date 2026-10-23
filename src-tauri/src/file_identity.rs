@@ -697,16 +697,13 @@ impl PrivateFile {
 
 impl Drop for PrivateFile {
     fn drop(&mut self) {
-        // A file whose descriptor went with a call given up on settles on
-        // that call's worker instead (see `new`).
-        if self.published.load(Ordering::SeqCst) || !self.file.is_open() {
-            return;
+        // VolumeFile closes on its worker, including when another file's
+        // abandoned read has stalled this lane. Keep private cleanup attached
+        // to that close instead of attempting an unadmitted removal here.
+        // A descriptor already given up on carries its own settlement action.
+        if self.published.load(Ordering::SeqCst) {
+            self.file.clear_settle();
         }
-        let path = self.path();
-        let _ = self.file.with(Op::Remove, None, None, move |file| {
-            remove_private(&path, file);
-            Ok(())
-        });
     }
 }
 

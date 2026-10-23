@@ -84,7 +84,7 @@ pub(crate) fn full_hash_file_cancellable(
     cancelled: &dyn Fn() -> bool,
     progress: &mut dyn FnMut(u64, u64),
 ) -> std::io::Result<String> {
-    file.seek(SeekFrom::Start(0))?;
+    file.seek_cancellable(SeekFrom::Start(0), Some(cancelled))?;
     progress(0, total);
     hash_from_current(file, cancelled, &mut |done| progress(done, total))
 }

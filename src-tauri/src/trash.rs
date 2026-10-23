@@ -139,6 +139,8 @@ pub struct TrashError {
     /// Source-read proof no longer names this version. This covers Move
     /// cleanup and the verified private copy required by Windows deletion.
     pub source_changed: bool,
+    /// Preparation ended before source removal because the caller cancelled.
+    pub cancelled: bool,
 }
 
 impl From<String> for TrashError {
@@ -147,6 +149,7 @@ impl From<String> for TrashError {
             message,
             outcome_unknown: false,
             source_changed: false,
+            cancelled: false,
         }
     }
 }
@@ -347,13 +350,14 @@ fn commit_trash(
     before_move: impl FnOnce(&Path),
     cancelled: &dyn Fn() -> bool,
 ) -> Result<TrashedRecord, TrashError> {
-    if cancelled() { return Err("cancelled".to_string().into()); }
+    if cancelled() { return Err(TrashError { cancelled: true, .."cancelled".to_string().into() }); }
     before_move(&plan.stored);
     let moved = refuse_newer_day(&plan.day_dir)
         .map_err(|message| TrashError {
             message,
             outcome_unknown: false,
             source_changed: false,
+            cancelled: false,
         })
         .and_then(|()| {
             #[cfg(target_os = "macos")]
@@ -366,6 +370,7 @@ fn commit_trash(
                 message: format!("trash move failed for {}: {error}", crate::native_path::label(&source)),
                 outcome_unknown: volume_io::outcome_unknown(&error),
                 source_changed: crate::file_identity::source_version_changed(&error),
+                cancelled: error.kind() == std::io::ErrorKind::Interrupted && cancelled(),
             })
         });
     record_trash_action(&plan.record, moved.as_ref().err());
