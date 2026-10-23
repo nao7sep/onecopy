@@ -155,8 +155,8 @@ fn check_cancel() -> Result<(), String> {
     }
 }
 
-/// The extension lists the scanner classifies against (the config's editable
-/// copies).
+/// The built-in extension lists the scanner classifies against. Production
+/// callers copy the constants from `extensions`; these are not user settings.
 pub struct ScanLists {
     pub images: Vec<String>,
     pub videos: Vec<String>,

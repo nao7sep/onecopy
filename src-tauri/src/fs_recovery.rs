@@ -3,7 +3,8 @@
 //! Cleanup of private staging and reconstructible cache files must never hide
 //! the primary failure or become an unbounded retry loop. It may continue when
 //! cleanup fails, but the secondary failure still belongs in the session log.
-//! Each step is a bounded `volume_io` call.
+//! Path operations use bounded `volume_io` calls. `sync_all` acts directly
+//! on the caller-held managed file; its caller owns blocking dispatch.
 
 use std::path::Path;
 

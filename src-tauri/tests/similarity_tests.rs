@@ -662,8 +662,8 @@ fn normalize_components(components: &mut Vec<Vec<usize>>) {
     components.sort();
 }
 
-/// One group's members, best-first: sharpness descending (the advisory
-/// machine guess), then time — never an auto-deletion criterion.
+/// This test helper orders members by sharpness descending, then hash.
+/// Production presentation can also rank faces; neither order deletes files.
 fn group_members(conn: &Connection, group_id: i64) -> Result<Vec<String>, String> {
     let mut stmt = conn
         .prepare(

@@ -1704,8 +1704,8 @@ fn shift_move_out_permanently_deletes_the_remaining_copies() {
 #[test]
 fn copy_count_matches_the_rows_a_delete_targets() {
     // The badge doubles as a backup health check, so it must describe the same
-    // set the delete destroys. section_items counts only rows with
-    // companion_of IS NULL; delete_item takes every row sharing the hash.
+    // main-copy membership the delete accepts: rows with companion_of IS NULL.
+    // Deletion also includes those mains' own companions, not unrelated pairs.
     let f = fixture("count-vs-delete");
     for sub in ["a", "b"] {
         std::fs::create_dir_all(f.root.join(sub)).unwrap();
@@ -1749,7 +1749,8 @@ fn a_shared_hash_split_across_paired_and_unpaired_rows_still_agrees() {
     // a companion row (excluded from the badge, which filters companion_of IS
     // NULL) and a standalone row (counted). dir a has a JPEG so its ARW pairs;
     // dir b has the identical ARW with no JPEG beside it, so it stands alone as
-    // an other-file. A delete takes every row sharing the hash.
+    // an other-file. Deleting that standalone item must leave the identical
+    // companion belonging to the other main intact.
     let f = fixture("count-split");
     for sub in ["a", "b"] {
         std::fs::create_dir_all(f.root.join(sub)).unwrap();

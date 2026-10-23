@@ -370,11 +370,10 @@ export function ReadyApp({ appData }: { appData: LoadedAppData }) {
                 the preview with a selection shows that image at once. */}
             <div
               style={{ width: paneWidths.preview }}
-              // Not a second item-navigation context, but Delete/Backspace
-              // still reach Main's complete-selection Trash from here: the
-              // pane and the preview window are one preview in two places,
-              // so Delete means the same in both. Only this one command reads
-              // the marker; see useGlobalCommands.
+              // Command-scoping context for useGlobalCommands: Select All and
+              // deletion distinguish this preview from Main's item grid.
+              // Delete/Backspace still use Main's complete selection here,
+              // matching the separate preview window.
               data-preview-pane
               className="relative shrink-0 overflow-hidden bg-surface"
             >

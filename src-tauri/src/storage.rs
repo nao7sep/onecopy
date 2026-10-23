@@ -12,7 +12,7 @@
 //! - `index.sqlite3`     — scan facts, caches, diagnostics.    not recorded (derived; rebuilt from sources)
 //! - `records.sqlite3`   — what happened, logs included.        not recorded (records)
 //! - `source-volumes.json` — destructive-operation trust baselines. RECORDED (managed safety text)
-//! - `backups.sqlite3`   — the write-through backup store.      not recorded (the store itself)
+//! - `backups.sqlite3`   — the queued backup store.      not recorded (the store itself)
 //! - `logs/`             — log lines the records could not take. not recorded (append-mode, by construction)
 //! - `backups/`          — index archives from earlier builds.  never read or written; left on disk for the user
 //! - `cache/`            — derived thumbnails/previews/strips.  not recorded (binary, reconstructible)
@@ -886,10 +886,9 @@ pub(crate) fn quarantine_name(path: &Path) -> PathBuf {
     path.with_file_name(format!("{stem}-{}.invalid", logging::filename_stamp_now()))
 }
 
-/// Atomic write: write to a `<stem>-<nanoid>.tmp` sibling, fsync it, rename over
-/// the target, fsync the directory — a crash can never leave a half-written
-/// store. Strictly AFTER the rename lands, the exact bytes are recorded into the
-/// write-through backup store (the one managed-text choke point).
+/// Atomically replaces the target with a synced `<stem>-<nanoid>.tmp` sibling.
+/// The directory barrier is best effort where supported. After the rename
+/// lands, the exact bytes are queued for the optional backup writer.
 pub fn write_atomic(target: &Path, bytes: &[u8]) -> Result<(), String> {
     write_atomic_inner(target, bytes, true, || Ok(()))
 }
@@ -971,11 +970,9 @@ fn write_atomic_inner(
         return Err(error);
     }
 
-    // Best-effort: persist the rename itself by fsyncing the directory. This
-    // owner already knows Windows has no portable directory handle to fsync
-    // (a journaled no-replace move stands in for it there) — calling it
-    // directly here, rather than opening the directory by hand, is what was
-    // logging a spurious warning on every managed-text save on Windows.
+    // Best-effort directory barrier after replacement by std::fs::rename.
+    // The shared helper is a no-op on Windows; this save does not use the
+    // separate no-replace publication path.
     if let Err(error) = crate::fs_publish::sync_directory(parent) {
         crate::logging::warn(
             "atomic store directory sync failed",

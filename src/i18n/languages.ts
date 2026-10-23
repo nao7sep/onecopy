@@ -1,6 +1,6 @@
 // The interface languages OneCopy ships, in the order the Settings picker
-// lists them after System: Latin-script languages alphabetically by their own
-// names, then Cyrillic, then CJK. Each tag names a catalogue in ./locales, and
+// lists them after System: fixed English-first order, followed by the other
+// Latin-script languages, Cyrillic and CJK. Each tag names a catalogue in ./locales, and
 // the Rust core embeds the same catalogues (src-tauri/src/i18n.rs), which
 // resolves the computer's language to one of these tags.
 export const LANGUAGES = ["en", "de", "es", "fr", "it", "pt-BR", "ru", "ja", "ko", "zh-Hans"] as const;

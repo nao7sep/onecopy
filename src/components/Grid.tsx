@@ -68,7 +68,7 @@ const LIST_ROW_ESTIMATE = 34;
 // The center-pane thumbnail grid. Native lazy loading keeps a large month
 // cheap; every pixel comes from the mediacache protocol, never original files.
 // Click selects; Delete/Backspace trash-deletes the selection (every copy),
-// Shift makes it permanent — the keydown lives in App.
+// Shift makes it permanent — the keydown lives in useGlobalCommands.
 
 function Thumb({ item }: { item: SectionItem }) {
   const { t } = useI18n();
@@ -605,7 +605,7 @@ export default function Grid({
   // The grid is ONE composite control: the scroll container is the single tab
   // stop (active-descendant style — selection state lives in the store, never
   // in DOM focus), arrows move the selection, Shift+arrows extend it. The
-  // command layer (Delete/Enter in App) reads the same source of truth.
+  // command layer (Delete/Enter in useGlobalCommands) reads the same source of truth.
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   const [columns, setColumns] = useState(1);

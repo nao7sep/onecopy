@@ -27,8 +27,8 @@
 //! Each bucket publishes as one complete cohort. Source-fact triggers retain
 //! a durable revision for only the affected buckets; a rebuild computed from
 //! an older revision cannot replace the published cohort or clear the newer
-//! invalidation. A group needs ≥ 2 members to exist. Groups order best-first
-//! by sharpness so slot 1 is the machine's guess.
+//! invalidation. A group needs ≥ 2 members to exist. Presentation orders by
+//! optional face score, then sharpness, path and hash; slot 1 is advisory.
 
 use std::collections::HashMap;
 

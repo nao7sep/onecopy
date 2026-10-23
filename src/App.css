@@ -63,9 +63,9 @@ body.row-resizing * {
 }
 
 /* ── Semantic color tokens ────────────────────────────────────────────────
-   Single source of truth for every color in the app. Light values alias
-   Tailwind's default palette; the prefers-color-scheme dark block overrides the
-   same variables, so components never reference raw palette shades. Utilities
+   Shared tokens for ordinary interface colors. Light values alias Tailwind's
+   default palette; the prefers-color-scheme dark block overrides the same
+   variables. Special-purpose controls may use explicit palette shades. Utilities
    are generated via `@theme inline` (bg-surface, text-ink-muted, …) and
    reference var(--…) directly, so the dark overrides take effect at runtime.
    prefers-color-scheme follows the native window theme, which the Rust core

@@ -67,9 +67,9 @@ pub fn strip_timestamps_ms(duration_ms: u64, count: u32) -> Vec<u64> {
         .collect()
 }
 
-// The subprocess boundary is logged (logging conventions): one debug line
-// per invocation, and the caller's error path carries the result — a probe
-// or extraction failure becomes an issue row, which record-time mirrors warn.
+// Each subprocess invocation has a debug diagnostic. The caller records a
+// probe or extraction failure as an Issue; normal recorded failures do not
+// also produce warnings. A failed Issue write retains its own diagnostic.
 fn log_invocation(op: &str, src: &Path) {
     crate::logging::debug(
         "ffmpeg invocation",
@@ -466,9 +466,9 @@ pub fn derive_strips_pending(
                 // -1 = strips failed: keeps the row out of every later pass
                 // (the churn the image pass's 'failed' marker exists to stop —
                 // retrying a broken video's N frame extractions every worker
-                // tick could eat whole minutes per pass). A rescan after a
-                // DERIVE_VERSION bump re-derives; the issue row carries the
-                // reason meanwhile.
+                // tick could eat whole minutes per pass). Explicit failed-output
+                // reset reopens the row; a derivation-version bump alone does
+                // not. The Issue carries the reason meanwhile.
                 stats.issues_changed |=
                     crate::derived_state::record_strip_failure(conn, &hash, &path, &err)?;
                 trace.finish(crate::activity::ActivityState::Failed, None);

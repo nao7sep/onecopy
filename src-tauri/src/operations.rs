@@ -139,9 +139,9 @@ struct DeleteTarget {
     abs_path: String,
     content_hash: Option<String>,
     bytes: u64,
-    /// The frozen configured root for recoverable deletion. A copy whose owner
-    /// cannot be established (its drive is away, or its source was removed)
-    /// fails as that one file; it never stops planning.
+    /// The frozen configured root for recoverable deletion. Whole-selection
+    /// preflight already checks source availability. A readable copy whose
+    /// configured source was removed can fail ownership as that one file.
     owning_root: Result<std::path::PathBuf, String>,
     /// The logical item's key and the file's role in it, for the
     /// deleted-file record.

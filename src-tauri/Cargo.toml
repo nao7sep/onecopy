@@ -103,7 +103,7 @@ iana-time-zone = "0.1"
 sha2 = "0.11"
 hex = "0.4"
 getrandom = "0.4"
-# The index database and the write-through data-backup store. `bundled` compiles
+# The index database and the queued data-backup store. `bundled` compiles
 # SQLite from source into the binary, so no system libsqlite3 is needed and
 # packaging stays churn-free (the lowest-friction SQLite binding for the Rust
 # core, per the data-backup conventions' "built-in or lowest-friction binding"

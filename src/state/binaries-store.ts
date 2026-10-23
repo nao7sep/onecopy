@@ -647,9 +647,9 @@ export function installBinariesEventWiring(): Promise<void> {
  *   is a capability hole, not an FYI) with appealing, remedy-shaped copy.
  * - Any entry with an update: a warning naming that tools want attention.
  * - A missing MODEL stays silent: it disables one enhancement, not a media
- *   kind, and its own feature surface names the remedy. Up-to-date and
- *   installed-unchecked stay silent per the managed-runtime-dependencies
- *   conventions (no permanent benign FYIs).
+ *   kind, and its own feature surface names the remedy. Up-to-date entries
+ *   stay silent. Installed-unchecked ffmpeg shows a neutral reminder; an
+ *   unchecked optional model stays silent.
  */
 export interface ToolsChip {
   text: Message;
