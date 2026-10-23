@@ -67,14 +67,13 @@ pub fn frame_fills_work_area(frame: NormalRectangle, work_area: NormalRectangle)
         && frame.height.abs_diff(work_area.height) <= 2
 }
 
-/// The smallest on-screen sliver a restored window must show in each
-/// dimension to count as "restored safely". Enough to see
-/// and drag the title bar back into view; a 1px overlap after an unplugged
-/// or resized monitor is not.
+/// Minimum usable overlap for OneCopy's restored windows. The top edge must
+/// also be in the work area: a visible bottom strip cannot expose the title
+/// bar after an upper display is removed.
 const MIN_RESTORE_OVERLAP: i64 = 80;
 
-/// Whether `rectangle` overlaps `work_area` by a usable amount in both
-/// dimensions, not merely a nonzero sliver.
+/// Whether the window's top and a usable horizontal span remain reachable
+/// in this work area, rather than merely its lower content.
 pub fn restorable_overlap(rectangle: NormalRectangle, work_area: NormalRectangle) -> bool {
     if rectangle.width == 0 || rectangle.height == 0 {
         return false;
@@ -89,7 +88,9 @@ pub fn restorable_overlap(rectangle: NormalRectangle, work_area: NormalRectangle
     let area_bottom = area_top + i64::from(work_area.height);
     let overlap_width = right.min(area_right) - left.max(area_left);
     let overlap_height = bottom.min(area_bottom) - top.max(area_top);
-    overlap_width >= MIN_RESTORE_OVERLAP && overlap_height >= MIN_RESTORE_OVERLAP
+    top >= area_top
+        && overlap_width >= MIN_RESTORE_OVERLAP
+        && overlap_height >= MIN_RESTORE_OVERLAP
 }
 
 pub(crate) type PlacementState = Arc<Mutex<Option<Placement>>>;

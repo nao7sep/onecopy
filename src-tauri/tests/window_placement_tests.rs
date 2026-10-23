@@ -88,11 +88,24 @@ fn a_sliver_of_overlap_is_not_restorable() {
 }
 
 #[test]
-fn a_substantial_corner_overlap_is_restorable() {
+fn visible_lower_content_cannot_substitute_for_a_reachable_title_bar() {
     let work_area = rectangle(0, 0, 1920, 1080);
-    // Mostly off-screen to the upper-left, but a full-size grabbable corner
-    // (well past the minimum overlap in both dimensions) remains visible.
-    assert!(restorable_overlap(rectangle(-1800, -1000, 1920, 1080), work_area));
+    assert!(!restorable_overlap(rectangle(-1800, -1000, 1920, 1080), work_area));
+    assert!(!restorable_overlap(rectangle(100, -600, 800, 700), work_area));
+    assert!(!restorable_overlap(rectangle(100, -1, 800, 700), work_area));
+    assert!(restorable_overlap(rectangle(-1800, 100, 1920, 1080), work_area));
+}
+
+#[test]
+fn negative_coordinates_remain_restorable_on_a_connected_upper_display() {
+    let saved = rectangle(-1000, -1000, 900, 800);
+    let upper = rectangle(-1920, -1080, 1920, 1080);
+    let primary = rectangle(0, 0, 1920, 1080);
+    assert!(restorable_overlap(saved, upper));
+    assert!(!restorable_overlap(saved, primary));
+    // Moving the work area's top below the saved top makes the title bar
+    // unreachable even though almost all of the window still intersects.
+    assert!(!restorable_overlap(saved, rectangle(-1920, -900, 1920, 1080)));
 }
 
 #[test]
