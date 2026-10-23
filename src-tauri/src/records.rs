@@ -66,13 +66,14 @@ fn write(
     }
 }
 
-/// One file moved to, restored from, or removed from Deleted files.
+/// One file permanently deleted or moved through Deleted files.
 pub struct TrashAction<'a> {
-    /// `trashed`, `trash-failed`, `restored`, `removed` or `remove-failed`.
+    /// `trashed`, `trash-failed`, `restored`, `removed`, `remove-failed`, or `permanently-deleted`.
     pub action: &'static str,
     pub operation_id: Option<&'a str>,
     pub content_hash: Option<&'a str>,
     pub original_path: Option<&'a str>,
+    /// Empty for a permanent source deletion, which has no recovery location.
     pub stored_path: &'a str,
     pub detail: JsonValue,
 }

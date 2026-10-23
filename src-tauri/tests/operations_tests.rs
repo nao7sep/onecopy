@@ -3885,3 +3885,60 @@ fn move_keeps_delivered_and_removed_counts_when_cleanup_cannot_commit() {
         assert_eq!(row_state(&f, "photo.jpg"), Some(0), "the failed index transaction rolled back");
     }
 }
+
+
+#[test]
+#[serial_test::serial(records_writer)]
+fn permanent_deletion_records_each_native_path_and_keeps_its_receipt_when_recording_fails() {
+    for scenario in ["delete", "move", "index-failure", "record-failure"] {
+        let f = fixture("permanent-deletion-records");
+        let records = f._dir.path().join(onecopy_lib::records::RECORDS_DB_FILE_NAME);
+        onecopy_lib::records::init(&records, "permanent-deletion-test");
+        let name = std::ffi::OsString::from("record_日本.jpg");
+        let source = f.root.join(&name);
+        std::fs::write(&source, b"image bytes").unwrap();
+        scan(&f);
+        let path_id: i64 = f.conn.query_row("SELECT id FROM paths", [], |row| row.get(0)).unwrap();
+        let reader = Connection::open(&records).unwrap();
+        if scenario == "record-failure" {
+            // Only this fixture's record is rejected; other parallel mutation
+            // tests may use the process's ordinary record writer too.
+            reader.execute_batch(&format!("CREATE TRIGGER reject_permanent_record BEFORE INSERT ON trash_actions
+                WHEN NEW.action = 'permanently-deleted' AND NEW.original_path = {}
+                BEGIN SELECT RAISE(ABORT, 'record fixture unavailable'); END;",
+                onecopy_lib::records::sql_text(Some(&onecopy_lib::native_path::encode(&source))))).unwrap();
+        }
+        if scenario == "index-failure" {
+            let deleted_path = source.clone();
+            f.conn.commit_hook(Some(move || !deleted_path.exists())).unwrap();
+        }
+        if scenario == "move" {
+            let destination = f._dir.path().join("destination");
+            std::fs::create_dir(&destination).unwrap();
+            let result = move_batch(&f.conn, &f.app_root, &f.cache,
+                &[ItemIdentity { hash: None, path_id: Some(path_id) }], &destination,
+                MoveOutMode::MoveDeleteRest, &|| false, |_| {}).unwrap();
+            assert_eq!(result.post_action.deleted_files, 1);
+            assert!(result.error.is_none());
+            assert_eq!(std::fs::read(destination.join(&name)).unwrap(), b"image bytes");
+        } else {
+            let result = delete_item(&f.conn, &f.app_root, &f.cache, ItemRef::PathId(path_id), DeleteMode::Permanent).unwrap();
+            assert_eq!(result.deleted_files, 1);
+            assert_eq!(result.failed_files, 0);
+            assert_eq!(result.error.is_some(), scenario == "index-failure");
+            f.conn.commit_hook(None::<fn() -> bool>).unwrap();
+        }
+        assert!(!source.exists());
+        let rows: Vec<(String, String, String)> = reader.prepare("SELECT operation_id, stored_path, detail_json FROM trash_actions
+            WHERE action = 'permanently-deleted' AND original_path = ?1").unwrap()
+            .query_map([onecopy_lib::native_path::encode(&source).as_ref()], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap().collect::<Result<_, _>>().unwrap();
+        if scenario == "record-failure" { assert!(rows.is_empty()); continue; }
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].0.is_empty(), "the per-file fact names its operation");
+        assert!(rows[0].1.is_empty(), "permanent deletion must not invent a recovery path");
+        let detail: serde_json::Value = serde_json::from_str(&rows[0].2).unwrap();
+        assert_eq!(detail["pathId"], path_id);
+        if scenario == "move" { assert!(detail["movedTo"].is_string()); }
+    }
+}

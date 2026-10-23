@@ -717,6 +717,7 @@ fn empty_notices_a_file_added_within_the_same_mtime_granule() {
 }
 
 #[test]
+#[serial_test::serial(records_writer)]
 fn each_trash_action_is_also_a_record() {
     let f = fixture("records");
     let records = f.source.parent().unwrap().join("records.sqlite3");

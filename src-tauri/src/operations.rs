@@ -363,6 +363,22 @@ fn delete_targets(
                 Ok(()) => {
                     outcome.deleted_files += 1;
                     on_attempt(target.bytes, false);
+                    if mode == DeleteMode::Permanent {
+                        crate::records::trash_action(crate::records::TrashAction {
+                            action: "permanently-deleted",
+                            operation_id: Some(&trash.operation),
+                            content_hash: target.content_hash.as_deref(),
+                            original_path: Some(&target.abs_path),
+                            stored_path: "",
+                            detail: json!({
+                                "kind": trash.kind,
+                                "item": target.item,
+                                "role": target.role,
+                                "pathId": target.path_id,
+                                "movedTo": trash.moved_to,
+                            }),
+                        });
+                    }
                     // Row removal and orphan collection are one IMMEDIATE
                     // transaction: a crash or DB error after this point can no
                     // longer leak a `contents` row or cache file with no
