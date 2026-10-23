@@ -469,8 +469,8 @@ pub fn forget_unconfigured_roots(
     let mut stmt = conn
         .prepare("SELECT root, configured_root FROM scan_dirs")
         .map_err(|e| e.to_string())?;
-    let recorded: Vec<(String, Option<String>)> = stmt
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))
+    let recorded: Vec<(String, String)> = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
         .map_err(|e| e.to_string())?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|e| e.to_string())?;
@@ -487,9 +487,7 @@ pub fn forget_unconfigured_roots(
     // for every file on it. Only one of those is recoverable. Each walked root
     // records the configured spelling that settled to it, which identifies an
     // unavailable root however differently it resolves (a mapped network
-    // drive, a symlinked folder); a root recorded before that is kept while
-    // any configured root cannot be resolved, since nothing proves which
-    // configured root produced it. A resolved configured root is judged by
+    // drive, a symlinked folder). A resolved configured root is judged by
     // its settled spelling or proven directory identity, never by case-folding.
     let mut keep: Vec<String> = Vec::new();
     let mut unresolved: Vec<&str> = Vec::new();
@@ -518,16 +516,13 @@ pub fn forget_unconfigured_roots(
         .filter_map(|root| crate::file_identity::FileIdentity::from_path(Path::new(root)).ok())
         .collect();
     let same = |left: &str, right: &str| left == right || left.to_lowercase() == right.to_lowercase();
-    let still_configured = |root: &str, configured_root: Option<&str>| {
+    let still_configured = |root: &str, configured_root: &str| {
         keep.iter().any(|spelling| spelling == root)
             || (!keep_identities.is_empty()
                 && crate::file_identity::FileIdentity::from_path(Path::new(root))
                     .is_ok_and(|identity| keep_identities.contains(&identity)))
             || unresolved_spellings.iter().any(|spelling| same(spelling, root))
-            || match configured_root {
-                Some(configured_root) => unresolved.iter().any(|dir| same(dir, configured_root)),
-                None => !unresolved.is_empty(),
-            }
+            || unresolved.iter().any(|dir| same(dir, configured_root))
     };
 
     // A root still configured as its own source keeps its rows even when it
@@ -538,7 +533,7 @@ pub fn forget_unconfigured_roots(
     // never asked to stop tracking.
     let kept_roots: Vec<String> = recorded
         .iter()
-        .filter(|(root, configured_root)| still_configured(root, configured_root.as_deref()))
+        .filter(|(root, configured_root)| still_configured(root, configured_root))
         .map(|(root, _)| root.clone())
         .collect();
 
@@ -1513,9 +1508,9 @@ fn walk_root_with_progress(
         }
 
         conn.execute(
-            "INSERT INTO scan_dirs (root, last_completed_at_utc, dirty) VALUES (?1, ?2, 0) \
+            "INSERT INTO scan_dirs (root, last_completed_at_utc, dirty, configured_root) VALUES (?1, ?2, 0, ?3) \
              ON CONFLICT(root) DO UPDATE SET last_completed_at_utc = ?2, dirty = 0",
-            params![root_str, scanned_at],
+            params![root_str, scanned_at, configured_root],
         )
         .map_err(|e| e.to_string())?;
 

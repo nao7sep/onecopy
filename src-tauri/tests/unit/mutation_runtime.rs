@@ -218,44 +218,19 @@ fn canonical_accepted_paths_keep_their_configured_alias_volume_gate() {
     );
 }
 
-#[cfg(unix)]
 #[test]
-fn legacy_alias_receipts_require_a_current_physical_owner_and_read_failures_close_admission() {
+fn obsolete_null_source_receipts_and_read_failures_close_admission() {
     let (_dir, data, roots) = volume_fixture();
-    let alias = roots[0].with_file_name("alias");
-    std::os::unix::fs::symlink(&roots[0], &alias).unwrap();
-    let sources = vec![
-        alias.to_string_lossy().into_owned(),
-        roots[1].to_string_lossy().into_owned(),
-    ];
-    let resolved = std::fs::canonicalize(&roots[0]).unwrap();
-    let accepted = crate::operations::AcceptedFiles::for_test_paths([resolved
-        .join("photo.jpg")
-        .to_string_lossy()]);
+    let sources: Vec<_> = roots.iter().map(|root| root.to_string_lossy().into_owned()).collect();
+    let accepted = crate::operations::AcceptedFiles::for_test_paths([roots[0]
+        .join("photo.jpg").to_string_lossy()]);
     let index = data.join(crate::storage::INDEX_DB_FILE_NAME);
     let conn = crate::index_store::open(&index).unwrap();
-    conn.execute(
-        "INSERT INTO scan_dirs (root, dirty) VALUES (?1, 0)",
-        [resolved.to_string_lossy()],
-    )
-    .unwrap();
-    assert_eq!(
-        touched_source_dirs_at(&data, &sources, &Touches::Files(&accepted)).unwrap(),
-        [sources[0].clone()]
-    );
-    std::fs::remove_file(&alias).unwrap();
-    std::os::unix::fs::symlink(&roots[1], &alias).unwrap();
-    assert!(
-        touched_source_dirs_at(&data, &sources, &Touches::Files(&accepted)).is_err(),
-        "a legacy alias that no longer proves its owner grants no effect authority"
-    );
-    let healthy = crate::operations::AcceptedFiles::for_test_paths([roots[1]
-        .join("photo.jpg")
-        .to_string_lossy()]);
-    assert_eq!(
-        touched_source_dirs_at(&data, &sources, &Touches::Files(&healthy)).unwrap(),
-        [sources[1].clone()]
-    );
+    // Simulate an obsolete receipt shape without passing through the owning
+    // startup opener, which rebuilds this disposable index before normal use.
+    conn.execute_batch("DROP TABLE scan_dirs; CREATE TABLE scan_dirs(root TEXT, configured_root TEXT);").unwrap();
+    conn.execute("INSERT INTO scan_dirs(root) VALUES (?1)", [&sources[0]]).unwrap();
+    assert!(touched_source_dirs_at(&data, &sources, &Touches::Files(&accepted)).is_err());
     drop(conn);
     std::fs::write(&index, b"unreadable source receipts").unwrap();
     assert!(

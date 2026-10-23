@@ -52,8 +52,8 @@ fn rebuild_clears_reconstructible_library_facts_and_closes_issues() {
          INSERT INTO paths
            (abs_path, dir_path, file_name, kind, content_hash, missing)
          VALUES ('/photos/a.jpg', '/photos', 'a.jpg', 'image', 'hash', 0);
-         INSERT INTO scan_dirs (root, last_completed_at_utc)
-         VALUES ('/photos', 'now');
+         INSERT INTO scan_dirs (root, configured_root, last_completed_at_utc)
+         VALUES ('/photos', '/photos', 'now');
          INSERT INTO transcripts (content_hash, model, model_version, text, segments, created_at_utc)
          VALUES ('hash', 'm', 'v', 'kept', '[]', 'now');
          INSERT INTO face_checks (content_hash, model, model_version, face_count, checked_at_utc)
@@ -370,9 +370,9 @@ fn a_rebuild_never_keeps_results_under_a_temporary_identity() {
 }
 
 // The old `(missing, id)` index trapped the planner on every `missing = 0`
-// lookup; an existing index gets the partial live-row index in its place.
+// lookup; its obsolete shape is deliberately rebuilt from source files.
 #[test]
-fn an_index_with_the_old_live_row_index_gets_the_partial_one() {
+fn an_index_with_the_old_live_row_index_is_rebuilt_with_the_partial_one() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("index.sqlite3");
     let by_id_indexes = |conn: &rusqlite::Connection| -> Vec<String> {
@@ -387,10 +387,13 @@ fn an_index_with_the_old_live_row_index_gets_the_partial_one() {
     rusqlite::Connection::open(&file)
         .unwrap()
         .execute_batch(
-            "DROP INDEX idx_paths_live_by_id;
+            "INSERT INTO contents (hash, byte_size, kind) VALUES ('obsolete', 1, 'image');
+             DROP INDEX idx_paths_live_by_id;
              CREATE INDEX idx_paths_media_repair_by_id ON paths (missing, id);",
         )
         .unwrap();
 
-    assert_eq!(by_id_indexes(&index_store::open(&file).unwrap()), current);
+    let conn = index_store::open(&file).unwrap();
+    assert_eq!(by_id_indexes(&conn), current);
+    assert_eq!(conn.query_row("SELECT count(*) FROM contents", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
 }

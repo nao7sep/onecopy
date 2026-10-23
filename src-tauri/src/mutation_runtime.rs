@@ -542,7 +542,7 @@ fn touched_source_dirs_at(
         .map_err(|error| format!("could not read source owners: {error}"))?;
     let receipts = statement
         .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
         .map_err(|error| error.to_string())?
         .collect::<rusqlite::Result<Vec<_>>>()
@@ -553,54 +553,15 @@ fn touched_source_dirs_at(
                 crate::scanner::directory_belongs_to_root(&owner.to_string_lossy(), root)
             })
     };
-    let same = |left: &str, right: &str| {
-        crate::scanner::directory_belongs_to_root(left, right)
-            && crate::scanner::directory_belongs_to_root(right, left)
-    };
     for source in source_dirs {
         if receipts.iter().any(|(root, configured)| {
-            configured
-                .as_deref()
-                .is_some_and(|configured| configured == source)
-                && touches_root(root)
+            configured == source && touches_root(root)
         }) && !touched.contains(source)
         {
             touched.push(source.clone());
         }
     }
     current_root_sources(&mut touched);
-    // Older scan receipts had no configured spelling. Only a touched legacy
-    // receipt earns current physical resolution. Modern unrelated/offline
-    // sources are never probed to scope an accepted batch.
-    let legacy: Vec<_> = receipts
-        .iter()
-        .filter(|(root, configured)| configured.is_none() && touches_root(root))
-        .collect();
-    if !legacy.is_empty() {
-        let mut proved = std::collections::HashSet::new();
-        for source in source_dirs {
-            let spellings = crate::trash::root_spellings(std::path::Path::new(source));
-            for (root, _) in &legacy {
-                if spellings
-                    .iter()
-                    .any(|spelling| same(&spelling.to_string_lossy(), root))
-                {
-                    proved.insert(root.as_str());
-                    if !touched.contains(source) {
-                        touched.push(source.clone());
-                    }
-                }
-            }
-        }
-        if legacy
-            .iter()
-            .any(|(root, _)| !proved.contains(root.as_str()))
-        {
-            return Err(
-                "could not verify the configured owner of accepted source files".to_string(),
-            );
-        }
-    }
     Ok(source_dirs
         .iter()
         .filter(|source| touched.contains(source))

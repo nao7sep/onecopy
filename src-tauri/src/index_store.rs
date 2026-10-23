@@ -448,7 +448,7 @@ CREATE TABLE IF NOT EXISTS scan_dirs (
   relationship_dirty    INTEGER NOT NULL DEFAULT 0,
   -- The configured spelling whose walk last settled to this root, so an
   -- unavailable root that resolves under another spelling is still known.
-  configured_root       TEXT
+  configured_root       TEXT NOT NULL
 );
 ");
 
@@ -471,7 +471,7 @@ fn open_before_setup(db_file: &Path, before_setup: impl FnOnce()) -> Result<Conn
     // is left exactly as it is (store-recovery conventions).
     let needs_setup = match crate::formats::sqlite_marker(&conn, db_file, crate::formats::INDEX)? {
         crate::formats::SqliteMarker::Newer(newer) => return Err(newer.to_string()),
-        crate::formats::SqliteMarker::Current => false,
+        crate::formats::SqliteMarker::Current => !current_shape(&conn)?,
         crate::formats::SqliteMarker::New | crate::formats::SqliteMarker::Missing => true,
     };
     conn.create_collation("onecopy_nocase", |left, right| {
@@ -485,9 +485,8 @@ fn open_before_setup(db_file: &Path, before_setup: impl FnOnce()) -> Result<Conn
     .map_err(|error| error.to_string())?;
     static JOURNAL: crate::sqlite::JournalSetup = crate::sqlite::JournalSetup::new();
     JOURNAL.configure(&conn, std::time::Duration::from_secs(5))?;
-    // A new index gets its schema once, and an index without its marker is
-    // unreadable and, being re-derived, is rebuilt from the files. Ordinary
-    // opens of a marked index replay no DDL.
+    // Missing markers and obsolete shapes are rebuilt from source files.
+    // A current index retains its facts and needs only projection refresh.
     if needs_setup {
         before_setup();
         conn.execute_batch("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE")
@@ -497,7 +496,8 @@ fn open_before_setup(db_file: &Path, before_setup: impl FnOnce()) -> Result<Conn
             // waited for SQLite's write lock.
             match crate::formats::sqlite_marker(&conn, db_file, crate::formats::INDEX)? {
                 crate::formats::SqliteMarker::Newer(newer) => return Err(newer.to_string()),
-                crate::formats::SqliteMarker::Current => return Ok(()),
+                crate::formats::SqliteMarker::Current if current_shape(&conn)? => return Ok(()),
+                crate::formats::SqliteMarker::Current => {},
                 crate::formats::SqliteMarker::New | crate::formats::SqliteMarker::Missing => {}
             }
             let objects = conn
@@ -513,7 +513,7 @@ fn open_before_setup(db_file: &Path, before_setup: impl FnOnce()) -> Result<Conn
                 .map_err(|error| error.to_string())?;
             if !objects.is_empty() {
                 crate::logging::warn(
-                    "index without its format version; rebuilding it from the files",
+                    "index has a missing format version or obsolete shape; rebuilding it from the files",
                     serde_json::json!({ "file": db_file }),
                 );
             }
@@ -575,40 +575,24 @@ fn open_before_setup(db_file: &Path, before_setup: impl FnOnce()) -> Result<Conn
 #[path = "../tests/unit/index_store.rs"]
 mod setup_tests;
 
-/// Brings an existing index's projection view and live-row index to this
-/// build's definitions. Ordinary opens find them current and write nothing.
+/// Shape changes discard this reconstructible index rather than migrating
+/// experimental data. Query errors remain errors, not evidence for a reset.
+fn current_shape(conn: &Connection) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('paths') WHERE name = 'file_key')
+            AND EXISTS (SELECT 1 FROM pragma_table_info('scan_dirs')
+                        WHERE name = 'configured_root' AND \"notnull\" = 1)
+            AND NOT EXISTS (SELECT 1 FROM sqlite_master
+                            WHERE type = 'index' AND name = 'idx_paths_media_repair_by_id')",
+        [],
+        |row| row.get(0),
+    )
+    .map_err(|error| format!("read index shape: {error}"))
+}
+
+/// Brings an existing index's projection view to this build's definition.
+/// Ordinary opens find it current and write nothing.
 fn refresh_definitions(conn: &Connection) -> Result<(), String> {
-    let has_file_key = |conn: &Connection| -> Result<bool, String> {
-        conn.prepare("SELECT 1 FROM pragma_table_info('paths') WHERE name = 'file_key'")
-            .and_then(|mut statement| statement.exists([]))
-            .map_err(|error| error.to_string())
-    };
-    if !has_file_key(conn)? {
-        let transaction = crate::sqlite::write_transaction(conn).map_err(|error| error.to_string())?;
-        if !has_file_key(&transaction)? {
-            transaction
-                .execute_batch("ALTER TABLE paths ADD COLUMN file_key TEXT;")
-                .map_err(|error| error.to_string())?;
-        }
-        transaction.commit().map_err(|error| error.to_string())?;
-    }
-    let has_old_index = |conn: &Connection| -> Result<bool, String> {
-        conn.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_paths_media_repair_by_id'")
-            .and_then(|mut statement| statement.exists([]))
-            .map_err(|error| error.to_string())
-    };
-    if has_old_index(conn)? {
-        let transaction = crate::sqlite::write_transaction(conn).map_err(|error| error.to_string())?;
-        if has_old_index(&transaction)? {
-            transaction
-                .execute_batch(
-                    "DROP INDEX idx_paths_media_repair_by_id;
-                     CREATE INDEX IF NOT EXISTS idx_paths_live_by_id ON paths (id) WHERE missing = 0;",
-                )
-                .map_err(|error| error.to_string())?;
-        }
-        transaction.commit().map_err(|error| error.to_string())?;
-    }
     let stored = |conn: &Connection| -> Result<Option<String>, String> {
         conn.query_row(
             "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'logical_content_projection'",

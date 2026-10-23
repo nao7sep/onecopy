@@ -772,7 +772,7 @@ fn scoped_repair_marks_only_the_completed_root_with_the_same_spelling() {
     let nested = stored_path(&f.root.join("Photos").join("Nested"));
     let prefix_sibling = stored_path(&f.root.join("Photos2"));
     for root in [&root, &sibling, &nested, &prefix_sibling] {
-        f.conn.execute("INSERT INTO scan_dirs (root, last_completed_at_utc) VALUES (?1, 'completed')", [root]).unwrap();
+        f.conn.execute("INSERT INTO scan_dirs (root, last_completed_at_utc, configured_root) VALUES (?1, 'completed', ?1)", [root]).unwrap();
     }
     let marked = begin_scoped_index_repair(&f.conn, &[stored_path(&f.root.join("Photos").join("Nested").join("changed"))]).unwrap();
     let mut expected = vec![root, nested];
@@ -1623,7 +1623,7 @@ fn completed_walk_checkpoint_uses_the_settled_case_identity() {
     .to_string();
     f.conn
         .execute(
-            "INSERT INTO scan_dirs (root, last_completed_at_utc, dirty) VALUES (?1, 'done', 0)",
+            "INSERT INTO scan_dirs (root, last_completed_at_utc, dirty, configured_root) VALUES (?1, 'done', 0, ?1)",
             rusqlite::params![recorded],
         )
         .unwrap();
@@ -2017,7 +2017,7 @@ fn forgetting_a_root_uses_a_literal_case_correct_separator_bounded_path_scope() 
     // correct on every host, independently of its filesystem's case rules.
     let f = fixture("forget-literal-prefix");
     let removed = f.root.join("Photos!%_[");
-    f.conn.execute("INSERT INTO scan_dirs (root) VALUES (?1)", [removed.to_string_lossy()]).unwrap();
+    f.conn.execute("INSERT INTO scan_dirs (root, configured_root) VALUES (?1, ?1)", [removed.to_string_lossy()]).unwrap();
     let removed_id = seed_forget_path(&f.conn, &removed.join("a.jpg"), "removed", false);
     let companion_id = seed_forget_path(&f.conn, &removed.join("a.xmp"), "companion", false);
     f.conn.execute("UPDATE paths SET companion_of = ?1 WHERE id = ?2", rusqlite::params![removed_id, companion_id]).unwrap();
@@ -2314,7 +2314,7 @@ fn library_wide_settings_change_holds_the_write_lock_only_briefly() {
     let root = stored_path(&f.root);
     f.conn
         .execute(
-            "INSERT INTO scan_dirs (root, last_completed_at_utc, dirty) VALUES (?1, 'x', 0)",
+            "INSERT INTO scan_dirs (root, last_completed_at_utc, dirty, configured_root) VALUES (?1, 'x', 0, ?1)",
             [&root],
         )
         .unwrap();
