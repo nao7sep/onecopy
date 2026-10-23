@@ -83,6 +83,7 @@ pub mod startup;
 pub mod storage;
 mod store_patch;
 mod fullres_cache;
+mod hash_cohort;
 pub mod subprocess;
 #[cfg(unix)]
 mod subprocess_supervisor;

@@ -482,6 +482,108 @@ fn size_collisions_among_other_files_get_hashed_and_deduped() {
 }
 
 #[test]
+fn hash_discovery_deduplicates_prehash_families_across_multiple_pages() {
+    let f = fixture("hash-pages");
+    // Each family exceeds a discovery page, so neither can be settled from
+    // only the rows present in one page. Both have the same byte size.
+    for family in [1u8, 2u8] {
+        for copy in 0..130 {
+            let name = format!("family-{family}-{copy:03}.bin");
+            std::fs::write(f.root.join(name), vec![family; 32]).unwrap();
+        }
+    }
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+    let expected_hashes = [1u8, 2u8].map(|family| {
+        onecopy_lib::hashing::full_hash(&f.root.join(format!("family-{family}-000.bin"))).unwrap()
+    });
+    assert_ne!(expected_hashes[0], expected_hashes[1]);
+
+    let stats = hash_pending(&f.conn, &test_cache(&f)).unwrap();
+    assert_eq!(stats.prehashed, 260);
+    assert_eq!(stats.full_hashed, 260);
+    assert_eq!(stats.errors, 0);
+    assert_eq!(stats.copies_disagree, 0);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths"), 260);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths WHERE content_hash IS NULL"), 0);
+    assert_eq!(count(&f.conn, "SELECT COUNT(DISTINCT prehash) FROM paths"), 2);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM contents"), 2);
+    for (family, expected) in [1u8, 2u8].into_iter().zip(expected_hashes) {
+        let (copies, matching): (i64, i64) = f.conn.query_row(
+            "SELECT COUNT(*), SUM(content_hash = ?2) FROM paths WHERE file_name GLOB ?1",
+            rusqlite::params![format!("family-{family}-*.bin"), expected],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!((copies, matching), (130, 130));
+    }
+}
+
+#[test]
+fn hash_discovery_reports_every_divergent_copy_across_prehash_pages() {
+    let f = fixture("disagree-pages");
+    let mut bytes = vec![7u8; 140 * 1024];
+    for copy in 0..130 {
+        // The changed byte is outside both 64 KiB prehash windows.
+        bytes[70 * 1024] = if copy % 2 == 0 { 1 } else { 2 };
+        std::fs::write(f.root.join(format!("copy-{copy:03}.bin")), &bytes).unwrap();
+    }
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+    let expected_hashes = [0, 1].map(|copy| {
+        onecopy_lib::hashing::full_hash(&f.root.join(format!("copy-{copy:03}.bin"))).unwrap()
+    });
+    assert_ne!(expected_hashes[0], expected_hashes[1]);
+
+    let stats = hash_pending(&f.conn, &test_cache(&f)).unwrap();
+    assert_eq!(stats.prehashed, 130);
+    assert_eq!(stats.full_hashed, 130);
+    assert_eq!(stats.copies_disagree, 1);
+    assert_eq!(stats.errors, 0);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths"), 130);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths WHERE content_hash IS NULL"), 0);
+    assert_eq!(count(&f.conn, "SELECT COUNT(DISTINCT prehash) FROM paths"), 1);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM contents"), 2);
+    assert_eq!(f.conn.query_row(
+        "SELECT COUNT(*) FROM active_issues WHERE kind = ?1",
+        [COPIES_DISAGREE],
+        |row| row.get::<_, i64>(0),
+    ).unwrap(), 130);
+    assert_eq!(f.conn.query_row(
+        "SELECT COUNT(*) FROM paths p WHERE EXISTS
+           (SELECT 1 FROM active_issues i WHERE i.kind = ?1 AND i.path = p.abs_path)",
+        [COPIES_DISAGREE],
+        |row| row.get::<_, i64>(0),
+    ).unwrap(), 130);
+    for copy in 0..130 {
+        let actual: String = f.conn.query_row(
+            "SELECT content_hash FROM paths WHERE file_name = ?1",
+            [format!("copy-{copy:03}.bin")],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(actual, expected_hashes[copy % 2]);
+    }
+}
+
+#[test]
+fn hash_discovery_keeps_unique_size_media_provisional_across_many_cohorts() {
+    let f = fixture("provisional-pages");
+    for size in 1..=260 {
+        std::fs::write(f.root.join(format!("image-{size:03}.jpg")), vec![7u8; size]).unwrap();
+    }
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+
+    let stats = hash_pending(&f.conn, &test_cache(&f)).unwrap();
+    assert_eq!(stats.provisional_created, 260);
+    assert_eq!(stats.prehashed, 0);
+    assert_eq!(stats.full_hashed, 0);
+    assert_eq!(stats.errors, 0);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths"), 260);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths WHERE content_hash IS NULL"), 0);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths WHERE prehash IS NOT NULL"), 0);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM contents"), 260);
+    assert_eq!(provisional_count(&f.conn, "SELECT hash FROM contents"), 260);
+    assert_eq!(count(&f.conn, "SELECT COUNT(DISTINCT content_hash) FROM paths"), 260);
+}
+
+#[test]
 fn diverged_copies_surface_as_a_copies_disagree_issue() {
     let f = fixture("disagree");
     // Same size, same 64K edges, different middle — the bit-rot shape.

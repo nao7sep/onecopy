@@ -483,6 +483,10 @@ fn open_before_setup(db_file: &Path, before_setup: impl FnOnce()) -> Result<Conn
             .cmp(right.chars().flat_map(char::to_lowercase))
     })
     .map_err(|error| error.to_string())?;
+    // Bundled SQLite defaults temporary tables to memory. Large hash cohorts
+    // and sort work must spill to its temporary files with a bounded page cache.
+    // Configure this before any temporary objects exist on the connection.
+    conn.pragma_update(None, "temp_store", "FILE").map_err(|e| e.to_string())?;
     static JOURNAL: crate::sqlite::JournalSetup = crate::sqlite::JournalSetup::new();
     JOURNAL.configure(&conn, std::time::Duration::from_secs(5))?;
     // Missing markers and obsolete shapes are rebuilt from source files.
@@ -552,6 +556,13 @@ fn open_before_setup(db_file: &Path, before_setup: impl FnOnce()) -> Result<Conn
     } else {
         refresh_definitions(&conn)?;
     }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_paths_pending_size ON paths(size, id)
+           WHERE missing = 0 AND hash_attempt_failed = 0
+             AND (content_hash IS NULL OR content_hash GLOB 'p*');
+         CREATE INDEX IF NOT EXISTS idx_contents_established_size ON contents(byte_size)
+           WHERE NOT hash GLOB 'p*';"
+    ).map_err(|e| e.to_string())?;
     crate::records::attach(
         &conn,
         &db_file.with_file_name(crate::records::RECORDS_DB_FILE_NAME),

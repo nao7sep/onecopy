@@ -17,7 +17,6 @@
 //! typed progress facts because only the index pipeline knows what a durable
 //! checkpoint means; `scan_runtime` owns worker lifetime and event transport.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::UNIX_EPOCH;
@@ -1720,9 +1719,9 @@ pub fn promote_identity(
 /// collision reads the 64 KB head+tail prehash, and only a prehash collision
 /// reads the full blake3. Collapsing copies still requires full-hash
 /// equality, always. Media with nothing to compare against get a PROVISIONAL
-/// identity (the cache and UI need a key before any read; images promote to
-/// a real hash for free at derive, where the decode reads every byte
-/// anyway); other-files stay hash-less as before. A size matching an
+/// identity (the cache and UI need a key before any read; image derivation
+/// promotes it after a separate streamed full hash); other-files stay
+/// hash-less as before. A size matching an
 /// ALREADY-HASHED content forces the full read directly — a late-arriving
 /// copy of known content must collapse into it, or the copy-count health
 /// check lies.
@@ -1740,36 +1739,13 @@ fn hash_pending_with_progress(
 ) -> Result<HashStats, String> {
     let mut stats = HashStats::default();
 
-    struct Row {
-        id: i64,
-        abs: String,
-        size: i64,
-        kind: String,
-        provisional: Option<String>,
-        prehash: Option<String>,
-    }
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, abs_path, size, kind, content_hash, prehash FROM paths \
-             WHERE missing = 0 AND hash_attempt_failed = 0 AND (content_hash IS NULL OR content_hash GLOB 'p*')",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows: Vec<Row> = stmt
-        .query_map([], |r| {
-            Ok(Row {
-                id: r.get(0)?,
-                abs: r.get(1)?,
-                size: r.get(2)?,
-                kind: r.get(3)?,
-                provisional: r.get(4)?,
-                prehash: r.get(5)?,
-            })
-        })
-        .map_err(|e| e.to_string())?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|e| e.to_string())?;
-    drop(stmt);
-    let total = rows.len() as u64;
+    use crate::hash_cohort::{Cohort, Row};
+    let (total, upper_id): (u64, i64) = conn.query_row(
+        "SELECT count(*), coalesce(max(id), 0) FROM paths
+         WHERE missing = 0 AND hash_attempt_failed = 0
+           AND (content_hash IS NULL OR content_hash GLOB 'p*')",
+        [], |row| Ok((row.get::<_, i64>(0)? as u64, row.get(1)?)),
+    ).map_err(|e| e.to_string())?;
     let mut done = 0u64;
     progress(ScanProgress::phase(
         ScanPhase::Hash,
@@ -1792,18 +1768,6 @@ fn hash_pending_with_progress(
                 _ => snapshot,
             });
         };
-
-    // Sizes of established (real-hashed) contents: a pending row matching one
-    // goes straight to the full read.
-    let mut known_stmt = conn
-        .prepare("SELECT DISTINCT byte_size FROM contents WHERE NOT hash GLOB 'p*'")
-        .map_err(|e| e.to_string())?;
-    let known_sizes: std::collections::HashSet<i64> = known_stmt
-        .query_map([], |r| r.get::<_, i64>(0))
-        .map_err(|e| e.to_string())?
-        .collect::<rusqlite::Result<std::collections::HashSet<_>>>()
-        .map_err(|e| e.to_string())?;
-    drop(known_stmt);
 
     let needs_content_identity = |kind: &str| matches!(kind, "image" | "video" | "audio");
 
@@ -1882,114 +1846,114 @@ fn hash_pending_with_progress(
         }
     };
 
-    let mut by_size: HashMap<i64, Vec<Row>> = HashMap::new();
-    for row in rows {
-        by_size.entry(row.size).or_default().push(row);
-    }
-
-    for (size, group) in by_size {
+    // The pass walks sizes by key rather than retaining every path and size.
+    // Cohort membership lives in SQLite's file-backed temporary store so
+    // promotion cannot remove a member before its later disagreement receipt.
+    let cohort = Cohort::new(conn)?;
+    let mut after_size: Option<i64> = None;
+    loop {
         check_cancel()?;
-        if !carries_content_identity(size) {
-            // Empty files never collapse: each stays its own physical item.
-            for row in &group {
-                check_cancel()?;
-                report_path(row, done, stats.errors, None, None);
-                settle_unique(row, &mut stats)?;
-                done += 1;
-                report_path(row, done, stats.errors, None, None);
-            }
-            continue;
-        }
-        if group.len() == 1 && !known_sizes.contains(&size) {
-            report_path(&group[0], done, stats.errors, None, None);
-            settle_unique(&group[0], &mut stats)?;
-            done += 1;
-            report_path(&group[0], done, stats.errors, None, None);
-            continue;
-        }
-        if known_sizes.contains(&size) {
-            // Collides with established content: the prehash tier cannot
-            // decide (established media were never prehashed) — read fully.
-            for row in &group {
-                check_cancel()?;
-                let _ = land_full_hash(row, &mut stats, done)?;
-                done += 1;
-                report_path(row, done, stats.errors, None, None);
-            }
-            continue;
-        }
-        // Size collision within the pending set: prehash each, then
-        // full-hash only prehash collisions.
-        let mut by_prehash: HashMap<String, Vec<Row>> = HashMap::new();
-        for mut row in group {
+        let size: Option<i64> = match after_size {
+            None => conn.query_row(
+                crate::hash_cohort::FIRST_SIZE, [upper_id], |row| row.get(0),
+            ).optional(),
+            Some(after) => conn.query_row(
+                crate::hash_cohort::NEXT_SIZE, params![after, upper_id], |row| row.get(0),
+            ).optional(),
+        }.map_err(|e| e.to_string())?;
+        let Some(size) = size else { break; };
+        after_size = Some(size);
+        cohort.select_size(size, upper_id)?;
+        let known: bool = conn.query_row(
+            crate::hash_cohort::KNOWN_SIZE,
+            [size], |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        let settle_without_read = !carries_content_identity(size) || (cohort.len()? == 1 && !known);
+        let mut after_id = 0;
+        loop {
             check_cancel()?;
-            report_path(&row, done, stats.errors, None, None);
-            let pre = match &row.prehash {
-                Some(pre) => Some(pre.clone()),
-                None => match hashing::prehash(Path::new(&row.abs)) {
-                    Ok(pre) => {
-                        stats.prehashed += 1;
-                        if issues_present {
-                            crate::index_store::clear_issues(conn, &row.abs, &["read-error"])?;
-                        }
-                        execute_cached(
-                            conn,
-                            "UPDATE paths SET prehash = ?2 WHERE id = ?1",
-                            params![row.id, pre],
-                        )?;
-                        Some(pre)
+            let rows = cohort.rows(after_id, None)?;
+            if rows.is_empty() { break; }
+            for row in rows {
+                check_cancel()?;
+                after_id = row.id;
+                report_path(&row, done, stats.errors, None, None);
+                if settle_without_read {
+                    settle_unique(&row, &mut stats)?;
+                } else if known {
+                    // Established media need not have prehashes: a matching
+                    // size goes straight to a complete identity read.
+                    let _ = land_full_hash(&row, &mut stats, done)?;
+                } else {
+                    // Finish the bounded prehash pass before grouping, so
+                    // equal prefixes on different pages still meet.
+                    match row.prehash.as_deref() {
+                        Some(pre) => cohort.set_prehash(row.id, pre)?,
+                        None => match hashing::prehash(Path::new(&row.abs)) {
+                            Ok(pre) => {
+                                stats.prehashed += 1;
+                                if issues_present {
+                                    crate::index_store::clear_issues(conn, &row.abs, &["read-error"])?;
+                                }
+                                execute_cached(conn, "UPDATE paths SET prehash = ?2 WHERE id = ?1",
+                                    params![row.id, pre])?;
+                                cohort.set_prehash(row.id, &pre)?;
+                            }
+                            Err(err) => {
+                                check_cancel()?;
+                                stats.errors += 1;
+                                crate::information_attempts::failed(conn, row.id, &row.abs,
+                                    crate::information_attempts::Stage::Identity, &err.to_string())?;
+                                cohort.discard(row.id)?;
+                                done += 1;
+                                report_path(&row, done, stats.errors, None, None);
+                            }
+                        },
                     }
-                    Err(err) => {
-                        stats.errors += 1;
-                        crate::information_attempts::failed(conn, row.id, &row.abs, crate::information_attempts::Stage::Identity, &err.to_string())?;
-                        done += 1;
-                        report_path(&row, done, stats.errors, None, None);
-                        None
-                    }
-                },
-            };
-            if let Some(pre) = pre {
-                row.prehash = Some(pre.clone());
-                by_prehash.entry(pre).or_default().push(row);
+                    continue;
+                }
+                done += 1;
+                report_path(&row, done, stats.errors, None, None);
             }
         }
-        for (_pre, collided) in by_prehash {
-            if collided.len() == 1 {
-                settle_unique(&collided[0], &mut stats)?;
-                done += 1;
-                report_path(&collided[0], done, stats.errors, None, None);
-                continue;
-            }
-            let group_len = collided.len();
-            let mut hashes_in_group: Vec<String> = Vec::new();
-            for row in &collided {
+        if settle_without_read || known { continue; }
+        let mut after_prehash: Option<String> = None;
+        while let Some(pre) = cohort.next_prehash(after_prehash.as_deref())? {
+            check_cancel()?;
+            let group_len = cohort.group_len(&pre)?;
+            let mut after_id = 0;
+            loop {
                 check_cancel()?;
-                if let Some(hash) = land_full_hash(row, &mut stats, done)? {
-                    if !hashes_in_group.contains(&hash) {
-                        hashes_in_group.push(hash);
+                let rows = cohort.rows(after_id, Some(&pre))?;
+                if rows.is_empty() { break; }
+                for row in rows {
+                    check_cancel()?;
+                    after_id = row.id;
+                    if group_len == 1 {
+                        settle_unique(&row, &mut stats)?;
+                    } else if let Some(hash) = land_full_hash(&row, &mut stats, done)? {
+                        cohort.set_hash(row.id, &hash)?;
+                    }
+                    done += 1;
+                    report_path(&row, done, stats.errors, None, None);
+                }
+            }
+            let distinct = cohort.distinct_hashes(&pre)?;
+            if distinct > 1 {
+                stats.copies_disagree += 1;
+                let detail = format!("{group_len} same-size same-prehash files split into {distinct} distinct contents (size {size})");
+                let mut after_id = 0;
+                loop {
+                    check_cancel()?;
+                    let rows = cohort.rows(after_id, Some(&pre))?;
+                    if rows.is_empty() { break; }
+                    for row in rows {
+                        after_id = row.id;
+                        record_issue(conn, Some(row.abs), "copies-disagree", &detail)?;
                     }
                 }
-                done += 1;
-                report_path(row, done, stats.errors, None, None);
             }
-            // Same size + same prehash + diverging full hashes: bit rot or a
-            // divergent sync among supposed copies — surface it.
-            if hashes_in_group.len() > 1 {
-                stats.copies_disagree += 1;
-                // One row PER FILE: (kind, path) identity needs a real anchor,
-                // and naming the disagreeing files is what lets the user act.
-                for row in &collided {
-                    record_issue(
-                        conn,
-                        Some(row.abs.clone()),
-                        "copies-disagree",
-                        &format!(
-                            "{group_len} same-size same-prehash files split into {} distinct contents (size {size})",
-                            hashes_in_group.len()
-                        ),
-                    )?;
-                }
-            }
+            after_prehash = Some(pre);
         }
     }
 
