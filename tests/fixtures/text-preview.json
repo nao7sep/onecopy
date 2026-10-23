@@ -1,0 +1,43 @@
+{
+  "first": {
+    "body": "text",
+    "text": "first line\nsecond line",
+    "encoding": "utf-8",
+    "method": "exact",
+    "contentKey": "text-content-hash",
+    "encodings": [
+      "utf-8",
+      "shift_jis"
+    ],
+    "byteSize": 22
+  },
+  "second": {
+    "body": "text",
+    "text": "another file",
+    "encoding": "utf-8",
+    "method": "exact",
+    "contentKey": "second-content-hash",
+    "encodings": [
+      "utf-8",
+      "shift_jis"
+    ],
+    "byteSize": 12
+  },
+  "tooLarge": {
+    "body": "attributes",
+    "reason": "Text preview is limited to 3 bytes.",
+    "reasonCode": "preview-too-large",
+    "reasonBytes": 3,
+    "byteSize": 8
+  },
+  "decodeError": {
+    "body": "decodeError",
+    "reason": "the file length is not valid UTF-32",
+    "contentKey": "invalid-content-hash",
+    "encodings": [
+      "utf-8",
+      "shift_jis"
+    ],
+    "byteSize": 3
+  }
+}

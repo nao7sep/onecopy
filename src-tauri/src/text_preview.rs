@@ -74,7 +74,7 @@ pub fn options() -> Options {
 }
 
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase", tag = "body")]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "body")]
 pub enum PreviewBody {
     Text {
         text: String,
@@ -289,7 +289,7 @@ fn decode_named(bytes: &[u8], label: &str) -> Result<String, String> {
         canonical => {
             let encoding = Encoding::for_label(canonical.as_bytes())
                 .ok_or_else(|| format!("unsupported text encoding: {label}"))?;
-            let (text, _, _had_errors) = encoding.decode(bytes);
+            let (text, _had_errors) = encoding.decode_without_bom_handling(bytes);
             Ok(text.into_owned())
         }
     }

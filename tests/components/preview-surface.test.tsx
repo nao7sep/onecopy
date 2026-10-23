@@ -10,6 +10,9 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useDerivedWorkStore } from "../../src/state/derived-work-store";
+import textPreviewFixture from "../fixtures/text-preview.json";
+import { I18nProvider } from "../../src/i18n/I18nContext";
+import { createTranslator } from "../../src/i18n/translate";
 import PreviewSurface from "../../src/components/PreviewSurface";
 import { useAppStore } from "../../src/state/app-store";
 import { useBinariesStore } from "../../src/state/binaries-store";
@@ -81,14 +84,7 @@ beforeEach(() => {
       message: null,
     }),
     open_item_externally: () => null,
-    text_preview: () => ({
-      body: "text",
-      text: "first line\nsecond line",
-      encoding: "utf-8",
-      contentKey: "text-content-hash",
-      encodings: ["utf-8", "shift_jis"],
-      byteSize: 22,
-    }),
+    text_preview: () => textPreviewFixture.first,
     background_work_snapshot: () => ({
       revision: 1, workerRunning: true, pausedClasses: [],
       classes: [],
@@ -806,5 +802,51 @@ describe("Install ffmpeg on a picture only ffmpeg can prepare", () => {
     fireEvent.error(video);
 
     expect(screen.queryByRole("button", { name: "Install ffmpeg" })).toBeNull();
+  });
+});
+
+
+describe("native text-preview wire contract", () => {
+  it("keeps encoding and reading position separate for different file content", async () => {
+    mockCommands({ text_preview: (args) => args.pathId === 8 ? textPreviewFixture.first : textPreviewFixture.second });
+    useContentSessionStore.setState({
+      textEncodings: { "text-content-hash": "shift_jis" },
+      transcriptViews: { "text:text-content-hash": { scrollTop: 240, selection: null } },
+    });
+    const view = render(<PreviewSurface surface="fullscreen-view" hash={null} pathId={8} detail={OTHER_DETAIL} />);
+    const first = await screen.findByText(/first line/);
+    await waitFor(() => expect(first.scrollTop).toBe(240));
+    expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("shift_jis");
+    view.rerender(<PreviewSurface surface="fullscreen-view" hash={null} pathId={9} detail={{ ...OTHER_DETAIL, fileName: "second.txt" }} />);
+    const second = await screen.findByText("another file");
+    await waitFor(() => expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("automatic"));
+    expect(second.scrollTop).toBe(0);
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "shift_jis" } });
+    await waitFor(() => expect(emitCalls).toContainEqual({
+      event: "content-session://set-text-encoding", payload: { key: "second-content-hash", encoding: "shift_jis" },
+    }));
+    second.scrollTop = 80;
+    fireEvent.scroll(second);
+    await waitFor(() => expect(emitCalls).toContainEqual({
+      event: "content-session://set-transcript-view", payload: { key: "text:second-content-hash", view: { scrollTop: 80, selection: null } },
+    }));
+  });
+
+  it("localizes native reason codes and their byte limits", async () => {
+    mockCommands({ text_preview: () => textPreviewFixture.tooLarge });
+    render(<I18nProvider language="ja" locale="ja"><PreviewSurface surface="fullscreen-view" hash={null} pathId={8} detail={OTHER_DETAIL} /></I18nProvider>);
+    const expected = createTranslator("ja", "ja").t("reason.previewTooLarge", { bytes: 3 });
+    expect(await screen.findByText(expected)).toBeTruthy();
+    expect(screen.queryByText(textPreviewFixture.tooLarge.reason)).toBeNull();
+  });
+
+  it("offers recovery encodings from the native decode-error variant", async () => {
+    mockCommands({ text_preview: () => textPreviewFixture.decodeError });
+    render(<PreviewSurface surface="fullscreen-view" hash={null} pathId={8} detail={OTHER_DETAIL} />);
+    expect(await screen.findByText(textPreviewFixture.decodeError.reason)).toBeTruthy();
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "shift_jis" } });
+    await waitFor(() => expect(emitCalls).toContainEqual({
+      event: "content-session://set-text-encoding", payload: { key: "invalid-content-hash", encoding: "shift_jis" },
+    }));
   });
 });

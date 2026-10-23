@@ -191,3 +191,46 @@ fn a_file_on_a_drive_that_does_not_answer_shows_as_not_responding() {
         PreviewBody::Text { .. }
     ));
 }
+
+
+#[test]
+fn explicit_encoding_does_not_switch_to_a_contradictory_unicode_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("marker.txt");
+    std::fs::write(&path, b"\xEF\xBB\xBFhello").unwrap();
+    let manual = preview_file(&path, 100, "utf-8", Some("windows-1252")).unwrap();
+    match manual {
+        PreviewBody::Text { text, encoding, method, .. } => {
+            assert_eq!(text, "ï»¿hello");
+            assert_eq!(encoding, "windows-1252");
+            assert_eq!(method, None);
+        }
+        other => panic!("expected manually decoded text: {other:?}"),
+    }
+    match preview_file(&path, 100, "windows-1252", None).unwrap() {
+        PreviewBody::Text { text, encoding, method, .. } => {
+            assert_eq!(text, "hello");
+            assert_eq!(encoding, "utf-8");
+            assert_eq!(method, Some("marker"));
+        }
+        other => panic!("expected marker-decoded text: {other:?}"),
+    }
+}
+
+#[test]
+fn preview_variants_serialize_to_the_shared_frontend_fixture() {
+    let fixture: serde_json::Value = serde_json::from_slice(&std::fs::read(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/text-preview.json")
+    ).unwrap()).unwrap();
+    let first = PreviewBody::Text { text: "first line\nsecond line".into(), encoding: "utf-8".into(),
+        method: Some("exact"), content_key: "text-content-hash".into(), encodings: &["utf-8", "shift_jis"], byte_size: 22 };
+    let second = PreviewBody::Text { text: "another file".into(), encoding: "utf-8".into(),
+        method: Some("exact"), content_key: "second-content-hash".into(), encodings: &["utf-8", "shift_jis"], byte_size: 12 };
+    let attributes = PreviewBody::Attributes { reason: "Text preview is limited to 3 bytes.".into(),
+        reason_code: Some("preview-too-large"), reason_bytes: Some(3), byte_size: 8 };
+    let error = PreviewBody::DecodeError { reason: "the file length is not valid UTF-32".into(),
+        content_key: "invalid-content-hash".into(), encodings: &["utf-8", "shift_jis"], byte_size: 3 };
+    for (name, body) in [("first", first), ("second", second), ("tooLarge", attributes), ("decodeError", error)] {
+        assert_eq!(serde_json::to_value(body).unwrap(), fixture[name], "{name}");
+    }
+}
