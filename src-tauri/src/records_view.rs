@@ -88,6 +88,8 @@ pub struct RecordsQuery {
     pub level: Option<LevelFilter>,
     pub search: String,
     pub after: Option<Cursor>,
+    /// Read the immediately newer page, still returned newest first.
+    pub before: Option<Cursor>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -110,6 +112,7 @@ pub struct RecordSummary {
 #[serde(rename_all = "camelCase")]
 pub struct RecordsPage {
     pub records: Vec<RecordSummary>,
+    /// More records exist in the requested paging direction.
     pub more: bool,
 }
 
@@ -139,8 +142,9 @@ pub struct RecordSources {
 }
 
 /// How one table reads as a summary. Levels are the logging levels: a table
-/// without a level of its own reads as `error` for a failure, `warn` for an
-/// open Issue, and `info` otherwise.
+/// without a level of its own reads as `error` for a failure, `warn` for a
+/// recorded Issue occurrence, and `info` otherwise. Historical severity does
+/// not consult whether that Issue is still open.
 struct Table {
     kind: RecordKind,
     name: &'static str,
@@ -323,18 +327,25 @@ fn table_page(connection: &Connection, table: &Table, query: &RecordsQuery) -> R
         conditions.push(format!("({any})"));
         params.extend(table.searched.iter().map(|_| SqlValue::Text(pattern.clone())));
     }
-    if let Some(after) = &query.after {
-        // The list's order is time, then kind name, then id, all newest
-        // first; this table's rows after the cursor follow from where its
-        // kind sorts against the cursor's.
-        conditions.push(match table.kind.as_str().cmp(after.kind.as_str()) {
-            Ordering::Less => format!("{} <= ?", table.time),
-            Ordering::Equal => format!("({}, id) < (?, ?)", table.time),
-            Ordering::Greater => format!("{} < ?", table.time),
+    if let Some(cursor) = query.after.as_ref().or(query.before.as_ref()) {
+        // Include equal-time rows only on the appropriate side of the kind
+        // tie-breaker, then use the id within that kind.
+        let newer = query.before.is_some();
+        let comparison = table.kind.as_str().cmp(cursor.kind.as_str());
+        let operator = match (newer, comparison) {
+            (false, Ordering::Less) => "<=",
+            (false, _) => "<",
+            (true, Ordering::Greater) => ">=",
+            (true, _) => ">",
+        };
+        conditions.push(if table.kind == cursor.kind {
+            format!("({}, id) {operator} (?, ?)", table.time)
+        } else {
+            format!("{} {operator} ?", table.time)
         });
-        params.push(SqlValue::Text(after.time.clone()));
-        if table.kind == after.kind {
-            params.push(SqlValue::Integer(after.id));
+        params.push(SqlValue::Text(cursor.time.clone()));
+        if table.kind == cursor.kind {
+            params.push(SqlValue::Integer(cursor.id));
         }
     }
     params.push(SqlValue::Integer((PAGE_SIZE + 1) as i64));
@@ -344,7 +355,8 @@ fn table_page(connection: &Connection, table: &Table, query: &RecordsQuery) -> R
         format!(" WHERE {}", conditions.join(" AND "))
     };
     let sql = format!(
-        "{select}{filter} ORDER BY {time} DESC, id DESC LIMIT ?",
+        "{select}{filter} ORDER BY {time} {direction}, id {direction} LIMIT ?",
+        direction = if query.before.is_some() { "ASC" } else { "DESC" },
         select = summary_select(table),
         time = table.time,
     );
@@ -368,13 +380,17 @@ pub fn newest_first(a: &RecordSummary, b: &RecordSummary) -> Ordering {
 /// One page of summaries across every table the query asks for. Each table
 /// gives at most one more than a page, so the merged first page is exact.
 pub fn page(connection: &Connection, query: &RecordsQuery) -> Result<RecordsPage, String> {
+    if query.after.is_some() && query.before.is_some() {
+        return Err("records query must choose one paging direction".into());
+    }
     let mut records = Vec::new();
     for table in TABLES.iter().filter(|table| query.kind.is_none_or(|kind| kind == table.kind)) {
         records.extend(table_page(connection, table, query)?);
     }
-    records.sort_by(newest_first);
+    records.sort_by(|a, b| if query.before.is_some() { newest_first(b, a) } else { newest_first(a, b) });
     let more = records.len() > PAGE_SIZE;
     records.truncate(PAGE_SIZE);
+    if query.before.is_some() { records.reverse(); }
     Ok(RecordsPage { records, more })
 }
 

@@ -679,3 +679,84 @@ it("serializes historical paging with a live refresh", async () => {
   expect(pageCalls()).toHaveLength(3);
   expect(titles()).toEqual(["app later", "preview-failed occurred", "boundary failed"]);
 });
+
+
+it("keeps a bounded virtual history and restores evicted pages without moving the reader's anchor", async () => {
+  const history = Array.from({ length: 600 }, (_, index) => ({ ...line, id: 600 - index, title: `row ${600 - index}` }));
+  mockCommand("records_page", ({ query: raw }) => {
+    const query = raw as RecordsQuery;
+    const matching = history.filter((record) => query.before ? record.id > query.before.id : !query.after || record.id < query.after.id);
+    return { records: query.before ? matching.slice(-100) : matching.slice(0, 100), more: matching.length > 100 };
+  });
+  // Page admission below comes from End; layout stays away from automatic
+  // edge loading so each step observes exactly one physical response.
+  box.scrollHeight = 1_000_000;
+  await mount();
+  expect(options().length).toBeLessThan(20);
+  for (let index = 0; index < 5; index++) {
+    await press("End");
+    expect(options().length).toBeLessThan(20);
+  }
+  const detailReads = invokeCalls.filter((call) => call.command === "records_detail").length;
+  await scrollTo(0);
+  expect(lastQuery().before?.id).toBe(300);
+  expect(box.scrollTop).toBe(7200);
+  expect(document.querySelector('[data-record-key="log:300"]')).not.toBeNull();
+  expect(options().length).toBeLessThan(20);
+  expect(invokeCalls.filter((call) => call.command === "records_detail")).toHaveLength(detailReads);
+  vi.useFakeTimers();
+  history.unshift({ ...line, id: 601, title: "newest history" });
+  const calls = pageCalls().length;
+  await signal();
+  await tick();
+  expect(pageCalls()).toHaveLength(calls);
+  for (let index = 0; index < 4; index++) await scrollTo(0);
+  expect(titles()).toContain("newest history");
+  expect(options().length).toBeLessThan(20);
+});
+
+it("holds a live response if the reader scrolls into history while it is running", async () => {
+  await mount();
+  vi.useFakeTimers();
+  const pending = deferred<RecordsPage>();
+  pages.push(pending.promise);
+  await signal();
+  await tick();
+  await scrollTo(300);
+  await act(async () => pending.resolve({ records: [newer, issue, line], more: false }));
+  await settle();
+  expect(titles()).not.toContain("app later");
+  expect(box.scrollTop).toBe(300);
+  pages.push({ records: [newer, issue, line], more: false });
+  await scrollTo(0);
+  expect(titles()[0]).toBe("app later");
+});
+
+
+it("keeps the visible record anchored when measured row heights change", async () => {
+  let height = 72;
+  const original = HTMLElement.prototype.getBoundingClientRect;
+  HTMLElement.prototype.getBoundingClientRect = function () {
+    return this.hasAttribute("data-record-key")
+      ? { ...original.call(this), height } as DOMRect
+      : original.call(this);
+  };
+  try {
+    defaultPage = { records: Array.from({ length: 100 }, (_, index) => ({ ...line, id: 100 - index, title: `measured ${index}` })), more: false };
+    box.scrollHeight = 7200;
+    await mount();
+    await scrollTo(720);
+    const firstMounted = titles()[0];
+    height = 92;
+    await act(async () => { for (const callback of [...resizeCallbacks]) callback(); });
+    await settle();
+    expect(titles()[0]).toBe(firstMounted);
+    // The anchor is row 10; the mounted overscan begins at row 7. Heights
+    // measured during reconciliation also update the leading spacer.
+    const leading = parseFloat((listbox().firstElementChild as HTMLElement).style.height);
+    expect(box.scrollTop).toBe(leading + 3 * height);
+    expect(options().length).toBeLessThan(20);
+  } finally {
+    HTMLElement.prototype.getBoundingClientRect = original;
+  }
+});

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   cursorAfter,
+  appendRecordPage,
+  prependRecordPage,
+  RETAINED_RECORDS,
   fieldPresentation,
   mergeNewestPage,
   newestFirst,
@@ -61,4 +64,20 @@ describe("records", () => {
     expect(recordSentence({ messageKey: "notice.previewFailed", messageValues: "not json" }))
       .toEqual({ key: "notice.previewFailed" });
   });
+});
+
+
+it("bounds history in either direction and leaves a live insertion gap pageable", () => {
+  const rows = Array.from({ length: 1000 }, (_, index) => summary("log", 1000 - index, at(1)));
+  let retained: RecordSummary[] = [];
+  for (let offset = 0; offset < rows.length; offset += 100) {
+    retained = appendRecordPage(retained, { records: rows.slice(offset, offset + 100), more: true }).records;
+    expect(retained.length).toBeLessThanOrEqual(RETAINED_RECORDS);
+  }
+  expect(retained).toEqual(rows.slice(700));
+  const restored = prependRecordPage(retained, { records: rows.slice(600, 700), more: true });
+  expect(restored.trimmed).toBe(true);
+  expect(restored.records).toEqual(rows.slice(600, 900));
+  expect(mergeNewestPage(restored.records, false, { records: rows.slice(0, 100), more: true }))
+    .toEqual({ records: rows.slice(0, 100), more: true });
 });

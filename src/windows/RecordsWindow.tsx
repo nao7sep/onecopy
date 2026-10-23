@@ -3,8 +3,8 @@ import { displayNativePath } from "../utils/nativePath";
 // the selected record's full content beside the list. The list is one
 // single-select listbox (composite-control conventions) driven by the
 // active-descendant technique: focus stays on the list, the arrows move the
-// selection, and the selection follows. More records load by themselves as
-// the end of the list comes near, and new ones arrive while the window is open.
+// selection, and the selection follows. Bounded history pages load in either
+// direction near the viewport edges; new records arrive at the head.
 
 import {
   useCallback,
@@ -36,6 +36,9 @@ import {
   RECORD_KINDS,
   RECORD_LEVEL_FILTERS,
   cursorAfter,
+  cursorBefore,
+  appendRecordPage,
+  prependRecordPage,
   fieldPresentation,
   mergeNewestPage,
   prettyJson,
@@ -49,6 +52,7 @@ import {
   type RecordsQuery,
   type RecordSummary,
 } from "../models/records";
+import { useRecordViewport } from "../hooks/useRecordViewport";
 import { isComposingEvent } from "../hooks/useComposing";
 import { useDisplayZone } from "../hooks/useDisplayZone";
 import { displayTimeZone } from "../repositories/display-zone";
@@ -102,7 +106,7 @@ export default function RecordsWindowRoute() {
   return <RecordsWindow initialListWidth={listWidth} />;
 }
 
-type Filters = Omit<RecordsQuery, "after">;
+type Filters = Omit<RecordsQuery, "after" | "before">;
 
 const NO_FILTERS: Filters = { session: null, kind: null, level: null, search: "" };
 const SEARCH_DELAY_MS = 300;
@@ -112,7 +116,7 @@ const LIVE_INTERVAL_MS = 1000;
 type ListState =
   | { status: "loading" }
   | { status: "failed" }
-  | { status: "ready"; records: RecordSummary[]; more: boolean; loadingMore: boolean; moreFailed: boolean; stale: boolean };
+  | { status: "ready"; records: RecordSummary[]; more: boolean; loadingMore: boolean; moreFailed: boolean; stale: boolean; newer: boolean; loadingNewer: boolean; newerFailed: boolean };
 
 type DetailState =
   | { status: "none" }
@@ -169,6 +173,10 @@ export function RecordsWindow({ initialListWidth }: { initialListWidth: number }
   const listRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const dragCleanup = useRef<(() => void) | null>(null);
+  const records = list.status === "ready" ? list.records : [];
+  const viewport = useRecordViewport(records, scrollRef, listRef);
+  const listStateRef = useRef(list);
+  listStateRef.current = list;
 
   // Times follow the display zone, and a change of it.
   const zone = useDisplayZone();
@@ -224,12 +232,13 @@ export function RecordsWindow({ initialListWidth }: { initialListWidth: number }
     const generation = ++listGeneration.current;
     pageReader.clearPending();
     newestPending.current = false;
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
     setList({ status: "loading" });
     pageReader.read({ ...filters, after: null },
       (page) => {
         if (generation !== listGeneration.current) return;
         liveSuspended.current = false;
-        setList({ status: "ready", records: page.records, more: page.more, loadingMore: false, moreFailed: false, stale: false });
+        setList({ status: "ready", records: page.records, more: page.more, loadingMore: false, moreFailed: false, stale: false, newer: false, loadingNewer: false, newerFailed: false });
       },
       (error: unknown) => {
         if (generation !== listGeneration.current) return;
@@ -246,19 +255,28 @@ export function RecordsWindow({ initialListWidth }: { initialListWidth: number }
 
   // The newest page read again for new records. It joins the rows already
   // shown rather than replacing them, so the list never falls back to the
-  // loading note and the pages already read stay. It reads only refs, so one
+  // loading note and contiguous history stays within its bound. It reads refs, so one
   // copy serves the live subscription below.
   const readNewest = useCallback((automatic = true): void => {
     if (automatic && liveSuspended.current) return;
+    if (listStateRef.current.status === "ready" && listStateRef.current.newer) {
+      newestPending.current = true;
+      return;
+    }
     const generation = listGeneration.current;
     pageReader.read({ ...filtersRef.current, after: null },
       (page) => {
         if (generation !== listGeneration.current) return;
         liveSuspended.current = false;
+        if (scrollRef.current && !atTop(scrollRef.current)) {
+          newestPending.current = true;
+          setList((current) => current.status === "ready" ? { ...current, stale: false } : current);
+          return;
+        }
         setList((current) =>
           current.status === "ready"
             ? { ...current, stale: false, ...mergeNewestPage(current.records, current.more, page) }
-            : { status: "ready", records: page.records, more: page.more, loadingMore: false, moreFailed: false, stale: false },
+            : { status: "ready", records: page.records, more: page.more, loadingMore: false, moreFailed: false, stale: false, newer: false, loadingNewer: false, newerFailed: false },
         );
       },
       (error: unknown) => {
@@ -335,11 +353,12 @@ export function RecordsWindow({ initialListWidth }: { initialListWidth: number }
       (page) => {
         if (generation !== listGeneration.current) return;
         liveSuspended.current = false;
-        setList((current) =>
-          current.status === "ready"
-            ? { ...current, records: [...current.records, ...page.records], more: page.more, loadingMore: false, stale: false }
-            : current,
-        );
+        viewport.preserveAnchor();
+        setList((current) => {
+          if (current.status !== "ready") return current;
+          const next = appendRecordPage(current.records, page);
+          return { ...current, records: next.records, newer: current.newer || next.trimmed, more: page.more, loadingMore: false, stale: false };
+        });
       },
       (error: unknown) => {
         if (generation !== listGeneration.current) return;
@@ -350,26 +369,55 @@ export function RecordsWindow({ initialListWidth }: { initialListWidth: number }
     );
   };
 
+  const loadNewer = (): void => {
+    if (list.status !== "ready" || !list.newer || pageReader.busy) return;
+    const generation = listGeneration.current;
+    setList((current) => current.status === "ready" ? { ...current, loadingNewer: true, newerFailed: false } : current);
+    pageReader.read({ ...filters, after: null, before: cursorBefore(list.records) },
+      (page) => {
+        if (generation !== listGeneration.current) return;
+        viewport.preserveAnchor();
+        liveSuspended.current = false;
+        setList((current) => {
+          if (current.status !== "ready") return current;
+          const next = prependRecordPage(current.records, page);
+          return { ...current, records: next.records, newer: page.more, more: current.more || next.trimmed, loadingNewer: false, stale: false };
+        });
+      },
+      (error: unknown) => {
+        if (generation !== listGeneration.current) return;
+        liveSuspended.current = true;
+        log.warn("records read failed", toErrorFields(error));
+        setList((current) => current.status === "ready" ? { ...current, loadingNewer: false, newerFailed: true } : current);
+      },
+    );
+  };
+
   // A page that leaves the list short of the end reads the next one; a failed
   // page waits for the reader instead.
   useEffect(() => {
     const scroll = scrollRef.current;
-    if (list.status !== "ready" || list.loadingMore || list.moreFailed || scroll === null) return;
-    if (nearEnd(scroll)) loadMore();
+    if (list.status !== "ready" || list.loadingMore || list.loadingNewer || scroll === null) return;
+    if (!list.newer && newestPending.current && atTop(scroll)) {
+      newestPending.current = false;
+      readNewest();
+    } else if (list.newer && !list.newerFailed && scroll.scrollTop <= scroll.clientHeight) loadNewer();
+    else if (!list.moreFailed && nearEnd(scroll)) loadMore();
     // Only a new list state can change what is loaded.
   }, [list]);
 
   const onListScroll = (): void => {
+    viewport.onScroll();
     const scroll = scrollRef.current;
     if (scroll === null) return;
-    if (newestPending.current && atTop(scroll)) {
+    if (list.status === "ready" && list.newer && scroll.scrollTop <= scroll.clientHeight) loadNewer();
+    if (newestPending.current && atTop(scroll) && list.status === "ready" && !list.newer) {
       newestPending.current = false;
       readNewest();
     }
     if (nearEnd(scroll)) loadMore();
   };
 
-  const records = list.status === "ready" ? list.records : [];
   const keys = records.map(recordKey);
   const selectedIndex = selectedKey === null ? -1 : keys.indexOf(selectedKey);
 
@@ -377,11 +425,6 @@ export function RecordsWindow({ initialListWidth }: { initialListWidth: number }
     const next = { kind: record.kind, id: record.id };
     selectedRef.current = next;
     if (recordKey(record) !== selectedKey) setSelected(next);
-  };
-
-  // Keeping the active item in view: the minimum scroll, no animation.
-  const reveal = (key: string): void => {
-    listRef.current?.querySelector<HTMLElement>(`#${CSS.escape(optionId(key))}`)?.scrollIntoView?.({ block: "nearest" });
   };
 
   // The list is one listbox (composite-control-conventions, Listbox); the
@@ -413,7 +456,8 @@ export function RecordsWindow({ initialListWidth }: { initialListWidth: number }
                   : Math.max(0, current - pageStep);
     const record = records[target]!;
     select(record);
-    reveal(recordKey(record));
+    viewport.reveal(recordKey(record));
+    if (target === 0 && (event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home")) loadNewer();
     if (target === last && (event.key === "ArrowDown" || event.key === "PageDown" || event.key === "End")) {
       loadMore();
     }
@@ -541,7 +585,11 @@ export function RecordsWindow({ initialListWidth }: { initialListWidth: number }
           className="relative min-h-0 flex-1 overflow-y-auto p-1"
           aria-busy={list.status === "loading"}
           onScroll={onListScroll}
+          style={{ overflowAnchor: "none" }}
         >
+          {list.status === "ready" && list.newerFailed ? (
+            <OperationResult level="error" className="m-2" actions={<Button size="xs" onClick={loadNewer}>{t("common.retry")}</Button>}>{t("records.loadFailed")}</OperationResult>
+          ) : null}
           {list.status === "ready" && list.stale ? (
             <OperationResult level="warning" className="m-2" actions={<Button size="xs" onClick={() => readNewest(false)}>{t("common.retry")}</Button>}>
               {t("records.liveFailed")}
@@ -559,12 +607,13 @@ export function RecordsWindow({ initialListWidth }: { initialListWidth: number }
               role="listbox"
               tabIndex={0}
               aria-label={t("records.title")}
-              aria-activedescendant={selectedKey !== null && selectedIndex >= 0 ? optionId(selectedKey) : undefined}
+              aria-activedescendant={selectedKey !== null && selectedIndex >= viewport.startRow && selectedIndex < viewport.endRow ? optionId(selectedKey) : undefined}
               className="group/records outline-none"
               onKeyDown={onListKeyDown}
               onFocus={onListFocus}
             >
-              {records.map((record) => {
+              <div aria-hidden="true" style={{ height: viewport.topPad }} />
+              {records.slice(viewport.startRow, viewport.endRow).map((record) => {
                 const key = recordKey(record);
                 const isSelected = key === selectedKey;
                 return (
@@ -597,9 +646,10 @@ export function RecordsWindow({ initialListWidth }: { initialListWidth: number }
                   </div>
                 );
               })}
+              <div aria-hidden="true" style={{ height: viewport.bottomPad }} />
             </div>
           )}
-          {list.status === "ready" && list.loadingMore ? (
+          {list.status === "ready" && (list.loadingMore || list.loadingNewer) ? (
             <p className="px-2 py-3 text-sm text-ink-muted">{t("records.loading")}</p>
           ) : null}
           {list.status === "ready" && list.moreFailed ? (

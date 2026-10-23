@@ -34,6 +34,7 @@ export interface RecordsQuery {
   level: RecordLevelFilter | null;
   search: string;
   after: RecordCursor | null;
+  before?: RecordCursor | null;
 }
 
 export interface RecordSummary {
@@ -202,17 +203,42 @@ export function newestFirst(a: RecordSummary, b: RecordSummary): number {
 }
 
 // The newest page read again, joined with the rows already shown: a row in
-// both takes the page's copy, and the rows shown beyond the page stay, so the
-// pages already read are kept and a page read out of order loses nothing.
+// both takes the page's copy. Contiguous retained history stays up to the
+// viewport bound; cursor paging recovers older rows when needed.
 export function mergeNewestPage(
   shown: readonly RecordSummary[],
   shownMore: boolean,
   page: RecordsPage,
 ): { records: RecordSummary[]; more: boolean } {
   const byKey = new Map(shown.map((record) => [recordKey(record), record]));
+  // A full new page without overlap leaves an unknown gap. Re-read that gap
+  // by its cursor rather than presenting disconnected history as contiguous.
+  if (page.more && !page.records.some((record) => byKey.has(recordKey(record)))) {
+    return { records: page.records.slice(0, RETAINED_RECORDS), more: true };
+  }
   for (const record of page.records) byKey.set(recordKey(record), record);
   const records = [...byKey.values()].sort(newestFirst);
   const last = page.records[page.records.length - 1];
   const beyond = last !== undefined && shown.some((record) => newestFirst(record, last) > 0);
-  return { records, more: beyond ? shownMore : page.more };
+  return { records: records.slice(0, RETAINED_RECORDS), more: records.length > RETAINED_RECORDS || (beyond ? shownMore : page.more) };
+}
+
+
+// Three native pages retain the viewport and its neighboring history. Paging
+// in either direction recovers trimmed records by key, not by growing offsets.
+export const RETAINED_RECORDS = 300;
+
+export function cursorBefore(records: readonly RecordSummary[]): RecordCursor | null {
+  const first = records[0];
+  return first === undefined ? null : { time: first.time, kind: first.kind, id: first.id };
+}
+
+export function appendRecordPage(shown: readonly RecordSummary[], page: RecordsPage): { records: RecordSummary[]; trimmed: boolean } {
+  const records = [...shown, ...page.records];
+  return { records: records.slice(-RETAINED_RECORDS), trimmed: records.length > RETAINED_RECORDS };
+}
+
+export function prependRecordPage(shown: readonly RecordSummary[], page: RecordsPage): { records: RecordSummary[]; trimmed: boolean } {
+  const records = [...page.records, ...shown];
+  return { records: records.slice(0, RETAINED_RECORDS), trimmed: records.length > RETAINED_RECORDS };
 }

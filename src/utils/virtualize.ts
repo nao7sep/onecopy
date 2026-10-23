@@ -51,3 +51,18 @@ export function scrollTopForRow(
 ): number {
   return Math.max(0, row * rowHeight - Math.max(0, viewportHeight - rowHeight) / 2);
 }
+
+
+/** Variable-height lists retain measured heights only for their bounded data
+ * window. Prefix positions also drive scroll anchoring and keyboard reveal. */
+export function variableWindow(heights: readonly number[], scrollTop: number, viewportHeight: number, overscan = 3): VisibleWindow & { offsets: number[] } {
+  const offsets = [0];
+  for (const height of heights) offsets.push(offsets[offsets.length - 1]! + height);
+  let first = 0;
+  while (first < heights.length - 1 && offsets[first + 1]! <= scrollTop) first++;
+  let last = first;
+  while (last < heights.length && offsets[last]! < scrollTop + viewportHeight) last++;
+  const startRow = Math.max(0, first - overscan);
+  const endRow = Math.min(heights.length, Math.max(last, first + 1) + overscan);
+  return { startRow, endRow, topPad: offsets[startRow]!, bottomPad: offsets[heights.length]! - offsets[endRow]!, offsets };
+}

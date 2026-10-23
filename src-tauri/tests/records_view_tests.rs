@@ -412,3 +412,28 @@ fn records_without_their_marker_are_unreadable_and_left_as_they_are() {
         .unwrap();
     assert_eq!(version, 0);
 }
+
+#[test]
+fn newer_pages_recover_adjacent_history_across_equal_time_kinds_and_new_inserts() {
+    let store = records();
+    for _ in 0..(PAGE_SIZE * 2) {
+        store.log(NOW, &at(1), "info", "line", json!({}));
+        store.issue(Some(NOW), &at(1), "occurred");
+    }
+    let reader = store.reader();
+    let first = page(&reader, &query()).unwrap();
+    let cursor = |row: &onecopy_lib::records_view::RecordSummary| Cursor { time: row.time.clone(), kind: row.kind, id: row.id };
+    let second = page(&reader, &RecordsQuery { after: first.records.last().map(cursor), ..query() }).unwrap();
+    let third = page(&reader, &RecordsQuery { after: second.records.last().map(cursor), ..query() }).unwrap();
+    let recovered = page(&reader, &RecordsQuery { before: third.records.first().map(cursor), ..query() }).unwrap();
+    assert_eq!(recovered.records, second.records);
+    assert!(recovered.more);
+    let inserted = store.log(NOW, &at(2), "info", "new", json!({}));
+    let recovered_first = page(&reader, &RecordsQuery { before: second.records.first().map(cursor), ..query() }).unwrap();
+    assert_eq!(recovered_first.records, first.records, "new inserts do not shift the adjacent page");
+    assert!(recovered_first.more);
+    let newest = page(&reader, &RecordsQuery { before: first.records.first().map(cursor), ..query() }).unwrap();
+    assert_eq!(keys(&newest.records), vec![(RecordKind::Log, inserted)]);
+    assert!(!newest.more);
+    assert!(page(&reader, &RecordsQuery { before: first.records.first().map(cursor), after: second.records.last().map(cursor), ..query() }).is_err());
+}
