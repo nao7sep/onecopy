@@ -2201,14 +2201,14 @@ fn transcribe_next(
             context.conn,
             kind,
             after_hash,
-            crate::derived_state::TRANSCRIPT_CANDIDATE_PAGE_SIZE,
+            1,
         )?
     } else {
         crate::derived_state::prioritized_transcript_candidates(
             context.conn,
             kind,
             priority_hashes,
-            crate::derived_state::TRANSCRIPT_CANDIDATE_PAGE_SIZE,
+            1,
         )?
     };
     let Some((candidate_hash, path)) = rows.into_iter().next() else {

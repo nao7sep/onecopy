@@ -217,15 +217,6 @@ impl Transcript {
 /// Runs the whisper engine over PCM. Language auto-detected (the developer's
 /// library mixes Japanese and English); progress is 0–100; the abort callback
 /// polls the cancel flag so a quit or Cancel stops the engine mid-run.
-pub fn run_whisper(
-    model: &Path,
-    pcm: &[f32],
-    acceleration: crate::ai_acceleration::Mode,
-    on_progress: impl FnMut(i32) + 'static,
-) -> Result<Transcript, String> {
-    run_whisper_with_model(model, pcm, acceleration, on_progress).result
-}
-
 fn run_whisper_with_model(
     model: &Path,
     pcm: &[f32],

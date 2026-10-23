@@ -497,7 +497,6 @@ pub use crate::formats::DERIVE_VERSION;
 const STRIP_FAILED: i64 = -1;
 pub const SNAPSHOT_CANDIDATE_PAGE_SIZE: usize = 32;
 pub const FACE_CANDIDATE_PAGE_SIZE: usize = 32;
-pub const TRANSCRIPT_CANDIDATE_PAGE_SIZE: usize = 64;
 
 fn transcript_unavailable_reason(capabilities: WorkCapabilities) -> &'static str {
     if !capabilities.transcription_acceleration {

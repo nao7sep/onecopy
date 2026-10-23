@@ -704,6 +704,20 @@ fn fixed_class_candidate_reads_seek_to_the_next_ordered_page() {
     assert_eq!(next_strips[0].0, "video-007");
     assert_eq!(next_faces[0].0, "image-009");
     assert_eq!(next_transcripts[0].0, "video-011");
+
+    // A transcription turn consumes one row. Both orderings keep that bound,
+    // skip unavailable members, and leave the next eligible row for a turn.
+    conn.execute("UPDATE paths SET missing = 1 WHERE content_hash = 'video-012'", []).unwrap();
+    let one = derived_state::transcript_candidates(&conn, "video", Some("video-011"), 1).unwrap();
+    assert_eq!(one, vec![("video-013".into(), "/video-013".into())]);
+    let next = derived_state::transcript_candidates(&conn, "video", Some(&one[0].0), 1).unwrap();
+    assert_eq!(next, vec![("video-014".into(), "/video-014".into())]);
+    let priority = ["video-012", "image-001", "absent", "video-030", "video-020"]
+        .map(str::to_string);
+    assert_eq!(
+        derived_state::prioritized_transcript_candidates(&conn, "video", &priority, 1).unwrap(),
+        vec![("video-030".into(), "/video-030".into())],
+    );
 }
 
 #[test]
