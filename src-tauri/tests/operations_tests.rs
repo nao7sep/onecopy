@@ -3942,3 +3942,49 @@ fn permanent_deletion_records_each_native_path_and_keeps_its_receipt_when_record
         if scenario == "move" { assert!(detail["movedTo"].is_string()); }
     }
 }
+
+
+#[test]
+fn conflict_rename_stops_after_a_failed_name_probe_and_honors_cancel_during_that_probe() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    for cancel in [false, true] {
+        let f = fixture("rename-probe-failure");
+        std::fs::write(f.root.join("photo.jpg"), b"incoming bytes").unwrap();
+        scan(&f);
+        let item = item_named(&f, "photo.jpg");
+        let destination = f._dir.path().join("destination");
+        std::fs::create_dir(&destination).unwrap();
+        std::fs::write(destination.join("photo.jpg"), b"existing bytes").unwrap();
+        let items = [item];
+        let review = move_batch(&f.conn, &f.app_root, &f.cache, &items, &destination,
+            MoveOutMode::CopyKeepAll, &|| false, |_| {}).unwrap();
+        let accepted = AcceptedFiles::capture(&f.conn, &items).unwrap();
+        let volume = FakeStallingVolume::mount(&destination, std::time::Duration::from_secs(5));
+        volume.stall(&[Op::Stat], Some(&destination.join("photo 2.jpg")));
+        let cancelled = AtomicBool::new(false);
+        let result = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                assert!(volume.wait_until_held(1, SETTLE));
+                cancelled.store(cancel, Ordering::SeqCst);
+                volume.fail();
+            });
+            move_batch_reviewed(&f.conn, &f.app_root, &f.cache, &items, &accepted, &destination,
+                MoveOutMode::CopyKeepAll, Some(DestinationConflictPolicy::Rename), review.plan_token.as_deref(),
+                RenameStyle::SpaceNumber, &|| cancelled.load(Ordering::SeqCst), |_| {})
+        });
+        assert!(volume.wait_until_settled(SETTLE));
+        if cancel {
+            let outcome = result.unwrap();
+            assert!(outcome.cancelled);
+            assert!(outcome.error.is_none());
+            assert_eq!(outcome.exported, 0);
+        } else {
+            assert!(result.unwrap_err().contains("could not inspect destination name"));
+        }
+        assert_eq!(std::fs::read(f.root.join("photo.jpg")).unwrap(), b"incoming bytes");
+        assert_eq!(std::fs::read(destination.join("photo.jpg")).unwrap(), b"existing bytes");
+        assert!(!destination.join("photo 2.jpg").exists());
+        assert!(!destination.join("photo 3.jpg").exists(), "a failed probe must not become an occupied-name retry");
+        assert!(private_leftovers(&destination).is_empty());
+    }
+}

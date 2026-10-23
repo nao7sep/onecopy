@@ -1246,7 +1246,14 @@ pub fn move_batch_reviewed(
         );
     }
     if conflict_policy == Some(DestinationConflictPolicy::Rename) {
-        apply_conflict_renames(&mut plan, rename_style, names)?;
+        if !apply_conflict_renames(&mut plan, rename_style, names, cancelled)? {
+            return Ok(MoveBatchOutcome {
+                cancelled: true,
+                files_total: plan.files_total,
+                bytes_total: plan.bytes_total,
+                ..MoveBatchOutcome::default()
+            });
+        }
     }
     let mut batch = MoveBatchOutcome {
         files_total: plan.files_total,
@@ -1721,7 +1728,8 @@ fn apply_conflict_renames(
     plan: &mut MovePlan,
     style: RenameStyle,
     names: FolderNames,
-) -> Result<(), String> {
+    cancelled: &dyn Fn() -> bool,
+) -> Result<bool, String> {
     let needs_rename = plan
         .units
         .iter()
@@ -1742,27 +1750,33 @@ fn apply_conflict_renames(
         }
     }
     for (unit, rename) in plan.units.iter_mut().zip(needs_rename) {
+        if cancelled() { return Ok(false); }
         if !rename {
             continue;
         }
-        let chosen = (2..=1_000_000u32).find_map(|number| {
-            let candidates = unit
-                .deliveries
-                .iter()
+        let mut chosen = None;
+        'suffix: for number in 2..=1_000_000u32 {
+            if cancelled() { return Ok(false); }
+            let candidates = unit.deliveries.iter()
                 .map(|delivery| file_names::renamed(&delivery.target, number, style))
-                .collect::<Option<Vec<_>>>()?;
-            // A name the destination cannot hold (too long, invalid there)
-            // is not occupied: it is planned and then fails at publication as
-            // that one file, like any other refused final name.
-            let available = candidates.iter().all(|candidate| {
-                !reserved.contains(&names.key(candidate))
-                    && volume_io::symlink_metadata(candidate)
-                        .is_err_and(|error| {
-                            error.kind() == std::io::ErrorKind::NotFound || file_names::is_name_error(&error)
-                        })
-            });
-            available.then_some(candidates)
-        });
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| "a selected output has no filename to rename".to_string())?;
+            for candidate in &candidates {
+                if cancelled() { return Ok(false); }
+                if reserved.contains(&names.key(candidate)) { continue 'suffix; }
+                match volume_io::symlink_metadata(candidate) {
+                    Ok(_) => continue 'suffix,
+                    // A refused filename is handled by final publication as
+                    // that file's failure; it is not an occupied suffix.
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound || file_names::is_name_error(&error) => {}
+                    Err(_) if cancelled() => return Ok(false),
+                    Err(error) => return Err(format!("could not inspect destination name {}: {error}", crate::native_path::label(candidate))),
+                }
+            }
+            if cancelled() { return Ok(false); }
+            chosen = Some(candidates);
+            break;
+        }
         let chosen = chosen.ok_or_else(|| {
             "could not find an available destination name for the selected family".to_string()
         })?;
@@ -1773,7 +1787,7 @@ fn apply_conflict_renames(
             reserved.insert(names.key(&target));
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 fn collect_move_unit(
