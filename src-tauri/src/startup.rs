@@ -8,6 +8,7 @@ use std::thread::JoinHandle;
 use std::time::Instant;
 
 use serde::Serialize;
+use tauri::Manager;
 use serde_json::{json, Value};
 
 const BLOCKED_TITLE: &str = "OneCopy could not start safely";
@@ -24,11 +25,11 @@ pub(crate) struct StartupFailure {
     pub(crate) newer_stores: Vec<crate::formats::NewerStore>,
 }
 
-pub(crate) struct StartupGate {
+pub(crate) struct StartupOutcome {
     failure: Option<StartupFailure>,
 }
 
-impl StartupGate {
+impl StartupOutcome {
     fn ready() -> Self {
         Self { failure: None }
     }
@@ -54,6 +55,100 @@ impl StartupGate {
     pub(crate) fn failure(&self) -> Option<StartupFailure> {
         self.failure.clone()
     }
+}
+
+/// A pending launch suspends bootstrap without occupying the interface thread.
+/// The sender belongs to the preparation worker; losing it fails closed.
+#[derive(Clone)]
+pub(crate) struct StartupGate {
+    outcome: tokio::sync::watch::Receiver<Option<Result<(), StartupFailure>>>,
+    pub(crate) debug_enabled: bool,
+    pub(crate) appearance: Value,
+}
+
+impl StartupGate {
+    pub(crate) async fn wait(&self) -> Result<(), StartupFailure> {
+        let mut outcome = self.outcome.clone();
+        loop {
+            if let Some(result) = outcome.borrow_and_update().clone() {
+                return result;
+            }
+            if outcome.changed().await.is_err() {
+                return Err(StartupOutcome::blocked().failure().unwrap());
+            }
+        }
+    }
+
+    pub(crate) fn ready(&self) -> bool {
+        matches!(&*self.outcome.borrow(), Some(Ok(())))
+    }
+}
+
+/// The exceptions either await preparation themselves or need no stores so
+/// the pending/blocked shell can still log diagnostics and quit.
+fn may_run_before_ready(command: &str) -> bool {
+    matches!(command, "load_app_data" | "appearance_preferences" | "logging_debug_enabled"
+        | "log_event" | "system_theme" | "media_use_current" | "media_use_released" | "request_app_exit" | "session_end_saved" | "quit_question")
+}
+
+pub(crate) fn gate_commands(
+    handler: impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static,
+) -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
+    move |invoke| {
+        let admitted = may_run_before_ready(invoke.message.command())
+            || invoke.message.webview_ref().state::<StartupGate>().ready();
+        if !admitted {
+            invoke.resolver.reject("application data is not ready");
+            return true;
+        }
+        handler(invoke)
+    }
+}
+
+pub(crate) fn initialize(
+    app: tauri::AppHandle,
+    debug_enabled: bool,
+    main: crate::window_placement::PlacementState,
+    preview: crate::window_placement::PlacementState,
+    records: crate::window_placement::PlacementState,
+    appearance: Value,
+) -> StartupGate {
+    let (complete, outcome) = tokio::sync::watch::channel(None);
+    let gate = StartupGate { outcome, debug_enabled, appearance };
+    let mut workers = WORKERS.lock().unwrap_or_else(|p| p.into_inner());
+    let failure_app = app.clone();
+    let worker = std::thread::Builder::new().name("onecopy-bootstrap".into()).spawn(move || {
+        let saved = crate::window_placement::load_main();
+        let shell = app.clone();
+        if let Err(error) = app.run_on_main_thread(move || {
+            if let Some(window) = shell.get_webview_window("main") {
+                crate::window_placement::restore(&window.as_ref().window(), &main, saved);
+                if let Err(error) = window.show() {
+                    crate::logging::warn("Main window could not be shown", json!({ "error": error.to_string() }));
+                }
+            }
+        }) {
+            crate::logging::error("Main window setup could not be dispatched", json!({ "error": error.to_string() }));
+        }
+        let result = initialize_data(&app, debug_enabled, preview, records);
+        let result = result.failure().map_or(Ok(()), Err);
+        complete.send_replace(Some(result));
+    });
+    match worker {
+        Ok(worker) => workers.push(worker),
+        Err(error) => {
+            // Dropping the sender wakes every waiter with the blocked result.
+            crate::logging::error("startup worker could not start", json!({ "error": error.to_string() }));
+            // Still in setup on the interface thread: reveal the authored
+            // blocked surface even when no preparation thread was created.
+            if let Some(window) = failure_app.get_webview_window("main") {
+                if let Err(error) = window.show() {
+                    crate::logging::error("blocked Main window could not be shown", json!({ "error": error.to_string() }));
+                }
+            }
+        }
+    }
+    gate
 }
 
 pub(crate) struct StartupState {
@@ -179,9 +274,9 @@ fn prepare_data(data_root: &Path) -> Result<PreparedData, String> {
     })
 }
 
-fn prepare(app: &tauri::App, debug_enabled: bool) -> Result<StartupState, StartupError> {
+fn prepare(app: &tauri::AppHandle, debug_enabled: bool) -> Result<StartupState, StartupError> {
     let started = Instant::now();
-    let data_root = crate::paths::resolve_data_root(app.handle())?;
+    let data_root = crate::paths::resolve_data_root(app)?;
     let records_path = data_root.join(crate::records::RECORDS_DB_FILE_NAME);
     // Before the log writer opens the records, so it opens the fresh store.
     let records_set_aside = crate::records::set_aside_if_unreadable(&records_path)?;
@@ -259,7 +354,7 @@ fn run_runtime_services(
     }
 }
 
-fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
+fn start_runtime(app: &tauri::AppHandle, state: StartupState, debug_enabled: bool) {
     let StartupState {
         data_root,
         cache_root,
@@ -267,8 +362,8 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
         started,
     } = state;
 
-    let derived_handle = app.handle().clone();
-    let sleep_handle = app.handle().clone();
+    let derived_handle = app.clone();
+    let sleep_handle = app.clone();
     let sleep_root = data_root.clone();
     // Before derived work can write anything, so the sweep can tell this
     // run's cache writes from what earlier runs left.
@@ -276,7 +371,7 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
     let cache_service = {
         let db_path = data_root.join(crate::storage::INDEX_DB_FILE_NAME);
         let cache = crate::preview::CachePaths::new(cache_root);
-        let handle = app.handle().clone();
+        let handle = app.clone();
         RuntimeService {
             name: "cache sweep",
             issue_kind: "cache-sweep-failed",
@@ -315,7 +410,7 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
     };
 
     let watcher_service = {
-        let handle = app.handle().clone();
+        let handle = app.clone();
         let root = data_root.clone();
         RuntimeService {
             name: "source watcher",
@@ -330,7 +425,7 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
 
     let update_service = {
         let root = data_root.clone();
-        let handle = app.handle().clone();
+        let handle = app.clone();
         RuntimeService {
             name: "managed-tool update check",
             issue_kind: "update-check-worker-failed",
@@ -447,7 +542,7 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
         ],
         |name, issue_kind, error| {
             let diagnostic = format!("{name}: {error}");
-            let _ = crate::failure_runtime::report(app.handle(), issue_kind, None, &diagnostic);
+            let _ = crate::failure_runtime::report(app, issue_kind, None, &diagnostic);
         },
     );
 
@@ -481,7 +576,12 @@ fn managed_update_attempt_eligible(
 
 /// Own the entire fallible launch boundary while keeping Tauri's setup hook
 /// infallible. A required-data failure becomes shell state, not process death.
-pub(crate) fn initialize(app: &tauri::App, debug_enabled: bool) -> StartupGate {
+fn initialize_data(
+    app: &tauri::AppHandle, debug_enabled: bool,
+    preview: crate::window_placement::PlacementState,
+    records: crate::window_placement::PlacementState,
+) -> StartupOutcome {
+    if crate::app_lifecycle::shutting_down() { return StartupOutcome::blocked(); }
     let prepared =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| prepare(app, debug_enabled)));
 
@@ -489,14 +589,14 @@ pub(crate) fn initialize(app: &tauri::App, debug_enabled: bool) -> StartupGate {
         Ok(Ok(state)) => state,
         Ok(Err(StartupError::Failed(error))) => {
             crate::logging::error("startup blocked", json!({ "error": { "message": error } }));
-            return StartupGate::blocked();
+            return StartupOutcome::blocked();
         }
         Ok(Err(StartupError::Newer(stores))) => {
             crate::logging::error(
                 "startup stopped: stores written by a newer OneCopy were left as they are",
                 json!({ "stores": stores }),
             );
-            return StartupGate::newer(stores);
+            return StartupOutcome::newer(stores);
         }
         Err(payload) => {
             let error = crate::failure_runtime::panic_message(payload);
@@ -504,13 +604,17 @@ pub(crate) fn initialize(app: &tauri::App, debug_enabled: bool) -> StartupGate {
                 "startup blocked",
                 json!({ "error": { "message": format!("startup panicked: {error}") } }),
             );
-            return StartupGate::blocked();
+            return StartupOutcome::blocked();
         }
     };
 
+    if crate::app_lifecycle::shutting_down() { return StartupOutcome::blocked(); }
+    crate::window_placement::load_preview(&preview);
+    crate::window_placement::load_records(&records);
+
     // The service-level boundaries above keep independent admissions moving.
-    // This outer framework boundary has a different job: no unforeseen panic
-    // may unwind through Tauri's setup callback and abort inside native code.
+    // This outer boundary contains an unforeseen service-orchestration panic
+    // while keeping a successfully prepared workspace available.
     if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         start_runtime(app, state, debug_enabled)
     })) {
@@ -527,7 +631,7 @@ pub(crate) fn initialize(app: &tauri::App, debug_enabled: bool) -> StartupGate {
         }
     }
 
-    StartupGate::ready()
+    if crate::app_lifecycle::shutting_down() { StartupOutcome::blocked() } else { StartupOutcome::ready() }
 }
 
 /// Every catalogue key this dialog reads; the tests check each one exists in

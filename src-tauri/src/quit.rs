@@ -81,6 +81,13 @@ pub(crate) fn session_ending() -> bool {
 
 pub(crate) fn request_quit(app: &AppHandle) {
     if SESSION.ending() || crate::app_lifecycle::shutting_down() { return; }
+    if app.try_state::<crate::startup::StartupGate>().is_some_and(|gate| !gate.ready()) {
+        // Bootstrap has admitted no editable workspace. Quit must work even
+        // before the renderer installs its save/consent listeners.
+        let handle = app.clone();
+        tauri::async_runtime::spawn_blocking(move || crate::app_lifecycle::quiesce(&handle));
+        return;
+    }
     if app.get_webview_window("main").is_none() {
         // No renderer owns pending work: Main's ordinary close is intercepted
         // and saves before shutdown; do not recreate the workspace to quit.
@@ -92,6 +99,7 @@ pub(crate) fn request_quit(app: &AppHandle) {
 
 fn prepare_session_end(app: &AppHandle) {
     SESSION.prepare(|id| {
+        if app.try_state::<crate::startup::StartupGate>().is_some_and(|gate| !gate.ready()) { return false; }
         if app.get_webview_window("main").is_none() { return false; }
         match app.emit_to("main", "app://session-ending", id) {
             Ok(()) => true,

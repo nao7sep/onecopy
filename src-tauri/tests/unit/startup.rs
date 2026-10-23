@@ -32,7 +32,7 @@ fn a_stored_ignored_name_that_is_not_a_file_name_does_not_stop_the_launch() {
 
 #[test]
 fn blocked_gate_exposes_only_stable_private_safe_copy() {
-    let failure = StartupGate::blocked().failure().unwrap();
+    let failure = StartupOutcome::blocked().failure().unwrap();
     // The fixed sentences, with nothing from the failure interpolated.
     assert_eq!(failure.title, BLOCKED_TITLE);
     assert_eq!(failure.message, BLOCKED_MESSAGE);
@@ -62,9 +62,9 @@ fn required_stores_a_newer_onecopy_wrote_stop_the_launch_by_name_untouched() {
     assert_eq!(std::fs::read(&index).unwrap(), index_bytes);
     assert_eq!(std::fs::read(&config).unwrap(), br#"{"formatVersion":2}"#);
     assert!(!temp.path().join(crate::records::RECORDS_DB_FILE_NAME).exists());
-    let failure = StartupGate::newer(newer).failure().unwrap();
+    let failure = StartupOutcome::newer(newer).failure().unwrap();
     assert_eq!(failure.newer_stores.len(), 2);
-    assert!(StartupGate::blocked().failure().unwrap().newer_stores.is_empty());
+    assert!(StartupOutcome::blocked().failure().unwrap().newer_stores.is_empty());
 }
 
 #[test]
@@ -142,4 +142,59 @@ fn managed_update_attempt_guard_uses_app_wide_attempt_freshness() {
     assert!(managed_update_attempt_eligible(Some("2026-09-10T00:00:01Z"), now));
     assert!(managed_update_attempt_eligible(Some("2026-09-09T00:00:00Z"), now));
     assert!(!managed_update_attempt_eligible(Some("2026-09-09T00:00:01Z"), now));
+}
+
+fn pending_gate() -> (
+    tokio::sync::watch::Sender<Option<Result<(), StartupFailure>>>,
+    StartupGate,
+) {
+    let (complete, outcome) = tokio::sync::watch::channel(None);
+    (complete, StartupGate { outcome, debug_enabled: false, appearance: json!({}) })
+}
+
+#[tokio::test]
+async fn pending_bootstrap_suspends_and_wakes_all_readers_only_after_preparation() {
+    use std::future::Future;
+    use std::task::{Context, Poll, Waker};
+    let (complete, gate) = pending_gate();
+    let mut first = std::pin::pin!(gate.wait());
+    let mut second = std::pin::pin!(gate.wait());
+    let mut context = Context::from_waker(Waker::noop());
+    assert!(matches!(first.as_mut().poll(&mut context), Poll::Pending));
+    assert!(matches!(second.as_mut().poll(&mut context), Poll::Pending));
+    assert!(!gate.ready());
+    // Polling pending bootstrap returned to the executor; it owns no blocking
+    // wait, and an independent task can run on this same single-thread runtime.
+    tokio::spawn(async { 42 }).await.unwrap();
+    complete.send_replace(Some(Ok(())));
+    assert!(first.await.is_ok());
+    assert!(second.await.is_ok());
+    assert!(gate.ready());
+    assert!(gate.wait().await.is_ok(), "late readers see the settled outcome");
+}
+
+#[tokio::test]
+async fn preparation_failure_and_lost_worker_never_admit_store_work() {
+    let (complete, gate) = pending_gate();
+    let failure = StartupOutcome::blocked().failure().unwrap();
+    complete.send_replace(Some(Err(failure)));
+    assert!(!gate.ready());
+    assert_eq!(gate.wait().await.err().unwrap().message, BLOCKED_MESSAGE);
+    drop(complete);
+    assert!(gate.wait().await.is_err());
+
+    let (complete, gate) = pending_gate();
+    drop(complete);
+    assert!(!gate.ready());
+    assert_eq!(gate.wait().await.err().unwrap().message, BLOCKED_MESSAGE);
+}
+
+#[test]
+fn pending_shell_allows_bootstrap_and_quit_but_not_normal_effects() {
+    assert!(may_run_before_ready("load_app_data"));
+    assert!(may_run_before_ready("appearance_preferences"));
+    assert!(may_run_before_ready("request_app_exit"));
+    for command in ["save_config", "patch_state", "start_source_check", "delete_items", "ensure_preview"] {
+        assert!(!may_run_before_ready(command), "{command}");
+    }
 }

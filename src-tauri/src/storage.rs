@@ -323,13 +323,18 @@ pub fn load_app_data() -> Result<LoadedAppData, String> {
 /// notices owned by Main.
 pub fn appearance_preferences(root: &Path) -> Result<JsonValue, String> {
     let config = config(root)?;
-    Ok(serde_json::json!({
+    Ok(appearance_from_config(&config))
+}
+
+/// Pure projection also used by the shell before store preparation completes.
+pub(crate) fn appearance_from_config(config: &JsonValue) -> JsonValue {
+    serde_json::json!({
         "uiFontFamily": config.get("uiFontFamily"),
         "enlargeSmallImages": config.get("enlargeSmallImages"),
         "videoTranscriptionEnabled": config.get("videoTranscriptionEnabled"),
         "audioTranscriptionEnabled": config.get("audioTranscriptionEnabled"),
         "displayTimezone": config.get("displayTimezone"),
-    }))
+    })
 }
 
 /// Projects `LanguageState`'s CURRENT values into an appearance-preferences

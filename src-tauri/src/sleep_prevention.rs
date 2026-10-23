@@ -178,6 +178,7 @@ pub(crate) fn start(app: tauri::AppHandle, enabled: bool) -> Result<(), String> 
     let mut worker = WORKER
         .lock()
         .map_err(|_| "sleep-prevention worker state unavailable")?;
+    if crate::app_lifecycle::shutting_down() { return Ok(()); }
     if SERVICE.get().is_some() {
         return Err("sleep prevention was initialized more than once".to_string());
     }
@@ -213,6 +214,9 @@ pub(crate) fn start(app: tauri::AppHandle, enabled: bool) -> Result<(), String> 
 }
 
 pub(crate) fn shutdown() {
+    // Pair admission with shutdown so a late bootstrap cannot create an
+    // assertion owner after shutdown has already visited this service.
+    let _worker = WORKER.lock().unwrap_or_else(|p| p.into_inner());
     if let Some(control) = SERVICE.get() {
         control.update(|state| state.stopped = true);
     }

@@ -225,17 +225,24 @@ fn warn(message: &str, error: impl ToString) {
     );
 }
 
-pub(crate) fn restore(window: &Window<Wry>, state: &PlacementState) {
-    let saved = paths::data_root()
+/// The small shell placement read runs on the bootstrap worker, before the
+/// required databases and crash-debris cleanup. This must not depend on their
+/// settled data root, or startup would lose the saved window rectangle.
+pub(crate) fn load_main() -> Option<Placement> {
+    let saved = paths::data_root_before_launch()
+        .ok_or_else(|| "data root could not be resolved".to_string())
         .and_then(|root| storage::read_window_state_for_setup(&root))
         .map(|value| value.and_then(|value| serde_json::from_value(value).ok()));
-    let saved = match saved {
+    match saved {
         Ok(saved) => saved,
         Err(error) => {
             warn("window placement could not be loaded", error);
             None
         }
-    };
+    }
+}
+
+pub(crate) fn restore(window: &Window<Wry>, state: &PlacementState, saved: Option<Placement>) {
     apply_saved(window, state, saved);
 }
 

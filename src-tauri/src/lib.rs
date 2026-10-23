@@ -160,7 +160,7 @@ enum BootstrapData {
 async fn load_app_data(
     startup: tauri::State<'_, startup::StartupGate>,
 ) -> Result<BootstrapData, String> {
-    if let Some(failure) = startup.failure() {
+    if let Err(failure) = startup.wait().await {
         return Ok(BootstrapData::Blocked { failure });
     }
     dispatch(move || {
@@ -210,7 +210,10 @@ async fn record_interface_failure(
 }
 
 #[tauri::command]
-async fn appearance_preferences(app: AppHandle) -> Result<Value, String> {
+async fn appearance_preferences(app: AppHandle, startup: tauri::State<'_, startup::StartupGate>) -> Result<Value, String> {
+    if !startup.ready() {
+        return Ok(storage::with_language_fields(startup.appearance.clone(), &app.state::<i18n::LanguageState>()));
+    }
     dispatch(move || {
         logging::boundary(
             "appearance_preferences",
@@ -1470,8 +1473,8 @@ fn log_event(entry: Value) {
 // Reports whether developer-only `debug` logging is on, so the frontend can
 // gate its own debug events identically (a dev build, or ONECOPY_DEBUG=1).
 #[tauri::command]
-fn logging_debug_enabled() -> bool {
-    logging::debug_enabled()
+fn logging_debug_enabled(startup: tauri::State<'_, startup::StartupGate>) -> bool {
+    startup.debug_enabled
 }
 
 #[tauri::command]
@@ -1690,9 +1693,11 @@ pub fn run() {
             // Before the records open, so no stored record goes unsignalled.
             let records_app = app.handle().clone();
             records::on_stored(move || records_window::notify_changed(&records_app));
-            app.manage(startup::initialize(app, debug_enabled));
-            window_placement::load_preview(&setup_preview_placement_state);
-            window_placement::load_records(&setup_records_placement_state);
+            app.manage(startup::initialize(
+                app.handle().clone(), debug_enabled, setup_placement_state.clone(),
+                setup_preview_placement_state.clone(), setup_records_placement_state.clone(),
+                storage::appearance_from_config(&storage::effective_config(settings.as_ref())),
+            ));
             let saved_theme = settings.as_ref().and_then(theme::config_window_theme);
             app.state::<theme::ThemeState>().set(saved_theme);
             if let Some(window) = app.get_webview_window("main") {
@@ -1704,21 +1709,11 @@ pub fn run() {
                         json!({ "error": { "message": error } }),
                     );
                 }
-                window_placement::restore(
-                    &window.as_ref().window(),
-                    &setup_placement_state,
-                );
-                if let Err(error) = window.show() {
-                    logging::warn(
-                        "Main window could not be shown",
-                        json!({ "error": { "message": error.to_string() } }),
-                    );
-                }
             }
             quit::install(app.handle());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(startup::gate_commands(tauri::generate_handler![
             load_app_data,
             save_config,
             appearance_preferences,
@@ -1808,7 +1803,7 @@ pub fn run() {
             request_app_exit,
             session_end_saved,
             quit_question
-        ])
+        ]))
         .build(tauri::generate_context!());
 
     let app = match app {
