@@ -548,3 +548,23 @@ describe("the Records window's first frame", () => {
     expect(shownListWidth()).toBe(`${RECORDS_LIST_WIDTH.default}px`);
   });
 });
+
+it("shows pending detail loading and keeps it while an older selection settles", async () => {
+  const first = deferred<RecordDetail>();
+  const second = deferred<RecordDetail>();
+  mockCommand("records_detail", ({ id }) => id === issue.id ? first.promise : second.promise);
+  await mount();
+  fireEvent.mouseDown(options()[0]!);
+  await settle();
+  const pane = document.querySelector<HTMLElement>('section[aria-busy="true"]')!;
+  expect(pane.textContent).toBe("Loading records…");
+  fireEvent.mouseDown(options()[1]!);
+  await settle();
+  await act(async () => first.resolve(issueDetail));
+  expect(pane.textContent).toBe("Loading records…");
+  expect(pane.getAttribute("aria-busy")).toBe("true");
+  await act(async () => second.resolve({ ...line, fields: [{ name: "message", value: "Selected detail" }] }));
+  expect(pane.getAttribute("aria-busy")).toBe("false");
+  expect(pane.textContent).toContain("Selected detail");
+  expect(pane.textContent).not.toContain("Loading records…");
+});

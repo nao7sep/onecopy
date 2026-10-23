@@ -618,6 +618,8 @@ export function RecordsWindow({ initialListWidth }: { initialListWidth: number }
       <section className="flex min-w-0 flex-1 flex-col overflow-hidden" aria-busy={detail.status === "loading"}>
         {detail.status === "ready" ? (
           <RecordDetailView record={detail.record} launchLabel={launchLabel} />
+        ) : detail.status === "loading" ? (
+          <p className="px-4 py-3 text-sm text-ink-muted">{t("records.loading")}</p>
         ) : detail.status === "failed" ? (
           <OperationResult level="error" className="m-4">{t("records.detailFailed")}</OperationResult>
         ) : detail.status === "none" ? (
