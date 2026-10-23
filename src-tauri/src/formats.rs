@@ -86,9 +86,14 @@ pub enum SqliteMarker {
 /// 0 over an existing schema is a missing marker, and 0 over an empty file is
 /// a store not created yet.
 pub fn sqlite_marker(connection: &Connection, path: &Path, supported: i64) -> Result<SqliteMarker, String> {
-    let recorded: i64 = connection
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .map_err(|error| format!("read the format version: {error}"))?;
+    // First creation commits schema and marker together. Separate statements
+    // could read version zero before that commit and a nonempty schema after it.
+    let (recorded, has_schema): (i64, bool) = connection
+        .query_row(
+            "SELECT user_version, EXISTS(SELECT 1 FROM sqlite_master) FROM pragma_user_version",
+            [], |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|error| format!("read the format version and schema: {error}"))?;
     if recorded > 0 {
         return Ok(match NewerStore::check(path, recorded, supported) {
             Some(newer) => SqliteMarker::Newer(newer),
@@ -98,10 +103,7 @@ pub fn sqlite_marker(connection: &Connection, path: &Path, supported: i64) -> Re
     if recorded < 0 {
         return Ok(SqliteMarker::Missing);
     }
-    let objects: i64 = connection
-        .query_row("SELECT COUNT(*) FROM sqlite_master", [], |row| row.get(0))
-        .map_err(|error| format!("read the schema: {error}"))?;
-    Ok(if objects == 0 { SqliteMarker::New } else { SqliteMarker::Missing })
+    Ok(if has_schema { SqliteMarker::Missing } else { SqliteMarker::New })
 }
 
 /// The message for a SQLite store whose schema carries no marker.

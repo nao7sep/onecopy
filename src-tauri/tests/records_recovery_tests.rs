@@ -122,3 +122,27 @@ fn a_store_deleted_while_running_is_created_again_on_attach() {
         .unwrap();
     assert_eq!(lines, 0);
 }
+
+#[test]
+fn a_format_check_observes_schema_and_marker_from_one_snapshot() {
+    use onecopy_lib::formats::{self, SqliteMarker};
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    let (_dir, path) = store();
+    let reader = Connection::open(&path).unwrap();
+    reader.pragma_update(None, "journal_mode", "WAL").unwrap();
+    let writer = Connection::open(&path).unwrap();
+    let committed = Arc::new(AtomicBool::new(false));
+    let observed = committed.clone();
+    reader.authorizer(Some(move |context: AuthContext<'_>| {
+        if matches!(context.action, AuthAction::Read { table_name, .. } if table_name == "sqlite_master")
+            && !observed.swap(true, Ordering::SeqCst)
+        {
+            writer.execute_batch(&format!("BEGIN IMMEDIATE; CREATE TABLE payload (value TEXT); PRAGMA user_version = {}; COMMIT;", formats::RECORDS)).unwrap();
+        }
+        Authorization::Allow
+    })).unwrap();
+    let marker = formats::sqlite_marker(&reader, &path, formats::RECORDS).unwrap();
+    assert!(committed.load(Ordering::SeqCst));
+    assert_ne!(marker, SqliteMarker::Missing, "an atomic first creation never exposes an unmarked schema");
+}
