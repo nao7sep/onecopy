@@ -2497,74 +2497,41 @@ fn library_wide_date_re_resolution_holds_the_write_lock_only_briefly() {
 }
 
 #[test]
-fn a_concurrent_commit_does_not_fail_a_source_check() {
-    // The walk's vanished-path publication (and `apply_policy`) used
-    // to open a DEFERRED transaction whose first statement is a read, so it
-    // took only a read snapshot and later upgraded to a write lock. SQLite
-    // can fail that upgrade at once with SQLITE_BUSY_SNAPSHOT the moment
-    // another connection has committed since the snapshot was taken — a
-    // real conflict, not an ordinary lock wait, so the busy handler every
-    // other writer relies on never even runs. IMMEDIATE takes the write
-    // lock up front, before any read, so no commit can land in between and
-    // no such conflict can arise.
-    //
-    // This reproduces the exact statement shape the walk publication and
-    // `apply_policy` use (SELECT/INSERT read first, UPDATE/INSERT write
-    // second) against two ordinary connections, sequenced deterministically
-    // instead of racing threads against a busy_timeout window.
+fn source_absence_publication_reserves_the_writer_before_reading_inventory() {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
     let f = fixture("source-check-vs-concurrent-commit");
-    f.conn
-        .execute(
-            "INSERT INTO paths (abs_path, dir_path, file_name, kind, missing) \
-             VALUES ('/a.jpg', '/', 'a.jpg', 'image', 0)",
-            [],
-        )
-        .unwrap();
+    let path = f.root.join("gone.txt");
+    std::fs::write(&path, b"gone").unwrap();
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+    std::fs::remove_file(path).unwrap();
     let db_path = f._dir.path().join("index.sqlite3");
     let other = index_store::open(&db_path).unwrap();
-
-    // DEFERRED: read first (snapshot taken), then another connection
-    // commits, then the write is attempted — SQLite must refuse it at once.
-    f.conn
-        .execute_batch("BEGIN DEFERRED; SELECT COUNT(*) FROM paths;")
-        .unwrap();
-    other
-        .execute("UPDATE paths SET missing = 1 WHERE id = 1", [])
-        .unwrap();
-    let deferred_write = f
-        .conn
-        .execute("UPDATE paths SET missing = 0 WHERE id = 1", []);
-    let _ = f.conn.execute_batch("ROLLBACK;");
-    assert!(
-        deferred_write.is_err(),
-        "a DEFERRED read-then-write transaction must be vulnerable to a \
-         stale snapshot — if this now succeeds, this test's premise needs \
-         revisiting"
-    );
-
-    // IMMEDIATE: the write lock is taken before the read runs, so the other
-    // connection's write cannot land in between at all — no snapshot, no
-    // conflict, no failure.
-    other
-        .execute("UPDATE paths SET missing = 0 WHERE id = 1", [])
-        .unwrap();
-    let immediate = rusqlite::Transaction::new_unchecked(
-        &f.conn,
-        rusqlite::TransactionBehavior::Immediate,
-    )
-    .unwrap();
-    immediate
-        .query_row("SELECT COUNT(*) FROM paths", [], |row| row.get::<_, i64>(0))
-        .unwrap();
-    immediate
-        .execute("UPDATE paths SET missing = 1 WHERE id = 1", [])
-        .unwrap();
-    immediate.commit().unwrap();
-    assert_eq!(
-        count(&f.conn, "SELECT missing FROM paths WHERE id = 1"),
-        1,
-        "the IMMEDIATE transaction's write must land"
-    );
+    other.busy_timeout(std::time::Duration::ZERO).unwrap();
+    let observed = Arc::new(AtomicBool::new(false));
+    let refused = Arc::new(AtomicBool::new(false));
+    let (seen, blocked) = (observed.clone(), refused.clone());
+    // This hook runs while the real absence publisher prepares its inventory
+    // read. A competing connection must already be excluded by that owner's
+    // write transaction, before the read can acquire an obsolete snapshot.
+    f.conn.authorizer(Some(move |context: AuthContext<'_>| {
+        if matches!(context.action, AuthAction::Read { table_name: "walk_present_paths", .. })
+            && !seen.swap(true, Ordering::SeqCst) {
+            let result = other.execute("UPDATE scan_dirs SET dirty = dirty", []);
+            blocked.store(matches!(result, Err(rusqlite::Error::SqliteFailure(error, _))
+                if error.code == rusqlite::ErrorCode::DatabaseBusy), Ordering::SeqCst);
+        }
+        Authorization::Allow
+    })).unwrap();
+    let result = walk_root(&f.conn, &f.root, &lists());
+    f.conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>).unwrap();
+    assert!(observed.load(Ordering::SeqCst), "the production inventory read must be reached");
+    assert!(refused.load(Ordering::SeqCst), "the production owner must reserve the writer before its read");
+    assert_eq!(result.unwrap().marked_missing, 1);
+    assert_eq!(count(&f.conn, "SELECT missing FROM paths"), 1);
+    // The reservation ends with publication; another writer can now commit.
+    let other = index_store::open(&db_path).unwrap();
+    other.execute("UPDATE scan_dirs SET dirty = dirty", []).unwrap();
 }
 
 #[test]
