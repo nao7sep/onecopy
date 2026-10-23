@@ -556,3 +556,89 @@ it("a quit question in Main during Comparison takes the keyboard to Main, and no
     useComparisonStore.setState({ open: false });
   }
 });
+
+it("saves playback edits received while running-work consent is open", async () => {
+  runOperation();
+  const quit = requestQuit();
+  const choose = await presentedRunningWorkQuestion();
+  setPlaybackVolume(0.23);
+  choose(true);
+  await quit;
+  const save = invokeCalls.findIndex((call) => call.command === "save_config");
+  const exit = invokeCalls.findIndex((call) => call.command === "request_app_exit");
+  expect(save).toBeGreaterThanOrEqual(0);
+  expect(save).toBeLessThan(exit);
+  expect(useAppStore.getState().appData?.config.playbackVolume).toBe(0.23);
+});
+
+it("a final save failure can cancel without discarding the approved Settings draft", async () => {
+  editSettings();
+  const quit = requestQuit();
+  const discard = await presentedDiscardQuestion();
+  setPlaybackVolume(0.23);
+  mockCommands({ save_config: () => Promise.reject(new Error("disk full")) });
+  discard(true);
+  await settle();
+  await settle();
+  expect(useQuitSaveStore.getState().choose).not.toBeNull();
+  expect(useSettingsStore.getState().draft?.defaultTimezone).toBe("Asia/Tokyo");
+  useQuitSaveStore.getState().choose!("cancel");
+  await quit;
+  expect(exits()).toHaveLength(0);
+  expect(useSettingsStore.getState().draft?.defaultTimezone).toBe("Asia/Tokyo");
+  expect(useAppShellStore.getState().utilitySurface).toBe("settings");
+});
+
+it("Quit anyway does not waive an edit received during later consent", async () => {
+  setPlaybackVolume(0.4);
+  runOperation();
+  mockCommands({ save_config: () => Promise.reject(new Error("disk full")) });
+  const quit = requestQuit();
+  await settle();
+  useQuitSaveStore.getState().choose!("quit");
+  const stop = await presentedRunningWorkQuestion();
+  setPlaybackVolume(0.6);
+  stop(true);
+  await settle();
+  await settle();
+  expect(exits()).toHaveLength(0);
+  expect(useQuitSaveStore.getState().choose).not.toBeNull();
+  mockCommands({ save_config: ({ changes }) => ({ ...useAppStore.getState().appData!.config, ...(changes as object) }) });
+  useQuitSaveStore.getState().choose!("retry");
+  await quit;
+  expect(exits()).toHaveLength(1);
+  expect(useAppStore.getState().appData?.config.playbackVolume).toBe(0.6);
+});
+
+it("captures playback edits during optional state saving before exit", async () => {
+  let complete!: (value: unknown) => void;
+  retainStatePatch({ zoom: 1.2 });
+  mockCommands({ patch_state: () => new Promise((resolve) => { complete = resolve; }) });
+  const quit = requestQuit();
+  await settle();
+  setPlaybackVolume(0.31);
+  complete({ zoom: 1.2 });
+  await quit;
+  expect(exits()).toHaveLength(1);
+  expect(invokeCalls.find((call) => call.command === "save_config")?.args.changes)
+    .toEqual({ soundEnabled: true, playbackVolume: 0.31 });
+});
+
+it("OS takeover during the final save keeps the Settings draft and skips ordinary exit", async () => {
+  editSettings();
+  const quit = requestQuit();
+  const discard = await presentedDiscardQuestion();
+  setPlaybackVolume(0.19);
+  let complete!: (value: unknown) => void;
+  mockCommands({ save_config: () => new Promise((resolve) => { complete = resolve; }) });
+  discard(true);
+  await settle();
+  await settle();
+  const ending = endSession(23);
+  complete({ soundEnabled: true, playbackVolume: 0.19 });
+  await ending;
+  await quit;
+  expect(exits()).toHaveLength(0);
+  expect(useSettingsStore.getState().draft?.defaultTimezone).toBe("Asia/Tokyo");
+  expect(invokeCalls.find((call) => call.command === "session_end_saved")?.args).toEqual({ id: 23 });
+});

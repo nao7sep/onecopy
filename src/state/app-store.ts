@@ -54,6 +54,10 @@ export type ConfigChanges =
 // later choice.
 let configWriteTail: Promise<unknown> = Promise.resolve();
 let configSequence = 0;
+// Authored changes, independent of write attempts: quit-anyway consent may
+// waive a failed revision, but never a later edit from another window.
+let configRevision = 0;
+export function requiredConfigRevision(): number { return configRevision; }
 // Values published before they are saved (sound and volume while the user
 // drags), each with the moment it was authored. A write confirms a key only
 // when it carried that very value, authored no later than the write began;
@@ -105,6 +109,7 @@ function enqueueConfigWrite(
 /** Publishes settings at once and keeps them pending until a queued write
  * carries them; `saveUnsettledConfig` writes them. */
 export function publishUnsettledConfig(patch: Record<string, unknown>): void {
+  configRevision += 1;
   for (const [key, value] of Object.entries(patch)) {
     unsettledConfig.set(key, { value, sequence: ++configSequence });
   }
@@ -293,7 +298,10 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   dismissQuarantines: () => set({ quarantines: [] }),
 
-  saveConfig: (changes, options) => enqueueConfigWrite(changes, options?.reportFailure ?? true),
+  saveConfig: (changes, options) => {
+    configRevision += 1;
+    return enqueueConfigWrite(changes, options?.reportFailure ?? true);
+  },
 
   patchState: async (patch, options) => {
     const published = get().appData?.state ?? {};

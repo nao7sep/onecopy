@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { createEventInstaller } from "../utils/eventInstallation";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { create } from "zustand";
-import { flushConfigForShutdown, flushStatePatchesForShutdown, reportStatePatchFailure, resumeStatePatchesAfterFailedShutdown } from "../state/app-store";
+import { flushConfigForShutdown, requiredConfigRevision, flushStatePatchesForShutdown, reportStatePatchFailure, resumeStatePatchesAfterFailedShutdown } from "../state/app-store";
 import { settingsDraftIsDirty, useSettingsStore } from "../state/settings-store";
 import { useAppShellStore } from "../state/app-shell-store";
 import { useMutationStore } from "../state/mutation-store";
@@ -188,21 +188,19 @@ async function runningWorkMayStop(revision: number): Promise<boolean> {
   });
 }
 
-/** Whether the quit may go on past the Settings draft: true when there are no
- * unsaved edits or the user chose Discard. Checked after the required save, so
- * a Settings save that was in flight has settled. */
-async function settingsMayBeDiscarded(revision: number): Promise<boolean> {
-  if (!settingsDraftIsDirty(useSettingsStore.getState())) return true;
+/** Retains the draft revision authorized for discard, or cancels. Discard
+ * itself waits until required saves and every cancellable question settle. */
+async function settingsMayBeDiscarded(revision: number): Promise<Pick<ReturnType<typeof useSettingsStore.getState>, "draft"> | null> {
+  const settings = useSettingsStore.getState();
+  if (!settingsDraftIsDirty(settings)) return { draft: settings.draft };
   // Like the save decision: a prompt that cannot be shown keeps editing.
   const discard = await ask(useQuitDiscardStore, revision, false, {
     title: message("settings.discardTitle"),
     body: message("settings.discardMessage"),
     choices: [[false, "settings.keepEditing"], [true, "settings.discard"]],
   });
-  if (!discard || sessionEnding || revision !== sessionRevision) return false;
-  useSettingsStore.getState().discardDraft();
-  useAppShellStore.getState().closeUtility();
-  return true;
+  if (!discard || sessionEnding || revision !== sessionRevision) return null;
+  return { draft: settings.draft };
 }
 
 // Missing presentation cancels, never discards.
@@ -214,36 +212,59 @@ function decide(revision: number): Promise<QuitChoice> {
   });
 }
 
-// The order: the required save comes first, as it always gets its attempt;
-// then the running work; the Settings discard is last because Discard acts at
-// once, so it follows every question that can still cancel the quit.
+// Save before consent, then recheck after all asynchronous steps. A waiver
+// belongs to one authored revision; writes and retries do not create edits.
 export function requestQuit(): Promise<void> {
   if (attempt !== null) return attempt;
   if (sessionEnding) return Promise.resolve();
   const revision = sessionRevision;
-  attempt = (async () => {
-    while (!sessionEnding && revision === sessionRevision) {
+  const current = () => !sessionEnding && revision === sessionRevision;
+  let settledConfigRevision: number | null = null;
+  const settleRequired = async (): Promise<boolean> => {
+    while (current()) {
+      const authored = requiredConfigRevision();
+      if (settledConfigRevision === authored) return true;
       try {
-        // Required settings always get their attempt, irrespective of optional
-        // screen-state failure. Optional work cannot delay the required save.
         await saveRequired();
-        break;
+        settledConfigRevision = authored;
       } catch (error) {
         reportStatePatchFailure(error);
-        if (sessionEnding || revision !== sessionRevision) return;
+        if (!current()) return false;
         const choice = await decide(revision);
-        if (choice === "session" || sessionEnding || revision !== sessionRevision) return;
-        if (choice === "cancel") { resumeStatePatchesAfterFailedShutdown(); return; }
-        if (choice === "quit") break;
+        if (choice === "session" || !current()) return false;
+        if (choice === "cancel") { resumeStatePatchesAfterFailedShutdown(); return false; }
+        if (choice === "quit") settledConfigRevision = authored;
       }
     }
-    if (sessionEnding || revision !== sessionRevision) return;
-    if (!(await runningWorkMayStop(revision))) return;
-    if (sessionEnding || revision !== sessionRevision) return;
-    if (!(await settingsMayBeDiscarded(revision))) return;
-    if (sessionEnding || revision !== sessionRevision) return;
+    return false;
+  };
+  attempt = (async () => {
+    if (!(await settleRequired()) || !current()) return;
+    if (!(await runningWorkMayStop(revision)) || !current()) return;
+    let consent = await settingsMayBeDiscarded(revision);
+    if (consent === null || !current()) return;
     await bounded(flushStatePatchesForShutdown(), 500).catch(reportStatePatchFailure);
-    if (!sessionEnding && revision === sessionRevision) await invoke("request_app_exit");
+    // Another window can still change playback settings during either consent
+    // or optional saving. A final failure must leave the Settings draft intact
+    // if the user cancels, even after agreeing to discard it earlier.
+    while (current()) {
+      if (!(await settleRequired()) || !current()) {
+        resumeStatePatchesAfterFailedShutdown();
+        return;
+      }
+      const settings = useSettingsStore.getState();
+      if (settingsDraftIsDirty(settings)) {
+        if (settings.draft !== consent.draft) {
+          consent = await settingsMayBeDiscarded(revision);
+          if (consent === null) { resumeStatePatchesAfterFailedShutdown(); return; }
+          continue;
+        }
+        settings.discardDraft();
+        useAppShellStore.getState().closeUtility();
+      }
+      await invoke("request_app_exit");
+      return;
+    }
   })().catch((error) => {
     resumeStatePatchesAfterFailedShutdown();
     reportWindowCall("request application exit")(error);
