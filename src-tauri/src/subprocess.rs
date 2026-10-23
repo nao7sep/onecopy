@@ -126,13 +126,16 @@ static RUNNING: Mutex<Vec<Arc<Mutex<OwnedProcess>>>> = Mutex::new(Vec::new());
 pub(crate) struct OwnedProcess {
     child: std::process::Child,
     #[cfg(unix)]
-    guardian: Option<crate::subprocess_supervisor::Guard>,
+    guardian: crate::subprocess_supervisor::Guard,
     #[cfg(windows)]
     tree: Option<process_tree::Job>,
 }
 
 impl OwnedProcess {
-    fn new(child: std::process::Child) -> Self {
+    fn new(
+        child: std::process::Child,
+        #[cfg(unix)] guardian: crate::subprocess_supervisor::Guard,
+    ) -> Self {
         #[cfg(windows)]
         let tree = match process_tree::Job::holding(&child) {
             Ok(job) => Some(job),
@@ -148,7 +151,7 @@ impl OwnedProcess {
         Self {
             child,
             #[cfg(unix)]
-            guardian: None,
+            guardian,
             #[cfg(windows)]
             tree,
         }
@@ -421,9 +424,7 @@ fn run_owned(
         .stderr(Stdio::piped()).spawn().map_err(|error| error.to_string())?;
     let stdout_pipe = spawned.stdout.take();
     let stderr_pipe = spawned.stderr.take();
-    let owned = OwnedProcess::new(spawned);
-    #[cfg(unix)]
-    let owned = { let mut owned = owned; owned.guardian = Some(guardian); owned };
+    let owned = OwnedProcess::new(spawned, #[cfg(unix)] guardian);
     let child = Arc::new(Mutex::new(owned));
     let _registration = register_running(child.clone());
     let last_output = Arc::new(AtomicU64::new(0));
@@ -476,10 +477,8 @@ fn run_owned(
         #[cfg(unix)]
         let guardian_settled = if status.is_some() {
             let mut owned = lock_child(&child);
-            if let Some(guardian) = owned.guardian.as_mut() {
-                guardian.signal();
-                guardian.try_settle().unwrap_or(false)
-            } else { true }
+            owned.guardian.signal();
+            owned.guardian.try_settle().unwrap_or(false)
         } else { false };
         if status.is_some() && guardian_settled && readers.iter().all(|reader| reader.is_finished()) { break; }
         std::thread::sleep(POLL);
@@ -559,13 +558,7 @@ fn start_reader(
 
 #[cfg(unix)]
 fn kill_owned(child: &mut OwnedProcess) {
-    if let Some(guardian) = child.guardian.as_mut() {
-        guardian.signal();
-    } else if matches!(child.try_wait(), Ok(None)) {
-        // Direct isolated test owners have their own group. A live/unreaped
-        // child pins its PID, so this cannot signal a reused process group.
-        unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL); }
-    }
+    child.guardian.signal();
 }
 
 #[cfg(not(unix))]
@@ -664,9 +657,6 @@ mod process_tree {
         }
     }
 }
-
-#[cfg(all(test, unix))]
-use std::os::unix::process::CommandExt;
 
 #[cfg(test)]
 // EXCEPTION: the deadline-only signal and registry are crate-private; these

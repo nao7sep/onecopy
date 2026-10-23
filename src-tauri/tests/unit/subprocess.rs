@@ -1,5 +1,27 @@
 use super::*;
 
+#[cfg(unix)]
+struct SupervisedChild(Arc<Mutex<OwnedProcess>>);
+
+#[cfg(unix)]
+impl SupervisedChild {
+    fn spawn(mut command: Command) -> Self {
+        let guardian = crate::subprocess_supervisor::prepare(&mut command).unwrap();
+        Self(Arc::new(Mutex::new(OwnedProcess::new(command.spawn().unwrap(), guardian))))
+    }
+}
+
+#[cfg(unix)]
+impl Drop for SupervisedChild {
+    fn drop(&mut self) {
+        let mut child = lock_child(&self.0);
+        kill_owned(&mut child);
+        // These controlled fixtures perform no volume I/O. Reap them even if
+        // an assertion fails; the guardian owns descendant termination.
+        let _ = child.wait();
+    }
+}
+
 #[test]
 fn a_contended_registry_cannot_block_the_force_exit_signal() {
     static REGISTRY: Mutex<Vec<Arc<Mutex<OwnedProcess>>>> = Mutex::new(Vec::new());
@@ -15,16 +37,9 @@ fn a_contended_registry_cannot_block_the_force_exit_signal() {
 #[cfg(unix)]
 #[test]
 fn a_deadline_signal_ends_the_live_group_and_leaves_reaping_to_its_owner() {
-    struct OwnedChild(Arc<Mutex<OwnedProcess>>);
-    impl Drop for OwnedChild {
-        fn drop(&mut self) {
-            let mut child = lock_child(&self.0);
-            if matches!(child.try_wait(), Ok(None)) { kill_owned(&mut child); }
-        }
-    }
     let mut command = Command::new("sleep");
-    command.arg("60").process_group(0);
-    let owner = OwnedChild(Arc::new(Mutex::new(OwnedProcess::new(command.spawn().unwrap()))));
+    command.arg("60");
+    let owner = SupervisedChild::spawn(command);
     let registry = Mutex::new(vec![owner.0.clone()]);
     signal_for_exit(&registry);
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -153,8 +168,9 @@ fn an_error_carries_the_whole_of_stderr() {
 #[test]
 fn shutdown_kill_signals_an_isolated_registered_process() {
     let mut command = Command::new("sleep");
-    command.arg("30").process_group(0);
-    let child = Arc::new(Mutex::new(OwnedProcess::new(command.spawn().unwrap())));
+    command.arg("30");
+    let owner = SupervisedChild::spawn(command);
+    let child = &owner.0;
     // A populated private registry is the admission handshake. No elapsed
     // time is used as evidence that a child has registered.
     let registry = Mutex::new(vec![child.clone()]);

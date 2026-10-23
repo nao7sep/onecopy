@@ -78,22 +78,19 @@ fn cancelling_a_subprocess_kills_its_owned_descendants() {
         .arg("sleep 30 & echo $! > \"$1\"; wait")
         .arg("onecopy-subprocess-test")
         .arg(&pid_file);
-    let started = std::time::Instant::now();
+    let recorded = || std::fs::read_to_string(&pid_file).ok()
+        .and_then(|text| text.trim().parse::<i32>().ok());
+    let watchdog = std::time::Instant::now() + std::time::Duration::from_secs(30);
     let result = subprocess::run_bounded(command, &|| {
-        started.elapsed() >= std::time::Duration::from_millis(150)
+        recorded().is_some() || std::time::Instant::now() >= watchdog
     });
     assert!(result.is_err());
-    let pid: i32 = std::fs::read_to_string(&pid_file)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(50));
-    // SAFETY: signal 0 performs only a liveness probe.
-    let alive = unsafe { libc::kill(pid, 0) } == 0;
-    if alive {
-        // SAFETY: test cleanup is scoped to the recorded child PID.
-        unsafe { libc::kill(pid, libc::SIGKILL) };
+    let pid = recorded().expect("the owned child must publish its PID before cancellation");
+    let settlement = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        // SAFETY: signal 0 performs only a liveness probe of the recorded child.
+        if unsafe { libc::kill(pid, 0) } != 0 { break; }
+        assert!(std::time::Instant::now() < settlement, "owned descendant {pid} survived cancellation");
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert!(!alive, "owned descendant {pid} survived cancellation");
 }
