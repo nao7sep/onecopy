@@ -3,6 +3,64 @@ use super::{
     IMAGE_CONCURRENCY_HEADROOM, IMAGE_JOB_RESERVATION,
 };
 
+#[test]
+fn response_admission_accounts_for_held_and_cloned_leases() {
+    use std::sync::{Arc, Mutex};
+    let ledger = Arc::new(Mutex::new(0));
+    let first = super::reserve_response_bytes_for(&ledger, 30, Some(100)).unwrap();
+    let clone = Arc::clone(&first);
+    let second = super::reserve_response_bytes_for(&ledger, 20, Some(100)).unwrap();
+    assert!(super::reserve_response_bytes_for(&ledger, 1, Some(100)).is_err());
+    drop(first);
+    assert_eq!(*ledger.lock().unwrap(), 50);
+    drop(clone);
+    assert_eq!(*ledger.lock().unwrap(), 20);
+    drop(second);
+    assert_eq!(*ledger.lock().unwrap(), 0);
+    assert!(super::reserve_response_bytes_for(&ledger, 50, Some(100)).is_ok());
+}
+
+#[test]
+fn response_admission_refuses_unknown_memory_oversize_and_overflow() {
+    use std::sync::{Arc, Mutex};
+    let ledger = Arc::new(Mutex::new(0));
+    assert!(super::reserve_response_bytes_for(&ledger, 1, None).is_err());
+    assert!(super::reserve_response_bytes_for(&ledger, 51, Some(100)).is_err());
+    assert!(super::reserve_response_bytes_for(&ledger, u64::MAX, Some(u64::MAX)).is_err());
+    assert_eq!(*ledger.lock().unwrap(), 0);
+    // Exercise checked aggregate addition without attempting an allocation.
+    *ledger.lock().unwrap() = 1;
+    assert!(super::reserve_response_bytes_for(&ledger, u64::MAX, Some(u64::MAX)).is_err());
+    assert_eq!(*ledger.lock().unwrap(), 1);
+}
+
+#[test]
+fn concurrent_response_admission_never_exceeds_the_shared_budget() {
+    use std::sync::{Arc, Barrier, Mutex};
+    let ledger = Arc::new(Mutex::new(0));
+    let admitted = Arc::new(Barrier::new(9));
+    let release = Arc::new(Barrier::new(9));
+    std::thread::scope(|scope| {
+        let mut workers = Vec::new();
+        for _ in 0..8 {
+            let ledger = Arc::clone(&ledger);
+            let admitted = Arc::clone(&admitted);
+            let release = Arc::clone(&release);
+            workers.push(scope.spawn(move || {
+                let lease = super::reserve_response_bytes_for(&ledger, 10, Some(80));
+                admitted.wait();
+                release.wait();
+                lease.is_ok()
+            }));
+        }
+        admitted.wait();
+        assert_eq!(*ledger.lock().unwrap(), 40);
+        release.wait();
+        assert_eq!(workers.into_iter().map(|worker| worker.join().unwrap()).filter(|admitted| *admitted).count(), 4);
+    });
+    assert_eq!(*ledger.lock().unwrap(), 0);
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn macos_speculative_pages_are_not_available_twice() {

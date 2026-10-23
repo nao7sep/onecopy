@@ -8,6 +8,7 @@
 
 use std::io::Cursor;
 use std::path::Path;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use image::{DynamicImage, ImageReader, Limits};
 
@@ -42,6 +43,49 @@ pub const DECODE_LIMIT_PREFIX: &str = "decode safety: ";
 /// lifecycle condition the derive owner pauses on rather than a per-item
 /// failure it records one Issue for each of.
 pub const STORAGE_UNAVAILABLE_PREFIX: &str = "cache storage unavailable: ";
+
+/// Accounts for response bodies while Rust owns them, including the native
+/// protocol handoff. Renderer memory and native copies made after handoff are
+/// outside this lease; this is not a whole-process memory guarantee.
+#[derive(Debug)]
+pub(crate) struct ResponseBytesLease {
+    ledger: Arc<Mutex<u64>>,
+    bytes: u64,
+}
+
+impl Drop for ResponseBytesLease {
+    fn drop(&mut self) {
+        let mut reserved = self.ledger.lock().unwrap_or_else(|error| error.into_inner());
+        *reserved -= self.bytes;
+    }
+}
+
+/// Tauri requires an owned contiguous response body, so streaming cannot
+/// avoid this allocation. Admit aggregate bodies against half the currently
+/// reclaimable memory, leaving headroom for other app and system work.
+pub(crate) fn reserve_response_bytes(bytes: u64) -> Result<Arc<ResponseBytesLease>, &'static str> {
+    static LEDGER: OnceLock<Arc<Mutex<u64>>> = OnceLock::new();
+    reserve_response_bytes_for(
+        LEDGER.get_or_init(|| Arc::new(Mutex::new(0))),
+        bytes,
+        available_memory_bytes(),
+    )
+}
+
+fn reserve_response_bytes_for(
+    ledger: &Arc<Mutex<u64>>,
+    bytes: u64,
+    available: Option<u64>,
+) -> Result<Arc<ResponseBytesLease>, &'static str> {
+    let available = available.ok_or("Available memory could not be measured")?;
+    let mut reserved = ledger.lock().unwrap_or_else(|error| error.into_inner());
+    let total = reserved.checked_add(bytes).ok_or("Response byte count overflowed")?;
+    if total > available / 2 {
+        return Err("Response exceeds the available memory budget; retry when memory is available");
+    }
+    *reserved = total;
+    Ok(Arc::new(ResponseBytesLease { ledger: Arc::clone(ledger), bytes }))
+}
 
 fn image_limits() -> Limits {
     let mut limits = Limits::default();

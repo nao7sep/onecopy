@@ -43,7 +43,7 @@ pub(crate) fn answer(
 
 /// Serves an original by indexed content hash or `path-<id>`. The webview
 /// never receives a filesystem path; large streamable files are range-capped
-/// so this synchronous protocol cannot read them wholesale on the UI thread.
+/// so a worker does not allocate and read them wholesale.
 pub(crate) fn serve_original(
     request: &tauri::http::Request<Vec<u8>>,
 ) -> tauri::http::Response<Vec<u8>> {
@@ -105,6 +105,38 @@ fn unavailable(
         .ok()
 }
 
+/// Capacity refusal is temporary, never a missing file or a partial image.
+/// Reasons are fixed, bounded diagnostics without source paths.
+fn response_capacity_unavailable(reason: &'static str) -> tauri::http::Response<Vec<u8>> {
+    crate::logging::warn("media response capacity unavailable", json!({ "reason": reason }));
+    tauri::http::Response::builder()
+        .status(503)
+        .header("Retry-After", "30")
+        .header("Content-Type", "text/plain; charset=utf-8")
+        .body(reason.as_bytes().to_vec())
+        .unwrap_or_else(|_| not_found())
+}
+
+fn response_buffer(
+    length: u64,
+) -> Result<(Vec<u8>, std::sync::Arc<crate::resource_limits::ResponseBytesLease>), &'static str> {
+    let size = usize::try_from(length).map_err(|_| "Response length cannot fit in memory")?;
+    let lease = crate::resource_limits::reserve_response_bytes(length)?;
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(size).map_err(|_| "Response allocation failed; retry when memory is available")?;
+    bytes.resize(size, 0);
+    Ok((bytes, lease))
+}
+
+fn read_response_body(file: &mut impl Read, bytes: &mut [u8]) -> std::io::Result<()> {
+    // VolumeFile owns a staging buffer for each bounded call. Chunking keeps
+    // that buffer small instead of duplicating the entire admitted body.
+    for chunk in bytes.chunks_mut(1024 * 1024) {
+        file.read_exact(chunk)?;
+    }
+    Ok(())
+}
+
 /// Serves the requested range of the original at `path` through bounded
 /// reads.
 fn serve_path(
@@ -119,22 +151,21 @@ fn serve_path(
         not_found()
     };
     let shown = path.to_string_lossy();
-    let path = shown.as_ref();
-    let mut file = match crate::volume_io::open_read(std::path::Path::new(path)) {
+    let mut file = match crate::volume_io::open_read(path) {
         Ok(file) => file,
         Err(error) => {
-            return unavailable("original unreadable", path, &error)
-                .unwrap_or_else(|| warn_404("original unreadable", format!("{path}: {error}")))
+            return unavailable("original unreadable", &shown, &error)
+                .unwrap_or_else(|| warn_404("original unreadable", format!("{shown}: {error}")))
         }
     };
     let total = match file.metadata().map(|metadata| metadata.len()) {
         Ok(total) => total,
         Err(error) => {
-            return unavailable("metadata failed", path, &error)
-                .unwrap_or_else(|| warn_404("metadata failed", format!("{path}: {error}")))
+            return unavailable("metadata failed", &shown, &error)
+                .unwrap_or_else(|| warn_404("metadata failed", format!("{shown}: {error}")))
         }
     };
-    let content_type = content_type_for(path);
+    let content_type = content_type_for(&shown);
     if request.method() == tauri::http::Method::HEAD {
         return tauri::http::Response::builder()
             .status(200)
@@ -164,19 +195,23 @@ fn serve_path(
     // `resolve_range` represents an empty 200 as (0, 0, 200). It is a span
     // sentinel, not one byte to read.
     let length = response_length(total, start, end);
-    let mut bytes = vec![0u8; length as usize];
+    let (mut bytes, lease) = match response_buffer(length) {
+        Ok(buffer) => buffer,
+        Err(reason) => return response_capacity_unavailable(reason),
+    };
     if length > 0 {
         if let Err(error) = file
             .seek(SeekFrom::Start(start))
-            .and_then(|_| file.read_exact(&mut bytes))
+            .and_then(|_| read_response_body(&mut file, &mut bytes))
         {
-            return unavailable("read failed", path, &error)
-                .unwrap_or_else(|| warn_404("read failed", format!("{path}: {error}")));
+            return unavailable("read failed", &shown, &error)
+                .unwrap_or_else(|| warn_404("read failed", format!("{shown}: {error}")));
         }
     }
 
     let mut builder = tauri::http::Response::builder()
         .status(status)
+        .extension(lease)
         .header("Content-Type", content_type)
         .header("Accept-Ranges", "bytes")
         .header("Content-Length", length.to_string());
@@ -228,18 +263,36 @@ pub(crate) fn serve_cache(
     } else {
         return not_found();
     };
-    match std::fs::read(file) { // data root
-        Ok(bytes) => {
-            let content_type = sniff_image_content_type(&bytes);
-            tauri::http::Response::builder()
-                .status(200)
-                .header("Content-Type", content_type)
-                .header("Cache-Control", cache_control(key))
-                .body(bytes)
-                .unwrap_or_else(|_| not_found())
-        }
-        Err(_) => not_found(),
+    serve_cache_path(&file, key)
+}
+
+fn serve_cache_path(path: &std::path::Path, key: &str) -> tauri::http::Response<Vec<u8>> {
+    let shown = path.to_string_lossy();
+    let mut file = match crate::volume_io::open_read(path) {
+        Ok(file) => file,
+        Err(error) => return unavailable("cache unreadable", &shown, &error).unwrap_or_else(not_found),
+    };
+    let total = match file.metadata() {
+        Ok(metadata) => metadata.len(),
+        Err(error) => return unavailable("cache metadata failed", &shown, &error).unwrap_or_else(not_found),
+    };
+    let (mut bytes, lease) = match response_buffer(total) {
+        Ok(buffer) => buffer,
+        Err(reason) => return response_capacity_unavailable(reason),
+    };
+    // Read precisely the opened file's measured length: growth cannot cause
+    // unreserved allocation and truncation never returns a partial success.
+    if let Err(error) = read_response_body(&mut file, &mut bytes) {
+        return unavailable("cache read failed", &shown, &error).unwrap_or_else(not_found);
     }
+    let content_type = sniff_image_content_type(&bytes);
+    tauri::http::Response::builder()
+        .status(200)
+        .extension(lease)
+        .header("Content-Type", content_type)
+        .header("Cache-Control", cache_control(key))
+        .body(bytes)
+        .unwrap_or_else(|_| not_found())
 }
 
 /// `bytes=start-end` / `bytes=start-` / `bytes=-suffix`, single range only.
@@ -319,11 +372,10 @@ pub fn sniff_image_content_type(bytes: &[u8]) -> &'static str {
 /// The largest span one response will carry. A Chromium webview opens every
 /// media resource with a literal `Range: bytes=0-`, which resolves — correctly
 /// per spec — to the entire file, so without a cap the handler allocates and
-/// reads the whole thing. That matters more here than it looks: the mediafile
-/// protocol is registered SYNCHRONOUSLY, so wry runs it inline on the main
-/// thread and a multi-gigabyte video freezes the whole app rather than just
-/// the player. Returning fewer bytes than asked for is legal for a 206 as long
-/// as Content-Range describes what was actually sent; the player simply asks
+/// reads the whole thing. Even on a worker, that would retain a multi-gigabyte
+/// body until the native protocol handoff. Returning fewer bytes than asked
+/// for is legal for a 206 as long as Content-Range describes what was sent;
+/// the player simply asks
 /// for the next span.
 pub const MAX_SPAN: u64 = 8 * 1024 * 1024;
 

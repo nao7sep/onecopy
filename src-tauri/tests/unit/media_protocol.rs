@@ -64,6 +64,74 @@ fn mediafile_refuses_a_key_that_would_escape_the_index_lookup() {
     assert_eq!(serve_original(&request).status(), tauri::http::StatusCode::NOT_FOUND);
 }
 
+#[test]
+fn capacity_refusal_is_bounded_retryable_and_never_image_success() {
+    let response = response_capacity_unavailable("Response allocation failed");
+    assert_eq!(response.status(), 503);
+    assert_eq!(response.headers()["Retry-After"], "30");
+    assert_eq!(response.headers()["Content-Type"], "text/plain; charset=utf-8");
+    assert_eq!(response.body(), b"Response allocation failed");
+}
+
+#[test]
+fn response_reads_are_chunked_and_never_grow_the_admitted_body() {
+    struct Reader {
+        remaining: usize,
+        largest_read: usize,
+    }
+    impl std::io::Read for Reader {
+        fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+            self.largest_read = self.largest_read.max(bytes.len());
+            let read = bytes.len().min(self.remaining);
+            bytes[..read].fill(7);
+            self.remaining -= read;
+            Ok(read)
+        }
+    }
+    let mut reader = Reader { remaining: 4 * 1024 * 1024, largest_read: 0 };
+    let mut body = vec![0; 3 * 1024 * 1024 + 1];
+    read_response_body(&mut reader, &mut body).unwrap();
+    assert_eq!(reader.largest_read, 1024 * 1024);
+    assert_eq!(reader.remaining, 1024 * 1024 - 1);
+    assert!(body.iter().all(|byte| *byte == 7));
+    let mut truncated = std::io::Cursor::new(b"short");
+    assert_eq!(read_response_body(&mut truncated, &mut body).unwrap_err().kind(), std::io::ErrorKind::UnexpectedEof);
+}
+
+#[cfg(any(target_os = "macos", windows))]
+#[test]
+fn cached_images_preserve_content_headers_and_lease_through_response_parts() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("fullres.png");
+    let bytes = b"\x89PNG\r\n\x1a\nimage bytes";
+    std::fs::write(&file, bytes).unwrap();
+    let response = serve_cache_path(&file, "3f2a9c");
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.body(), bytes);
+    assert_eq!(response.headers()["Content-Type"], "image/png");
+    assert_eq!(response.headers()["Cache-Control"], cache_control("3f2a9c"));
+    let (parts, body) = response.into_parts();
+    assert_eq!(body, bytes);
+    assert!(parts.extensions.get::<std::sync::Arc<crate::resource_limits::ResponseBytesLease>>().is_some());
+    assert_eq!(serve_cache_path(&file, "p17").headers()["Cache-Control"], "no-store");
+}
+
+#[cfg(all(unix, target_os = "macos"))]
+#[test]
+#[ignore = "requires a filesystem supporting non-UTF-8 filenames; APFS rejects these names"]
+fn original_reads_the_native_path_without_lossy_reopening() {
+    use std::os::unix::ffi::OsStringExt;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join(std::ffi::OsString::from_vec(b"image-\xff.png".to_vec()));
+    std::fs::write(&file, b"original image").unwrap();
+    let request = tauri::http::Request::builder().body(Vec::new()).unwrap();
+    let response = serve_path(&request, &file);
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.body(), b"original image");
+    assert_eq!(response.headers()["Content-Type"], "image/png");
+    assert!(response.extensions().get::<std::sync::Arc<crate::resource_limits::ResponseBytesLease>>().is_some());
+}
+
 // A drive that stops answering answers 504 for the request that gave up on
 // it and 503 while it has not answered, never a hang and never 404.
 #[test]
