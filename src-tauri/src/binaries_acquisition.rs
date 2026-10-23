@@ -320,10 +320,6 @@ fn network_error(error: reqwest::Error) -> String {
     error.without_url().to_string()
 }
 
-fn require_online_acquisition() -> Result<(), String> {
-    Ok(())
-}
-
 /// Resolves the latest ffmpeg build for this platform. Errors on platforms
 /// with no managed build (Linux, Intel macs) — manual install applies there.
 pub(crate) fn resolve_latest(
@@ -431,7 +427,6 @@ pub(crate) fn download_to(
     cleanup: Arc<RemoveFilesOnDrop>,
     mut on_progress: impl FnMut(u64, Option<u64>),
 ) -> Result<u64, String> {
-    require_online_acquisition()?;
     assert_https(url)?;
     check_cancelled(cancelled)?;
     let ceiling = download_ceiling(expected_bytes);
@@ -512,7 +507,6 @@ fn fetch_metadata(
     cancelled: &AtomicBool,
     deadline: &OperationDeadline,
 ) -> Result<(reqwest::Url, Vec<u8>), String> {
-    require_online_acquisition()?;
     assert_https(url)?;
     check_cancelled(cancelled)?;
     block_on_network(cancellable_with_timeout(
