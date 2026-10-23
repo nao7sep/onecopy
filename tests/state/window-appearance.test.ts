@@ -22,6 +22,7 @@ it("initializes the font without Main bootstrap, then follows saved changes", as
   // The core answers with effective values (storage::appearance_preferences).
   const effective = {
     enlargeSmallImages: true,
+    scoreFaces: true,
     videoTranscriptionEnabled: true,
     audioTranscriptionEnabled: true,
   };
@@ -33,11 +34,13 @@ it("initializes the font without Main bootstrap, then follows saved changes", as
   expect(listenerCount("appearance://changed")).toBe(1);
   expect(document.documentElement.style.getPropertyValue("--font-ui")).toBe("Iosevka");
   expect(useWindowPreferencesStore.getState().videoTranscriptionEnabled).toBe(true);
+  expect(useWindowPreferencesStore.getState().scoreFaces).toBe(true);
   expect(invokeCalls.some((call) => call.command === "load_app_data")).toBe(false);
 
-  preferences = { ...effective, uiFontFamily: "" };
+  preferences = { ...effective, uiFontFamily: "", scoreFaces: false };
   fireEvent("appearance://changed");
   await vi.waitFor(() => expect(document.documentElement.style.getPropertyValue("--font-ui")).toBe(""));
+  expect(useWindowPreferencesStore.getState().scoreFaces).toBe(false);
   await installWindowAppearance();
   expect(listenerCount("appearance://changed")).toBe(1);
 });

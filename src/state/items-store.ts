@@ -654,10 +654,18 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   },
 
   applyDerivedItem: (previousHash, item) => {
+    if (item.hash === null) return;
     const state = get();
     const items = replaceDerivedItem(state.items, previousHash, item);
-    if (items === state.items || item.hash === null) return;
     const current = item.hash;
+    // The selected anchor can outlive its loaded window. Derived completion
+    // still updates its identity and detail even when no visible row changes.
+    const selectionAffected = [previousHash, current].some((key) =>
+      state.selectedItem === key || state.selectedPositions.has(key) ||
+      state.rangeBasePositions.has(key) || state.rangeOrigin === key ||
+      state.scrollRequest?.key === key,
+    );
+    if (items === state.items && !selectionAffected) return;
     const remap = (key: string | null) => (key === previousHash ? current : key);
     const remapPositions = (positions: Map<string, number>) => {
       const next = new Map(positions);

@@ -1,10 +1,12 @@
 // @vitest-environment happy-dom
 
-import { cleanup, fireEvent, render } from "@testing-library/react";
+import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ComparisonSlot from "../../src/components/ComparisonSlot";
 import type { GroupMember } from "../../src/state/comparison-store";
 import { seedAppConfig } from "../helpers/config";
+import { useWindowPreferencesStore } from "../../src/state/window-preferences-store";
+import { useAppStore } from "../../src/state/app-store";
 
 const MEMBER: GroupMember = {
   hash: "hash-a",
@@ -18,7 +20,7 @@ const MEMBER: GroupMember = {
   hasThumb: true,
 };
 
-beforeEach(() => seedAppConfig());
+beforeEach(() => { seedAppConfig(); useWindowPreferencesStore.setState({ scoreFaces: true }); });
 
 afterEach(cleanup);
 
@@ -71,12 +73,14 @@ describe("comparison pointer decisions", () => {
   });
 
   it("shows existing face scores only while face scoring is enabled", () => {
-    seedAppConfig({ scoreFaces: false, showFaceStars: true });
+    useAppStore.setState({ appData: null });
+    useWindowPreferencesStore.setState({ scoreFaces: false });
     const view = renderSlot({ ...MEMBER, faceScore: 0.66 });
     expect(view.queryByRole("img", { name: /Advisory:/ })).toBeNull();
-    view.unmount();
-    seedAppConfig({ scoreFaces: true, showFaceStars: false });
-    expect(renderSlot({ ...MEMBER, faceScore: 0.66 }).getByRole("img", { name: /Advisory:/ })).toBeTruthy();
+    act(() => useWindowPreferencesStore.setState({ scoreFaces: true }));
+    expect(view.getByRole("img", { name: /Advisory:/ })).toBeTruthy();
+    act(() => useWindowPreferencesStore.setState({ scoreFaces: false }));
+    expect(view.queryByRole("img", { name: /Advisory:/ })).toBeNull();
   });
 
   it("draws face ratings as icons rather than font characters", () => {

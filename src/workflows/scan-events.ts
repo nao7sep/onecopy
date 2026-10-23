@@ -20,6 +20,7 @@ import {
   useSectionsStore,
 } from "../state/sections-store";
 import { reconcileComparisonMembership } from "./comparison";
+import { useComparisonStore } from "../state/comparison-store";
 import {
   finishActivityOperation,
   latestActivityOperationId,
@@ -368,6 +369,7 @@ const install = createEventInstaller(
         useItemsStore
           .getState()
           .applyDerivedItem(event.payload.previousHash, event.payload.item);
+        useComparisonStore.getState().applyDerivedItem(event.payload.previousHash, event.payload.item);
       },
     );
     await listeners.listen("derived://issues", refreshDerivedIssues);

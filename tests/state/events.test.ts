@@ -379,13 +379,17 @@ describe("derived media events", () => {
       ],
     });
 
+    const { useComparisonStore } = await import("../../src/state/comparison-store");
+    useComparisonStore.setState({ open: true, members: [{ hash: "h1", fileName: "one.jpg", width: null, height: null, byteSize: 1, faceScore: null, sharpness: null, copyCount: 1, hasThumb: false }] });
     fireEvent("derived://item", {
       previousHash: "h1",
-      item: { ...useItemsStore.getState().items[0], width: 4000, hasThumb: true },
+      item: { ...useItemsStore.getState().items[0], width: 4000, hasThumb: true, faceScore: 0.75 },
     });
     await settleUntil(() => useItemsStore.getState().items[0]?.width === 4000);
 
     expect(useItemsStore.getState().items[0]).toMatchObject({ width: 4000, hasThumb: true });
+    expect(useComparisonStore.getState().members[0]).toMatchObject({ faceScore: 0.75, hasThumb: true });
+    useComparisonStore.setState({ open: false });
     expect(invokeCalls.some((call) => call.command === "get_section_window")).toBe(false);
     expect(invokeCalls.some((call) => call.command === "reconcile_section")).toBe(false);
     expect(invokeCalls.some((call) => call.command === "get_section_counts")).toBe(false);

@@ -483,6 +483,142 @@ describe("explicit selection", () => {
   });
 });
 
+describe("derived updates outside the loaded window", () => {
+  async function selectOffWindow(): Promise<void> {
+    mockSection([item(1), item(2)]);
+    await useItemsStore.getState().select(SECTION);
+    await vi.waitFor(() => expect(useItemsStore.getState().detail?.fileName).toBe("item"));
+    // Scrolling can replace the loaded rows without moving the selection.
+    useItemsStore.setState({ items: [item(9)], itemPositions: new Map([["h9", 8]]), windowStart: 8, totalItems: 10 });
+  }
+
+  it("refreshes selected detail on derived completion without loading its row", async () => {
+    await selectOffWindow();
+    const before = useItemsStore.getState();
+    const feedback = useMainFeedbackStore.getState();
+    mockCommand("get_item_detail", () => ({ fileName: "completed.jpg", kind: "image", stripFrames: 12 }));
+    const start = invokeCalls.length;
+
+    before.applyDerivedItem("h1", item(1));
+    await vi.waitFor(() => expect(useItemsStore.getState().detail?.stripFrames).toBe(12));
+
+    const after = useItemsStore.getState();
+    expect(after.items).toBe(before.items);
+    expect(after.windowStart).toBe(8);
+    expect(after.totalItems).toBe(10);
+    expect(after.selectedItem).toBe("h1");
+    expect(after.scrollRequest).toEqual(before.scrollRequest);
+    expect(useMainFeedbackStore.getState()).toBe(feedback);
+    expect(invokeCalls.slice(start)).toEqual([{ command: "get_item_detail", args: { hash: "h1", pathId: null } }]);
+  });
+
+  it("promotes an off-window selected identity across selection and range state", async () => {
+    await selectOffWindow();
+    const before = useItemsStore.getState();
+    let resolveDetail!: (detail: unknown) => void;
+    mockCommand("get_item_detail", () => new Promise((resolve) => { resolveDetail = resolve; }));
+
+    before.applyDerivedItem("h1", item(1, { hash: "canonical" }));
+
+    const after = useItemsStore.getState();
+    expect(after.selectedItem).toBe("canonical");
+    expect(after.selectedKeys).toEqual(new Set(["canonical"]));
+    expect(after.selectedPositions).toEqual(new Map([["canonical", 0]]));
+    expect(after.rangeBase).toEqual(new Set(["canonical"]));
+    expect(after.rangeBasePositions).toEqual(new Map([["canonical", 0]]));
+    expect(after.rangeOrigin).toBe("canonical");
+    expect(after.rangeOriginPosition).toBe(0);
+    expect(after.scrollRequest).toEqual({ ...before.scrollRequest, key: "canonical" });
+    expect(after.detail).toBeNull();
+    expect(after.items).toBe(before.items);
+    expect(invokeCalls.at(-1)).toEqual({ command: "get_item_detail", args: { hash: "canonical", pathId: null } });
+    resolveDetail({ fileName: "canonical.jpg", kind: "image" });
+    await vi.waitFor(() => expect(useItemsStore.getState().detail?.fileName).toBe("canonical.jpg"));
+  });
+
+  it("discards a derived detail reply after selection moves to another row", async () => {
+    await selectOffWindow();
+    let resolveOld!: (detail: unknown) => void;
+    mockCommand("get_item_detail", ({ hash }) => hash === "h1"
+      ? new Promise((resolve) => { resolveOld = resolve; })
+      : { fileName: "new.jpg", kind: "image" });
+
+    useItemsStore.getState().applyDerivedItem("h1", item(1));
+    useItemsStore.getState().selectItem("h9", "nearest", 8);
+    await vi.waitFor(() => expect(useItemsStore.getState().detail?.fileName).toBe("new.jpg"));
+    expect(resolveOld).toBeTypeOf("function");
+    resolveOld({ fileName: "obsolete.jpg", kind: "image" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(useItemsStore.getState().selectedItem).toBe("h9");
+    expect(useItemsStore.getState().detail?.fileName).toBe("new.jpg");
+  });
+
+  it("does not reread detail or publish state for an unrelated off-window event", async () => {
+    await selectOffWindow();
+    const before = useItemsStore.getState();
+    const start = invokeCalls.length;
+
+    before.applyDerivedItem("h5", item(5));
+
+    expect(useItemsStore.getState()).toBe(before);
+    expect(invokeCalls.slice(start)).toEqual([]);
+  });
+
+  it("refreshes an off-window canonical selection when another identity promotes into it", async () => {
+    await selectOffWindow();
+    mockCommand("get_item_detail", () => ({ fileName: "merged.jpg", kind: "image", copyCount: 2 }));
+
+    useItemsStore.getState().applyDerivedItem("provisional", item(1, { copyCount: 2 }));
+
+    await vi.waitFor(() => expect(useItemsStore.getState().detail?.copyCount).toBe(2));
+    expect(useItemsStore.getState().selectedItem).toBe("h1");
+  });
+
+  it("refuses a derived row without a completed hash", async () => {
+    await selectOffWindow();
+    const before = useItemsStore.getState();
+    const start = invokeCalls.length;
+
+    before.applyDerivedItem("h1", item(1, { hash: null }));
+
+    expect(useItemsStore.getState()).toBe(before);
+    expect(invokeCalls.slice(start)).toEqual([]);
+  });
+
+  it.each(["selectedPositions", "rangeBasePositions", "rangeOrigin", "scrollRequest"] as const)(
+    "remaps off-window promotion referenced only by %s", async (reference) => {
+      await selectOffWindow();
+      const key = "h5";
+      if (reference === "selectedPositions") {
+        useItemsStore.setState({ selectedPositions: new Map([["h1", 0], [key, 4]]), selectedKeys: new Set(["h1", key]) });
+      } else if (reference === "rangeBasePositions") {
+        useItemsStore.setState({ rangeBasePositions: new Map([[key, 4]]), rangeBase: new Set([key]) });
+      } else if (reference === "rangeOrigin") {
+        useItemsStore.setState({ rangeOrigin: key, rangeOriginPosition: 4 });
+      } else {
+        useItemsStore.setState({ scrollRequest: { key, index: 4, align: "nearest", id: 123 } });
+      }
+      const start = invokeCalls.length;
+
+      useItemsStore.getState().applyDerivedItem(key, item(5, { hash: "canonical" }));
+
+      const after = useItemsStore.getState();
+      if (reference === "selectedPositions" || reference === "rangeBasePositions") {
+        expect(after[reference].get("canonical")).toBe(4);
+        expect(after[reference].has(key)).toBe(false);
+      } else if (reference === "rangeOrigin") {
+        expect(after.rangeOrigin).toBe("canonical");
+      } else {
+        expect(after.scrollRequest?.key).toBe("canonical");
+      }
+      expect(after.selectedItem).toBe("h1");
+      expect(invokeCalls.slice(start)).toEqual([]);
+    },
+  );
+});
+
 describe("request ownership", () => {
   it("ignores an older section response that arrives last", async () => {
     let release!: () => void;

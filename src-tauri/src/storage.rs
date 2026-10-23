@@ -331,6 +331,7 @@ pub(crate) fn appearance_from_config(config: &JsonValue) -> JsonValue {
     serde_json::json!({
         "uiFontFamily": config.get("uiFontFamily"),
         "enlargeSmallImages": config.get("enlargeSmallImages"),
+        "scoreFaces": config.get("scoreFaces"),
         "videoTranscriptionEnabled": config.get("videoTranscriptionEnabled"),
         "audioTranscriptionEnabled": config.get("audioTranscriptionEnabled"),
         "displayTimezone": config.get("displayTimezone"),

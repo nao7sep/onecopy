@@ -30,6 +30,8 @@ import { message, type Message } from "../i18n/translate";
 import { documentTranslator } from "../i18n/I18nContext";
 import { recordInterfaceFailure } from "../utils/failureSurface";
 
+import type { SectionItem } from "../models/items";
+
 export type GroupMember = ComparisonMember;
 export type ComparisonOpenResult = "opened" | "unavailable" | "failed";
 
@@ -120,6 +122,7 @@ interface ComparisonState extends ComparisonDecisionDraft {
   retryFailure: (
     configConfirms?: boolean,
   ) => Promise<ComparisonCommitResult | null>;
+  applyDerivedItem: (previousHash: string, item: SectionItem) => void;
   reconcileLiveMembers: (liveHashes: Iterable<string>) => Promise<boolean>;
   close: () => Promise<void>;
 }
@@ -823,6 +826,42 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
     };
     set({ failure: null });
     return await requestAction(set, get, action, configConfirms);
+  },
+
+  applyDerivedItem: (previousHash, item) => {
+    const state = get();
+    const hash = item.hash;
+    if (!state.open || hash === null) return;
+    if (!state.members.some((member) => member.hash === previousHash || member.hash === hash)) return;
+    const remap = (key: string) => key === previousHash ? hash : key;
+    const keys = (values: Iterable<string>) => new Set(Array.from(values, remap));
+    const action = <T extends ComparisonAction>(value: T | null): T | null => value === null ? null : ({
+      ...value, keepHashes: Array.from(keys(value.keepHashes)), targetHashes: Array.from(keys(value.targetHashes)),
+    });
+    // Facts update the existing session directly. No group reload can reorder
+    // its cards, replace marks or introduce newly discovered members. Identity
+    // promotion carries the same draft intent to the established content key.
+    const seen = new Set<string>();
+    const members = state.members.map((member) => member.hash === previousHash || member.hash === hash
+      ? { ...member, hash, faceScore: item.faceScore, sharpness: item.sharpness, hasThumb: item.hasThumb }
+      : member).filter((member) => {
+        if (seen.has(member.hash)) return false;
+        seen.add(member.hash);
+        return true;
+      });
+    const patch: Partial<ComparisonState> = {
+      members,
+      ...(previousHash === hash ? {} : {
+        originalMemberHashes: Array.from(keys(state.originalMemberHashes)),
+        selected: keys(state.selected), anchors: keys(state.anchors), rangeBase: keys(state.rangeBase),
+        anchor: state.anchor === null ? null : remap(state.anchor),
+        rangeOrigin: state.rangeOrigin === null ? null : remap(state.rangeOrigin),
+        pendingAction: action(state.pendingAction), failure: action(state.failure),
+      }),
+    };
+    set(members.length === state.members.length ? patch : {
+      ...patch, ...viewPatch({ ...state, ...patch }, members),
+    });
   },
 
   reconcileLiveMembers: async (liveHashes) => {

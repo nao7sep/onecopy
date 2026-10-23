@@ -6,6 +6,7 @@ import {
   type GroupMember,
 } from "../../src/state/comparison-store";
 import {
+  emitCalls,
   mockCommands,
   resetTauriMocks,
 } from "../mocks/tauri";
@@ -15,6 +16,7 @@ import {
 import { useItemsStore } from "../../src/state/items-store";
 import { useSectionsStore } from "../../src/state/sections-store";
 import { useIssuesStore } from "../../src/state/issues-store";
+import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import { usePreviewStore } from "../../src/state/preview-store";
 
 function member(index: number): GroupMember {
@@ -109,4 +111,50 @@ describe("live membership reconciliation", () => {
 
     expect(useComparisonStore.getState().members).toEqual(replacement);
   });
+});
+
+function derived(hash: string): SectionItem {
+  return { ...member(2), hash, faceScore: 0.8, sharpness: 45, pathId: 2,
+    resolvedUtcMs: null, similarGroupId: null, hasCompanions: false,
+    durationMs: null, dirPaths: [], derivedWork: EMPTY_ITEM_WORK };
+}
+
+it("refreshes comparison facts and its secondary projection without changing the draft", () => {
+  const before = useComparisonStore.getState();
+  useComparisonStore.getState().applyDerivedItem("h2", derived("h2"));
+  const after = useComparisonStore.getState();
+  expect(after.members.map((item) => item.hash)).toEqual(before.members.map((item) => item.hash));
+  expect(after.members[2]).toMatchObject({ faceScore: 0.8, sharpness: 45 });
+  expect(after.selected).toBe(before.selected);
+  expect(after.anchors).toBe(before.anchors);
+  expect(after.anchor).toBe(before.anchor);
+  expect(after.page).toBe(before.page);
+  const latest = emitCalls.filter((call) => call.event === "comparison://state").at(-1)?.payload;
+  expect(latest).toMatchObject({ chunks: [expect.arrayContaining([
+    expect.objectContaining({ member: expect.objectContaining({ hash: "h2", faceScore: 0.8 }) }),
+  ])] });
+});
+
+it("carries comparison identity promotion through marks and pending intent", () => {
+  useComparisonStore.setState({ pendingAction: { kind: "selection", permanent: false, keepHashes: ["h2"], targetHashes: ["h1"] } });
+  useComparisonStore.getState().applyDerivedItem("h2", derived("established"));
+  const state = useComparisonStore.getState();
+  expect(state.members.map((item) => item.hash)).toEqual(["h0", "h1", "established", "h3", "h4"]);
+  expect(state.originalMemberHashes).toContain("established");
+  expect(state.selected).toEqual(new Set(["h1", "established"]));
+  expect(state.anchors).toEqual(new Set(["established"]));
+  expect(state.anchor).toBe("established");
+  expect(state.rangeOrigin).toBe("established");
+  expect(state.pendingAction?.keepHashes).toEqual(["established"]);
+});
+
+it("never reopens a closed comparison or inserts a result into a replacement session", () => {
+  useComparisonStore.setState({ open: false });
+  const closed = useComparisonStore.getState();
+  closed.applyDerivedItem("h2", derived("h2"));
+  expect(useComparisonStore.getState()).toBe(closed);
+  openSession(2);
+  const replacement = useComparisonStore.getState();
+  replacement.applyDerivedItem("h2", derived("h2"));
+  expect(useComparisonStore.getState()).toBe(replacement);
 });

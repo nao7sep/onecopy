@@ -41,6 +41,7 @@ fn appearance_reads_only_preferences_from_the_settings_in_memory() {
         serde_json::json!({
             "uiFontFamily": "Iosevka",
             "enlargeSmallImages": false,
+            "scoreFaces": builtin("scoreFaces"),
             "videoTranscriptionEnabled": false,
             "audioTranscriptionEnabled": true,
             "displayTimezone": builtin("displayTimezone"),

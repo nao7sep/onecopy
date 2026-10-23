@@ -5,14 +5,13 @@ import type { GroupMember } from "../state/comparison-store";
 import { useState } from "react";
 import { ExternalLink, Focus, FolderOpen } from "lucide-react";
 import InspectableImage from "./InspectableImage";
-import { useAppStore } from "../state/app-store";
+import { useWindowPreferencesStore } from "../state/window-preferences-store";
 import { openInDefaultApp } from "../workflows/external-open";
 import { log, toErrorFields } from "../repositories";
 import FaceRating from "./FaceRating";
 import OperationResult from "./ui/OperationResult";
 import IdentifyingText from "./ui/IdentifyingText";
 import Button, { IconButton } from "./ui/Button";
-import { configFlag } from "../models/config";
 
 // One comparison card, shared by the main and secondary display surfaces.
 
@@ -36,9 +35,7 @@ export default function ComparisonSlot({
   const [previewFailed, setPreviewFailed] = useState(false);
   // Pixel, byte and duration facts are still assembled in models/items.
   const facts = factsLine(member, number);
-  const showFaceStars = useAppStore(
-    (state) => configFlag(state.appData?.config, "scoreFaces"),
-  );
+  const showFaceStars = useWindowPreferencesStore((state) => state.scoreFaces);
   const faceStars = showFaceStars ? faceStarRating(member.faceScore) : 0;
   return (
     <figure

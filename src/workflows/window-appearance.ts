@@ -43,6 +43,7 @@ interface AppearancePreferences {
   systemLanguage?: unknown;
   systemLocale?: unknown;
   enlargeSmallImages?: unknown;
+  scoreFaces?: unknown;
   videoTranscriptionEnabled?: unknown;
   audioTranscriptionEnabled?: unknown;
   displayTimezone?: unknown;
