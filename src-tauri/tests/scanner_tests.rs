@@ -1639,6 +1639,29 @@ fn replacing_a_provisionally_identified_file_resets_its_content_facts() {
     // The user trims the clip in QuickTime and saves over it: same path, new
     // bytes, new length.
     std::fs::write(f.root.join("clip.mov"), vec![9u8; 900]).unwrap();
+    f.conn.execute_batch(
+        "CREATE TEMP TRIGGER refuse_old_content_delete BEFORE DELETE ON contents
+         BEGIN SELECT RAISE(ABORT, 'injected provisional cleanup failure'); END;",
+    ).unwrap();
+    let path = f.root.join("clip.mov");
+    let metadata = std::fs::metadata(&path).unwrap();
+    let error = upsert_file(&f.conn, &path, &metadata, &lists(), 0).unwrap_err();
+    assert!(error.contains("injected provisional cleanup failure"));
+    let checkpoint = || f.conn.query_row(
+        "SELECT size, content_hash FROM paths WHERE file_name = 'clip.mov'", [],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+    ).unwrap();
+    assert_eq!(checkpoint(), (500, key.clone()), "failed cleanup must roll back the path checkpoint");
+    f.conn.execute_batch("DROP TRIGGER refuse_old_content_delete").unwrap();
+
+    // An enclosing publication remains the owner: upsert cannot commit it.
+    let outer = f.conn.unchecked_transaction().unwrap();
+    upsert_file(&outer, &path, &metadata, &lists(), 0).unwrap();
+    assert_eq!(outer.query_row("SELECT count(*) FROM contents WHERE hash = ?1", [&key], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    drop(outer);
+    assert_eq!(checkpoint(), (500, key.clone()));
+
+    // Retry in the same session must regenerate facts for the new bytes.
     walk_root(&f.conn, &f.root, &lists()).unwrap();
     hash_pending(&f.conn, &test_cache(&f)).unwrap();
 

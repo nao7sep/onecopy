@@ -1086,6 +1086,13 @@ pub fn upsert_file(
             Ok(if changed == 0 { Upsert::Unchanged } else { Upsert::Updated })
         }
         Some(_) => {
+            // The path checkpoint and removal of its old provisional facts
+            // publish together. Join a caller's transaction when it already
+            // owns publication; otherwise acquire the write lock here.
+            let transaction = conn.is_autocommit()
+                .then(|| crate::sqlite::write_transaction(conn))
+                .transpose().map_err(|error| error.to_string())?;
+            let conn = transaction.as_ref().map_or(conn, |tx| &**tx);
             // A provisional key is `p<path_id>` — derived from the path, not
             // the bytes — so an in-place replacement regenerates the SAME key.
             // Left alone, the old contents row hands the new file the previous
@@ -1125,6 +1132,9 @@ pub fn upsert_file(
                     [&hash],
                 )
                 .map_err(|e| e.to_string())?;
+            }
+            if let Some(transaction) = transaction {
+                crate::records::commit(transaction).map_err(|error| error.to_string())?;
             }
             Ok(Upsert::Updated)
         }
