@@ -1,5 +1,5 @@
 use super::*;
-use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
 
 #[cfg(target_os = "macos")]
 #[test]
@@ -227,6 +227,7 @@ fn cumulative_deadline_expires_local_work_too() {
     let deadline = OperationDeadline {
         started: std::time::Instant::now() - Duration::from_secs(2),
         timeout: Duration::from_secs(1),
+        physical: PhysicalWork::default(),
     };
     let cancelled = AtomicBool::new(false);
     assert_ne!(deadline.check(&cancelled).unwrap_err(), CANCELLED_ERROR);
@@ -371,6 +372,7 @@ fn a_failed_download_names_no_url_or_signature() {
         &AtomicBool::new(false),
         &OperationDeadline::for_install(Some(1024)),
         Some(1024),
+        Arc::new(RemoveFilesOnDrop::new(vec![dir.path().join("ffmpeg.partial")])),
         |_, _| {},
     )
     .unwrap_err();
@@ -380,4 +382,96 @@ fn a_failed_download_names_no_url_or_signature() {
     let refused = assert_https("http://cdn.example.test/file?sig=secret-signature").unwrap_err();
     assert!(refused.contains("cdn.example.test"), "{refused}");
     assert!(!refused.contains("secret-signature"), "{refused}");
+}
+
+struct SettlementNotice(std::sync::mpsc::Sender<()>);
+impl Drop for SettlementNotice {
+    fn drop(&mut self) { let _ = self.0.send(()); }
+}
+
+#[test]
+fn cancelled_staging_waits_keep_cleanup_until_late_create_and_write_settle() {
+    for late_create in [true, false] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("owned.partial");
+        let (settled, settlement) = std::sync::mpsc::channel();
+        let physical = PhysicalWork {
+            owner: Some(Arc::new(SettlementNotice(settled))),
+            ..PhysicalWork::default()
+        };
+        let cleanup = Arc::new(RemoveFilesOnDrop::new(vec![path.clone()]));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let signal = cancelled.clone();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let future: std::pin::Pin<Box<dyn std::future::Future<Output = Result<DownloadStage, String>>>> =
+            if late_create {
+                Box::pin(DownloadStage::create_with(path.clone(), physical.clone(), cleanup.clone(), move |path| {
+                    signal.store(true, Ordering::SeqCst);
+                    blocked.recv().unwrap();
+                    std::fs::File::create(path)
+                }))
+            } else {
+                let stage = block_on_network(DownloadStage::create(path.clone(), physical.clone(), cleanup.clone())).unwrap();
+                Box::pin(stage.perform(move |file| {
+                    signal.store(true, Ordering::SeqCst);
+                    blocked.recv().unwrap();
+                    file.write_all(b"late bytes")?;
+                    file.sync_all()
+                }))
+            };
+        let result = block_on_network(cancellable_with_timeout(future, &cancelled, Duration::from_secs(5), "stage"));
+        assert!(matches!(result, Err(ref error) if error == CANCELLED_ERROR));
+        drop(result);
+        drop(cleanup);
+        drop(physical);
+        assert!(matches!(settlement.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)), "the physical owner must still be alive");
+        assert_eq!(path.exists(), !late_create);
+        release.send(()).unwrap();
+        settlement.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(!path.exists(), "cleanup must run after the late handle closes");
+    }
+}
+
+#[test]
+fn repeated_cancelled_waits_cannot_queue_behind_a_stalled_physical_call() {
+    let physical = PhysicalWork::default();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let signal = cancelled.clone();
+    let (release, blocked) = std::sync::mpsc::channel();
+    let result = block_on_network(cancellable_with_timeout(physical.run(move || {
+        signal.store(true, Ordering::SeqCst);
+        blocked.recv().unwrap();
+        Ok(())
+    }), &cancelled, Duration::from_secs(5), "resolver"));
+    assert_eq!(result.unwrap_err(), CANCELLED_ERROR);
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    for _ in 0..8 {
+        let calls = calls.clone();
+        let never_cancelled = AtomicBool::new(false);
+        let result = block_on_network(cancellable_with_timeout(physical.run(move || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }), &never_cancelled, Duration::from_millis(1), "queued resolver"));
+        assert!(result.unwrap_err().starts_with("queued resolver timed out"));
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    release.send(()).unwrap();
+    block_on_network(physical.run(|| Ok(()))).unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "expired waiters must never dispatch later");
+}
+
+#[test]
+fn network_driver_settles_background_work_after_the_last_caller_returns() {
+    let (release, released) = tokio::sync::oneshot::channel();
+    let (settled, settlement) = std::sync::mpsc::channel();
+    block_on_network(async {
+        tokio::spawn(async move {
+            released.await.unwrap();
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            settled.send(()).unwrap();
+        });
+        Ok(())
+    }).unwrap();
+    release.send(()).unwrap();
+    settlement.recv_timeout(Duration::from_secs(5)).unwrap();
 }

@@ -667,7 +667,14 @@ struct BusyGuard {
     cancelled: Arc<AtomicBool>,
     deadline: acquisition::OperationDeadline,
 }
-impl Drop for BusyGuard {
+// Shared with blocking acquisition workers so logical timeout cannot release
+// this entry while a previous OS call is still running.
+struct EntryLease {
+    id: String,
+    operation_id: String,
+}
+
+impl Drop for EntryLease {
     fn drop(&mut self) {
         let (operations, settled) = &*IN_FLIGHT;
         let mut in_flight = operations.lock().unwrap_or_else(|p| p.into_inner());
@@ -684,7 +691,7 @@ impl Drop for BusyGuard {
 fn claim(
     id: &str,
     operation_id: &str,
-    deadline: acquisition::OperationDeadline,
+    mut deadline: acquisition::OperationDeadline,
 ) -> Result<BusyGuard, String> {
     if operation_id.trim().is_empty() {
         return Err("dependency operation id is empty".to_string());
@@ -708,6 +715,10 @@ fn claim(
             cancelled: cancelled.clone(),
         },
     );
+    deadline.retain_owner(Arc::new(EntryLease {
+        id: id.to_string(),
+        operation_id: operation_id.to_string(),
+    }));
     Ok(BusyGuard {
         id: id.to_string(),
         operation_id: operation_id.to_string(),
@@ -855,8 +866,8 @@ pub fn install_entry_started(
             std::fs::create_dir_all(&temp).map_err(|e| e.to_string())?;
             let partial = temp.join(format!("{id}-{}.partial", nanoid::generate()?));
             let staged = temp.join(format!("{id}-{}.staged", nanoid::generate()?));
-            let _cleanup =
-                acquisition::RemoveFilesOnDrop::new(vec![partial.clone(), staged.clone()]);
+            let cleanup = Arc::new(
+                acquisition::RemoveFilesOnDrop::new(vec![partial.clone(), staged.clone()]));
             let result = (|| -> Result<BinaryFacts, String> {
                 on_progress(InstallProgress::bytes(
                     InstallPhase::Download,
@@ -870,6 +881,7 @@ pub fn install_entry_started(
                     &guard.cancelled,
                     &guard.deadline,
                     Some(pinned.bytes),
+                    cleanup.clone(),
                     |done, total| {
                         on_progress(InstallProgress::bytes(
                             InstallPhase::Download,
@@ -952,7 +964,7 @@ fn activate_ffmpeg(
     deadline.check(cancelled)?;
     let staged_version = binary_file_version(staged)?;
     let probe = probe_ffmpeg_at(staged, &|| deadline.check(cancelled).is_err(),
-        Some(cleanup.clone()));
+        Some(Arc::new((cleanup.clone(), deadline.physical_owner()))));
     deadline.check(cancelled)?;
     let reported = probe?;
     if ffmpeg_reports_its_own_version() && reported != binaries::normalize_version(version) {
@@ -1015,6 +1027,7 @@ fn install_ffmpeg_started(
             &guard.cancelled,
             &guard.deadline,
             None,
+            cleanup.clone(),
             |done, total| {
                 on_progress(InstallProgress::bytes(
                     InstallPhase::Download,

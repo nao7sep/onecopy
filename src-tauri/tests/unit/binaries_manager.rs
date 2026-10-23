@@ -626,3 +626,18 @@ fn cancellation_registered_at_admission_reaches_a_worker_that_has_not_started() 
     assert!(!cancel_entry("ffmpeg", "queued-install"));
     assert!(!replacement.0.cancelled.load(Ordering::SeqCst));
 }
+
+#[test]
+fn entry_claim_survives_logical_completion_until_physical_owner_settles() {
+    let guard = claim("physical-acquisition-test", "cancelled", acquisition::OperationDeadline::for_check()).unwrap();
+    let physical = guard.deadline.physical_owner().unwrap();
+    assert!(cancel_entry("physical-acquisition-test", "cancelled"));
+    drop(guard);
+    for _ in 0..8 {
+        assert!(claim("physical-acquisition-test", "retry", acquisition::OperationDeadline::for_check()).is_err());
+    }
+    drop(physical);
+    let replacement = claim("physical-acquisition-test", "retry", acquisition::OperationDeadline::for_check()).unwrap();
+    assert!(!cancel_entry("physical-acquisition-test", "cancelled"));
+    assert!(!replacement.cancelled.load(Ordering::SeqCst));
+}

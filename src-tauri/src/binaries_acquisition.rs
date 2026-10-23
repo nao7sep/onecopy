@@ -6,10 +6,10 @@
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
-use tokio::io::AsyncWriteExt;
 
 use crate::binaries;
 
@@ -46,6 +46,7 @@ pub(crate) const CANCELLED_ERROR: &str = "dependency operation cancelled";
 pub(crate) struct OperationDeadline {
     started: std::time::Instant,
     timeout: Duration,
+    physical: PhysicalWork,
 }
 
 impl OperationDeadline {
@@ -53,6 +54,7 @@ impl OperationDeadline {
         Self {
             started: std::time::Instant::now(),
             timeout: download_whole_timeout(expected_bytes).saturating_add(POST_DOWNLOAD_BUDGET),
+            physical: PhysicalWork::default(),
         }
     }
 
@@ -60,7 +62,16 @@ impl OperationDeadline {
         Self {
             started: std::time::Instant::now(),
             timeout: CHECK_OPERATION_TIMEOUT,
+            physical: PhysicalWork::default(),
         }
+    }
+
+    pub(crate) fn retain_owner(&mut self, owner: Arc<dyn Send + Sync>) {
+        self.physical.owner = Some(owner);
+    }
+
+    pub(crate) fn physical_owner(&self) -> Option<Arc<dyn Send + Sync>> {
+        self.physical.owner.clone()
     }
 
     pub(crate) fn check(&self, cancelled: &AtomicBool) -> Result<(), String> {
@@ -89,29 +100,126 @@ pub(crate) struct Resolved {
     pub sums_asset: String,
 }
 
-fn network_runtime() -> Result<tokio::runtime::Runtime, String> {
-    tokio::runtime::Builder::new_current_thread()
-        // Reqwest's connector uses tokio::net; time alone leaves no reactor and
-        // panics on the first real request.
-        .enable_all()
-        .build()
-        .map_err(|e| e.to_string())
+/// Each operation can have only one blocking OS call outstanding. A dropped
+/// waiter cannot queue more work behind a stalled call or release its claim.
+#[derive(Clone)]
+struct PhysicalWork {
+    owner: Option<Arc<dyn Send + Sync>>,
+    permit: Arc<tokio::sync::Semaphore>,
+}
+
+impl Default for PhysicalWork {
+    fn default() -> Self {
+        Self { owner: None, permit: Arc::new(tokio::sync::Semaphore::new(1)) }
+    }
+}
+
+impl PhysicalWork {
+    async fn run<T: Send + 'static>(
+        &self,
+        work: impl FnOnce() -> Result<T, String> + Send + 'static,
+    ) -> Result<T, String> {
+        let permit = self.permit.clone().acquire_owned().await.map_err(|e| e.to_string())?;
+        let owner = self.owner.clone();
+        tokio::task::spawn_blocking(move || {
+            let _owner = owner;
+            let _permit = permit;
+            work()
+        }).await.map_err(|e| e.to_string())?
+    }
+}
+
+fn network_runtime() -> Result<&'static tokio::runtime::Runtime, String> {
+    static RUNTIME: LazyLock<Result<tokio::runtime::Runtime, String>> = LazyLock::new(|| {
+        // Keep the single network event loop running even after the last
+        // caller returns, so connector cancellation and deadlines can settle.
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .max_blocking_threads(std::thread::available_parallelism().map_or(1, usize::from))
+            .build()
+            .map_err(|e| e.to_string())
+    });
+    RUNTIME.as_ref().map_err(Clone::clone)
 }
 
 fn block_on_network<T>(
     future: impl std::future::Future<Output = Result<T, String>>,
 ) -> Result<T, String> {
-    let runtime = network_runtime()?;
-    let result = runtime.block_on(future);
-    // Dropping a runtime can wait indefinitely for a blocking DNS worker.
-    // A cancelled/expired user operation must return promptly even if the OS
-    // resolver has not; unfinished blocking work is allowed to finish detached.
-    runtime.shutdown_timeout(Duration::from_millis(100));
-    result
+    // One launch-lived pool bounds physical workers across logical retries.
+    // Blocking jobs retain their entry claim; shutdown is bounded by the app.
+    network_runtime()?.block_on(future)
 }
 
-fn metadata_client() -> Result<reqwest::Client, String> {
+struct OwnedResolver(PhysicalWork);
+
+impl reqwest::dns::Resolve for OwnedResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let physical = self.0.clone();
+        Box::pin(async move {
+            let addresses = physical.run(move || {
+                use std::net::ToSocketAddrs;
+                (name.as_str(), 0).to_socket_addrs()
+                    .map(|addresses| addresses.collect::<Vec<_>>())
+                    .map_err(|error| error.to_string())
+            }).await?;
+            Ok(Box::new(addresses.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+/// Field order closes the native handle before cleanup, including when the
+/// caller drops a write/flush waiter and the worker returns after cancellation.
+struct DownloadStage {
+    file: std::fs::File,
+    _cleanup: Arc<RemoveFilesOnDrop>,
+    physical: PhysicalWork,
+}
+
+impl DownloadStage {
+    async fn create(
+        path: PathBuf,
+        physical: PhysicalWork,
+        cleanup: Arc<RemoveFilesOnDrop>,
+    ) -> Result<Self, String> {
+        Self::create_with(path, physical, cleanup, |path| std::fs::File::create(path)).await
+    }
+
+    async fn create_with(
+        path: PathBuf,
+        physical: PhysicalWork,
+        cleanup: Arc<RemoveFilesOnDrop>,
+        open: impl FnOnce(&Path) -> std::io::Result<std::fs::File> + Send + 'static,
+    ) -> Result<Self, String> {
+        let stage_physical = physical.clone();
+        physical.run(move || {
+            let file = open(&path).map_err(|e| e.to_string())?;
+            Ok(Self { file, _cleanup: cleanup, physical: stage_physical })
+        }).await
+    }
+
+    async fn perform(
+        mut self,
+        work: impl FnOnce(&mut std::fs::File) -> std::io::Result<()> + Send + 'static,
+    ) -> Result<Self, String> {
+        self.physical.clone().run(move || {
+            work(&mut self.file).map_err(|e| e.to_string())?;
+            Ok(self)
+        }).await
+    }
+
+    async fn write(self, bytes: impl AsRef<[u8]> + Send + 'static) -> Result<Self, String> {
+        self.perform(move |file| file.write_all(bytes.as_ref())).await
+    }
+
+    async fn sync(self) -> Result<Self, String> {
+        self.perform(|file| file.sync_all()).await
+    }
+}
+
+fn metadata_client(deadline: &OperationDeadline) -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
+        .dns_resolver(OwnedResolver(deadline.physical.clone()))
         .connect_timeout(Duration::from_secs(30))
         .read_timeout(Duration::from_secs(30))
         .https_only(true)
@@ -120,8 +228,9 @@ fn metadata_client() -> Result<reqwest::Client, String> {
         .map_err(|e| e.to_string())
 }
 
-fn download_client() -> Result<reqwest::Client, String> {
+fn download_client(deadline: &OperationDeadline) -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
+        .dns_resolver(OwnedResolver(deadline.physical.clone()))
         .connect_timeout(Duration::from_secs(60))
         // Per-read idleness catches a stalled peer; download_whole_timeout is
         // the separate finite wall-clock bound for a slow but active peer.
@@ -319,6 +428,7 @@ pub(crate) fn download_to(
     cancelled: &AtomicBool,
     deadline: &OperationDeadline,
     expected_bytes: Option<u64>,
+    cleanup: Arc<RemoveFilesOnDrop>,
     mut on_progress: impl FnMut(u64, Option<u64>),
 ) -> Result<u64, String> {
     require_online_acquisition()?;
@@ -328,7 +438,7 @@ pub(crate) fn download_to(
     let timeout = download_whole_timeout(expected_bytes).min(deadline.remaining(cancelled)?);
     block_on_network(cancellable_with_timeout(
         async {
-            let mut response = download_client()?
+            let mut response = download_client(deadline)?
                 .get(url)
                 .send()
                 .await
@@ -351,12 +461,7 @@ pub(crate) fn download_to(
                 }
             }
             on_progress(0, announced_bytes);
-            // Tokio's filesystem adapter keeps this current-thread runtime free
-            // to poll the cancellation and whole-deadline branches while the OS
-            // performs writes and the durable flush on its blocking pool.
-            let mut file = tokio::fs::File::create(dest)
-                .await
-                .map_err(|e| e.to_string())?;
+            let mut file = DownloadStage::create(dest.to_path_buf(), deadline.physical.clone(), cleanup).await?;
             let mut total = 0u64;
             let mut reported = 0u64;
             loop {
@@ -366,7 +471,7 @@ pub(crate) fn download_to(
                 };
                 total += bytes.len() as u64;
                 ensure_download_within_ceiling(total, expected_bytes)?;
-                file.write_all(&bytes).await.map_err(|e| e.to_string())?;
+                file = file.write(bytes).await?;
                 if total.saturating_sub(reported) >= 1024 * 1024 {
                     on_progress(total, announced_bytes);
                     reported = total;
@@ -392,7 +497,7 @@ pub(crate) fn download_to(
                 // still close the phase with the actual stable byte total.
                 on_progress(total, Some(announced_bytes.unwrap_or(total)));
             }
-            file.sync_all().await.map_err(|e| e.to_string())?;
+            let _file = file.sync().await?;
             Ok(total)
         },
         cancelled,
@@ -412,7 +517,7 @@ fn fetch_metadata(
     check_cancelled(cancelled)?;
     block_on_network(cancellable_with_timeout(
         async {
-            let mut response = metadata_client()?
+            let mut response = metadata_client(deadline)?
                 .get(url)
                 .header("User-Agent", "onecopy")
                 .send()
