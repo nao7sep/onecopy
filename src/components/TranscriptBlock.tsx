@@ -1,5 +1,7 @@
+import { parseTranscript } from "../models/transcript";
+import TranscriptRows from "./TranscriptRows";
 import { requestBackgroundWork } from "../workflows/auxiliary-utilities";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { reasonRemedy, reasonText } from "../models/workReasons";
 import type { MessageKey } from "../i18n/catalogues";
 import { useI18n } from "../i18n/I18nContext";
@@ -9,7 +11,7 @@ import { useWindowPreferencesStore } from "../state/window-preferences-store";
 import { useDerivedWorkStore } from "../state/derived-work-store";
 import { useTranscriptStore } from "../state/transcript-store";
 import { useAppStore } from "../state/app-store";
-import Button, { LinkButton } from "./ui/Button";
+import Button from "./ui/Button";
 import type { ItemWorkState } from "../models/items";
 import {
   installContentSessionClient,
@@ -17,8 +19,6 @@ import {
   setTranscriptView,
   useContentSessionStore,
 } from "../state/content-session-store";
-import { usePlaybackClientStore } from "../state/playback-client-store";
-import { requestPlaybackSeek } from "../workflows/playback";
 import OperationResult from "./ui/OperationResult";
 import type { TranscriptViewState } from "../models/contentSession";
 import { log, toErrorFields } from "../repositories";
@@ -27,12 +27,6 @@ import { useAppShellStore } from "../state/app-shell-store";
 import { transcriptOwnsScrollKey } from "../utils/viewerKeys";
 import { passiveScrollKey } from "../utils/passiveScrollKey";
 import { configFlag } from "../models/config";
-
-interface TranscriptSegment {
-  seconds: number;
-  timestamp: string;
-  text: string;
-}
 
 type SessionOwner = "installation" | "position" | "visibility";
 
@@ -87,21 +81,6 @@ function restoreSelection(
   selection.addRange(range);
 }
 
-export function parseTranscript(text: string): TranscriptSegment[] {
-  return text
-    .split(/\r?\n/)
-    .filter((line) => line.trim() !== "")
-    .map((line) => {
-      const match = line.match(/^\[(\d+):(\d{2})\]\s?(.*)$/);
-      if (match === null) return { seconds: 0, timestamp: "", text: line };
-      return {
-        seconds: Number(match[1]) * 60 + Number(match[2]),
-        timestamp: `${match[1]}:${match[2]}`,
-        text: match[3],
-      };
-    });
-}
-
 export default function TranscriptBlock({
   hash,
   medium,
@@ -145,9 +124,6 @@ export default function TranscriptBlock({
   const transcriptOpen = useContentSessionStore(
     (state) => state.transcriptOpen[medium],
   );
-  const playback = usePlaybackClientStore((state) =>
-    state.session?.key === hash ? state.session : null,
-  );
   const transcriptView = useContentSessionStore(
     (state) => state.transcriptViews[hash],
   );
@@ -164,6 +140,9 @@ export default function TranscriptBlock({
     percent: null,
     replacement: null,
   };
+
+  const segments = useMemo(() => state.text === null ? [] : parseTranscript(state.text), [state.text]);
+  const expanded = inDetails || transcriptOpen;
 
   useEffect(() => {
     void load(hash);
@@ -281,7 +260,9 @@ export default function TranscriptBlock({
     ) : null;
 
   let content: React.ReactNode;
-  if (state.status !== "ready" && (state.status === "running" || projectedRunning)) {
+  if (!expanded) {
+    content = null;
+  } else if (state.status !== "ready" && (state.status === "running" || projectedRunning)) {
     const progress =
       state.status === "running" ? state.percent : projectedProgress;
     content = (
@@ -325,33 +306,7 @@ export default function TranscriptBlock({
             });
           }}
         >
-          {parseTranscript(state.text).map((segment, index, segments) => {
-            const current =
-              playback !== null &&
-              playback.position >= segment.seconds &&
-              (segments[index + 1] === undefined ||
-                playback.position < segments[index + 1].seconds);
-            return (
-              <li
-                key={`${segment.seconds}-${index}`}
-                className={`flex items-baseline gap-2 rounded px-1 py-0.5 ${
-                  current ? "bg-primary-surface" : ""
-                }`}
-              >
-                {segment.timestamp !== "" ? (
-                  <LinkButton
-                    tone="primary"
-                    className="shrink-0 font-mono text-xs"
-                    title={t("preview.playFrom", { time: segment.timestamp })}
-                    onClick={() => requestPlaybackSeek(hash, segment.seconds)}
-                  >
-                    {segment.timestamp}
-                  </LinkButton>
-                ) : null}
-                <span className="min-w-0 whitespace-pre-wrap break-words">{segment.text}</span>
-              </li>
-            );
-          })}
+          <TranscriptRows hash={hash} segments={segments} />
         </ol>
       );
   } else if (unavailable) {
@@ -499,7 +454,6 @@ export default function TranscriptBlock({
     }
   }
 
-  const expanded = inDetails || transcriptOpen;
   return (
     <section
       ref={panelRef}
