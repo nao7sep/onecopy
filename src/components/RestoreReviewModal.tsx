@@ -21,6 +21,7 @@ const SKIP_REASONS: Record<RestoreSkip, MessageKey> = {
   "folder-is-link": "restoreReview.skipFolderIsLink",
   "file-in-the-way": "restoreReview.skipFileInTheWay",
   "other-drive": "restoreReview.skipOtherDrive",
+  failed: "notice.restoreFailed",
 };
 
 export default function RestoreReviewModal({

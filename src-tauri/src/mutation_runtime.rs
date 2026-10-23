@@ -1379,32 +1379,29 @@ fn restore_claimed<H: RestoreHost>(
             );
             let listing = crate::trash::list_root(&root, &data_root)?;
             let cancelled = || mutation.cancelled();
-            let candidates = match crate::restore::candidates(
-                &root,
-                &listing,
-                &ids,
-                &crate::file_identity::volume_of,
-                &cancelled,
-            ) {
-                Ok(candidates) => candidates,
-                Err(error) if error == crate::scanner::CANCELLED && mutation.cancelled() => {
-                    return Ok(crate::restore::RestoreOutcome {
-                        cancelled: true,
-                        files_total,
-                        unstarted: files_total,
-                        ..Default::default()
-                    })
-                }
-                Err(error) => return Err(error),
+            let cancelled_outcome = || crate::restore::RestoreOutcome {
+                cancelled: true, files_total, unstarted: files_total, ..Default::default()
             };
-            let plan = crate::restore::plan_restore(
-                &candidates,
-                crate::file_names::FolderNames::for_directory(&root),
-                style,
-                &mut |path| crate::restore::name_available(path),
-            );
+            let planned = (|| {
+                let candidates = crate::restore::candidates(
+                    &root, &listing, &ids, &crate::file_identity::volume_of, &cancelled,
+                )?;
+                crate::restore::plan_restore(
+                    &candidates,
+                    crate::file_names::FolderNames::for_directory(&root),
+                    style,
+                    &mut |path| crate::restore::name_available(&root, path, &cancelled),
+                    &cancelled,
+                )
+            })();
+            let plan = match planned {
+                Ok(plan) => plan,
+                Err(crate::restore::PlanningFailure::Cancelled) => return Ok(cancelled_outcome()),
+                Err(error) => return Err(error.to_string()),
+            };
             let token = crate::restore::plan_token(&root, &plan);
             let review = crate::restore::review_of(&plan, &root, &listing.entries);
+            if cancelled() { return Ok(cancelled_outcome()); }
             let changed = plan_token.as_deref().is_some_and(|expected| expected != token);
             if changed || (plan_token.is_none() && review.needed()) {
                 return Ok(crate::restore::RestoreOutcome {

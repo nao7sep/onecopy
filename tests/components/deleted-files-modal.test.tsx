@@ -321,6 +321,29 @@ describe("Restore", () => {
     );
   });
 
+  it("explains a planning failure while keeping healthy files available to restore", async () => {
+    mockCommands({
+      trash_entries: () => LISTING,
+      trash_restore: () => outcome({
+        requiresReview: true,
+        review: {
+          files: [
+            { id: "bad", original: "blocked.jpg", target: null, renamed: false, skip: "failed", mainRestoredAs: null },
+            { id: "good", original: "healthy.jpg", target: "healthy.jpg", renamed: false, skip: null, mainRestoredAs: null },
+          ],
+          folders: [], companionsLeft: [],
+        },
+      }),
+    });
+    await selectFirstItem();
+    await act(async () => button("Restore").click());
+    expect(document.body.textContent).toContain("OneCopy could not restore this file. It is still in Deleted files.");
+    const dialogs = document.querySelectorAll('[role="dialog"]');
+    const review = dialogs[dialogs.length - 1];
+    const primary = [...review.querySelectorAll("button")].find((b) => b.textContent === "Restore")!;
+    expect(primary.disabled).toBe(false);
+  });
+
   it("cancelling the review restores nothing", async () => {
     const calls: Array<Record<string, unknown>> = [];
     mockCommands({

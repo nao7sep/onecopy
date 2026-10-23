@@ -41,6 +41,7 @@ fn candidate(entry: TrashEntry) -> Candidate {
         missing_folders: Vec::new(),
         blocked: None,
         target_state: TargetState::Absent,
+        failure: None,
     }
 }
 
@@ -61,8 +62,9 @@ fn plan(candidates: &[Candidate], occupied: &[&str]) -> RestorePlan {
         candidates,
         FolderNames::new(true, true),
         RenameStyle::SpaceNumber,
-        &mut |path| !occupied.contains(path),
-    )
+        &mut |path| Ok(!occupied.contains(path)),
+        &|| false,
+    ).unwrap()
 }
 
 fn targets(plan: &RestorePlan) -> Vec<(String, Option<String>)> {
@@ -74,6 +76,7 @@ fn targets(plan: &RestorePlan) -> Vec<(String, Option<String>)> {
                 match &step.action {
                     Action::Restore { target, .. } => Some(target.to_string_lossy().into_owned()),
                     Action::Skip(skip) => Some(format!("skip:{skip:?}")),
+                    Action::Failed(detail) => Some(format!("failed:{detail}")),
                 },
             )
         })
@@ -120,6 +123,52 @@ fn identical_bytes_are_already_there_and_different_ones_are_renamed() {
     assert_eq!(target_of(&plan_other, "d/a.jpg"), "/r/a 3.jpg");
     let review = review_of(&plan_other, Path::new("/r"), &[]);
     assert!(review.files[0].renamed && review.needed());
+}
+
+#[test]
+fn conflict_search_stops_at_cancellation_without_another_probe() {
+    let probes = std::cell::Cell::new(0);
+    let result = plan_restore(
+        &[with_state(candidate(entry("d/a.jpg", "a.jpg")), TargetState::Occupied)],
+        FolderNames::new(true, true), RenameStyle::SpaceNumber,
+        &mut |_| { probes.set(probes.get() + 1); Ok(false) },
+        &|| probes.get() == 3,
+    );
+    assert_eq!(result.unwrap_err(), PlanningFailure::Cancelled);
+    assert_eq!(probes.get(), 3);
+}
+
+#[test]
+fn a_failed_suffix_probe_preserves_its_cause_and_other_families() {
+    let probes = std::cell::Cell::new(0);
+    let candidates = [
+        with_state(candidate(entry("d/a.jpg", "a.jpg")), TargetState::Occupied),
+        candidate(entry("d/b.jpg", "b.jpg")),
+    ];
+    let plan = plan_restore(
+        &candidates, FolderNames::new(true, true), RenameStyle::SpaceNumber,
+        &mut |_| { probes.set(probes.get() + 1); Err(PlanningFailure::File("access refused".into())) },
+        &|| false,
+    ).unwrap();
+    assert_eq!(probes.get(), 1);
+    assert_eq!(target_of(&plan, "d/a.jpg"), "failed:access refused");
+    assert_eq!(target_of(&plan, "d/b.jpg"), "/r/b.jpg");
+    let review = review_of(&plan, Path::new("/r"), &[]);
+    assert_eq!(review.files.iter().find(|file| file.id == "d/a.jpg").unwrap().skip, Some(Skip::Failed));
+    assert!(review.needed());
+}
+
+#[test]
+fn an_unavailable_root_stops_suffix_planning_at_the_first_failure() {
+    let probes = std::cell::Cell::new(0);
+    let result = plan_restore(
+        &[with_state(candidate(entry("d/a.jpg", "a.jpg")), TargetState::Occupied)],
+        FolderNames::new(true, true), RenameStyle::SpaceNumber,
+        &mut |_| { probes.set(probes.get() + 1); Err(PlanningFailure::Stop("drive disconnected".into())) },
+        &|| false,
+    );
+    assert_eq!(result.unwrap_err(), PlanningFailure::Stop("drive disconnected".into()));
+    assert_eq!(probes.get(), 1);
 }
 
 #[test]
@@ -192,8 +241,9 @@ fn names_that_the_folder_treats_as_one_are_planned_as_one() {
         &[candidate(a), candidate(b)],
         FolderNames::new(false, false),
         RenameStyle::ParenthesizedNumber,
-        &mut |_| true,
-    );
+        &mut |_| Ok(true),
+        &|| false,
+    ).unwrap();
     assert_eq!(target_of(&apart, "d/a.jpg"), "/r/a.jpg");
 }
 
@@ -397,8 +447,9 @@ impl Fixture {
             &candidates,
             FolderNames::for_directory(&self.root),
             RenameStyle::SpaceNumber,
-            &mut |path| name_available(path),
-        );
+            &mut |path| name_available(&self.root, path, &|| false),
+            &|| false,
+        ).unwrap();
         let review = review_of(&plan, &self.root, &listing.entries);
         let token = plan_token(&self.root, &plan);
         (plan, review, token)
@@ -681,6 +732,42 @@ fn a_folder_that_refuses_writes_fails_its_file_and_others_continue() {
     assert_eq!(f.issue_keys(), [(RESTORE_ERROR.to_string(), NOTICE_FAILED.to_string())]);
 }
 
+#[cfg(unix)]
+#[test]
+fn an_unreadable_existing_target_fails_only_its_selected_file() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture("unreadable-target", false);
+    let blocked = f.deleted("a.jpg", b"stored", "i1", TrashRole::Main);
+    let healthy = f.deleted("b.jpg", b"healthy", "i2", TrashRole::Main);
+    let target = f.root.join("a.jpg");
+    std::fs::write(&target, b"target").unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let (plan, review, _) = f.plan(&[blocked.clone(), healthy]);
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(review.files.iter().find(|file| file.id == blocked).unwrap().skip, Some(Skip::Failed));
+    assert!(plan.steps.iter().any(|step| matches!(&step.action, Action::Failed(detail) if detail.contains("a.jpg"))));
+    let outcome = f.execute(&plan);
+    assert_eq!((outcome.failed, outcome.restored.len()), (1, 1));
+    assert!(outcome.error.is_none());
+    assert_eq!(std::fs::read(target).unwrap(), b"target");
+    assert_eq!(std::fs::read(f.root.join(TRASH_DIR_NAME).join(blocked)).unwrap(), b"stored");
+    assert_eq!(std::fs::read(f.root.join("b.jpg")).unwrap(), b"healthy");
+    assert_eq!(f.issue_keys(), [(RESTORE_ERROR.to_string(), NOTICE_FAILED.to_string())]);
+}
+
+#[cfg(unix)]
+#[test]
+fn an_inaccessible_suffix_directory_is_a_file_failure_not_an_occupied_name() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture("suffix-permission", false);
+    let folder = f.root.join("locked");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let result = name_available(&f.root, &folder.join("a 2.jpg"), &|| false);
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(matches!(result, Err(PlanningFailure::File(detail)) if detail.contains("a 2.jpg")));
+}
+
 #[test]
 fn cancel_between_files_leaves_an_exact_partial_result() {
     let f = fixture("cancel", false);
@@ -711,7 +798,7 @@ fn cancelling_while_planning_does_no_filesystem_work() {
     let id = f.deleted("a.jpg", b"a", "i1", TrashRole::Main);
     let listing = list_root(&f.root, &f.data).unwrap();
     let result = candidates(&f.root, &listing, &[id], &onecopy_lib::file_identity::volume_of, &|| true);
-    assert_eq!(result.unwrap_err(), onecopy_lib::scanner::CANCELLED);
+    assert_eq!(result.unwrap_err(), PlanningFailure::Cancelled);
     assert!(!f.root.join("a.jpg").exists());
 }
 

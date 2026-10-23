@@ -48,6 +48,8 @@ pub enum Skip {
     FileInTheWay,
     /// A different drive is mounted on the original path.
     OtherDrive,
+    /// Planning could not inspect this file or choose its destination.
+    Failed,
 }
 
 impl Skip {
@@ -60,6 +62,7 @@ impl Skip {
             Skip::Unrepresentable | Skip::Excluded => NOTICE_UNPLACEABLE,
             Skip::FolderIsLink | Skip::FileInTheWay => NOTICE_FOLDER_BLOCKED,
             Skip::OtherDrive => NOTICE_OTHER_DRIVE,
+            Skip::Failed => NOTICE_FAILED,
         }
     }
 
@@ -105,6 +108,7 @@ pub struct Candidate {
     /// A problem on the way that stops this file, if any.
     pub blocked: Option<Skip>,
     pub target_state: TargetState,
+    pub failure: Option<String>,
 }
 
 /// What happens to one selected file.
@@ -114,6 +118,7 @@ pub enum Action {
     /// original name.
     Restore { target: PathBuf, renamed: bool },
     Skip(Skip),
+    Failed(String),
 }
 
 #[derive(Clone, Debug)]
@@ -176,6 +181,35 @@ fn family_key(entry: &TrashEntry) -> String {
     entry.group.clone()
 }
 
+/// Planning separates one unreadable file from an unavailable root and a
+/// user cancellation. Only the latter two stop unrelated selected files.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PlanningFailure {
+    File(String),
+    Stop(String),
+    Cancelled,
+}
+
+impl std::fmt::Display for PlanningFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::File(detail) | Self::Stop(detail) => formatter.write_str(detail),
+            Self::Cancelled => formatter.write_str(crate::scanner::CANCELLED),
+        }
+    }
+}
+
+fn planning_io_failure(root: &Path, path: &Path, error: io::Error, cancelled: &dyn Fn() -> bool) -> PlanningFailure {
+    if cancelled() { return PlanningFailure::Cancelled; }
+    let detail = format!("could not inspect {}: {error}", crate::native_path::label(path));
+    if stops_remainder(&error, root) { PlanningFailure::Stop(detail) }
+    else { PlanningFailure::File(detail) }
+}
+
+fn check_planning_cancelled(cancelled: &dyn Fn() -> bool) -> Result<(), PlanningFailure> {
+    if cancelled() { Err(PlanningFailure::Cancelled) } else { Ok(()) }
+}
+
 /// Decides every selected file's fate. Pure: `available(path)` answers
 /// whether a suffixed candidate name is free on disk (a name the filesystem
 /// cannot hold counts as free; its rename then fails as that one file).
@@ -192,13 +226,19 @@ pub fn plan_restore(
     candidates: &[Candidate],
     names: FolderNames,
     style: RenameStyle,
-    available: &mut dyn FnMut(&Path) -> bool,
-) -> RestorePlan {
+    available: &mut dyn FnMut(&Path) -> Result<bool, PlanningFailure>,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<RestorePlan, PlanningFailure> {
     let mut plan = RestorePlan::default();
     let mut families: Vec<(String, Vec<&Candidate>)> = Vec::new();
     let mut family_index: HashMap<String, usize> = HashMap::new();
     let mut skipped = Vec::new();
     for candidate in candidates {
+        check_planning_cancelled(cancelled)?;
+        if let Some(detail) = &candidate.failure {
+            skipped.push(Step { entry: candidate.entry.clone(), action: Action::Failed(detail.clone()) });
+            continue;
+        }
         let skip = candidate
             .blocked
             .or(Skip::from_status(candidate.entry.status))
@@ -242,6 +282,7 @@ pub fn plan_restore(
     let mut folders: Vec<PathBuf> = Vec::new();
     let mut known_folders: HashSet<PathBuf> = HashSet::new();
     for (_, mut members) in families {
+        check_planning_cancelled(cancelled)?;
         // The main file leads its companions.
         members.sort_by_key(|candidate| {
             (
@@ -260,27 +301,48 @@ pub fn plan_restore(
                 || reserved.contains(&key)
                 || !claimed_here.insert(key)
         });
+        let mut failure = None;
         let targets: Vec<PathBuf> = if conflict {
-            (2..=1_000_000u32)
-                .find_map(|number| {
-                    let candidates = originals
-                        .iter()
-                        .map(|target| file_names::renamed(target, number, style))
-                        .collect::<Option<Vec<_>>>()?;
-                    let mut keys = HashSet::new();
-                    let free = candidates.iter().all(|candidate| {
-                        let key = names.key(candidate);
-                        !reserved.contains(&key) && keys.insert(key) && available(candidate)
-                    });
-                    free.then_some(candidates)
-                })
-                .unwrap_or_default()
+            let mut number = 2u32;
+            loop {
+                check_planning_cancelled(cancelled)?;
+                let Some(candidates) = originals.iter()
+                    .map(|target| file_names::renamed(target, number, style))
+                    .collect::<Option<Vec<_>>>() else { break Vec::new(); };
+                let mut keys = HashSet::new();
+                let mut free = true;
+                for candidate in &candidates {
+                    check_planning_cancelled(cancelled)?;
+                    let key = names.key(candidate);
+                    if reserved.contains(&key) || !keys.insert(key) {
+                        free = false;
+                        break;
+                    }
+                    let availability = available(candidate);
+                    check_planning_cancelled(cancelled)?;
+                    match availability {
+                        Ok(true) => {}
+                        Ok(false) => { free = false; break; }
+                        Err(PlanningFailure::File(detail)) => { failure = Some(detail); break; }
+                        Err(error) => return Err(error),
+                    }
+                }
+                if failure.is_some() { break Vec::new(); }
+                if free { break candidates; }
+                let Some(next) = number.checked_add(1) else { break Vec::new(); };
+                number = next;
+            }
         } else {
             originals.iter().map(|target| (*target).clone()).collect()
         };
+        if let Some(detail) = failure {
+            for candidate in members {
+                skipped.push(Step { entry: candidate.entry.clone(), action: Action::Failed(detail.clone()) });
+            }
+            continue;
+        }
         if targets.len() != members.len() {
-            // No free suffix (or a name that is not Unicode): these files
-            // cannot be placed and stay in Deleted files.
+            // No representable suffix remains; these files stay in Deleted files.
             for candidate in members {
                 skipped.push(Step {
                     entry: candidate.entry.clone(),
@@ -290,6 +352,7 @@ pub fn plan_restore(
             continue;
         }
         for (candidate, target) in members.into_iter().zip(targets) {
+            check_planning_cancelled(cancelled)?;
             reserved.insert(names.key(&target));
             for folder in &candidate.missing_folders {
                 if known_folders.insert(folder.clone()) {
@@ -308,7 +371,8 @@ pub fn plan_restore(
     folders.sort_by_key(|folder| folder.components().count());
     plan.folders = folders;
     plan.steps.extend(skipped);
-    plan
+    check_planning_cancelled(cancelled)?;
+    Ok(plan)
 }
 
 /// The name stem companions pair by (the library's rule: same folder, same
@@ -339,6 +403,7 @@ pub fn review_of(plan: &RestorePlan, root: &Path, selected_all: &[TrashEntry]) -
             let (target, renamed, skip) = match &step.action {
                 Action::Restore { target, renamed } => (Some(target), *renamed, None),
                 Action::Skip(skip) => (None, false, Some(*skip)),
+                Action::Failed(_) => (None, false, Some(Skip::Failed)),
             };
             // Pairing is by folder and name stem, so a
             // companion restored under a stem its restored main no longer
@@ -415,6 +480,7 @@ pub fn plan_token(root: &Path, plan: &RestorePlan) -> String {
                 field(target.as_os_str().as_encoded_bytes());
                 field(&[u8::from(*renamed)]);
             }
+            Action::Failed(_) => field(b"failed"),
             Action::Skip(skip) => {
                 field(b"skip");
                 field(format!("{skip:?}").as_bytes());
@@ -437,14 +503,16 @@ pub fn observe(
     entry: &TrashEntry,
     volume: &dyn Fn(&Path) -> io::Result<u64>,
     cancelled: &dyn Fn() -> bool,
-) -> Result<Candidate, String> {
+) -> Result<Candidate, PlanningFailure> {
     let mut candidate = Candidate {
         entry: entry.clone(),
         target: None,
         missing_folders: Vec::new(),
         blocked: None,
         target_state: TargetState::Absent,
+        failure: None,
     };
+    check_planning_cancelled(cancelled)?;
     if !entry.status.restorable() {
         return Ok(candidate);
     }
@@ -469,6 +537,7 @@ pub fn observe(
     chain.reverse();
     let mut deepest_existing = root.to_path_buf();
     for folder in chain {
+        check_planning_cancelled(cancelled)?;
         if !candidate.missing_folders.is_empty() {
             candidate.missing_folders.push(folder);
             continue;
@@ -490,17 +559,17 @@ pub fn observe(
                 candidate.blocked = Some(Skip::Unrepresentable);
                 return Ok(candidate);
             }
-            Err(error) => return Err(format!("could not inspect {}: {error}", crate::native_path::label(&folder))),
+            Err(error) => return Err(planning_io_failure(root, &folder, error, cancelled)),
         }
     }
     let stored_path = crate::native_path::from_text(&entry.stored_path);
     let day_dir = stored_path
         .parent()
-        .ok_or("a stored file has no day folder")?;
+        .ok_or_else(|| PlanningFailure::File("a stored file has no day folder".into()))?;
     let home = volume(&deepest_existing)
-        .map_err(|error| format!("could not inspect {}: {error}", crate::native_path::label(&deepest_existing)))?;
+        .map_err(|error| planning_io_failure(root, &deepest_existing, error, cancelled))?;
     let stored = volume(day_dir)
-        .map_err(|error| format!("could not inspect {}: {error}", crate::native_path::label(&day_dir)))?;
+        .map_err(|error| planning_io_failure(root, day_dir, error, cancelled))?;
     if home != stored {
         candidate.blocked = Some(Skip::OtherDrive);
         return Ok(candidate);
@@ -508,14 +577,15 @@ pub fn observe(
     if !candidate.missing_folders.is_empty() {
         return Ok(candidate);
     }
+    check_planning_cancelled(cancelled)?;
     candidate.target_state = match volume_io::symlink_metadata(&target) {
         Err(error) if error.kind() == io::ErrorKind::NotFound || file_names::is_name_error(&error) => {
             TargetState::Absent
         }
-        Err(error) => return Err(format!("could not inspect {}: {error}", crate::native_path::label(&target))),
+        Err(error) => return Err(planning_io_failure(root, &target, error, cancelled)),
         Ok(metadata) if metadata.file_type().is_file() && metadata.len() == entry.size => {
             if same_bytes(
-                crate::native_path::from_text(&entry.stored_path).as_ref(), &target, entry.size, cancelled,
+                root, crate::native_path::from_text(&entry.stored_path).as_ref(), &target, entry.size, cancelled,
             )? {
                 TargetState::Identical
             } else {
@@ -527,28 +597,26 @@ pub fn observe(
     Ok(candidate)
 }
 
-fn same_bytes(stored: &Path, target: &Path, size: u64, cancelled: &dyn Fn() -> bool) -> Result<bool, String> {
-    let hash = |path: &Path| -> Result<String, String> {
+fn same_bytes(root: &Path, stored: &Path, target: &Path, size: u64, cancelled: &dyn Fn() -> bool) -> Result<bool, PlanningFailure> {
+    let hash = |path: &Path| -> Result<String, PlanningFailure> {
+        check_planning_cancelled(cancelled)?;
         let (mut file, _) = crate::file_identity::open_regular_nofollow(path)
-            .map_err(|error| format!("could not read {}: {error}", crate::native_path::label(&path)))?;
+            .map_err(|error| planning_io_failure(root, path, error, cancelled))?;
         crate::hashing::full_hash_file_cancellable(&mut file, size, cancelled, &mut |_, _| {})
-            .map_err(|error| {
-                if error.kind() == io::ErrorKind::Interrupted && cancelled() {
-                    crate::scanner::CANCELLED.to_string()
-                } else {
-                    format!("could not read {}: {error}", crate::native_path::label(&path))
-                }
-            })
+            .map_err(|error| planning_io_failure(root, path, error, cancelled))
     };
     Ok(hash(stored)? == hash(target)?)
 }
 
-/// Whether a suffixed name is free on disk. A name the filesystem cannot hold
-/// counts as free; its rename then fails as that one file.
-pub fn name_available(path: &Path) -> bool {
-    volume_io::symlink_metadata(path).is_err_and(|error| {
-        error.kind() == io::ErrorKind::NotFound || file_names::is_name_error(&error)
-    })
+/// Whether a suffixed name is free on disk. Name-shape errors remain local
+/// publication failures; read errors must never masquerade as occupied names.
+pub fn name_available(root: &Path, path: &Path, cancelled: &dyn Fn() -> bool) -> Result<bool, PlanningFailure> {
+    check_planning_cancelled(cancelled)?;
+    match volume_io::symlink_metadata(path) {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::NotFound || file_names::is_name_error(&error) => Ok(true),
+        Err(error) => Err(planning_io_failure(root, path, error, cancelled)),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -813,6 +881,7 @@ pub fn execute(
                 None
             }
             Action::Skip(skip) => Some(StepFailure::File(skip.descriptor(), String::new())),
+            Action::Failed(detail) => Some(StepFailure::File(NOTICE_FAILED, detail.clone())),
             Action::Restore { target, .. } => match restore_one(root, &step.entry, target, volume) {
                 Ok(()) => {
                     outcome.restored.push(crate::native_path::encode(&target).into_owned());
@@ -942,7 +1011,7 @@ pub fn candidates(
     ids: &[String],
     volume: &dyn Fn(&Path) -> io::Result<u64>,
     cancelled: &dyn Fn() -> bool,
-) -> Result<Vec<Candidate>, String> {
+) -> Result<Vec<Candidate>, PlanningFailure> {
     let location = root.join(trash::TRASH_DIR_NAME);
     let by_id: HashMap<&str, &TrashEntry> = listing
         .entries
@@ -952,11 +1021,18 @@ pub fn candidates(
     let mut seen = HashSet::new();
     let mut observed = Vec::new();
     for id in ids.iter().filter(|id| seen.insert(id.as_str())) {
-        if cancelled() {
-            return Err(crate::scanner::CANCELLED.to_string());
-        }
+        check_planning_cancelled(cancelled)?;
         observed.push(match by_id.get(id.as_str()) {
-            Some(entry) => observe(root, entry, volume, cancelled)?,
+            Some(entry) => match observe(root, entry, volume, cancelled) {
+                Ok(candidate) => candidate,
+                Err(PlanningFailure::File(detail)) => {
+                    let mut candidate = missing_candidate((*entry).clone());
+                    candidate.blocked = None;
+                    candidate.failure = Some(detail);
+                    candidate
+                }
+                Err(error) => return Err(error),
+            },
             None => missing_candidate(missing_entry(id, &location)),
         });
     }
@@ -997,6 +1073,7 @@ fn missing_candidate(entry: TrashEntry) -> Candidate {
         missing_folders: Vec::new(),
         blocked: Some(Skip::Missing),
         target_state: TargetState::Absent,
+        failure: None,
     }
 }
 

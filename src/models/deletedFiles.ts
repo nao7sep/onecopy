@@ -282,7 +282,8 @@ export type RestoreSkip =
   | "excluded"
   | "folder-is-link"
   | "file-in-the-way"
-  | "other-drive";
+  | "other-drive"
+  | "failed";
 
 export interface RestoreReviewFile {
   id: string;

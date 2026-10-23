@@ -186,8 +186,9 @@ windows_test! {
             &candidates,
             file_names::FolderNames::for_directory(&root),
             file_names::RenameStyle::SpaceNumber,
-            &mut |path| restore::name_available(path),
-        );
+            &mut |path| restore::name_available(&root, path, &|| false),
+            &|| false,
+        ).unwrap();
         let (restored, _) = restore::execute(
             &conn,
             &root,

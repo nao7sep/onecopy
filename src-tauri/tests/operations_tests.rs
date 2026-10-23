@@ -3785,7 +3785,7 @@ fn native_name_lifecycle(names: Vec<std::ffi::OsString>) {
     }
     let ids: Vec<String> = listing.entries.iter().map(|entry| entry.id.clone()).collect();
     let candidates = restore::candidates(&f.root, &listing, &ids, &onecopy_lib::file_identity::volume_of, &|| false).unwrap();
-    let plan = restore::plan_restore(&candidates, FolderNames::for_directory(&f.root), RenameStyle::platform_default(), &mut restore::name_available);
+    let plan = restore::plan_restore(&candidates, FolderNames::for_directory(&f.root), RenameStyle::platform_default(), &mut |path| restore::name_available(&f.root, path, &|| false), &|| false).unwrap();
     let config = onecopy_lib::storage::config(&f.app_root).unwrap();
     let settings = scanner::settings_from_config(Some(&config), &f.app_root, 0);
     let (restored, _) = restore::execute(&f.conn, &f.root, &plan, &settings, &onecopy_lib::file_identity::volume_of, &|| false, &mut |_| {}).unwrap();
