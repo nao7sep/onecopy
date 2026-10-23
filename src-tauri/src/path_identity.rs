@@ -1,10 +1,27 @@
-//! Physical directory relationship checks.
+//! Native path containment: lexical scope checks and physical safety checks.
 //!
 //! Config and native dialogs retain their literal paths. Safety decisions use
 //! a separate canonical projection so symlink aliases cannot make a directory
 //! inside a scanned source look external.
 
 use std::path::{Path, PathBuf};
+
+/// Cheap source-scope comparison without filesystem access. Unix preserves
+/// case and native units; Windows accepts ordinary/verbatim spelling aliases.
+/// This does not establish physical containment through symlinks.
+pub(crate) fn lexical_is_within(candidate: &Path, root: &Path) -> bool {
+    #[cfg(not(windows))]
+    { candidate.starts_with(root) }
+    #[cfg(windows)]
+    {
+        let candidate = crate::winpath::for_fs(candidate);
+        let root = crate::winpath::for_fs(root);
+        let mut components = candidate.components();
+        root.components().all(|root_part| components.next().is_some_and(|part| {
+            part.as_os_str().eq_ignore_ascii_case(root_part.as_os_str())
+        }))
+    }
+}
 
 fn canonical(path: &Path) -> Result<PathBuf, String> {
     crate::volume_io::canonicalize(path)

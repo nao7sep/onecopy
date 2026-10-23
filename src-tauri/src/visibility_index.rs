@@ -189,19 +189,7 @@ pub fn root_for(roots: &[String], path: &Path) -> Option<PathBuf> {
     let depth = roots
         .iter()
         .map(|root| crate::winpath::for_fs(crate::native_path::from_text(root).as_ref()).into_owned())
-        .filter(|root| {
-            let mut components = path.components();
-            root.components().all(|root_part| {
-                components.next().is_some_and(|part| {
-                    if cfg!(target_os = "windows") {
-                        crate::native_path::encode(part.as_os_str())
-                            .eq_ignore_ascii_case(&crate::native_path::encode(root_part.as_os_str()))
-                    } else {
-                        part == root_part
-                    }
-                })
-            })
-        })
+        .filter(|root| crate::path_identity::lexical_is_within(path, root))
         .map(|root| root.components().count())
         .max()?;
     // Retain the discovered spelling, including the native long-path prefix.

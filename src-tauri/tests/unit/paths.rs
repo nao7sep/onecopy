@@ -75,9 +75,10 @@ fn is_within_data_root_matches_the_root_and_its_descendants_only() {
         &data_root.join("cache/previews/ab/abc123.webp"),
         &data_root
     ));
-    assert!(
+    assert_eq!(
         is_within_data_root(&PathBuf::from("/Users/tester/.ONECOPY/index.sqlite3"), &data_root),
-        "component comparison is case-insensitive, like the trash-name check"
+        cfg!(windows),
+        "Unix case-only siblings remain distinct; Windows retains its folded spelling comparison"
     );
     assert!(!is_within_data_root(
         &PathBuf::from("/Users/tester/Pictures/vacation.jpg"),
@@ -91,8 +92,8 @@ fn is_within_data_root_matches_the_root_and_its_descendants_only() {
 
 // The data root must be private to the owner, and an existing root an
 // earlier build left too open must be tightened, not just a freshly created
-// one. Unix-only: Windows has no equivalent permission bits to assert on
-// (the profile ACL already applies there).
+// one. Unix mode-bit assertions live here; Windows ACL coverage lives with
+// the Windows data-root privacy owner.
 // A freshly created root must be born owner-only, not merely
 // tightened afterward. Uses a throwaway home so a broad umask (e.g. 022)
 // cannot leave the directory briefly world-readable before any tightening.
@@ -140,5 +141,18 @@ fn privacy_recovery_visits_only_known_app_owned_root_entries() {
     for name in ["photos", "notes.txt", "config-my-notes.invalid", "config-🙂.tmp", "logs-old",
         "config-20261024-010203-utx.invalid", "config-abcdefgh-010203-utc.invalid", "config.json-wal"] {
         assert_eq!(kind(name), None, "{name}");
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn data_root_containment_preserves_windows_drive_and_unc_components() {
+    for (root, child, sibling) in [
+        (r"C:\Users\tester\onecopy", r"c:\users\TESTER\ONECOPY\cache", r"C:\Users\tester\onecopy-more"),
+        (r"C:/Users/tester/onecopy", r"\\?\C:\Users\tester\onecopy\cache", r"D:\Users\tester\onecopy"),
+        (r"\\server\share\onecopy", r"\\SERVER\SHARE\OneCopy\logs", r"\\server\other-share\onecopy"),
+    ] {
+        assert!(is_within_data_root(Path::new(child), Path::new(root)));
+        assert!(!is_within_data_root(Path::new(sibling), Path::new(root)));
     }
 }

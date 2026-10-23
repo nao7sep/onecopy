@@ -185,3 +185,14 @@ fn native_filesystem_inventory_reopens_an_invalid_byte_name_when_supported() {
     assert_eq!(reopened, path);
     assert_eq!(std::fs::read(reopened).unwrap(), b"native contents");
 }
+
+#[cfg(unix)]
+#[test]
+fn discovery_keeps_case_only_siblings_of_the_data_root() {
+    use super::is_excluded_from_discovery;
+    use std::path::Path;
+    let root = Path::new("/archive/onecopy");
+    assert!(is_excluded_from_discovery(Path::new("/archive/onecopy/cache/image.jpg"), false, Some(root)));
+    assert!(!is_excluded_from_discovery(Path::new("/archive/OneCopy"), true, Some(root)));
+    assert!(!is_excluded_from_discovery(Path::new("/archive/OneCopy/image.jpg"), false, Some(root)));
+}

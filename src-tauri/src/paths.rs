@@ -137,14 +137,7 @@ pub fn data_root_before_launch() -> Option<PathBuf> {
 /// reaches the same storage only through a symlink or another spelling is not
 /// caught here, the same tradeoff the trash exclusion already accepts.
 pub fn is_within_data_root(candidate: &Path, data_root: &Path) -> bool {
-    let mut candidate_components = candidate.components();
-    for root_component in data_root.components() {
-        match candidate_components.next() {
-            Some(component) if component.as_os_str().eq_ignore_ascii_case(root_component.as_os_str()) => {}
-            _ => return false,
-        }
-    }
-    true
+    crate::path_identity::lexical_is_within(candidate, data_root)
 }
 
 // Root resolution, factored out so it can be unit-tested with an injected home
