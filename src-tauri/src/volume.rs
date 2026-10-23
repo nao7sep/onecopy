@@ -310,6 +310,13 @@ pub fn prune_identities(root: &Path, configured: &[String]) -> Result<u64, Strin
 #[path = "../tests/unit/volume.rs"]
 mod tests;
 
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct Substitution {
+    pub dir: String,
+    pub recorded: String,
+    pub current: String,
+}
+
 #[derive(serde::Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceDirsStatus {
@@ -319,6 +326,8 @@ pub struct SourceDirsStatus {
     #[serde(skip)]
     pub(crate) uncertain: Vec<String>,
     pub substituted: Vec<String>,
+    #[serde(skip)]
+    pub(crate) substitutions: Vec<Substitution>,
     /// Present folders whose drive has no identity OneCopy can read (some
     /// network shares): a different drive mounted there would go unnoticed.
     pub unidentified: Vec<String>,
@@ -417,10 +426,9 @@ fn probe_source_dirs_with(
                 serde_json::json!({ "dir": dir, "identity": current }),
             ),
             IdentityCheck::Substituted { recorded } => {
-                logging::warn(
-                    "source volume SUBSTITUTED",
-                    serde_json::json!({ "dir": dir, "recorded": recorded, "current": current }),
-                );
+                status.substitutions.push(Substitution {
+                    dir: dir.clone(), recorded, current,
+                });
                 status.substituted.push(dir.clone());
             }
             IdentityCheck::Unchanged => {}

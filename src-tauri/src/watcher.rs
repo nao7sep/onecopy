@@ -315,6 +315,7 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
         .map(|root| (root.clone(), Arc::new(AtomicBool::new(false)))).collect();
     let mut watchers: Vec<Option<notify::RecommendedWatcher>> = source_dirs.iter().map(|_| None).collect();
     let mut last_status = None;
+    let mut last_substitutions = Vec::new();
     let mut next_presence = std::time::Instant::now();
     // Retain the sender even when every source is offline, so this owner can
     // observe returning sources without depending on a registered watch.
@@ -326,8 +327,16 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
         }
         if std::time::Instant::now() >= next_presence {
             let verified = crate::volume::probe_source_dirs(&data_root);
+            if !owns_generation(generation) { return Ok(()); }
             let (missing, substituted, unidentified, uncertain, all_unknown) = match verified {
-                Ok(status) => (status.missing, status.substituted, status.unidentified, status.uncertain, false),
+                Ok(status) => {
+                    report_substitution_changes(&mut last_substitutions, status.substitutions, |change| {
+                        logging::warn("source volume SUBSTITUTED", json!({
+                            "dir": change.dir, "recorded": change.recorded, "current": change.current,
+                        }));
+                    });
+                    (status.missing, status.substituted, status.unidentified, status.uncertain, false)
+                },
                 Err(error) => {
                     logging::warn("source availability verification failed", json!({"error": {"message": error}}));
                     (source_dirs.clone(), Vec::new(), Vec::new(), Vec::new(), true)
@@ -511,6 +520,20 @@ pub fn join() {
     }
 }
 
+// The availability owner retains diagnostic state through repeated probes.
+// A different substituted identity is a new condition even at the same path;
+// a healthy/missing result retires the old condition so recurrence is visible.
+fn report_substitution_changes(
+    previous: &mut Vec<crate::volume::Substitution>,
+    current: Vec<crate::volume::Substitution>,
+    mut report: impl FnMut(&crate::volume::Substitution),
+) {
+    for substitution in &current {
+        if !previous.contains(substitution) { report(substitution); }
+    }
+    *previous = current;
+}
+
 fn join_finished(workers: &mut Vec<JoinHandle<()>>) {
     let mut index = 0;
     while index < workers.len() {
@@ -630,8 +653,8 @@ fn record_activity(
 
 #[cfg(test)]
 // EXCEPTION to tests-folder conventions: exercises the private
-// `generation_is_live` and `restat_batch`; promoting them would widen the
-// crate's API only for these tests.
+// generation, batch classification and availability-diagnostic transitions;
+// promoting them would widen the crate's API only for these tests.
 #[path = "../tests/unit/watcher.rs"]
 mod lifecycle_tests;
 

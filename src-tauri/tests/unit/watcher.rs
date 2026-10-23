@@ -395,3 +395,27 @@ fn a_database_failure_stops_the_directory_batch_before_its_next_entry() {
     assert!(result.is_err());
     assert_eq!(entered.get(), 1);
 }
+
+#[test]
+fn repeated_substitution_probes_report_only_new_identity_conditions() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source");
+    let data = root.path().join("data");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::create_dir(&data).unwrap();
+    crate::storage::save_config(&data, &serde_json::json!({"sourceDirs": [source]})).unwrap();
+    let mut previous = Vec::new();
+    let mut reports = Vec::new();
+    for identity in ["original", "other-a", "other-a", "other-b", "other-b", "original", "other-b"] {
+        let status = crate::volume::verify_source_dirs_with(&data, &|_| Some(identity.to_string())).unwrap();
+        assert_eq!(status.substituted.len(), usize::from(identity != "original"));
+        super::report_substitution_changes(&mut previous, status.substitutions, |change| {
+            reports.push((change.recorded.clone(), change.current.clone()));
+        });
+    }
+    assert_eq!(reports, [
+        ("original".to_string(), "other-a".to_string()),
+        ("original".to_string(), "other-b".to_string()),
+        ("original".to_string(), "other-b".to_string()),
+    ]);
+}
