@@ -475,3 +475,43 @@ fn cancellation_during_inference_fences_the_late_success_and_receipt() {
     assert!(![derived_state::READY, derived_state::FAILED].contains(&status), "{status}");
     assert!(!transcription::is_cancelled(), "the core releases its claim after settlement");
 }
+
+#[test]
+#[serial_test::serial(transcription)]
+fn staging_storage_failures_leave_media_pending_and_resume_without_recheck() {
+    use std::io::ErrorKind;
+    let root = tempfile::tempdir().unwrap();
+    let conn = index_store::open(&root.path().join("index.sqlite3")).unwrap();
+    let cache = preview::CachePaths::new(root.path().join("cache"));
+    insert(&conn, "media", "audio", "media.flac");
+    for kind in [ErrorKind::StorageFull, ErrorKind::QuotaExceeded,
+                 ErrorKind::ReadOnlyFilesystem, ErrorKind::PermissionDenied] {
+        let message = onecopy_lib::resource_limits::cache_write_error(
+            "transcription staging", std::io::Error::from(kind));
+        let outcome = complete_transcription_attempt_with_inference(
+            transcript_attempt(&conn, &cache, root.path(), "media", "media.flac", false),
+            |_| {}, |_| {}, |_, _| {}, |_| Err(message.clone()),
+        ).unwrap();
+        assert_eq!(outcome, TranscriptionAttemptOutcome::StorageUnavailable {
+            hash: "media".into(), message,
+        });
+        assert_eq!(derived_state::transcript_result(&conn, "media").unwrap().status,
+                   derived_state::PENDING);
+        let issues: i64 = conn.query_row("SELECT count(*) FROM active_issues", [], |row| row.get(0)).unwrap();
+        assert_eq!(issues, 0, "shared staging failure must not blame a media file");
+    }
+    let resumed = complete_transcription_attempt_with_inference(
+        transcript_attempt(&conn, &cache, root.path(), "media", "media.flac", false),
+        |_| {}, |_| {}, |_, _| {}, |_| Ok(spoken("after storage recovery")),
+    ).unwrap();
+    assert!(matches!(resumed, TranscriptionAttemptOutcome::Completed { .. }));
+    assert_eq!(stored_text(&conn, "media").as_deref(), Some("after storage recovery"));
+
+    let replacement = complete_transcription_attempt_with_inference(
+        transcript_attempt(&conn, &cache, root.path(), "media", "media.flac", true),
+        |_| {}, |_| {}, |_, _| {}, |_| Err(onecopy_lib::resource_limits::cache_write_error(
+            "transcription staging", std::io::Error::from(ErrorKind::QuotaExceeded))),
+    ).unwrap();
+    assert!(matches!(replacement, TranscriptionAttemptOutcome::StorageUnavailable { .. }));
+    assert_eq!(stored_text(&conn, "media").as_deref(), Some("after storage recovery"));
+}

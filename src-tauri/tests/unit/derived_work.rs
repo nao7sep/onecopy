@@ -327,3 +327,26 @@ fn transcription_receipts_keep_loaded_identity_and_failures_do_not_retry_for_a_d
     }
     assert_eq!(crate::derived_state::transcript_result(&conn, "failure").unwrap().status, crate::derived_state::FAILED);
 }
+
+#[test]
+fn storage_pauses_are_shared_and_only_requested_runs_report_to_the_item() {
+    let message = crate::resource_limits::cache_write_error(
+        "transcription staging", std::io::Error::from(std::io::ErrorKind::QuotaExceeded));
+    let outcome = TranscriptionAttemptOutcome::StorageUnavailable {
+        hash: "media".into(), message: message.clone(),
+    };
+    let root = tempfile::tempdir().unwrap();
+    let conn = crate::index_store::open(&root.path().join("index.sqlite3")).unwrap();
+    for _ in 0..2 {
+        record_storage_failure(&conn, WorkClass::AudioTranscripts, &message).unwrap();
+    }
+    let issues: i64 = conn.query_row("SELECT count(*) FROM active_issues WHERE path = '' AND kind = 'cache-storage-unavailable-audio-transcripts'", [], |row| row.get(0)).unwrap();
+    assert_eq!(issues, 1, "one shared Issue explains the paused class");
+    for run in [TranscriptionRun::Automatic, TranscriptionRun::Requested { replacement: false },
+                TranscriptionRun::Requested { replacement: true }] {
+        let report = transcription_report(run, &outcome);
+        assert_eq!(report.pause_message.as_deref(), Some(message.as_str()));
+        assert!(report.item_hash.is_none());
+        assert_eq!(report.event.is_some(), run != TranscriptionRun::Automatic);
+    }
+}

@@ -138,6 +138,7 @@ pub fn is_storage_unavailable(error: &str) -> bool {
 pub fn cache_write_error(context: &str, error: std::io::Error) -> String {
     match error.kind() {
         std::io::ErrorKind::StorageFull
+        | std::io::ErrorKind::QuotaExceeded
         | std::io::ErrorKind::ReadOnlyFilesystem
         | std::io::ErrorKind::PermissionDenied => {
             format!("{STORAGE_UNAVAILABLE_PREFIX}{context}: {error}")

@@ -1699,6 +1699,12 @@ pub(crate) fn pause_for_storage_safety(
     error: &str,
 ) -> Result<(), String> {
     crate::derived_runtime::pause_for_safety(app, class)?;
+    record_storage_failure(conn, class, error)?;
+    notify_issues(app);
+    Ok(())
+}
+
+fn record_storage_failure(conn: &Connection, class: WorkClass, error: &str) -> Result<(), String> {
     crate::index_store::upsert_issue_with_descriptor(
         conn,
         None,
@@ -1706,9 +1712,7 @@ pub(crate) fn pause_for_storage_safety(
         Some("notice.cacheStorageUnavailable"),
         None,
         crate::resource_limits::storage_message(error),
-    )?;
-    notify_issues(app);
-    Ok(())
+    ).map(|_| ())
 }
 
 fn pause_for_model_failure(app: &AppHandle, conn: &Connection, class: WorkClass, error: &str) -> Result<(), String> {
@@ -1885,6 +1889,7 @@ pub enum TranscriptionAttemptOutcome {
     Cancelled { hash: String },
     Unavailable { hash: String, message: String },
     ResourceSafety { hash: String, message: String },
+    StorageUnavailable { hash: String, message: String },
     ModelUnavailable { hash: String, message: String },
     Failed {
         hash: String,
@@ -1966,6 +1971,9 @@ fn finish_transcription_attempt(
         }
         Err(error) if crate::ai_dependencies::is_model_load_error(&error) => {
             Ok(TranscriptionAttemptOutcome::ModelUnavailable { hash, message: error })
+        }
+        Err(error) if crate::resource_limits::is_storage_unavailable(&error) => {
+            Ok(TranscriptionAttemptOutcome::StorageUnavailable { hash, message: error })
         }
         Err(error) if crate::resource_limits::is_safety_error(&error) => {
             Ok(TranscriptionAttemptOutcome::ResourceSafety {
@@ -2151,7 +2159,7 @@ where
         Ok(TranscriptionAttemptOutcome::Completed { hash, .. }) => trace.finish(crate::activity::ActivityState::Succeeded, Some(hash)),
         Ok(TranscriptionAttemptOutcome::Cancelled { .. }) => trace.finish(crate::activity::ActivityState::Cancelled, None),
         Ok(TranscriptionAttemptOutcome::Unavailable { .. }) => trace.finish(crate::activity::ActivityState::Waiting, None),
-        Ok(TranscriptionAttemptOutcome::ResourceSafety { .. } | TranscriptionAttemptOutcome::ModelUnavailable { .. }) => trace.finish(crate::activity::ActivityState::Paused, None),
+        Ok(TranscriptionAttemptOutcome::StorageUnavailable { .. } | TranscriptionAttemptOutcome::ResourceSafety { .. } | TranscriptionAttemptOutcome::ModelUnavailable { .. }) => trace.finish(crate::activity::ActivityState::Paused, None),
         Ok(TranscriptionAttemptOutcome::Failed { .. }) => trace.finish(crate::activity::ActivityState::Failed, None),
         Err(_) => trace.result(&outcome),
     }
@@ -2245,6 +2253,7 @@ fn transcribe_next(
         },
         TranscriptionAttemptOutcome::Cancelled { .. }
         | TranscriptionAttemptOutcome::Unavailable { .. }
+        | TranscriptionAttemptOutcome::StorageUnavailable { .. }
         | TranscriptionAttemptOutcome::ResourceSafety { .. }
         | TranscriptionAttemptOutcome::ModelUnavailable { .. } => TranscriptStep::default(),
     })
@@ -2313,6 +2322,7 @@ fn transcription_report(
             pause_message: None,
         },
         TranscriptionAttemptOutcome::ModelUnavailable { hash, message }
+        | TranscriptionAttemptOutcome::StorageUnavailable { hash, message }
         | TranscriptionAttemptOutcome::ResourceSafety { hash, message } => TranscriptionReport {
             item_hash: None,
             event: requested.then(|| error(hash, message)),
@@ -2397,6 +2407,8 @@ fn run_transcription(
     if let Some(message) = &report.pause_message {
         if crate::ai_dependencies::is_model_load_error(message) {
             pause_for_model_failure(context.app, context.conn, class, message)?;
+        } else if crate::resource_limits::is_storage_unavailable(message) {
+            pause_for_storage_safety(context.app, context.conn, class, message)?;
         } else {
             pause_for_resource_safety(context.app, context.conn, class, message)?;
         }
@@ -2418,7 +2430,8 @@ fn run_transcription(
         TranscriptionAttemptOutcome::Completed { .. } => ("completed", None),
         TranscriptionAttemptOutcome::Cancelled { .. } => ("cancelled", None),
         TranscriptionAttemptOutcome::Unavailable { message, .. } => ("unavailable", Some(message)),
-        TranscriptionAttemptOutcome::ResourceSafety { message, .. }
+        TranscriptionAttemptOutcome::StorageUnavailable { message, .. }
+        | TranscriptionAttemptOutcome::ResourceSafety { message, .. }
         | TranscriptionAttemptOutcome::ModelUnavailable { message, .. } => ("paused", Some(message)),
         TranscriptionAttemptOutcome::Failed { message, .. } => ("failed", Some(message)),
     };

@@ -101,7 +101,8 @@ pub fn extract_pcm(ffmpeg: &Path, media: &Path, temp_dir: &Path) -> Result<Vec<f
         crate::resource_limits::PCM_REQUIRED_AVAILABLE,
         "Audio extraction",
     )?;
-    std::fs::create_dir_all(temp_dir).map_err(|error| error.to_string())?;
+    std::fs::create_dir_all(temp_dir)
+        .map_err(|error| crate::resource_limits::cache_write_error("transcription staging directory", error))?;
     let staged = Arc::new(crate::subprocess::StagedOutput::new(
         temp_dir.join(format!("pcm-{}.f32le", crate::nanoid::generate()?)),
     ).map_err(|error| crate::resource_limits::cache_write_error("transcription staging", error))?);
