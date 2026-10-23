@@ -4,7 +4,7 @@
 //! millions of identities. Keeping that list in the webview or a Rust Vec
 //! makes ordinary viewing scale with library size. This runtime streams the
 //! frozen order into one temporary SQLite table and retains only its token and
-//! current ordinal in memory. The file is replaced for each viewer session
+//! current ordinal, position and length in memory. The file is replaced for each viewer session
 //! and removed on close.
 
 use std::path::{Path, PathBuf};
@@ -55,7 +55,41 @@ struct Sequence {
     path: PathBuf,
     conn: Connection,
     current_ordinal: i64,
+    // Invalid only after membership changes or an incomplete navigation.
+    position: Option<Position>,
     scope: Scope,
+}
+
+#[derive(Clone, Copy)]
+struct Position {
+    index: u64,
+    length: u64,
+}
+
+impl Sequence {
+    fn position(&mut self) -> Result<Position, String> {
+        if let Some(position) = self.position { return Ok(position); }
+        let position = self.conn.query_row(
+            "SELECT (SELECT count(*) FROM members WHERE ordinal < ?1), count(*) FROM members",
+            [self.current_ordinal],
+            |row| Ok(Position { index: row.get::<_, i64>(0)? as u64, length: row.get::<_, i64>(1)? as u64 }),
+        ).map_err(|error| error.to_string())?;
+        self.position = Some(position);
+        Ok(position)
+    }
+
+    fn move_to(&mut self, ordinal: i64, movement: Move) {
+        if ordinal == self.current_ordinal { return; }
+        if let Some(position) = &mut self.position {
+            position.index = match movement {
+                Move::Previous => position.index - 1,
+                Move::Next => position.index + 1,
+                Move::First => 0,
+                Move::Last => position.length - 1,
+            };
+        }
+        self.current_ordinal = ordinal;
+    }
 }
 
 struct PendingFile {
@@ -201,6 +235,7 @@ pub fn start(
         path,
         conn,
         current_ordinal,
+        position: None,
         scope,
     });
     pending.published = true;
@@ -236,11 +271,13 @@ pub fn move_current(
     // sequence never wraps, so a held arrow key stops at the last item
     // instead of silently starting the section over.
     if let Some(ordinal) = ordinal {
-        sequence.current_ordinal = ordinal;
+        sequence.move_to(ordinal, movement);
     }
     let snapshot = snapshot_locked(sequence, index_conn, projection);
     if snapshot.is_err() {
         sequence.current_ordinal = previous_ordinal;
+        // The failed snapshot may already have pruned unavailable members.
+        sequence.position = None;
     }
     snapshot
 }
@@ -294,7 +331,9 @@ pub fn reconcile(
             )
         });
     let detach = sequence.conn.execute("DETACH DATABASE library", []);
-    result.map_err(|error| error.to_string())?;
+    if result.map_err(|error| error.to_string())? > 0 {
+        sequence.position = None;
+    }
     detach.map_err(|error| error.to_string())?;
     if member_at(&sequence.conn, sequence.current_ordinal)?.is_none() {
         let replacement = neighbor_ordinal(&sequence.conn, sequence.current_ordinal, true)?.or(
@@ -338,22 +377,7 @@ fn snapshot_locked(
         };
         let member = follow_promotion(sequence, index_conn, member)?;
         if let Some(item) = queries::item_by_identity(index_conn, &member, projection)? {
-            let index = sequence
-                .conn
-                .query_row(
-                    "SELECT COUNT(*) FROM members WHERE ordinal < ?1",
-                    [sequence.current_ordinal],
-                    |row| row.get::<_, i64>(0),
-                )
-                .map_err(|error| error.to_string())?
-                .max(0) as u64;
-            let length = sequence
-                .conn
-                .query_row("SELECT COUNT(*) FROM members", [], |row| {
-                    row.get::<_, i64>(0)
-                })
-                .map_err(|error| error.to_string())?
-                .max(0) as u64;
+            let position = sequence.position()?;
             return Ok(Snapshot {
                 token: sequence.token.clone(),
                 detail: queries::item_detail(
@@ -363,8 +387,8 @@ fn snapshot_locked(
                 )?,
                 member,
                 item,
-                index,
-                length,
+                index: position.index,
+                length: position.length,
                 section_index,
                 scope: sequence.scope,
             });
@@ -376,6 +400,7 @@ fn snapshot_locked(
                 [sequence.current_ordinal],
             )
             .map_err(|error| error.to_string())?;
+        sequence.position = None;
         sequence.current_ordinal =
             neighbor_ordinal(&sequence.conn, sequence.current_ordinal, true)?
                 .or(neighbor_ordinal(
@@ -496,3 +521,7 @@ fn remove_file_if_present(path: &Path) -> Result<(), String> {
         Err(error) => Err(error.to_string()),
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/viewer_sequence.rs"]
+mod tests;
