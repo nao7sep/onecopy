@@ -513,6 +513,31 @@ describe("derived updates outside the loaded window", () => {
     expect(invokeCalls.slice(start)).toEqual([{ command: "get_item_detail", args: { hash: "h1", pathId: null } }]);
   });
 
+  it.each(["visible", "off-window"])("retains large selection references for %s enrichment", async (location) => {
+    await selectOffWindow();
+    const selectedPositions = new Map(Array.from({ length: 10_000 }, (_, index) => [`h${index + 1}`, index]));
+    useItemsStore.setState({
+      selectedPositions,
+      selectedKeys: new Set(selectedPositions.keys()),
+      rangeBasePositions: new Map(selectedPositions),
+      rangeBase: new Set(selectedPositions.keys()),
+      totalItems: selectedPositions.size,
+    });
+    const before = useItemsStore.getState();
+    const index = location === "visible" ? 9 : 1;
+    mockCommand("get_item_detail", () => ({ fileName: "enriched.jpg", kind: "image" }));
+    before.applyDerivedItem(`h${index}`, item(index, { copyCount: 3 }));
+    if (location === "off-window") {
+      await vi.waitFor(() => expect(useItemsStore.getState().detail?.fileName).toBe("enriched.jpg"));
+    }
+    const after = useItemsStore.getState();
+    for (const key of ["selectedKeys", "selectedPositions", "rangeBase", "rangeBasePositions", "itemPositions", "scrollRequest"] as const) {
+      expect(after[key]).toBe(before[key]);
+    }
+    if (location === "visible") expect(after.items[0].copyCount).toBe(3);
+    else expect(after.detail?.fileName).toBe("enriched.jpg");
+  });
+
   it("promotes an off-window selected identity across selection and range state", async () => {
     await selectOffWindow();
     const before = useItemsStore.getState();

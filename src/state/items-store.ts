@@ -658,6 +658,13 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     const state = get();
     const items = replaceDerivedItem(state.items, previousHash, item);
     const current = item.hash;
+    // Enrichment does not change membership or positions. Preserve large
+    // selections and their references; only an identity promotion remaps them.
+    if (previousHash === current) {
+      if (items !== state.items) set({ items });
+      if (state.selectedItem === current) loadAnchorDetail(current, "background");
+      return;
+    }
     // The selected anchor can outlive its loaded window. Derived completion
     // still updates its identity and detail even when no visible row changes.
     const selectionAffected = [previousHash, current].some((key) =>
