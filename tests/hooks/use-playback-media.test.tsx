@@ -14,8 +14,10 @@ const playbackClient = vi.hoisted(() => ({
 vi.mock("../../src/state/playback-client-store", () => ({
   registerPlaybackClient: playbackClient.register,
   unregisterPlaybackClient: playbackClient.unregister,
-  usePlaybackClientStore: (select: (state: { session: PlaybackSession | null }) => unknown) =>
-    select({ session: playbackClient.session }),
+  usePlaybackClientStore: Object.assign(
+    (select: (state: { session: PlaybackSession | null }) => unknown) => select({ session: playbackClient.session }),
+    { getState: () => ({ session: playbackClient.session }) },
+  ),
 }));
 
 import { usePlaybackMedia } from "../../src/hooks/usePlaybackMedia";

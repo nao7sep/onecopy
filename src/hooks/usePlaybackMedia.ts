@@ -2,11 +2,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { emit } from "@tauri-apps/api/event";
 import type {
   PlaybackMedium,
+  PlaybackSession,
   PlaybackRegistration,
   PlaybackSurface,
 } from "../models/playback";
 import { mediaUseActive, useOwnedMedia } from "../media-use";
 import { log, toErrorFields } from "../repositories";
+import { recordActionFailure } from "../state/notifications-store";
+import { message } from "../i18n/translate";
 import {
   registerPlaybackClient,
   unregisterPlaybackClient,
@@ -28,7 +31,14 @@ export function usePlaybackMedia<T extends HTMLMediaElement>(
   medium: PlaybackMedium,
   enabled = true,
 ) {
-  const [elementRef, setElementRef] = useOwnedMedia<T>();
+  const cleanupApplication = useRef<(() => void) | null>(null);
+  const restorePending = useRef(false);
+  const suppressedSession = useRef<PlaybackSession | null>(null);
+  const [elementRef, setElementRef] = useOwnedMedia<T>(key, (restorePlayback) => {
+    suppressedSession.current = restorePlayback ? null : usePlaybackClientStore.getState().session;
+    restorePending.current = true;
+    applyCurrent();
+  });
   const [setupFailed, setSetupFailed] = useState(false);
   const setupAttempt = useRef(0);
   const session = usePlaybackClientStore((state) => state.session);
@@ -58,35 +68,50 @@ export function usePlaybackMedia<T extends HTMLMediaElement>(
     };
   }, [enabled, key, medium, register, surface]);
 
-  useEffect(() => {
+  const applyCurrent = useCallback(() => {
+    cleanupApplication.current?.();
+    cleanupApplication.current = null;
     const element = elementRef.current;
-    if (element === null) return;
-    const owns = enabled && session?.owner === surface && session.key === key;
+    if (element === null || mediaUseActive()) return;
+    const latest = usePlaybackClientStore.getState().session;
+    const owns = enabled && latest?.owner === surface && latest.key === key;
     if (!owns) {
+      restorePending.current = false;
       element.pause();
       return;
     }
-    if (Math.abs(element.volume - session.volume) > 0.001)
-      element.volume = session.volume;
-    if (element.muted === session.soundEnabled)
-      element.muted = !session.soundEnabled;
+    if (Math.abs(element.volume - latest.volume) > 0.001)
+      element.volume = latest.volume;
+    if (element.muted === latest.soundEnabled)
+      element.muted = !latest.soundEnabled;
     let current = true;
+    const stillCurrent = () => current && !mediaUseActive() && elementRef.current === element &&
+      usePlaybackClientStore.getState().session === latest;
     const applyPosition = () => {
-      if (Math.abs(element.currentTime - session.position) > 0.35) {
+      if (!stillCurrent()) return;
+      const restoring = restorePending.current;
+      restorePending.current = false;
+      let restorationFailed = false;
+      const reportRestoreFailure = (error: unknown) => {
+        if (restorationFailed) return;
+        restorationFailed = true;
+        log.error("playback restore failed", toErrorFields(error));
+        recordActionFailure("playback-restore-failed", message("playback.restoreFailed"), error);
+      };
+      if (Math.abs(element.currentTime - latest.position) > 0.35) {
         try {
-          element.currentTime = session.position;
-        } catch {
-          // An unsupported or not-yet-seekable source remains truthful in
-          // its own media error state; playback ownership still stays unique.
+          element.currentTime = latest.position;
+        } catch (error) {
+          if (restoring) reportRestoreFailure(error);
+          // An unsupported or not-yet-seekable source otherwise remains
+          // truthful in its own media error state.
         }
       }
-      if (session.playing) {
+      if (latest.playing && suppressedSession.current !== latest) {
         void element.play().catch((error) => {
-          // play() can reject after a seek, handoff, disable, or unmount has
-          // superseded this application of the session. Only its current
-          // owner may turn a rejected start into a paused observation.
-          if (!current) return;
-          log.warn("media playback start failed", toErrorFields(error));
+          if (!stillCurrent()) return;
+          if (restoring) reportRestoreFailure(error);
+          else log.warn("media playback start failed", toErrorFields(error));
           emitPlayback("playback://observe", {
             surface,
             key,
@@ -100,17 +125,26 @@ export function usePlaybackMedia<T extends HTMLMediaElement>(
         element.pause();
       }
     };
-    if (element.readyState >= HTMLMediaElement.HAVE_METADATA) applyPosition();
-    else
-      element.addEventListener("loadedmetadata", applyPosition, { once: true });
-    return () => {
+    // Resume installs this listener before load(), which may still expose
+    // the previous source’s readyState until that call resets the element.
+    if (!restorePending.current && element.readyState >= HTMLMediaElement.HAVE_METADATA) applyPosition();
+    else element.addEventListener("loadedmetadata", applyPosition, { once: true });
+    cleanupApplication.current = () => {
       current = false;
       element.removeEventListener("loadedmetadata", applyPosition);
     };
-  }, [elementRef, enabled, key, session, surface]);
+  }, [elementRef, enabled, key, surface]);
+
+  useEffect(() => {
+    applyCurrent();
+    return () => {
+      cleanupApplication.current?.();
+      cleanupApplication.current = null;
+    };
+  }, [applyCurrent, session]);
 
   const observe = useCallback(() => {
-    if (mediaUseActive()) return;
+    if (mediaUseActive() || restorePending.current) return;
     const element = elementRef.current;
     if (element === null) return;
     emitPlayback("playback://observe", {

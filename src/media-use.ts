@@ -7,8 +7,6 @@ import { useCallback, useRef, type MutableRefObject } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { log, toErrorFields } from "./repositories";
 import { createEventInstaller } from "./utils/eventInstallation";
-import { recordActionFailure } from "./state/notifications-store";
-import { message } from "./i18n/translate";
 
 interface ReleaseMessage {
   token: number;
@@ -16,16 +14,14 @@ interface ReleaseMessage {
   restorePlayback?: boolean;
 }
 
-interface SavedMedia {
+interface MediaReader {
   element: HTMLMediaElement;
-  src: string | null;
-  time: number;
-  playing: boolean;
+  resume: (restorePlayback: boolean) => void;
 }
 
-const elements = new Set<HTMLMediaElement>();
+const elements = new Set<MediaReader>();
 let activeToken: number | null = null;
-let released: SavedMedia[] = [];
+let released = new Map<MediaReader, string | null>();
 let lifecycle: Promise<void> = Promise.resolve();
 const operations = new Map<number, Promise<void>>();
 const resumeWaiters = new Map<number, () => void>();
@@ -36,13 +32,9 @@ export function mediaUseActive(): boolean {
   return activeToken !== null;
 }
 
-function clearElement(element: HTMLMediaElement): SavedMedia {
-  const saved: SavedMedia = {
-    element,
-    src: element.getAttribute("src"),
-    time: Number.isFinite(element.currentTime) ? element.currentTime : 0,
-    playing: !element.paused,
-  };
+function clearElement(reader: MediaReader): void {
+  const { element } = reader;
+  released.set(reader, element.getAttribute("src"));
   element.pause();
   element.removeAttribute("src");
   try {
@@ -51,13 +43,15 @@ function clearElement(element: HTMLMediaElement): SavedMedia {
     // A detached test/webview element may reject load; clearing `src` is the
     // handle-releasing operation and remains authoritative.
   }
-  return saved;
 }
 
-function register(element: HTMLMediaElement): () => void {
-  elements.add(element);
-  if (activeToken !== null) released.push(clearElement(element));
-  return () => elements.delete(element);
+function register(reader: MediaReader): () => void {
+  elements.add(reader);
+  if (activeToken !== null) clearElement(reader);
+  return () => {
+    elements.delete(reader);
+    released.delete(reader);
+  };
 }
 
 function afterPaint(): Promise<void> {
@@ -76,7 +70,8 @@ function afterPaint(): Promise<void> {
 async function release(message: ReleaseMessage): Promise<void> {
   if (activeToken !== message.token) {
     activeToken = message.token;
-    released = [...elements].map(clearElement);
+    released.clear();
+    elements.forEach(clearElement);
   }
   await afterPaint();
   const resumed = new Promise<void>((resolve) => {
@@ -101,35 +96,15 @@ async function release(message: ReleaseMessage): Promise<void> {
 function resume(token: number, restorePlayback = true): void {
   if (activeToken === token) {
     const saved = released;
-    released = [];
+    released = new Map();
     activeToken = null;
-    for (const { element, src, time, playing } of saved) {
-      if (!element.isConnected || src === null) continue;
+    for (const [reader, src] of saved) {
+      const { element } = reader;
+      if (!elements.has(reader) || !element.isConnected || src === null) continue;
       element.setAttribute("src", src);
-      const restore = () => {
-        let seekFailed = false;
-        if (time > 0) {
-          try {
-            element.currentTime = time;
-          } catch {
-            // A removed item or unsupported codec has no seekable timeline.
-            seekFailed = true;
-          }
-        }
-        if (playing && restorePlayback) {
-          element.play().catch((error) => {
-            // A failed restore (seek or resumed playback) is reported: the
-            // player must not stay silently paused at the wrong spot with no
-            // explanation.
-            log.error("playback restore failed", toErrorFields(error));
-            recordActionFailure("playback-restore-failed", message("playback.restoreFailed"), error);
-          });
-        } else if (seekFailed) {
-          log.error("playback position restore failed", { element: element.tagName });
-          recordActionFailure("playback-restore-failed", message("playback.restoreFailed"));
-        }
-      };
-      element.addEventListener("loadedmetadata", restore, { once: true });
+      // The playback owner applies current intent and installs its metadata
+      // listener before loading. This boundary owns resources, not playback.
+      reader.resume(restorePlayback);
       try {
         element.load();
       } catch {
@@ -177,17 +152,24 @@ export function installMediaUseBoundary(): Promise<void> {
   return install();
 }
 
-export function useOwnedMedia<T extends HTMLMediaElement>(): readonly [
+export function useOwnedMedia<T extends HTMLMediaElement>(
+  identity: string,
+  onResume: (restorePlayback: boolean) => void,
+): readonly [
   MutableRefObject<T | null>,
   (element: T | null) => void,
 ] {
   const ref = useRef<T | null>(null);
+  const resume = useRef(onResume);
+  resume.current = onResume;
   const unregister = useRef<(() => void) | null>(null);
   const setRef = useCallback((element: T | null) => {
     unregister.current?.();
     unregister.current = null;
     ref.current = element;
-    if (element !== null) unregister.current = register(element);
-  }, []);
+    if (element !== null) unregister.current = register({
+      element, resume: (restorePlayback) => resume.current(restorePlayback),
+    });
+  }, [identity]);
   return [ref, setRef] as const;
 }
