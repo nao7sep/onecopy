@@ -6,14 +6,18 @@ use onecopy_lib::face::{self, Face};
 use onecopy_lib::{index_store, queries};
 use rusqlite::{params, Connection, OptionalExtension};
 
-fn db() -> Connection {
-    let dir = tempfile::Builder::new().prefix("onecopy-face-db-").tempdir().unwrap();
-    // Leak the tempdir handle so the SQLite file outlives this helper; the OS
-    // temp cleaner owns it, the same lifetime every DB-backed test here uses.
-    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
-    std::mem::forget(dir);
-    conn
+struct DatabaseFixture {
+    // Fields drop in declaration order: close SQLite before removing its files.
+    conn: Connection,
+    _dir: tempfile::TempDir,
 }
+
+fn db() -> DatabaseFixture {
+    let dir = tempfile::Builder::new().prefix("onecopy-face-db-").tempdir().unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    DatabaseFixture { conn, _dir: dir }
+}
+
 fn seed_image(conn: &Connection, hash: &str, name: &str) {
     conn.execute(
         "INSERT INTO contents (hash, byte_size, kind, derived_at_utc, sharpness) \
@@ -59,7 +63,8 @@ fn group(conn: &Connection, hashes: &[&str]) {
 
 #[test]
 fn face_score_orders_ahead_of_sharpness_within_the_group() {
-    let conn = db();
+    let database = db();
+    let conn = &database.conn;
     for (hash, name) in [("smile", "a.jpg"), ("blur", "b.jpg"), ("scenery", "c.jpg")] {
         seed_image(&conn, hash, name);
     }
@@ -86,7 +91,8 @@ fn face_score_orders_ahead_of_sharpness_within_the_group() {
 
 #[test]
 fn disabled_face_policy_orders_by_sharpness_even_when_scores_exist() {
-    let conn = db();
+    let database = db();
+    let conn = &database.conn;
     seed_image(&conn, "smile", "a.jpg");
     seed_image(&conn, "sharp", "b.jpg");
     conn.execute("UPDATE contents SET sharpness = 2.0 WHERE hash = 'smile'", []).unwrap();
@@ -104,7 +110,8 @@ fn disabled_face_policy_orders_by_sharpness_even_when_scores_exist() {
 
 #[test]
 fn null_scores_fall_back_to_sharpness_exactly_as_before() {
-    let conn = db();
+    let database = db();
+    let conn = &database.conn;
     for (hash, name) in [("sharp", "a.jpg"), ("soft", "b.jpg")] {
         seed_image(&conn, hash, name);
     }
@@ -127,7 +134,8 @@ fn null_scores_fall_back_to_sharpness_exactly_as_before() {
 fn comparison_payload_serializes_the_score_camel_cased() {
     // The broadcast to the comparison windows is serde JSON; the frontend
     // mirror reads `faceScore`.
-    let conn = db();
+    let database = db();
+    let conn = &database.conn;
     seed_image(&conn, "one", "a.jpg");
     score_faces(&conn, "one", 0.5);
     group(&conn, &["one"]);
@@ -140,7 +148,8 @@ fn comparison_payload_serializes_the_score_camel_cased() {
 #[test]
 fn model_less_pass_is_a_silent_no_op_leaving_scores_null() {
     let dir = tempfile::Builder::new().prefix("onecopy-face-").tempdir().unwrap();
-    let conn = db();
+    let database = db();
+    let conn = &database.conn;
     seed_image(&conn, "img", "a.jpg");
     let cache = onecopy_lib::preview::CachePaths::new(dir.path().join("cache"));
 
@@ -256,7 +265,8 @@ windows_test! {
 #[test]
 fn corrupt_face_models_fail_as_a_dependency_before_any_media_receipt() {
     let dir = tempfile::tempdir().unwrap();
-    let conn = db();
+    let database = db();
+    let conn = &database.conn;
     seed_image(&conn, "img", "a.jpg");
     conn.execute("UPDATE contents SET derived_version = ?1 WHERE hash = 'img'", [onecopy_lib::derived_state::DERIVE_VERSION]).unwrap();
     assert_eq!(onecopy_lib::derived_state::face_candidates(&conn, None, 10).unwrap().len(), 1);
