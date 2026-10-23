@@ -295,9 +295,11 @@ describe("the issues modal", () => {
     mockCommands({ get_issues: () => ++calls === 1
       ? new Promise((resolve) => { resolveOld = resolve; }) : { total: 0, rows: [] } });
     const old = useIssuesStore.getState().load();
-    await useIssuesStore.getState().load();
+    await Promise.resolve();
+    const fresh = useIssuesStore.getState().load();
+    expect(calls).toBe(1);
     resolveOld({ total: 1, rows: [row(1)] });
-    await old;
+    await Promise.all([old, fresh]);
     expect(useIssuesStore.getState().rows).toEqual([]);
     expect(useIssuesStore.getState().total).toBe(0);
   });

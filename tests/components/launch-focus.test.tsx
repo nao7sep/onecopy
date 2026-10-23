@@ -26,7 +26,7 @@ beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
   mockCommands({
     get_section_counts: () => ({ images: [], videos: [], others: [] }),
-    get_issues: () => ({ issues: [], total: 0 }),
+    get_issues: () => ({ rows: [], total: 0 }),
     binaries_state: () => null,
     patch_state: () => ({}),
     log_event: () => null,

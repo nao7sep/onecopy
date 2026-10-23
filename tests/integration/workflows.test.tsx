@@ -116,7 +116,7 @@ beforeEach(() => {
       },
     }),
     get_section_counts: () => ({ images: [], videos: [], others: [] }),
-    get_issues: () => ({ issues: [], total: 0 }),
+    get_issues: () => ({ rows: [], total: 0 }),
     binaries_state: () => [],
     check_source_dirs: () => ({ missing: [], substituted: [] }),
     patch_state: () => ({}),
@@ -575,7 +575,7 @@ describe("the failure workflow", () => {
       };
     });
     mockCommand("get_issues", () => ({
-      issues: [
+      rows: [
         {
           id: 1,
           kind: "delete-failed",
@@ -584,7 +584,8 @@ describe("the failure workflow", () => {
           firstSeenUtc: "2026-01-01T00:00:00.000Z",
           lastSeenUtc: "2026-01-01T00:00:00.000Z",
           occurrenceCount: 1,
-          recovery: null,
+          messageKey: null,
+          messageValues: null,
         },
       ],
       total: 1,

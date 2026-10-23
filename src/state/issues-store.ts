@@ -1,6 +1,5 @@
 // The current-run inbox is diagnostic visibility, never work eligibility.
 import { create } from "zustand";
-import { requestSeq } from "./request-seq";
 import { invoke } from "@tauri-apps/api/core";
 import { message, type Message } from "../i18n/translate";
 import type { MessageKey } from "../i18n/catalogues";
@@ -38,73 +37,98 @@ interface IssuesState {
   dismissAll: () => Promise<void>;
 }
 
-const issuesLoad = requestSeq();
-export const useIssuesStore = create<IssuesState>((set, get) => ({
-  total: 0,
-  rows: [],
-  loading: false,
-  loadingMore: false,
-  error: null,
-  load: async () => {
-    const fresh = issuesLoad.begin();
-    set({ loading: true, loadingMore: false, error: null });
-    try {
-      const result = await invoke<{ total: number; rows: IssueRow[] }>("get_issues", { limit: PAGE_SIZE });
-      if (fresh()) set({ ...result, loading: false, error: null });
-    } catch (error) {
-      if (!fresh()) return;
-      log.error("issues load failed", toErrorFields(error));
-      set({ loading: false, error: message("issues.unavailable") });
-    }
-  },
-  loadMore: async () => {
-    const { rows, total, loading, loadingMore } = get();
-    const last = rows[rows.length - 1];
-    if (loading || loadingMore || last === undefined || rows.length >= total) return;
-    const fresh = issuesLoad.begin();
-    set({ loadingMore: true, error: null });
-    try {
-      const result = await invoke<{ total: number; rows: IssueRow[] }>("get_issues", {
-        limit: PAGE_SIZE,
-        afterFirstSeenUtc: last.firstSeenUtc,
-        afterId: last.id,
-      });
-      if (fresh()) {
-        set((state) => ({
-          total: result.total,
-          rows: [...state.rows, ...result.rows],
-          loadingMore: false,
-          error: null,
-        }));
+export const useIssuesStore = create<IssuesState>((set, get) => {
+  let reader: Promise<void> | null = null;
+  let active: "refresh" | "more" | null = null;
+  let refreshPending = false;
+  let morePending = false;
+  let dismissalRevision = 0;
+
+  const readPending = (): Promise<void> => {
+    if (reader !== null) return reader;
+    // Publish ownership before callbacks can request another read.
+    reader = Promise.resolve().then(async () => {
+      while (refreshPending || morePending) {
+        const refresh = refreshPending;
+        if (refresh) refreshPending = false;
+        else morePending = false;
+        const { rows, total } = get();
+        const last = rows[rows.length - 1];
+        if (!refresh && (last === undefined || rows.length >= total)) continue;
+        active = refresh ? "refresh" : "more";
+        const revision = dismissalRevision;
+        set({ loading: refresh, loadingMore: !refresh, error: null });
+        try {
+          const result = await invoke<{ total: number; rows: IssueRow[] }>("get_issues", {
+            limit: PAGE_SIZE,
+            ...(!refresh && last !== undefined ? {
+              afterFirstSeenUtc: last.firstSeenUtc, afterId: last.id,
+            } : {}),
+          });
+          if (revision !== dismissalRevision || (!refresh && refreshPending)) continue;
+          // A notification received during this read requests one successor;
+          // it does not hide the latest complete page during a sustained burst.
+          set((state) => ({ ...result, rows: refresh ? result.rows : [...state.rows, ...result.rows],
+            loading: false, loadingMore: false, error: null }));
+        } catch (error) {
+          if (revision !== dismissalRevision || (!refresh && refreshPending)) continue;
+          log.error(refresh ? "issues load failed" : "issues page load failed", toErrorFields(error));
+          if (refresh) morePending = false;
+          set({ loading: false, loadingMore: false, error: message("issues.unavailable") });
+        } finally {
+          active = null;
+        }
       }
-    } catch (error) {
-      if (!fresh()) return;
-      log.error("issues page load failed", toErrorFields(error));
-      set({ loadingMore: false, error: message("issues.unavailable") });
-    }
-  },
-  dismiss: async (id) => {
-    set({ error: null });
-    try {
-      await invoke("dismiss_issue", { id });
-      await get().load();
-    } catch (error) {
-      log.error("issue dismissal failed", toErrorFields(error));
-      const failure = message("issues.dismissFailed");
-      set({ error: failure });
-      recordActionFailure("issue-dismiss-failed", failure, error);
-    }
-  },
-  dismissAll: async () => {
-    set({ error: null });
-    try {
-      await invoke("dismiss_all_issues");
-      await get().load();
-    } catch (error) {
-      log.error("dismiss all failed", toErrorFields(error));
-      const failure = message("issues.dismissAllFailed");
-      set({ error: failure });
-      recordActionFailure("issues-dismiss-failed", failure, error);
-    }
-  },
-}));
+      set({ loading: false, loadingMore: false });
+    }).finally(() => {
+      reader = null;
+      // Store subscribers may request work while the final state is published.
+      if (refreshPending || morePending) return readPending();
+    });
+    return reader;
+  };
+
+  return {
+    total: 0,
+    rows: [],
+    loading: false,
+    loadingMore: false,
+    error: null,
+    load: () => {
+      refreshPending = true;
+      // A fresh head supersedes the old page cursor, not the user's Show more intent.
+      if (active === "more") morePending = true;
+      return readPending();
+    },
+    loadMore: () => {
+      if (active !== "more") morePending = true;
+      return readPending();
+    },
+    dismiss: async (id) => {
+      set({ error: null });
+      try {
+        await invoke("dismiss_issue", { id });
+        dismissalRevision += 1;
+        await get().load();
+      } catch (error) {
+        log.error("issue dismissal failed", toErrorFields(error));
+        const failure = message("issues.dismissFailed");
+        set({ error: failure });
+        recordActionFailure("issue-dismiss-failed", failure, error);
+      }
+    },
+    dismissAll: async () => {
+      set({ error: null });
+      try {
+        await invoke("dismiss_all_issues");
+        dismissalRevision += 1;
+        await get().load();
+      } catch (error) {
+        log.error("dismiss all failed", toErrorFields(error));
+        const failure = message("issues.dismissAllFailed");
+        set({ error: failure });
+        recordActionFailure("issues-dismiss-failed", failure, error);
+      }
+    },
+  };
+});
