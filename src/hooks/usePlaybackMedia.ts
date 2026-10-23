@@ -39,7 +39,7 @@ export function usePlaybackMedia<T extends HTMLMediaElement>(
       await registerPlaybackClient(registration);
       if (setupAttempt.current === attempt) setSetupFailed(false);
     } catch {
-      // installPlaybackClient preserves the original diagnostic. This hook owns
+      // The playback client preserves the original diagnostic. This hook owns
       // only the authored, per-media recovery result.
       if (setupAttempt.current === attempt) setSetupFailed(true);
     }

@@ -74,7 +74,10 @@ export function registerPlaybackClient(
   return installPlaybackClient().then(() => {
     const current = registrations.get(registration.surface);
     if (sameRegistration(current, registration)) {
-      emitPlayback("playback://register", registration);
+      return emit("playback://register", registration).catch((error) => {
+        log.error("playback registration failed", toErrorFields(error));
+        throw error;
+      });
     }
   });
 }
