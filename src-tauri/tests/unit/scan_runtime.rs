@@ -302,3 +302,54 @@ fn the_share_admission_and_the_reported_availability_give_one_answer() {
     FOREGROUND_WAITERS.fetch_sub(1, Ordering::SeqCst);
     assert!(ordinary_share_free());
 }
+
+#[cfg(unix)]
+#[test]
+fn section_recheck_finishes_healthy_directories_and_tail_after_a_read_refusal() {
+    use std::os::unix::fs::PermissionsExt;
+    let _serial = serial_test();
+    crate::scanner::SCAN_CANCEL.store(false, Ordering::SeqCst);
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("source");
+    let locked = root.join("locked");
+    let healthy = root.join("healthy");
+    std::fs::create_dir_all(&locked).unwrap();
+    std::fs::create_dir_all(&healthy).unwrap();
+    std::fs::write(locked.join("kept.txt"), b"old file").unwrap();
+    let conn = crate::index_store::open(&temp.path().join("index.sqlite3")).unwrap();
+    let settings = crate::scanner::settings_from_config(
+        Some(&serde_json::json!({"sourceDirs": [root]})), &temp.path().join("data"), 0,
+    );
+    crate::scanner::run_source_check(&conn, &settings, &|_| {}).unwrap();
+    std::fs::write(healthy.join("new.txt"), b"new healthy file").unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let dirs: Vec<String> = [&locked, &healthy].iter().map(|path| crate::native_path::encode(path).into_owned()).collect();
+    let result = recheck_section_dirs(&conn, &settings, &dirs, &|| Ok(()));
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(result.unwrap_err().contains("locked"));
+    let resolved: bool = conn.query_row(
+        "SELECT resolved_source IS NOT NULL FROM paths WHERE file_name = 'new.txt' AND missing = 0", [], |row| row.get(0),
+    ).unwrap();
+    assert!(resolved, "healthy file reaches the information tail despite the other directory's failure");
+    assert_eq!(conn.query_row("SELECT missing FROM paths WHERE file_name = 'kept.txt'", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    assert_eq!(conn.query_row("SELECT count(*) FROM active_issues WHERE kind = ?1", [crate::scanner::WALK_ERROR], |row| row.get::<_, i64>(0)).unwrap(), 1);
+    assert_eq!(conn.query_row("SELECT relationship_dirty FROM scan_dirs", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+    recheck_section_dirs(&conn, &settings, &dirs, &|| Ok(())).unwrap();
+    assert_eq!(conn.query_row("SELECT count(*) FROM active_issues WHERE kind = ?1", [crate::scanner::WALK_ERROR], |row| row.get::<_, i64>(0)).unwrap(), 0);
+}
+
+#[test]
+fn section_recheck_cancellation_stops_before_directory_work() {
+    let _serial = serial_test();
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("source");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("new.txt"), b"untouched").unwrap();
+    let conn = crate::index_store::open(&temp.path().join("index.sqlite3")).unwrap();
+    let settings = crate::scanner::settings_from_config(
+        Some(&serde_json::json!({"sourceDirs": [root]})), &temp.path().join("data"), 0,
+    );
+    let dirs = [crate::native_path::encode(&root).into_owned()];
+    assert_eq!(recheck_section_dirs(&conn, &settings, &dirs, &|| Err(crate::scanner::CANCELLED.into())).unwrap_err(), crate::scanner::CANCELLED);
+    assert_eq!(conn.query_row("SELECT count(*) FROM paths", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+}

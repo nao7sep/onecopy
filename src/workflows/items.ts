@@ -195,6 +195,9 @@ export async function rescanCurrentSection(): Promise<void> {
     log.error("section rescan failed", toErrorFields(error));
     feedback.finish({ tone: "danger", text: message("section.rescanFailed") });
     recordActionFailure("section-refresh-failed", message("section.rescanFailedNotice"), error);
+    // Healthy directories may have committed before the partial failure.
+    await useItemsStore.getState().refresh();
+    await useSectionsStore.getState().loadCounts();
     await useIssuesStore.getState().load();
   }
 }

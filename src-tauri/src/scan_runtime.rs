@@ -930,32 +930,9 @@ pub(crate) fn recheck_section(
             // admitted recheck releases it, even if later stat fails.
             crate::derived_work::wake();
         }
-        crate::scanner::with_scoped_index_repair(&conn, &dirs, || {
-            let mut changed = 0u64;
-            for dir in &dirs {
-                changed += crate::watcher::restat_dir(
-                    &conn,
-                    crate::native_path::from_text(dir).as_ref(),
-                    &settings.lists,
-                    &settings.source_dirs,
-                    &data_root,
-                )?;
-            }
-            // Finish any interrupted index checkpoints too. Derived media is
-            // woken after the index tail instead of being smuggled into the
-            // rescan.
-            if changed > 0 || crate::scanner::pending_index_work_exists(&conn)? {
-                let mut summary = crate::scanner::ScanSummary::default();
-                crate::scanner::run_index_tail_for_dirs(
-                    &conn,
-                    &settings,
-                    &dirs,
-                    &|_| {},
-                    &mut summary,
-                )?;
-                crate::derived_work::wake();
-            }
-            Ok(changed)
+        recheck_section_dirs(&conn, &settings, &dirs, &|| {
+            if crate::scanner::cancelled() { return Err(crate::scanner::CANCELLED.to_string()); }
+            yield_at_safe_point().map(|_| ())
         })
     });
     match result {
@@ -963,6 +940,29 @@ pub(crate) fn recheck_section(
         Err(error) if error == crate::scanner::CANCELLED => Ok(RescanSectionOutcome::Cancelled),
         Err(error) => Err(error),
     }
+}
+
+fn recheck_section_dirs(
+    conn: &rusqlite::Connection,
+    settings: &crate::scanner::ScanSettings,
+    dirs: &[String],
+    between: &dyn Fn() -> Result<(), String>,
+) -> Result<u64, String> {
+    crate::scanner::with_scoped_index_repair(conn, dirs, || {
+        let native_dirs: Vec<std::path::PathBuf> = dirs.iter()
+            .map(|dir| crate::native_path::from_text(dir).into_owned()).collect();
+        let pass = crate::watcher::restat_batch(conn, &native_dirs, settings, between)?;
+        between()?;
+        // A directory-local failure cannot strand healthy files' information.
+        // Keep repair debt and the failure visible after that tail settles.
+        if pass.changed() > 0 || crate::scanner::pending_index_work_exists(conn)? {
+            let mut summary = crate::scanner::ScanSummary::default();
+            crate::scanner::run_index_tail_for_dirs(conn, settings, dirs, &|_| {}, &mut summary)?;
+            crate::derived_work::wake();
+        }
+        if let Some(error) = pass.failure() { return Err(error); }
+        Ok(pass.changed())
+    })
 }
 
 pub(crate) fn record_runtime_failure(app: &AppHandle, kind: &str, message: &str) {

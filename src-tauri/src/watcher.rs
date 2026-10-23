@@ -64,13 +64,32 @@ pub fn restat_dir(
     data_root: &Path,
 ) -> Result<u64, String> {
     restat_dir_with(conn, dir, lists, source_roots, data_root, &|path| crate::volume_io::read_dir(path, true))
+        .map_err(|error| error.message().to_owned())
+}
+
+#[derive(Debug)]
+enum RestatFailure {
+    Directory(String),
+    Stop(String),
+}
+
+impl RestatFailure {
+    fn message(&self) -> &str {
+        match self { Self::Directory(message) | Self::Stop(message) => message }
+    }
+}
+
+// Database and shared-boundary failures are terminal. Only the I/O boundary
+// that knows a failure belongs to one directory may classify it as local.
+impl From<String> for RestatFailure {
+    fn from(message: String) -> Self { Self::Stop(message) }
 }
 
 fn restat_dir_with(
     conn: &rusqlite::Connection, dir: &Path, lists: &ScanLists,
     source_roots: &[String], data_root: &Path,
     read_dir: &dyn Fn(&Path) -> std::io::Result<Vec<crate::volume_io::DirEntryInfo>>,
-) -> Result<u64, String> {
+) -> Result<u64, RestatFailure> {
     if crate::trash::is_trash_path(dir) || crate::paths::is_within_data_root(dir, data_root) {
         return Ok(0);
     }
@@ -88,7 +107,7 @@ fn restat_dir_with(
     let root = match crate::visibility_index::root_for(&roots, dir) {
         Some(root) => root,
         None if crate::visibility_index::root_for(source_roots, dir).is_some() => return Ok(0),
-        None => return Err("Changed directory is outside configured sources".to_string()),
+        None => return Err(RestatFailure::Directory("Changed directory is outside configured sources".to_string())),
     };
     // Losing the configured root does not establish that any indexed file was deleted.
     if !crate::volume_io::is_dir(&root).unwrap_or(false) {
@@ -104,7 +123,7 @@ fn restat_dir_with(
     {
         if !crate::volume_io::is_dir(&root).unwrap_or(false) { return Ok(0); }
         let dir_str = crate::native_path::encode(&dir).to_string();
-        return scanner::mark_missing_under(conn, &dir_str);
+        return scanner::mark_missing_under(conn, &dir_str).map_err(RestatFailure::from);
     }
     let mut visibility_directories = crate::visibility_index::DirectoryFacts::default();
     let inherited = visibility_directories.refresh(conn, &root, dir)?;
@@ -131,7 +150,9 @@ fn restat_dir_with(
                 None,
                 &error.to_string(),
             )?;
-            return Err(error.to_string());
+            return Err(if crate::volume_io::wait_failure(&error).is_some() {
+                RestatFailure::Stop(error.to_string())
+            } else { RestatFailure::Directory(error.to_string()) });
         }
     };
     for entry in entries {
@@ -774,7 +795,7 @@ impl WatchPass {
         self.changed
     }
 
-    fn failure(&self) -> Option<String> {
+    pub(crate) fn failure(&self) -> Option<String> {
         let (dir, error) = self.failed.first()?;
         Some(format!(
             "{} changed folder(s) could not be updated; recheck the source folders. {}: {error}",
@@ -798,9 +819,10 @@ pub(crate) fn restat_batch(
     let data_root = settings.data_root();
     for dir in dirs {
         between()?;
-        match restat_dir(conn, dir, &settings.lists, &settings.source_dirs, data_root) {
+        match restat_dir_with(conn, dir, &settings.lists, &settings.source_dirs, data_root, &|path| crate::volume_io::read_dir(path, true)) {
             Ok(count) => pass.changed += count,
-            Err(error) => {
+            Err(RestatFailure::Stop(error)) => return Err(error),
+            Err(RestatFailure::Directory(error)) => {
                 logging::warn(
                     "watcher directory failed; continuing with the rest of the batch",
                     json!({ "dir": crate::native_path::encode(&dir), "error": { "message": &error } }),

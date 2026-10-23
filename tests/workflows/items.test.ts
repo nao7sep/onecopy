@@ -4,8 +4,9 @@
 // sentence in the language the document declares, so this spec needs a document
 // even though the subject is not the interface.
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { rescanCurrentSection } from "../../src/workflows/items";
+import { useSectionsStore } from "../../src/state/sections-store";
 import { useItemsStore } from "../../src/state/items-store";
 import { currentMainFeedback, useMainFeedbackStore } from "../../src/state/main-feedback-store";
 import { mockCommands, resetTauriMocks } from "../mocks/tauri";
@@ -23,6 +24,8 @@ beforeEach(() => {
   });
 });
 
+afterEach(() => vi.restoreAllMocks());
+
 describe("section repair outcome", () => {
   it("leaves intentional cancellation to the resumable-index warning", async () => {
     mockCommands({ rescan_section: () => ({ status: "cancelled" }) });
@@ -32,7 +35,9 @@ describe("section repair outcome", () => {
     expect(currentMainFeedback(useMainFeedbackStore.getState())).toBeNull();
   });
 
-  it("keeps an unexpected repair failure visible", async () => {
+  it("refreshes committed partial changes while keeping a repair failure visible", async () => {
+    const refresh = vi.spyOn(useItemsStore.getState(), "refresh").mockResolvedValue();
+    const counts = vi.spyOn(useSectionsStore.getState(), "loadCounts").mockResolvedValue();
     mockCommands({
       rescan_section: () =>
         Promise.reject(
@@ -42,6 +47,8 @@ describe("section repair outcome", () => {
 
     await rescanCurrentSection();
 
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(counts).toHaveBeenCalledOnce();
     const feedback = currentMainFeedback(useMainFeedbackStore.getState());
     expect(feedback?.tone).toBe("danger");
     expect(inEnglish(feedback?.text)).toBe("This section could not be refreshed. Try again.");

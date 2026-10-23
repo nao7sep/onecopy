@@ -223,14 +223,23 @@ fn an_unreadable_directory_never_turns_known_files_into_missing_rows() {
     restat_dir(&conn, &root, &lists(), &[stored_root.to_string_lossy().into_owned()], &no_data_root()).unwrap();
 
     let original = std::fs::metadata(&root).unwrap().permissions();
-    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o000)).unwrap();
-    let result = restat_dir(&conn, &root, &lists(), &[stored_root.to_string_lossy().into_owned()], &no_data_root());
-    // Root test runners can read past the mode bits; skip rather than assert
-    // a false failure in that environment.
-    if result.is_ok() {
-        std::fs::set_permissions(&root, original).unwrap();
-        return;
+    struct RestorePermissions<'a>(&'a std::path::Path, std::fs::Permissions);
+    impl Drop for RestorePermissions<'_> {
+        fn drop(&mut self) {
+            if let Err(error) = std::fs::set_permissions(self.0, self.1.clone()) {
+                eprintln!("could not restore fixture permissions: {error}");
+            }
+        }
     }
+    let _permissions = RestorePermissions(&root, original.clone());
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o000)).unwrap();
+    // Establish this runner's permission capability independently of production.
+    match std::fs::read_dir(&root) {
+        Ok(_) => return,
+        Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied),
+    }
+    let result = restat_dir(&conn, &root, &lists(), &[stored_root.to_string_lossy().into_owned()], &no_data_root());
+    assert!(result.is_err(), "an unreadable directory must report failure");
 
     let missing: i64 = conn
         .query_row("SELECT missing FROM paths", [], |row| row.get(0))

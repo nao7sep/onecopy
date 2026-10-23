@@ -372,3 +372,26 @@ fn stopping_a_batch_preserves_collected_overflow_and_queued_events() {
     assert!(dirty.is_empty());
     assert!(receiver.try_recv().unwrap().is_err());
 }
+
+#[test]
+fn a_database_failure_stops_the_directory_batch_before_its_next_entry() {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("source");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("new.txt"), b"new").unwrap();
+    let conn = crate::index_store::open(&temp.path().join("index.sqlite3")).unwrap();
+    let settings = crate::scanner::settings_from_config(
+        Some(&serde_json::json!({"sourceDirs": [root]})), &temp.path().join("data"), 0,
+    );
+    conn.authorizer(Some(|context: AuthContext<'_>| {
+        if matches!(context.action, AuthAction::Insert { table_name: "paths" }) { Authorization::Deny }
+        else { Authorization::Allow }
+    })).unwrap();
+    let entered = std::cell::Cell::new(0);
+    let result = super::restat_batch(&conn, &[root.clone(), root], &settings, &|| {
+        entered.set(entered.get() + 1); Ok(())
+    });
+    assert!(result.is_err());
+    assert_eq!(entered.get(), 1);
+}
