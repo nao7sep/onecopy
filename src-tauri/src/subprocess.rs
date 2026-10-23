@@ -333,12 +333,14 @@ fn start_owned(
             }
         }
     };
+    let job = crate::derived_runtime::retain_current_job();
     let cancellation = Arc::new(AtomicBool::new(false));
     let owner_cancellation = cancellation.clone();
     let (settled, receiver) = std::sync::mpsc::channel();
     std::thread::Builder::new().name("onecopy-subprocess-owner".to_string())
         .spawn(move || {
             let _capacity = capacity;
+            let _job = job;
             let result = crate::failure_runtime::contain_item(|| {
                 run_owned(command, &owner_cancellation, idle_timeout, target, &settled)
             });

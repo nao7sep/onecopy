@@ -19,9 +19,9 @@
 //! helper thread that polls for a job carries it with
 //! [`on_behalf_of_current_job`].
 
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::sync::{Condvar, LazyLock, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
 use serde_json::json;
@@ -169,11 +169,11 @@ impl RuntimeState {
 
     /// The job owned by the calling thread.
     fn current_job(&self) -> Option<&Job> {
-        CURRENT_JOB.with(Cell::get).and_then(|id| self.job(id))
+        current_job_id().and_then(|id| self.job(id))
     }
 
     fn current_job_mut(&mut self, class: WorkClass) -> Option<&mut Job> {
-        let current = CURRENT_JOB.with(Cell::get);
+        let current = current_job_id();
         let id = current
             .and_then(|id| self.job(id))
             .filter(|job| job.class == class)
@@ -262,8 +262,26 @@ static POISON_LOGGED: std::sync::atomic::AtomicBool =
 static POISON_ISSUE_REPORTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+// Looking up the ID under the runtime lock must not upgrade and drop the
+// final lease: its destructor takes that same lock.
+#[derive(Clone)]
+struct JobContext {
+    id: u64,
+    owner: Weak<JobLease>,
+}
+
+fn current_job_id() -> Option<u64> {
+    CURRENT_JOB.with(|current| current.borrow().as_ref().map(|job| job.id))
+}
+
+/// Physical native owners retain the same job, including its file exclusion,
+/// lane capacity and requested queue turn, after a cancelled caller returns.
+pub(crate) fn retain_current_job() -> Option<Arc<JobLease>> {
+    CURRENT_JOB.with(|current| current.borrow().as_ref().and_then(|job| job.owner.upgrade()))
+}
+
 thread_local! {
-    static CURRENT_JOB: Cell<Option<u64>> = const { Cell::new(None) };
+    static CURRENT_JOB: RefCell<Option<JobContext>> = const { RefCell::new(None) };
     #[cfg(test)]
     static CANCEL_SIGNAL_HOOK: std::cell::RefCell<Option<Box<dyn FnMut()>>> = const { std::cell::RefCell::new(None) };
 }
@@ -344,25 +362,27 @@ fn report_poison_once(app: Option<&AppHandle>) {
     }
 }
 
-/// One admitted job. It binds the job to the admitting thread for
-/// `cancelled`, and releases its lane slot and queue turn when dropped.
+/// Binds one admitted job to its calling thread. Native owners can retain its
+/// lease; the last owner releases the lane slot and requested queue turn.
 struct ActiveGuard {
+    _owner: Arc<JobLease>,
+    previous: Option<JobContext>,
+}
+
+pub(crate) struct JobLease {
     app: Option<AppHandle>,
     id: u64,
     manual_ticket: Option<u64>,
-    previous: Option<u64>,
 }
 
 impl ActiveGuard {
     fn bind(app: Option<&AppHandle>, id: u64, manual_ticket: Option<u64>) -> Self {
-        let previous = CURRENT_JOB.with(|current| current.replace(Some(id)));
+        let owner = Arc::new(JobLease { app: app.cloned(), id, manual_ticket });
+        let previous = CURRENT_JOB.with(|current| current.replace(Some(JobContext {
+            id, owner: Arc::downgrade(&owner),
+        })));
         emit(app);
-        Self {
-            app: app.cloned(),
-            id,
-            manual_ticket,
-            previous,
-        }
+        Self { _owner: owner, previous }
     }
 
     /// Automatic admission never waits: it declines while the lane is full,
@@ -396,7 +416,12 @@ impl ActiveGuard {
 
 impl Drop for ActiveGuard {
     fn drop(&mut self) {
-        CURRENT_JOB.with(|current| current.set(self.previous));
+        CURRENT_JOB.with(|current| current.replace(self.previous.take()));
+    }
+}
+
+impl Drop for JobLease {
+    fn drop(&mut self) {
         if let Ok(mut runtime) = RUNTIME.0.lock() {
             runtime.remove(self.id);
             if self.manual_ticket == Some(runtime.serving_manual_ticket) {
@@ -733,11 +758,11 @@ pub fn cancelled() -> bool {
 pub(crate) fn on_behalf_of_current_job(
     check: Box<dyn Fn() -> bool + Send + 'static>,
 ) -> impl Fn() -> bool + Send + 'static {
-    let job = CURRENT_JOB.with(Cell::get);
+    let job = CURRENT_JOB.with(|current| current.borrow().clone());
     move || {
-        let previous = CURRENT_JOB.with(|current| current.replace(job));
+        let previous = CURRENT_JOB.with(|current| current.replace(job.clone()));
         let stop = check();
-        CURRENT_JOB.with(|current| current.set(previous));
+        CURRENT_JOB.with(|current| current.replace(previous));
         stop
     }
 }

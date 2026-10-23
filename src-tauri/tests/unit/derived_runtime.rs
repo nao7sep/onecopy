@@ -21,7 +21,7 @@ fn cancellation_keeps_its_selected_native_owner(boundary: CancelBoundary) {
         let active = ActiveGuard::begin(None, WorkClass::VideoTranscripts)
             .unwrap()
             .unwrap();
-        set_hash(active.id, "selected");
+        set_hash(active._owner.id, "selected");
         let native = crate::transcription::claim().unwrap();
         ready.send(()).unwrap();
         retiring.recv().unwrap();
@@ -164,7 +164,7 @@ fn lifecycle_signals_cancel_the_selected_native_transcription() {
         let active = ActiveGuard::begin(None, WorkClass::VideoTranscripts)
             .unwrap()
             .unwrap();
-        set_hash(active.id, "selected");
+        set_hash(active._owner.id, "selected");
         let native = crate::transcription::claim().unwrap();
         let canceller = thread::spawn(move || match boundary {
             CancelBoundary::Foreground => preempt_automatic(),
@@ -204,7 +204,7 @@ async fn dispatched_controls_yield_while_native_publication_holds_its_lock() {
     let active = ActiveGuard::begin(None, WorkClass::VideoTranscripts)
         .unwrap()
         .unwrap();
-    set_hash(active.id, "publishing");
+    set_hash(active._owner.id, "publishing");
     let caller_thread = thread::current().id();
     let (entered, publishing) = mpsc::channel();
     let (release, finish_publication) = mpsc::channel();
@@ -316,7 +316,7 @@ fn long_automatic_job(
     let (running_tx, running_rx) = mpsc::channel();
     let worker = thread::spawn(move || {
         let job = ActiveGuard::begin(None, class).unwrap().unwrap();
-        set_hash(job.id, hash);
+        set_hash(job._owner.id, hash);
         running_tx.send(()).unwrap();
         let started = Instant::now();
         while !cancelled() {
@@ -937,7 +937,7 @@ fn heavy_work_publishes_only_for_the_content_the_index_still_names() {
 fn runtime_and_detailed_snapshots_share_capture_order_across_completion() {
     let _serial = crate::scan_runtime::serial_test();
     let job = ActiveGuard::begin(None, WorkClass::VideoTranscripts).unwrap().unwrap();
-    set_hash(job.id, "ordering-test");
+    set_hash(job._owner.id, "ordering-test");
     let running = state_payload().unwrap();
     assert_eq!(running["active"]["hash"], "ordering-test");
     drop(job);
@@ -947,4 +947,66 @@ fn runtime_and_detailed_snapshots_share_capture_order_across_completion() {
     let later = state_payload().unwrap();
     assert!(later["revision"].as_u64().unwrap() > completed.revision);
     assert!(later["active"].is_null());
+}
+
+#[test]
+fn physical_job_lease_keeps_file_claims_out_after_the_caller_returns() {
+    let _serial = crate::scan_runtime::serial_test();
+    for policy in [ClaimPolicy::Mutation, ClaimPolicy::ExternalOpen] {
+        let active = ActiveGuard::begin(None, WorkClass::Previews).unwrap().unwrap();
+        let id = active._owner.id;
+        set_hash(id, "selected");
+        let physical = retain_current_job().unwrap();
+        let (settle, settlement) = mpsc::channel();
+        let native_owner = thread::spawn(move || {
+            let _physical = physical;
+            settlement.recv().unwrap();
+        });
+        drop(active);
+        assert!(current_job_id().is_none(), "the caller's binding ends immediately");
+        assert!(lock(None).unwrap().job(id).is_some(), "the native owner still owns the file");
+        let unrelated = exclusive_claim(None, &["other-file".into()], policy, &|| false).unwrap();
+        drop(unrelated);
+        let (stopping, stopped) = mpsc::channel();
+        let (admitted, admission) = mpsc::channel();
+        let claimant = thread::spawn(move || {
+            CANCEL_SIGNAL_HOOK.with(|hook| *hook.borrow_mut() = Some(Box::new(move || {
+                stopping.send(()).unwrap();
+            })));
+            let claim = exclusive_claim(None, &["selected".into()], policy, &|| false).unwrap();
+            admitted.send(()).unwrap();
+            drop(claim);
+        });
+        stopped.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(admission.try_recv().is_err(), "caller settlement cannot admit a conflicting operation");
+        assert!(lock(None).unwrap().job(id).unwrap().stop);
+        settle.send(()).unwrap();
+        native_owner.join().unwrap();
+        admission.recv_timeout(Duration::from_secs(2)).unwrap();
+        claimant.join().unwrap();
+        assert!(lock(None).unwrap().job(id).is_none());
+    }
+}
+
+#[test]
+fn physical_job_lease_retains_the_requested_turn_and_heavy_lane() {
+    let _serial = crate::scan_runtime::serial_test();
+    let requested = requested_heavy(None, WorkClass::AudioTranscripts, "selected").unwrap();
+    let physical = retain_current_job().unwrap();
+    let id = physical.id;
+    let ticket = physical.manual_ticket.unwrap();
+    drop(requested);
+    {
+        let runtime = lock(None).unwrap();
+        assert!(runtime.job(id).is_some());
+        assert_eq!(runtime.serving_manual_ticket, ticket);
+    }
+    assert!(ActiveGuard::begin(None, WorkClass::Faces).unwrap().is_none());
+    drop(physical);
+    {
+        let runtime = lock(None).unwrap();
+        assert!(runtime.job(id).is_none());
+        assert_eq!(runtime.serving_manual_ticket, ticket.wrapping_add(1));
+    }
+    assert!(ActiveGuard::begin(None, WorkClass::Faces).unwrap().is_some());
 }
