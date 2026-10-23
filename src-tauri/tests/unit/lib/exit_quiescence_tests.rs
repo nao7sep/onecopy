@@ -162,27 +162,67 @@ fn unsuccessful_worker_quiescence_does_not_count_as_a_clean_exit() {
 }
 
 #[test]
-fn a_stalled_final_tail_cannot_outlive_the_aggregate_exit_budget() {
-    let budget = Arc::new(super::ExitBudget::new());
-    assert!(budget.arm(Duration::from_millis(40)));
-    let worker_budget = budget.clone();
-    let (expired, observed) = std::sync::mpsc::channel();
-    let watchdog = std::thread::spawn(move || { worker_budget.wait(); expired.send(()).unwrap(); });
-    let (release, stalled) = std::sync::mpsc::channel::<()>();
-    let (started, entered) = std::sync::mpsc::channel();
-    let (tail_finished, finished) = std::sync::mpsc::channel();
+#[ignore = "disposable process fixture: invoked by the production watchdog test"]
+fn stalled_exit_watchdog_fixture() {
+    use std::io::Read;
+    let root = std::path::PathBuf::from(std::env::var_os("ONECOPY_EXIT_WATCHDOG_FIXTURE").expect("fixture directory"));
+    let takeover = std::env::var("ONECOPY_EXIT_WATCHDOG_TAKEOVER").as_deref() == Ok("1");
+    super::start_exit_deadline(if takeover { super::EXIT_TOTAL_DEADLINE } else { Duration::from_secs(2) });
     let mut sequence = sequence(&Steps::default(), Box::new(|| {}), Duration::ZERO).0;
     sequence.exit = Box::new(move |_| {
-        started.send(()).unwrap();
-        let _ = stalled.recv();
-        tail_finished.send(()).unwrap();
+        std::fs::write(root.join("cleanup-entered"), b"ready").unwrap();
+        // Never release final cleanup. Only the production watchdog may exit.
+        loop { std::thread::park(); }
     });
     run_exit(sequence, spawn_thread, Duration::from_secs(1));
-    entered.recv_timeout(Duration::from_secs(2)).unwrap();
-    observed.recv_timeout(Duration::from_secs(2)).expect("the independent exit deadline expires despite held cleanup");
-    release.send(()).unwrap();
-    finished.recv_timeout(Duration::from_secs(2)).unwrap();
-    watchdog.join().unwrap();
+    if takeover {
+        let mut request = [0];
+        std::io::stdin().read_exact(&mut request).unwrap();
+        super::start_exit_deadline(super::SESSION_EXIT_DEADLINE);
+        // A repeated ordinary quit cannot extend the shortened deadline.
+        super::start_exit_deadline(super::EXIT_TOTAL_DEADLINE);
+    }
+    loop { std::thread::park(); }
+}
+
+#[test]
+fn production_watchdog_exits_stalled_cleanup_and_os_takeover_shortens_it() {
+    use std::io::Write;
+    use std::process::{Child, Command, Stdio};
+    struct Fixture(Child);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            if self.0.try_wait().ok().flatten().is_none() {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+    }
+    for takeover in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let mut child = Fixture(Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "app_lifecycle::exit_quiescence_tests::stalled_exit_watchdog_fixture", "--ignored", "--nocapture"])
+            .env("ONECOPY_EXIT_WATCHDOG_FIXTURE", root.path())
+            .env("ONECOPY_EXIT_WATCHDOG_TAKEOVER", if takeover { "1" } else { "0" })
+            .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null())
+            .spawn().unwrap());
+        let ready_deadline = Instant::now() + Duration::from_secs(10);
+        while !root.path().join("cleanup-entered").is_file() {
+            assert!(child.0.try_wait().unwrap().is_none(), "fixture exited before entering final cleanup");
+            assert!(Instant::now() < ready_deadline, "fixture never entered final cleanup");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if takeover { child.0.stdin.take().unwrap().write_all(b"1").unwrap(); }
+        let exit_deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                assert!(status.success(), "the production watchdog must perform its normal forced exit");
+                break;
+            }
+            assert!(Instant::now() < exit_deadline, "the real watchdog did not terminate stalled cleanup");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 }
 
 #[test]
