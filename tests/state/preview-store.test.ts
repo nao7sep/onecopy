@@ -52,7 +52,7 @@ function armSplitFollow(): void {
 }
 
 // Fake time exercises publications on both sides of the throttle boundary.
-beforeAll(() => vi.useFakeTimers());
+beforeAll(() => vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "performance"] }));
 afterAll(() => vi.useRealTimers());
 
 beforeEach(() => {
@@ -123,6 +123,21 @@ describe("the stale-detail guard", () => {
 });
 
 describe("the follow throttle", () => {
+  it("publishes within the throttle interval after the wall clock moves backward", async () => {
+    new WebviewWindow("preview");
+    usePreviewStore.setState({ placementPreference: "window" });
+    await usePreviewStore.getState().open(ITEM_A, null);
+    usePreviewStore.getState().anchorChanged(ITEM_A, null);
+    emitCalls.length = 0;
+    vi.setSystemTime(Date.now() - 3_600_000);
+    usePreviewStore.getState().anchorChanged(ITEM_B, null);
+    await vi.advanceTimersByTimeAsync(119);
+    expect(emitCalls.filter((call) => call.event === "preview://show")).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(emitCalls.filter((call) => call.event === "preview://show").at(-1)?.payload)
+      .toMatchObject(ITEM_B);
+  });
+
   it("keeps local identity current while coalescing cross-window publication", async () => {
     new WebviewWindow("preview");
     usePreviewStore.setState({ placementPreference: "window" });

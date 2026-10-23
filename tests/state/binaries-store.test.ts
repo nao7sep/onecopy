@@ -364,3 +364,30 @@ describe("managed-tool terminal ownership", () => {
     }
   });
 });
+
+
+it("records monotonic check duration when the wall clock moves backward", async () => {
+  const state = entry("ffmpeg", "up-to-date", "9.1");
+  seed([state]);
+  let elapsed = 0;
+  const now = vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+  const wall = vi.spyOn(Date, "now").mockReturnValue(3_600_000);
+  mockCommands({
+    binaries_check: () => {
+      elapsed = 125;
+      wall.mockReturnValue(0);
+      return { outcome: "completed", states: [state] };
+    },
+    log_event: () => null,
+  });
+  try {
+    await useBinariesStore.getState().checkAll();
+    await Promise.resolve();
+    const event = invokeCalls.find((call) => call.command === "log_event"
+      && (call.args.entry as { message: string }).message === "update check finished");
+    expect(event?.args.entry).toMatchObject({ workMs: 125 });
+  } finally {
+    now.mockRestore();
+    wall.mockRestore();
+  }
+});

@@ -309,9 +309,9 @@ export function backgroundRows(snapshot: BackgroundWorkSnapshot): BackgroundClas
   });
 }
 
-let lastPing = 0;
+let lastPing = -Infinity;
 function ping(): void {
-  const now = Date.now();
+  const now = performance.now();
   if (now - lastPing < PING_EVERY_MS) return;
   lastPing = now;
   void invoke("note_user_activity").catch((error) => log.warn("activity ping failed", toErrorFields(error)));

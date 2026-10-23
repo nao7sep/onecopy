@@ -274,7 +274,7 @@ function publishCurrent(): void {
   const { follow, placement, current, error } = usePreviewStore.getState();
   if (follow && placement === "window" && previewWindowOpen && current !== null) {
     const request = surfaceRequest;
-    lastSentAt = Date.now();
+    lastSentAt = performance.now();
     void emit("preview://show", current)
       .then(() => {
         if (request === surfaceRequest && usePreviewStore.getState().error === error) {
@@ -294,7 +294,7 @@ function publishCurrent(): void {
 function schedulePublication(): void {
   const { follow, placement } = usePreviewStore.getState();
   if (!follow || placement !== "window" || !previewWindowOpen) return;
-  const now = Date.now();
+  const now = performance.now();
   if (lastSentAt === null || now - lastSentAt >= FOLLOW_THROTTLE_MS) {
     cancelPublication();
     publishCurrent();

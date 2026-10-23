@@ -411,7 +411,7 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
   checkAll: async () => {
     const { entries, installing, checking } = get();
     if (checking) return;
-    const started = Date.now();
+    const started = performance.now();
     const activityOperationId = newActivityOperationId("managedTools");
     registryRevision += 1;
     set({
@@ -489,7 +489,7 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
         log.error("binaries check failed", { id: entry.id, ...toErrorFields(error) });
       }
     }
-    const elapsed = Date.now() - started;
+    const elapsed = performance.now() - started;
     const updates = get().entries.filter(
       (e) => e.checkable && e.status === "update-available",
     ).length;
