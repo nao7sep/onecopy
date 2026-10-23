@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { CatalogueEntry, MessageKey } from "../../src/i18n/catalogues";
 import { createTranslator, message } from "../../src/i18n/translate";
 
 // The translator itself: placeholder filling, locale formatting, and the
@@ -42,7 +43,32 @@ describe("createTranslator", () => {
     expect(createTranslator("ru", "ru-RU").monthYear(2016, 3)).toBe("март 2016 г.");
   });
 
-  it("falls back to the key's English form only when a language lacks it", () => {
-    expect(createTranslator("en").t("settings.languageSystem", { language: "English" })).toBe("System (English)");
+  it("uses English until the requested catalogue has loaded", async () => {
+    // Suite setup preloads every language. Fresh modules exercise the actual
+    // cold catalogue owner without adding a production reset API.
+    vi.resetModules();
+    const { createTranslator: freshTranslator } = await import("../../src/i18n/translate");
+    const { loadCatalogue } = await import("../../src/i18n/catalogues");
+    expect(freshTranslator("de").t("nativeMenu.about", { app: "OneCopy" })).toBe("About OneCopy");
+    await loadCatalogue("de");
+    expect(freshTranslator("de").t("nativeMenu.about", { app: "OneCopy" })).toBe("Über OneCopy");
+  });
+
+  it("exposes a missing entry as its key without throwing", async () => {
+    vi.resetModules();
+    const { createTranslator: freshTranslator } = await import("../../src/i18n/translate");
+    const { loadCatalogue } = await import("../../src/i18n/catalogues");
+    const catalogue = await loadCatalogue("de") as Partial<Record<MessageKey, CatalogueEntry>>;
+    const key = "nativeMenu.about";
+    const entry = catalogue[key];
+    delete catalogue[key];
+    try {
+      // Loaded catalogues must be complete; the final key is deliberately
+      // visible to the rendered-key gate if that contract is broken.
+      expect(freshTranslator("de").t(key, { app: "OneCopy" })).toBe(key);
+      expect(freshTranslator("en").t(key, { app: "OneCopy" })).toBe("About OneCopy");
+    } finally {
+      catalogue[key] = entry;
+    }
   });
 });
