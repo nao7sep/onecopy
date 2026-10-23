@@ -39,6 +39,10 @@ const MARKERS: &[&str] = &["// data root", "// volume_io worker"];
 /// previous line's code, used when a chained call's receiver sits at the end
 /// of the line above (`reader\n    .metadata()`).
 fn raw_primitive(code: &str, prev: &str) -> Option<&'static str> {
+    // An extern declaration names a symbol but performs no filesystem work.
+    if code.trim_start().starts_with("fn ") && code.trim_end().ends_with(';') {
+        return None;
+    }
     const NEEDLES: &[&str] = &[
         "File::open(",
         "File::create(",
@@ -61,6 +65,14 @@ fn raw_primitive(code: &str, prev: &str) -> Option<&'static str> {
         ".symlink_metadata()",
         // Native filesystem calls, which no Rust lint sees as file access.
         "libc::renamex_np(",
+        "libc::renameatx_np(",
+        "libc::openat(",
+        "libc::fstatfs(",
+        "DirBuilder::new(",
+        "acl_get_fd(",
+        "acl_set_fd(",
+        "CreateDirectoryW(",
+        "GetVolumeInformationByHandleW(",
         "libc::rename(",
         "libc::open(",
         "libc::stat(",
@@ -214,14 +226,14 @@ fn source_dir() -> std::path::PathBuf {
 #[test]
 fn only_the_bounded_owner_touches_user_volumes() {
     let mut offenders = Vec::new();
-    let mut files: Vec<_> = std::fs::read_dir(source_dir())
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
+    let mut files: Vec<_> = walkdir::WalkDir::new(source_dir())
+        .into_iter()
+        .map(|entry| entry.unwrap().into_path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
         .collect();
     files.sort();
     for path in files {
-        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let name = path.strip_prefix(source_dir()).unwrap().to_string_lossy().into_owned();
         if name == "volume_io.rs" || DATA_ROOT_MODULES.iter().any(|(module, _)| *module == name) {
             continue;
         }
@@ -293,6 +305,8 @@ fn the_lint_recognizes_raw_calls_and_ignores_accessors() {
         "let source = nom_exif::MediaSource::open(path)?;",
         "let existing = unsafe { GetFileAttributesW(wide.as_ptr()) };",
         "let moved = unsafe { libc::renamex_np(from, to, libc::RENAME_EXCL) };",
+        "let moved = unsafe { libc::renameatx_np(fd, from, fd, to, libc::RENAME_EXCL) };",
+        "let acl = unsafe { acl_get_fd(fd) };",
         "let meta = path.metadata()?;",
         "let meta = entry.metadata()?;",
     ] {
@@ -310,6 +324,7 @@ fn the_lint_recognizes_raw_calls_and_ignores_accessors() {
         "crate::volume_io::metadata(path)?",
         "let len = file.metadata()?.len();",
         "let len = reader.metadata()?.len();",
+        "fn acl_get_fd(fd: i32) -> *mut c_void;",
     ] {
         assert!(raw_primitive(accessor, "").is_none(), "{accessor}");
     }

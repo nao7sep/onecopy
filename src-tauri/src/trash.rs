@@ -1,32 +1,21 @@
-//! Recoverable deleted-file storage: root-local, day-foldered, and
-//! append-only (the app never purges or rewrites it; deleting any day folder
-//! by hand is safe because nothing outside it references its contents — the
-//! invariant the design states). This module owns the manifest format, its
-//! writer and its reader (`read_day`), which Restore builds on.
+//! Recoverable deleted files stay on the source filesystem. New day folders
+//! are private to the deleting OS account; old shared days are left untouched.
+//! Layout: <root>/.onecopy-trash/private-<account>--<yyyymmdd-utc>/<file>.
+//! Each day carries its own append-only manifest for Browse and Restore.
+//! Explicit Empty removes reviewed files and then their manifests; there is
+//! no automatic purge. Different app data folders under the same OS account
+//! can recover these files without relying on the old app data folder.
 //!
-//! Layout beneath each configured source or destination root:
+//! Unix moves into an owner-only directory through its held descriptor.
+//! Windows copies to a new protected file, verifies and flushes it, publishes
+//! without replacement, and only then removes the unchanged original. This
+//! needs temporary free space and copying time, and leaves live hard links'
+//! permissions unchanged. Filesystems unable to enforce privacy refuse new
+//! recoverable deletions. Other accounts' private days are outside Browse and
+//! Empty; old shared days retain their original access and recovery behavior.
 //!
-//! ```text
-//! <configured root>/.onecopy-trash/20260808-utc/manifest.jsonl
-//! <configured root>/.onecopy-trash/20260808-utc/<stored file>
-//! ```
-//!
-//! The owning configured root is frozen before execution. The storage boundary
-//! proves physical containment and same-filesystem placement before creating
-//! the hidden directory or moving the file. Different roots therefore never
-//! share a permission boundary.
-//!
-//! The configured root is the access boundary: stored files keep what the
-//! root grants, and OneCopy neither rebuilds permissions a nested folder had
-//! nor makes deleted files private to the current account. Storage belongs to
-//! the root, not to an app home: two OneCopy data folders configured with the
-//! same root share its `.onecopy-trash`, and no data folder holds deleted
-//! files.
-//!
-//! A stored-name collision (same file re-created and re-trashed the same day)
-//! is resolved by a suffix loop plus an atomic exclusive rename
-//! (`image1-2.jpg`, …); the manifest line records both the original path and
-//! the actual stored name, so restore mapping stays exact in the suffixed case.
+//! Stored-name collisions use suffixes and atomic exclusive publication. The
+//! manifest commits first, so interruption never loses the original location.
 
 use std::path::{Path, PathBuf};
 
@@ -147,8 +136,8 @@ pub struct TrashError {
     /// is already written, so it is recoverable either way, and the next
     /// source check settles the index.
     pub outcome_unknown: bool,
-    /// Move refused the final mutation because its source-read proof no
-    /// longer names this version. Ordinary Delete never sets this flag.
+    /// Source-read proof no longer names this version. This covers Move
+    /// cleanup and the verified private copy required by Windows deletion.
     pub source_changed: bool,
 }
 
@@ -168,7 +157,7 @@ impl std::fmt::Display for TrashError {
     }
 }
 
-/// Moves one file beneath the frozen configured root that owns it.
+/// Stores one file for recovery beneath the frozen configured root that owns it.
 pub fn trash_file(
     file: &Path,
     owning_root: &Path,
@@ -178,14 +167,15 @@ pub fn trash_file(
     trash_file_with_before_move(file, owning_root, content_hash, context, |_| {})
 }
 
-pub(crate) fn trash_file_proven(
+pub(crate) fn trash_file_cancellable(
     file: &Path,
     owning_root: &Path,
     content_hash: Option<&str>,
     context: &TrashContext,
-    source_version: crate::file_identity::FileVersion,
+    source_version: Option<crate::file_identity::FileVersion>,
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<TrashedRecord, TrashError> {
-    trash_file_checked(file, owning_root, content_hash, context, Some(source_version), |_| {})
+    trash_file_checked(file, owning_root, content_hash, context, source_version, |_| {}, cancelled)
 }
 
 fn trash_file_with_before_move(
@@ -195,7 +185,7 @@ fn trash_file_with_before_move(
     context: &TrashContext,
     before_move: impl FnOnce(&Path),
 ) -> Result<TrashedRecord, TrashError> {
-    trash_file_checked(file, owning_root, content_hash, context, None, before_move)
+    trash_file_checked(file, owning_root, content_hash, context, None, before_move, &|| false)
 }
 
 fn trash_file_checked(
@@ -205,6 +195,7 @@ fn trash_file_checked(
     context: &TrashContext,
     source_version: Option<crate::file_identity::FileVersion>,
     before_move: impl FnOnce(&Path),
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<TrashedRecord, TrashError> {
     if !file.is_absolute() {
         return Err(format!(
@@ -223,13 +214,14 @@ fn trash_file_checked(
         .into());
     }
     let plan = prepare_trash(file, owning_root, content_hash, context, &metadata)?;
-    commit_trash(file, plan, source_version, before_move)
+    commit_trash(file, plan, source_version, before_move, cancelled)
 }
 
 struct TrashPlan {
     record: TrashedRecord,
     stored: PathBuf,
     day_dir: PathBuf,
+    private: crate::trash_privacy::Directory,
 }
 
 fn prepare_trash(
@@ -274,7 +266,7 @@ fn prepare_trash(
     // grammar, with `-utc` carried because the files inside are the user's
     // own originals and cannot carry it themselves.
     let day = format!("{}-utc", &logging::filename_stamp_now()[..8]);
-    let day_dir = trash_root.join(&day);
+    let day_dir = trash_root.join(format!("{}{day}", crate::trash_privacy::account_prefix().map_err(|e| e.to_string())?));
 
     // FLAT: the day folder holds file names only, no preserved directory
     // structure. The manifest carries provenance, so the folder can be the
@@ -294,9 +286,13 @@ fn prepare_trash(
     // the one that creates it — never per trashed file.
     #[cfg_attr(not(windows), allow(unused_variables))]
     let trash_root_is_new = !volume_io::exists(&trash_root).map_err(|e| e.to_string())?;
-    volume_io::create_dir_all(&day_dir).map_err(|e| e.to_string())?;
+    volume_io::create_dir_all(&trash_root).map_err(|e| e.to_string())?;
+    let private = crate::trash_privacy::Directory::open(&day_dir, true).map_err(|e| e.to_string())?;
     ensure_real_directory_if_present(&trash_root)?;
     ensure_real_directory_if_present(&day_dir)?;
+    if crate::file_identity::volume_of(&day_dir).map_err(|e| e.to_string())? != root_volume {
+        return Err("recoverable deletion must stay on the same filesystem".to_string());
+    }
     if !crate::path_identity::directory_is_within(&day_dir, owning_root)? {
         return Err("deleted-file storage escaped its configured root".to_string());
     }
@@ -330,13 +326,17 @@ fn prepare_trash(
     // not moved and remains authoritative. A crash or an exact-boundary target
     // collision after this point can leave a harmless stale audit line, never
     // an untracked file whose original location was lost.
-    append_manifest(&day_dir, &record)?;
-    crate::fs_publish::sync_directory(&day_dir).map_err(|e| e.to_string())?;
+    let line = serde_json::to_string(&record).map_err(|e| e.to_string())?;
+    refuse_newer_day(&day_dir)?;
+    private.append(&day_dir.join(MANIFEST_FILE_NAME), line).map_err(|e| e.to_string())?;
+    private.sync(&day_dir).map_err(|e| e.to_string())?;
+    crate::fs_publish::sync_directory(&trash_root).map_err(|e| e.to_string())?;
 
     Ok(TrashPlan {
         record,
         stored,
         day_dir,
+        private,
     })
 }
 
@@ -345,7 +345,9 @@ fn commit_trash(
     plan: TrashPlan,
     source_version: Option<crate::file_identity::FileVersion>,
     before_move: impl FnOnce(&Path),
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<TrashedRecord, TrashError> {
+    if cancelled() { return Err("cancelled".to_string().into()); }
     before_move(&plan.stored);
     let moved = refuse_newer_day(&plan.day_dir)
         .map_err(|message| TrashError {
@@ -354,10 +356,12 @@ fn commit_trash(
             source_changed: false,
         })
         .and_then(|()| {
-            let moved = match source_version {
-                Some(version) => crate::fs_publish::rename_no_replace_proven(source, &plan.stored, version),
-                None => crate::fs_publish::rename_no_replace(source, &plan.stored),
-            };
+            #[cfg(target_os = "macos")]
+            let moved = plan.private.move_source(source, &plan.stored, source_version);
+            #[cfg(windows)]
+            let moved = copy_before_remove(source, &plan, source_version, || {}, cancelled);
+            #[cfg(not(any(target_os = "macos", windows)))]
+            let moved: std::io::Result<()> = Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "private deletion is unsupported on this platform"));
             moved.map_err(|error| TrashError {
                 message: format!("trash move failed for {}: {error}", crate::native_path::label(&source)),
                 outcome_unknown: volume_io::outcome_unknown(&error),
@@ -366,7 +370,7 @@ fn commit_trash(
         });
     record_trash_action(&plan.record, moved.as_ref().err());
     moved?;
-    if let Err(error) = crate::fs_publish::sync_directory(&plan.day_dir) {
+    if let Err(error) = plan.private.sync(&plan.day_dir) {
         crate::logging::warn(
             "trash directory sync failed after the move completed",
             json!({
@@ -377,6 +381,67 @@ fn commit_trash(
     }
 
     Ok(plan.record)
+}
+
+/// Shared orchestration is exercised on every host; Windows supplies the
+/// protected file creator. Failures after publication retain the recovery
+/// copy and the original, never roll recovery back after uncertain removal.
+#[cfg(any(windows, test))]
+fn copy_before_remove(
+    source: &Path,
+    plan: &TrashPlan,
+    expected: Option<crate::file_identity::FileVersion>,
+    before_remove: impl FnOnce(),
+    cancelled: &dyn Fn() -> bool,
+) -> std::io::Result<()> {
+    use crate::hashing::CopyFailure;
+    if let Some(expected) = expected { expected.require_path(source)?; }
+    let stage = plan.day_dir.join(crate::file_identity::private_stage_file_name().map_err(std::io::Error::other)?);
+    let (mut copied, version) = crate::hashing::copy_to_private(source, &stage, || plan.private.create_file(&stage), cancelled)
+        .map_err(|error| match error {
+            CopyFailure::Source(error) | CopyFailure::Destination(error) => recovery_preparation_error(error),
+            CopyFailure::Cancelled => std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled"),
+            CopyFailure::SourceChanged => crate::file_identity::changed_source_error(),
+        })?;
+    if expected.is_some_and(|expected| expected != version) {
+        return Err(crate::file_identity::changed_source_error());
+    }
+    let writer = copied.file_mut();
+    let metadata = writer.metadata()?;
+    if metadata.len() != plan.record.size || mtime_ms(&metadata) != plan.record.mtime_ms {
+        return Err(crate::file_identity::changed_source_error());
+    }
+    version.require_path(source)?;
+    if cancelled() { return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled")); }
+    copied.publish(&plan.stored).map_err(recovery_preparation_error)?;
+    plan.private.sync(&plan.day_dir).map_err(recovery_preparation_error)?;
+    let stored_version = crate::file_identity::FileVersion::of(copied.file_mut())?;
+    before_remove();
+    if cancelled() { return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled")); }
+    let source_path = source.to_path_buf();
+    #[cfg(not(windows))]
+    let native = crate::winpath::for_fs(source).into_owned();
+    let stored = plan.stored.clone();
+    volume_io::call(source, volume_io::Op::Remove, None, move || {
+        stored_version.require_path(&stored)?;
+        version.require_path(&source_path)?;
+        if crate::file_identity::volume_of(&stored)? != crate::file_identity::volume_of(&source_path)? {
+            return Err(std::io::Error::other("private recovery moved to a different filesystem"));
+        }
+        #[cfg(windows)]
+        { crate::trash_privacy::remove_original(&source_path, version) }
+        #[cfg(not(windows))]
+        { std::fs::remove_file(native) } // volume_io worker
+    })
+}
+
+#[cfg(any(windows, test))]
+fn recovery_preparation_error(error: std::io::Error) -> std::io::Error {
+    // A timed-out write or publication may settle later, but no source
+    // removal has even been submitted. Do not report its deletion as unknown.
+    if volume_io::outcome_unknown(&error) {
+        std::io::Error::new(error.kind(), format!("private recovery preparation failed; original retained: {error}"))
+    } else { error }
 }
 
 fn record_trash_action(record: &TrashedRecord, failure: Option<&TrashError>) {
@@ -497,18 +562,14 @@ fn suffixed_name(target: &Path, counter: u32) -> PathBuf {
     target.with_file_name(name)
 }
 
-/// Appends one manifest line (JSONL). The manifest lives INSIDE the day folder
-/// it describes, keeping the folder self-contained and hand-deletable.
-fn append_manifest(day_dir: &Path, record: &TrashedRecord) -> Result<(), String> {
-    let line = serde_json::to_string(record).map_err(|e| e.to_string())?;
-    // not recorded: a sidecar of the trashed files beside it
-    // (data-backup conventions); each action is a record instead.
-    append_manifest_line(day_dir, line)
-}
-
 fn append_manifest_line(day_dir: &Path, line: String) -> Result<(), String> {
     refuse_newer_day(day_dir)?;
-    volume_io::append_line_synced(&day_dir.join(MANIFEST_FILE_NAME), line)
+    if crate::trash_privacy::is_private(day_dir) {
+        crate::trash_privacy::Directory::open(day_dir, false)
+            .and_then(|directory| directory.append(&day_dir.join(MANIFEST_FILE_NAME), line))
+    } else {
+        volume_io::append_line_synced(&day_dir.join(MANIFEST_FILE_NAME), line)
+    }
         .map_err(|e| e.to_string())
 }
 
@@ -936,7 +997,9 @@ pub fn list_root(root: &Path, data_root: &Path) -> Result<TrashListing, String> 
     let mut days = volume_io::read_dir(&location, false)
         .map_err(|error| format!("could not list deleted files: {error}"))?;
     days.sort_by(|left, right| left.file_name.cmp(&right.file_name));
+    let account = crate::trash_privacy::account_prefix().map_err(|e| e.to_string())?;
     for day in days {
+        if !crate::trash_privacy::visible_day(&day.file_name, &account) { continue; }
         match day.file_type {
             Some(kind) if kind.is_dir() => {}
             Some(kind) if kind.is_symlink() => {
@@ -1348,8 +1411,13 @@ fn measure_root_at(
     let mut entries = Vec::new();
     let mut directories = Vec::new();
     let mut versions = Vec::new();
-    let mut walk =
-        volume_io::walk(walk_root, |_, _| true).map_err(|error| error.to_string())?;
+    let account = crate::trash_privacy::account_prefix().map_err(|e| e.to_string())?;
+    let filter_root = filesystem_root.into_owned();
+    let mut walk = volume_io::walk(walk_root, move |path, _| {
+        path.parent() != Some(filter_root.as_path())
+            || path.file_name().is_none_or(|name| crate::trash_privacy::visible_day(name, &account))
+    }).map_err(|error| error.to_string())?;
+    let filesystem_root = crate::winpath::for_fs(walk_root);
     while let Some(entry) = walk.next(cancelled) {
         if cancelled.is_some_and(|cancelled| cancelled()) {
             return Err("trash totals measurement cancelled".to_string());

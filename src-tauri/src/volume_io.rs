@@ -842,21 +842,26 @@ pub fn append_line_synced(path: &Path, line: String) -> io::Result<()> {
             .create(true)
             .append(true)
             .open(target)?;
-        let length = file.metadata()?.len();
-        let mut bytes = Vec::with_capacity(line.len() + 2);
-        if length > 0 {
-            let mut last = [0u8; 1];
-            file.seek(SeekFrom::Start(length - 1))?;
-            file.read_exact(&mut last)?;
-            if last[0] != b'\n' {
-                bytes.push(b'\n');
-            }
-        }
-        bytes.extend_from_slice(line.as_bytes());
-        bytes.push(b'\n');
-        file.write_all(&bytes)?;
-        file.sync_all()
+        append_record_synced(&mut file, &line)
     })
+}
+
+/// Runs on the descriptor's volume worker. Private recovery storage supplies
+/// an already protected handle while legacy days use ordinary append-open.
+pub(crate) fn append_record_synced(file: &mut File, line: &str) -> io::Result<()> {
+    let length = file.metadata()?.len();
+    let mut bytes = Vec::with_capacity(line.len() + 2);
+    if length > 0 {
+        let mut last = [0u8; 1];
+        file.seek(SeekFrom::Start(length - 1))?;
+        file.read_exact(&mut last)?;
+        if last[0] != b'\n' { bytes.push(b'\n'); }
+    }
+    bytes.extend_from_slice(line.as_bytes());
+    bytes.push(b'\n');
+    file.seek(SeekFrom::End(0))?;
+    file.write_all(&bytes)?;
+    file.sync_all()
 }
 
 // ---------------------------------------------------------------------------

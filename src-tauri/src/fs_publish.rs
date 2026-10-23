@@ -33,16 +33,6 @@ pub fn rename_no_replace(source: &Path, target: &Path) -> io::Result<()> {
     rename_no_replace_checked(source, target, None)
 }
 
-/// Move cleanup carries evidence from its source read into the final worker.
-/// Other publication and ordinary Delete retain their existing behavior.
-pub(crate) fn rename_no_replace_proven(
-    source: &Path,
-    target: &Path,
-    version: crate::file_identity::FileVersion,
-) -> io::Result<()> {
-    rename_no_replace_checked(source, target, Some(version))
-}
-
 fn rename_no_replace_checked(
     source: &Path,
     target: &Path,
@@ -55,6 +45,33 @@ fn rename_no_replace_checked(
     let (from, to) = (source.to_path_buf(), target.to_path_buf());
     volume_io::call(target, Op::Rename, None, move || {
         rename_no_replace_raw(&from, &to, exclusive_unsupported, source_version)
+    })
+}
+
+/// A private directory is held by descriptor so replacement of its public
+/// pathname cannot redirect newly deleted bytes into a shared directory.
+#[cfg(target_os = "macos")]
+pub(crate) fn rename_into_directory(
+    source: &Path,
+    target: &Path,
+    directory: std::sync::Arc<std::fs::File>,
+    version: Option<crate::file_identity::FileVersion>,
+) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    #[cfg(test)]
+    let unsupported = seam::EXCLUSIVE_RENAME_UNSUPPORTED.with(std::cell::Cell::get);
+    #[cfg(not(test))]
+    let unsupported = false;
+    let source = source.to_path_buf();
+    let parent = target.parent().ok_or_else(|| io::Error::other("missing stored parent"))?.to_path_buf();
+    let name = target.file_name().ok_or_else(|| io::Error::other("missing stored name"))?.to_os_string();
+    volume_io::call(target, Op::Rename, None, move || {
+        if unsupported { return Err(exclusive_rename_unsupported()); }
+        if !crate::file_identity::path_names_file(&parent, &directory) {
+            return Err(io::Error::other("private deleted-file directory was replaced"));
+        }
+        require_source_version(&source, version)?;
+        rename_exclusive_at(&source, Path::new(&name), directory.as_raw_fd())
     })
 }
 
@@ -81,6 +98,11 @@ fn rename_no_replace_raw(
 
 #[cfg(target_os = "macos")]
 fn rename_exclusive(source: &Path, target: &Path) -> io::Result<()> {
+    rename_exclusive_at(source, target, libc::AT_FDCWD)
+}
+
+#[cfg(target_os = "macos")]
+fn rename_exclusive_at(source: &Path, target: &Path, directory: libc::c_int) -> io::Result<()> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
 
@@ -91,7 +113,7 @@ fn rename_exclusive(source: &Path, target: &Path) -> io::Result<()> {
     // SAFETY: both arguments are owned NUL-terminated path buffers for the
     // duration of the call; RENAME_EXCL requests an ordinary same-volume move
     // that fails rather than replacing an occupied target.
-    let result = unsafe { libc::renamex_np(source.as_ptr(), target.as_ptr(), libc::RENAME_EXCL) }; // volume_io worker
+    let result = unsafe { libc::renameatx_np(libc::AT_FDCWD, source.as_ptr(), directory, target.as_ptr(), libc::RENAME_EXCL) }; // volume_io worker
     if result == 0 {
         Ok(())
     } else {

@@ -99,18 +99,25 @@ pub(crate) struct FileVersion {
 
 impl FileVersion {
     pub(crate) fn of(file: &mut VolumeFile) -> io::Result<Self> {
-        file.with(Op::Stat, None, None, |file| {
-            let metadata = file.metadata()?;
-            #[cfg(windows)]
-            let identity = FileIdentity::from_file(file)?;
-            #[cfg(not(windows))]
-            let identity = FileIdentity::from_metadata(&metadata)?;
-            Ok(Self {
-                identity,
-                bytes: metadata.len(),
-                modified: metadata.modified()?,
-            })
-        })
+        file.with(Op::Stat, None, None, |file| Self::from_file(file))
+    }
+
+    fn from_file(file: &File) -> io::Result<Self> {
+        let metadata = file.metadata()?; // volume_io worker
+        #[cfg(windows)]
+        let identity = FileIdentity::from_file(file)?;
+        #[cfg(not(windows))]
+        let identity = FileIdentity::from_metadata(&metadata)?;
+        Ok(Self { identity, bytes: metadata.len(), modified: metadata.modified()? })
+    }
+
+    /// Check the exact pinned deletion handle, not a separately opened pathname.
+    #[cfg(windows)]
+    pub(crate) fn require_file(self, file: &File) -> io::Result<()> {
+        match Self::from_file(file) {
+            Ok(actual) if actual == self => Ok(()),
+            result => Err(io::Error::other(SourceVersionChanged { cause: result.err() })),
+        }
     }
 
     pub(crate) fn matches_path(self, path: &Path) -> io::Result<bool> {
@@ -150,6 +157,14 @@ impl std::error::Error for SourceVersionChanged {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.cause.as_ref().map(|cause| cause as &dyn std::error::Error)
     }
+}
+
+/// A source changed across a bounded copy, even when no path probe failed.
+/// Move must retain that source's remaining family rather than classify it as
+/// an ordinary destination failure.
+#[cfg(any(windows, test))]
+pub(crate) fn changed_source_error() -> io::Error {
+    io::Error::other(SourceVersionChanged { cause: None })
 }
 
 pub(crate) fn source_version_changed(error: &io::Error) -> bool {

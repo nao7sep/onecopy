@@ -95,6 +95,7 @@ pub mod timestamps;
 pub mod transcription;
 pub mod restore;
 pub mod trash;
+mod trash_privacy;
 pub mod video;
 pub mod viewer_sequence;
 pub mod volume;

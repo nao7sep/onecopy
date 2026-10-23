@@ -312,6 +312,7 @@ pub fn delete_item(
         &targets,
         mode,
         &trash::TrashContext::new(trash::TrashKind::Delete, &operation),
+        &|| false,
         &mut |_, _| {},
     )
     .map(|(outcome, _)| outcome)
@@ -329,6 +330,7 @@ fn delete_targets(
     targets: &[DeleteTarget],
     mode: DeleteMode,
     trash: &trash::TrashContext,
+    cancelled: &dyn Fn() -> bool,
     on_attempt: &mut (impl FnMut(u64, bool) + ?Sized),
 ) -> Result<(DeleteOutcome, Vec<i64>), String> {
     let mut outcome = DeleteOutcome::default();
@@ -342,14 +344,10 @@ fn delete_targets(
             DeleteMode::Trash => match &target.owning_root {
                 Ok(owning_root) => {
                     let context = trash.clone().item(target.item.clone()).role(target.role);
-                    match target.source_version {
-                        Some(version) => trash::trash_file_proven(
-                            file, owning_root, target.content_hash.as_deref(), &context, version,
-                        ),
-                        None => trash::trash_file(
-                            file, owning_root, target.content_hash.as_deref(), &context,
-                        ),
-                    }
+                    trash::trash_file_cancellable(
+                        file, owning_root, target.content_hash.as_deref(), &context,
+                        target.source_version, cancelled,
+                    )
                     .map(|_| ())
                 }
                 Err(error) => Err(error.clone().into()),
@@ -357,6 +355,7 @@ fn delete_targets(
             DeleteMode::Permanent => permanently_delete_file(file, target.source_version),
         };
 
+        if cancelled() && result.as_ref().is_err_and(|error| !error.outcome_unknown) { break; }
         match result {
             Ok(()) => {
                 outcome.deleted_files += 1;
@@ -685,6 +684,7 @@ pub fn delete_accepted_batch(
                 std::slice::from_ref(target),
                 mode,
                 &trash_context,
+                cancelled,
                 &mut |bytes, failed| {
                     files_done = files_done.saturating_add(1);
                     bytes_done = bytes_done.saturating_add(bytes);
@@ -715,6 +715,7 @@ pub fn delete_accepted_batch(
             outcome.failed_files = outcome.failed_files.saturating_add(step.failed_files);
             outcome.removed_rows = outcome.removed_rows.saturating_add(step.removed_rows);
             outcome.unknown_files = outcome.unknown_files.saturating_add(step.unknown_files);
+            if cancelled() { batch.cancelled = true; completed_unit = false; break; }
         }
         batch.deleted_files = batch.deleted_files.saturating_add(outcome.deleted_files);
         batch.failed_files = batch.failed_files.saturating_add(outcome.failed_files);
@@ -2283,6 +2284,7 @@ fn execute_move_unit(
                     std::slice::from_ref(&target),
                     delete_mode,
                     &cleanup_context,
+                    cancelled,
                     &mut |bytes, failed| on_progress(MoveUnitProgress::Attempt { bytes, failed }),
                 )?;
                 if changed_sources.contains(&source.path_id) {
@@ -2307,6 +2309,7 @@ fn execute_move_unit(
                     .post_action
                     .unknown_files
                     .saturating_add(cleanup.unknown_files);
+                if cancelled() { return Ok(MoveUnitResult::Cancelled(outcome)); }
             }
         }
         if !outcome.conflicts.is_empty() {

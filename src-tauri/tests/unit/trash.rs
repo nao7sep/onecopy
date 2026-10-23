@@ -347,7 +347,7 @@ fn newer_records_added_after_trash_preparation_leave_the_source_in_place() {
 }
 
 #[test]
-fn replacement_before_the_move_is_the_file_that_gets_trashed() {
+fn replacement_before_commit_follows_the_platform_move_or_verified_copy_boundary() {
     let dir = tempfile::tempdir().unwrap();
     let source_dir = dir.path().join("source");
     std::fs::create_dir_all(&source_dir).unwrap();
@@ -358,12 +358,21 @@ fn replacement_before_the_move_is_the_file_that_gets_trashed() {
     let result = trash_file_with_before_move(&source, &source_dir, None, &ctx(), |_| {
         std::fs::rename(&source, &held).unwrap();
         std::fs::write(&source, b"replacement").unwrap();
-    })
-    .unwrap();
+    });
 
-    assert!(!source.exists());
     assert_eq!(std::fs::read(&held).unwrap(), b"original");
-    assert_eq!(std::fs::read(result.stored_path).unwrap(), b"replacement");
+    #[cfg(windows)]
+    {
+        // The copy must match the prepared manifest before removing anything.
+        assert!(result.unwrap_err().source_changed);
+        assert_eq!(std::fs::read(&source).unwrap(), b"replacement");
+    }
+    #[cfg(not(windows))]
+    {
+        // An ordinary atomic Delete still acts on the path the user chose.
+        assert_eq!(std::fs::read(result.unwrap().stored_path).unwrap(), b"replacement");
+        assert!(!source.exists());
+    }
 }
 
 #[test]
@@ -618,4 +627,132 @@ windows_test! {
         assert!(!valid_stored_name("a\0bff.jpg"), "Unix bytes are not guessed on Windows");
         assert!(!valid_stored_name(r"a\b.jpg"));
     }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn private_deletion_keeps_legacy_days_and_other_accounts_outside_empty() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let legacy = source.join(TRASH_DIR_NAME).join("20000101-utc");
+    std::fs::create_dir_all(&legacy).unwrap();
+    std::fs::write(legacy.join("legacy.jpg"), b"legacy").unwrap();
+    let foreign = source.join(TRASH_DIR_NAME).join("private-other--20000101-utc");
+    std::fs::create_dir(&foreign).unwrap();
+    std::fs::write(foreign.join("other.jpg"), b"other private bytes").unwrap();
+    let original = source.join("original.jpg");
+    std::fs::write(&original, b"new private bytes").unwrap();
+    let record = trash_file(&original, &source, None, &TrashContext::new(TrashKind::Delete, "private-test")).unwrap();
+    let stored = crate::native_path::from_text(&record.stored_path);
+    assert!(crate::trash_privacy::is_private(stored.parent().unwrap()));
+    assert_eq!(std::fs::read(stored.as_ref()).unwrap(), b"new private bytes");
+    assert_eq!(std::fs::read(legacy.join("legacy.jpg")).unwrap(), b"legacy");
+    let rows = list_root(&source, root.path()).unwrap();
+    assert_eq!(rows.entries.len(), 1);
+    assert_eq!(rows.unrecorded_files, 1);
+    let overview = overview(&[source.clone()]);
+    assert_eq!(overview[0].files, 2);
+    empty_root_with_progress(Path::new(&overview[0].root), &overview[0].plan_token, &AtomicBool::new(false), &|_| {}, &|_, _| Ok(())).unwrap();
+    assert!(!legacy.exists());
+    assert_eq!(std::fs::read(foreign.join("other.jpg")).unwrap(), b"other private bytes");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn private_directory_replacement_cannot_expose_a_deleted_source() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("original.jpg");
+    std::fs::write(&source, b"private source").unwrap();
+    let displaced = root.path().join("displaced-private-day");
+    let result = trash_file_with_before_move(&source, root.path(), None, &TrashContext::new(TrashKind::Delete, "private-test"), |target| {
+        std::fs::rename(target.parent().unwrap(), &displaced).unwrap();
+        std::fs::create_dir(target.parent().unwrap()).unwrap();
+    });
+    assert!(result.is_err());
+    assert_eq!(std::fs::read(&source).unwrap(), b"private source");
+    assert!(!displaced.join("original.jpg").exists());
+    assert!(displaced.join(MANIFEST_FILE_NAME).exists());
+}
+
+#[test]
+fn private_copy_publishes_complete_recovery_before_removing_source() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("original.jpg");
+    let alias = root.path().join("live-hardlink.jpg");
+    std::fs::write(&source, b"protected recovery bytes").unwrap();
+    std::fs::hard_link(&source, &alias).unwrap();
+    let original_permissions = std::fs::metadata(&alias).unwrap().permissions();
+    let plan = prepare_trash(&source, root.path(), None, &TrashContext::new(TrashKind::Delete, "copy-test"), &std::fs::metadata(&source).unwrap()).unwrap();
+    copy_before_remove(&source, &plan, None, || {
+        assert_eq!(std::fs::read(&plan.stored).unwrap(), b"protected recovery bytes");
+        assert!(source.exists());
+    }, &|| false).unwrap();
+    assert!(!source.exists());
+    assert_eq!(std::fs::read(&alias).unwrap(), b"protected recovery bytes");
+    assert_eq!(std::fs::metadata(&alias).unwrap().permissions(), original_permissions);
+    assert_eq!(read_day(&plan.day_dir).unwrap().records.len(), 1);
+}
+
+#[test]
+fn private_copy_keeps_both_recovery_and_replaced_original_on_cleanup_failure() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("original.jpg");
+    std::fs::write(&source, b"original bytes").unwrap();
+    let plan = prepare_trash(&source, root.path(), None, &TrashContext::new(TrashKind::Delete, "copy-test"), &std::fs::metadata(&source).unwrap()).unwrap();
+    let result = copy_before_remove(&source, &plan, None, || {
+        std::fs::rename(&source, root.path().join("old-source")).unwrap();
+        std::fs::write(&source, b"new unrepresented bytes").unwrap();
+    }, &|| false);
+    assert!(result.is_err());
+    assert_eq!(std::fs::read(&source).unwrap(), b"new unrepresented bytes");
+    assert_eq!(std::fs::read(&plan.stored).unwrap(), b"original bytes");
+}
+
+#[test]
+fn private_copy_preserves_source_and_winner_when_publication_is_occupied() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("original.jpg");
+    std::fs::write(&source, b"original bytes").unwrap();
+    let plan = prepare_trash(&source, root.path(), None, &TrashContext::new(TrashKind::Delete, "copy-test"), &std::fs::metadata(&source).unwrap()).unwrap();
+    std::fs::write(&plan.stored, b"other writer").unwrap();
+    assert!(copy_before_remove(&source, &plan, None, || {}, &|| false).is_err());
+    assert_eq!(std::fs::read(&source).unwrap(), b"original bytes");
+    assert_eq!(std::fs::read(&plan.stored).unwrap(), b"other writer");
+    assert!(!std::fs::read_dir(&plan.day_dir).unwrap().any(|entry| crate::file_identity::is_private_tmp_name(&entry.unwrap().path())));
+}
+
+#[test]
+fn cancelling_private_copy_keeps_original_and_removes_unpublished_staging() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("original.jpg");
+    std::fs::write(&source, vec![42u8; 1024 * 1024]).unwrap();
+    let plan = prepare_trash(&source, root.path(), None, &TrashContext::new(TrashKind::Delete, "copy-cancel"), &std::fs::metadata(&source).unwrap()).unwrap();
+    let polls = std::cell::Cell::new(0);
+    let result = copy_before_remove(&source, &plan, None, || {}, &|| {
+        polls.set(polls.get() + 1);
+        polls.get() > 2
+    });
+    assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::Interrupted);
+    assert!(source.exists());
+    assert!(!plan.stored.exists());
+    assert_eq!(std::fs::read_dir(&plan.day_dir).unwrap().count(), 1);
+}
+
+#[test]
+fn failed_private_copy_write_leaves_original_and_no_published_recovery() {
+    use crate::volume_io::{FakeStallingVolume, Op};
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("original.jpg");
+    std::fs::write(&source, b"original bytes").unwrap();
+    let plan = prepare_trash(&source, root.path(), None, &TrashContext::new(TrashKind::Delete, "copy-failure"), &std::fs::metadata(&source).unwrap()).unwrap();
+    let fake = FakeStallingVolume::mount(root.path(), std::time::Duration::from_secs(10));
+    fake.stall(&[Op::Write], Some(&plan.day_dir));
+    let failed = std::thread::scope(|scope| {
+        scope.spawn(|| { assert!(fake.wait_until_held(1, std::time::Duration::from_secs(10))); fake.fail(); });
+        copy_before_remove(&source, &plan, None, || {}, &|| false)
+    });
+    assert!(failed.is_err());
+    assert_eq!(std::fs::read(&source).unwrap(), b"original bytes");
+    assert!(!plan.stored.exists());
 }

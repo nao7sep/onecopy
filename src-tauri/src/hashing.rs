@@ -191,6 +191,31 @@ fn hash_while_copying_detailed(
     (String, u64, crate::file_identity::PrivateFile, Option<crate::file_identity::FileVersion>),
     CopyFailure,
 > {
+    copy_to_created(src, dst, cancelled, progress, prove_source, after_sync, || volume_io::create_new(dst))
+}
+
+/// Recoverable Windows deletion supplies a creator with an explicit private
+/// DACL. Stream, source-version proof, flush and read-back remain one owner.
+#[cfg(any(windows, test))]
+pub(crate) fn copy_to_private(
+    src: &Path,
+    dst: &Path,
+    create: impl FnOnce() -> std::io::Result<VolumeFile>,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<(crate::file_identity::PrivateFile, crate::file_identity::FileVersion), CopyFailure> {
+    let (_, _, file, version) = copy_to_created(src, dst, cancelled, &mut |_, _| {}, true, |_| {}, create)?;
+    Ok((file, version.expect("source proof requested")))
+}
+
+fn copy_to_created(
+    src: &Path,
+    dst: &Path,
+    cancelled: &dyn Fn() -> bool,
+    progress: &mut dyn FnMut(u64, u64),
+    prove_source: bool,
+    after_sync: impl FnOnce(&Path),
+    create: impl FnOnce() -> std::io::Result<VolumeFile>,
+) -> Result<(String, u64, crate::file_identity::PrivateFile, Option<crate::file_identity::FileVersion>), CopyFailure> {
     // A read or write given up on because Cancel was pressed is a
     // cancellation, not a failure of either side.
     let classify = |error: std::io::Error, side: fn(std::io::Error) -> CopyFailure| {
@@ -216,7 +241,7 @@ fn hash_while_copying_detailed(
         .transpose()
         .map_err(|error| classify(error, CopyFailure::Source))?;
     let writer =
-        volume_io::create_new(dst).map_err(|error| classify(error, CopyFailure::Destination))?;
+        create().map_err(|error| classify(error, CopyFailure::Destination))?;
     // From here every failure or cancellation drops the private output, which
     // removes it while `dst` still names this descriptor's file.
     let mut private = crate::file_identity::PrivateFile::new(dst.to_path_buf(), writer);

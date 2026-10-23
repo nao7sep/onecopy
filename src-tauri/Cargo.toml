@@ -153,6 +153,8 @@ windows-sys = { version = "0.61.2", features = [
     # (subprocess::process_tree); CreateJobObjectW takes SECURITY_ATTRIBUTES.
     "Win32_System_JobObjects",
     "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_SystemServices",
     "Win32_Foundation",
     # GetForegroundWindow/GetWindowThreadProcessId tell whether OneCopy is the
     # active app (fullscreen::application_active); IsZoomed/IsIconic keep
