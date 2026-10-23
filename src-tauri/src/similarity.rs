@@ -88,11 +88,9 @@ fn union_strict_neighbors(
     stop: &dyn Fn() -> bool,
 ) -> Result<(), String> {
     if distance >= 64 {
-        for a in 0..phashes.len() {
-            for b in (a + 1)..phashes.len() {
-                checked_comparison(comparisons, stop)?;
-                uf.union(a, b);
-            }
+        for index in 1..phashes.len() {
+            checked_comparison(comparisons, stop)?;
+            uf.union(index, 0);
         }
         return Ok(());
     }
@@ -100,10 +98,17 @@ fn union_strict_neighbors(
     let band_count = distance as usize + 1;
     let mut buckets: HashMap<(usize, u64), Vec<usize>> = HashMap::new();
     let mut seen_at = vec![usize::MAX; phashes.len()];
+    let mut representatives = HashMap::new();
     for a in 0..phashes.len() {
         if a % 1024 == 0 && stop() {
             return Err(crate::scanner::CANCELLED.to_string());
         }
+        if let Some(&representative) = representatives.get(&phashes[a]) {
+            checked_comparison(comparisons, stop)?;
+            uf.union(a, representative);
+            continue;
+        }
+        representatives.insert(phashes[a], a);
         for band in 0..band_count {
             let key = (band, hamming_band(phashes[a] as u64, band, band_count));
             if let Some(candidates) = buckets.get(&key) {
@@ -157,30 +162,123 @@ fn union_burst_neighbors(
     if distance <= strict_distance {
         return Ok(());
     }
-    let mut timed: Vec<(i64, usize)> = times_ms
-        .iter()
-        .enumerate()
-        .filter_map(|(index, time)| time.map(|value| (value, index)))
-        .collect();
-    timed.sort_unstable();
-    let mut left = 0usize;
-    for right in 0..timed.len() {
-        if right % 1024 == 0 && stop() {
-            return Err(crate::scanner::CANCELLED.to_string());
-        }
-        while timed[right].0 - timed[left].0 > gap_ms {
-            left += 1;
-        }
-        for prior in left..right {
-            checked_comparison(comparisons, stop)?;
-            let a = timed[prior].1;
-            let b = timed[right].1;
-            if hamming(phashes[a], phashes[b]) <= distance {
-                uf.union(a, b);
-            }
+    let mut timed = Vec::new();
+    for (index, time) in times_ms.iter().enumerate() {
+        check_member(index, stop)?;
+        if let Some(time) = time {
+            timed.push((*time, index));
         }
     }
+    timed.sort_unstable();
+    let mut left = 0usize;
+    // Strict grouping already connects equal signatures. The latest member
+    // preserves every possible burst connection to that signature's cohort.
+    let mut latest = HashMap::new();
+    for right in 0..timed.len() {
+        check_member(right, stop)?;
+        while timed[right].0.abs_diff(timed[left].0) > gap_ms as u64 {
+            checked_comparison(comparisons, stop)?;
+            let expired = timed[left].1;
+            if latest.get(&phashes[expired]) == Some(&expired) {
+                latest.remove(&phashes[expired]);
+            }
+            left += 1;
+        }
+        let current = timed[right].1;
+        for (&signature, &prior) in &latest {
+            if signature == phashes[current] {
+                continue;
+            }
+            checked_comparison(comparisons, stop)?;
+            if hamming(signature, phashes[current]) <= distance {
+                uf.union(prior, current);
+            }
+        }
+        latest.insert(phashes[current], current);
+    }
     Ok(())
+}
+
+fn check_member(index: usize, stop: &dyn Fn() -> bool) -> Result<(), String> {
+    if index % 1024 == 0 && stop() {
+        Err(crate::scanner::CANCELLED.to_string())
+    } else {
+        Ok(())
+    }
+}
+
+/// Equal signatures have zero visual distance. Their date extremes are all
+/// that is needed to validate every pair against a different signature.
+struct SignatureSummary {
+    phash: i64,
+    any_undated: bool,
+    min_time: Option<i64>,
+    max_time: Option<i64>,
+}
+
+impl SignatureSummary {
+    fn new(phash: i64, time: Option<i64>) -> Self {
+        Self {
+            phash,
+            any_undated: time.is_none(),
+            min_time: time,
+            max_time: time,
+        }
+    }
+
+    fn add(&mut self, time: Option<i64>) {
+        match time {
+            Some(time) => {
+                self.min_time = Some(self.min_time.map_or(time, |old| old.min(time)));
+                self.max_time = Some(self.max_time.map_or(time, |old| old.max(time)));
+            }
+            None => self.any_undated = true,
+        }
+    }
+
+    fn within_diameter(
+        &self,
+        other: &Self,
+        strict: u32,
+        burst: u32,
+        multiplier: u32,
+        gap_ms: i64,
+    ) -> bool {
+        let distance = hamming(self.phash, other.phash);
+        if distance <= strict.saturating_mul(multiplier) {
+            return true;
+        }
+        if distance > strict.max(burst).saturating_mul(multiplier)
+            || self.any_undated
+            || other.any_undated
+        {
+            return false;
+        }
+        // Both fully dated cohorts have extrema. abs_diff also handles
+        // timestamps spanning the whole signed range without overflowing.
+        self.max_time.unwrap().abs_diff(other.min_time.unwrap()) <= gap_ms as u64
+            && other.max_time.unwrap().abs_diff(self.min_time.unwrap()) <= gap_ms as u64
+    }
+}
+
+fn summarize_members(
+    members: &[usize],
+    phashes: &[i64],
+    times_ms: &[Option<i64>],
+    stop: &dyn Fn() -> bool,
+) -> Result<Vec<SignatureSummary>, String> {
+    let mut summaries: Vec<SignatureSummary> = Vec::new();
+    let mut positions: HashMap<i64, usize> = HashMap::new();
+    for (position, &member) in members.iter().enumerate() {
+        check_member(position, stop)?;
+        if let Some(&index) = positions.get(&phashes[member]) {
+            summaries[index].add(times_ms[member]);
+        } else {
+            positions.insert(phashes[member], summaries.len());
+            summaries.push(SignatureSummary::new(phashes[member], times_ms[member]));
+        }
+    }
+    Ok(summaries)
 }
 
 fn checked_comparison(comparisons: &mut usize, stop: &dyn Fn() -> bool) -> Result<(), String> {
@@ -205,8 +303,8 @@ fn checked_comparison(comparisons: &mut usize, stop: &dyn Fn() -> bool) -> Resul
 /// a component whose diameter is within TWICE the threshold stands whole (two
 /// members of a real burst may sit `2d` apart through their shared middle),
 /// and a wider component is re-clustered around LEADERS — each member joins
-/// the first cluster whose leader is within the threshold, so no cluster's
-/// diameter can exceed `2d` by construction. Members are ordered by hash
+/// the first cluster whose leader is within the threshold and whose members
+/// all satisfy the pair-specific diameter allowance. Members are ordered by hash
 /// first, which keeps near-identical twins adjacent (they meet the same
 /// leader) and makes the result deterministic.
 pub fn cluster_by_appearance(
@@ -225,7 +323,7 @@ pub fn cluster_by_appearance(
     // candidate generation has built the connected components.
     let allowed = |a: usize, b: usize| -> u32 {
         match (times_ms[a], times_ms[b]) {
-            (Some(ta), Some(tb)) if (ta - tb).abs() <= gap_ms => {
+            (Some(ta), Some(tb)) if ta.abs_diff(tb) <= gap_ms as u64 => {
                 strict_distance.max(burst_distance)
             }
             _ => strict_distance,
@@ -246,6 +344,7 @@ pub fn cluster_by_appearance(
     )?;
     let mut components: HashMap<usize, Vec<usize>> = HashMap::new();
     for i in 0..n {
+        check_member(i, stop)?;
         let root = uf.find(i);
         components.entry(root).or_default().push(i);
     }
@@ -253,27 +352,69 @@ pub fn cluster_by_appearance(
     let mut out: Vec<Vec<usize>> = Vec::new();
     for mut members in components.into_values() {
         members.sort_unstable();
-        // The diameter discipline survives the gating per pair: two members
-        // admitted through the burst allowance may spread to its multiple,
-        // two admitted through the strict one only to the strict multiple.
-        let chained = members.iter().enumerate().any(|(i, &a)| {
-            members[(i + 1)..].iter().any(|&b| {
-                hamming(phashes[a], phashes[b]) > allowed(a, b) * diameter_multiplier.max(1)
-            })
-        });
+        let summaries = summarize_members(&members, phashes, times_ms, stop)?;
+        let multiplier = diameter_multiplier.max(1);
+        let mut chained = false;
+        'diameter: for (index, summary) in summaries.iter().enumerate() {
+            check_member(index, stop)?;
+            for other in &summaries[index + 1..] {
+                checked_comparison(&mut comparisons, stop)?;
+                if !summary.within_diameter(
+                    other,
+                    strict_distance,
+                    burst_distance,
+                    multiplier,
+                    gap_ms,
+                ) {
+                    chained = true;
+                    break 'diameter;
+                }
+            }
+        }
         if !chained {
             out.push(members);
             continue;
         }
         members.sort_by_key(|&i| (phashes[i], i));
         let mut clusters: Vec<Vec<usize>> = Vec::new();
-        for &i in &members {
-            match clusters
-                .iter_mut()
-                .find(|c| hamming(phashes[c[0]], phashes[i]) <= allowed(c[0], i))
-            {
-                Some(cluster) => cluster.push(i),
-                None => clusters.push(vec![i]),
+        let mut cluster_summaries: Vec<HashMap<i64, SignatureSummary>> = Vec::new();
+        for (position, &i) in members.iter().enumerate() {
+            check_member(position, stop)?;
+            let candidate = SignatureSummary::new(phashes[i], times_ms[i]);
+            let mut destination = None;
+            for (index, cluster) in clusters.iter().enumerate() {
+                checked_comparison(&mut comparisons, stop)?;
+                if hamming(phashes[cluster[0]], phashes[i]) > allowed(cluster[0], i) {
+                    continue;
+                }
+                let mut fits = true;
+                for summary in cluster_summaries[index].values() {
+                    checked_comparison(&mut comparisons, stop)?;
+                    if !candidate.within_diameter(
+                        summary,
+                        strict_distance,
+                        burst_distance,
+                        multiplier,
+                        gap_ms,
+                    ) {
+                        fits = false;
+                        break;
+                    }
+                }
+                if fits {
+                    destination = Some(index);
+                    break;
+                }
+            }
+            if let Some(index) = destination {
+                clusters[index].push(i);
+                cluster_summaries[index]
+                    .entry(phashes[i])
+                    .and_modify(|summary| summary.add(times_ms[i]))
+                    .or_insert(candidate);
+            } else {
+                clusters.push(vec![i]);
+                cluster_summaries.push(HashMap::from([(phashes[i], candidate)]));
             }
         }
         out.extend(clusters);
