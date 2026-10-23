@@ -24,27 +24,10 @@ import { hasMod } from "./shortcuts";
 // the command modifier — both Cmd and Ctrl fire on every platform; only the
 // displayed word is platform-bound.
 //
-// --- Keyboard layout notes ---
-//
-// "+" is not a bare key on any major layout; it always requires Shift. The base
-// key that produces "+" varies across layouts:
-//   US / UK / French AZERTY  →  Shift + =  (physical = key, left of Backspace)
-//   Japanese JIS              →  Shift + ;  (physical ; key, near Enter)
-//   German QWERTZ             →  Shift + 1  (not covered here; numpad serves them)
-//
-// "-" is a bare key (no Shift) on US, UK, German, and Japanese layouts.
-// French AZERTY users need Shift for "-", so they are not covered by zoom out;
-// this is an accepted gap.
-//
-// Using event.key (the produced character) rather than event.code (physical
-// position) means each case is handled automatically:
-//   "="  → physical = key without Shift  (US/UK/French)
-//   "+"  → = key + Shift, ; key + Shift, Numpad+ (with or without Shift),
-//           or a bare "+" from a programmable / remapped keyboard
-//   ";"  → physical ; key without Shift  (Japanese JIS)
-//          Claude Code and Codex use this same key for zoom in on JIS keyboards.
-//   "-"  → physical - key or Numpad-  (event.key is "-" for both)
-//   "0"  → main row 0 or Numpad 0     (event.key is "0" for both)
+// Shortcuts match event.key, the produced character, rather than a physical
+// key position. Zoom in accepts "=", "+", and ";"; zoom out accepts "-";
+// reset accepts "0". Shift is not restricted: a character produced with
+// Shift or on a numeric keypad follows the same binding.
 
 // Ordered list of supported zoom multipliers (1.0 = 100%).
 // Percentages: 50, 60, 70, 80, 90, 100, 120, 140, 170, 200, 240, 290, 350, 420, 500
