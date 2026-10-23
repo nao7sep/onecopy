@@ -155,6 +155,7 @@ pub struct FoundFace {
 /// Both sessions loaded once per pass — model load costs real time, one
 /// image costs milliseconds.
 pub struct FaceScorer {
+    model: crate::ai_dependencies::ModelIdentity,
     detector: ort::session::Session,
     det_input: String,
     det_scores: String,
@@ -181,12 +182,15 @@ impl FaceScorer {
         // Same interactive-headroom budget as ffmpeg and Whisper: the default
         // intra-op thread count is every physical core.
         let threads = crate::resource_limits::cpu_thread_budget().max(1) as usize;
-        let detector = ort::session::Session::builder()
+        let mut detector_builder = ort::session::Session::builder()
             .map_err(|e| e.to_string())?
             .with_intra_threads(threads)
-            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        let detector_observation = crate::ai_dependencies::ModelObservation::before(detector_model);
+        let detector = detector_builder
             .commit_from_file(detector_model)
             .map_err(|e| format!("face detector load failed: {e}"))?;
+        let detector_version = detector_observation.after_load();
         let det_input = detector
             .inputs()
             .first()
@@ -207,12 +211,16 @@ impl FaceScorer {
             .cloned()
             .ok_or_else(|| format!("no box output among {det_names:?}"))?;
 
-        let emotion = ort::session::Session::builder()
+        let mut emotion_builder = ort::session::Session::builder()
             .map_err(|e| e.to_string())?
             .with_intra_threads(threads)
-            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        let emotion_observation = crate::ai_dependencies::ModelObservation::before(emotion_model);
+        let emotion = emotion_builder
             .commit_from_file(emotion_model)
             .map_err(|e| format!("expression model load failed: {e}"))?;
+        let emotion_version = emotion_observation.after_load();
+        let model = crate::ai_dependencies::face_model_with_versions(detector_version, emotion_version);
         let emo_input = emotion
             .inputs()
             .first()
@@ -231,7 +239,7 @@ impl FaceScorer {
                 "emotion": { "input": emo_input, "output": emo_output },
             }),
         );
-        Ok(FaceScorer { detector, det_input, det_scores, det_boxes, emotion, emo_input, emo_output })
+        Ok(FaceScorer { model, detector, det_input, det_scores, det_boxes, emotion, emo_input, emo_output })
     }
 
     /// Faces on the image, confidence-thresholded and NMS-deduplicated,
@@ -447,8 +455,24 @@ pub fn complete_face_scoring_attempt(
     hash: &str,
     source_path: &str,
     cancel_when: &dyn Fn() -> bool,
+    on_change: impl FnMut(&str),
+    inference: impl FnOnce(&DynamicImage) -> Result<Vec<FoundFace>, String>,
+) -> Result<FaceScoringAttemptOutcome, String> {
+    complete_face_scoring_attempt_with_model(
+        conn, cache, hash, source_path, cancel_when, on_change, inference,
+        &crate::ai_dependencies::face_model(),
+    )
+}
+
+fn complete_face_scoring_attempt_with_model(
+    conn: &rusqlite::Connection,
+    cache: &crate::preview::CachePaths,
+    hash: &str,
+    source_path: &str,
+    cancel_when: &dyn Fn() -> bool,
     mut on_change: impl FnMut(&str),
     inference: impl FnOnce(&DynamicImage) -> Result<Vec<FoundFace>, String>,
+    model: &crate::ai_dependencies::ModelIdentity,
 ) -> Result<FaceScoringAttemptOutcome, String> {
     let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::BackgroundWork,
         Some(crate::activity::ActivitySubject::Faces), Some(hash));
@@ -473,7 +497,7 @@ pub fn complete_face_scoring_attempt(
                 hash,
                 source_path,
                 &found,
-                &crate::ai_dependencies::face_model(),
+                model,
             )?;
             trace.finish(crate::activity::ActivityState::Succeeded, None);
             on_change(hash);
@@ -485,7 +509,7 @@ pub fn complete_face_scoring_attempt(
         }
         Err(message) => {
             let issues_changed =
-                crate::derived_state::record_face_failure(conn, hash, source_path, &message)?;
+                crate::derived_state::record_face_failure_with_model(conn, hash, source_path, &message, model)?;
             trace.finish(crate::activity::ActivityState::Failed, None);
             on_change(hash);
             Ok(FaceScoringAttemptOutcome::Failed { message, issues_changed })
@@ -541,6 +565,7 @@ pub fn face_scores_pending(
         if crate::resource_limits::is_safety_error(&error) { error }
         else { crate::ai_dependencies::model_load_error(error) }
     })?;
+    let model = scorer.model.clone();
     let total = pending.len() as u64;
     for (hash, path) in pending {
         // Coordinator politeness: the user's return stops the pass
@@ -551,7 +576,7 @@ pub fn face_scores_pending(
         on_item(&hash);
         stats.attempted += 1;
         stats.last_attempted_hash = Some(hash.clone());
-        let outcome = complete_face_scoring_attempt(
+        let outcome = complete_face_scoring_attempt_with_model(
             conn,
             cache,
             &hash,
@@ -559,6 +584,7 @@ pub fn face_scores_pending(
             stop,
             |changed| on_change(changed),
             |image| scorer.analyze(image),
+            &model,
         )?;
         match outcome {
             FaceScoringAttemptOutcome::Completed { issues_changed, .. } => {

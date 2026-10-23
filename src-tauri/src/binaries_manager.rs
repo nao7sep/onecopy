@@ -29,8 +29,8 @@
 //!                    tags directly.
 //!   a model          read a verified-install identity beside the model. File
 //!                    size establishes usable presence, while the identity
-//!                    records which digest was verified before publication.
-//!                    A missing identity stays installed-unchecked; an older
+//!                    binds the verified digest to its published file version.
+//!                    Missing version evidence stays installed-unchecked; an older
 //!                    digest remains update-available even at the same size.
 //!
 //! Endpoint shapes verified live at build time:
@@ -465,14 +465,22 @@ fn read_version_sidecar(root: &Path) -> Option<String> {
 struct ModelIdentity {
     sha256: String,
     bytes: u64,
+    #[serde(default)]
+    file_version: Option<crate::file_identity::FileVersion>,
 }
 
 fn model_identity_path(root: &Path, spec: &DependencySpec) -> PathBuf {
     installed_path(root, spec).with_extension("json")
 }
 
-fn read_model_identity(root: &Path, spec: &DependencySpec, bytes: u64) -> Option<String> {
-    let document = match storage::read_json_file(&model_identity_path(root, spec), formats::MODEL_IDENTITY) {
+fn read_model_identity(root: &Path, spec: &DependencySpec) -> Option<String> {
+    verified_model_digest(&installed_path(root, spec)).map(|digest| digest[..12].to_string())
+}
+
+/// The full verified digest belongs only to the published file version recorded
+/// at installation. Presence alone never assigns a model the current build's pin.
+pub(crate) fn verified_model_digest(path: &Path) -> Option<String> {
+    let document = match storage::read_json_file(&path.with_extension("json"), formats::MODEL_IDENTITY) {
         Ok(storage::JsonFile::Document(document)) => document,
         Ok(storage::JsonFile::Newer(newer)) => {
             storage::warn_newer(&newer);
@@ -481,13 +489,20 @@ fn read_model_identity(root: &Path, spec: &DependencySpec, bytes: u64) -> Option
         _ => return None,
     };
     let identity: ModelIdentity = serde_json::from_value(document).ok()?;
-    if identity.bytes != bytes
-        || identity.sha256.len() != 64
+    if identity.sha256.len() != 64
         || !identity.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
     {
         return None;
     }
-    Some(identity.sha256[..12].to_ascii_lowercase())
+    let expected = identity.file_version?;
+    let (mut file, _) = crate::file_identity::open_regular_nofollow(path).ok()?;
+    if file.metadata().ok()?.len() != identity.bytes
+        || crate::file_identity::FileVersion::of(&mut file).ok()? != expected
+        || !expected.matches_path(path).ok()?
+    {
+        return None;
+    }
+    Some(identity.sha256.to_ascii_lowercase())
 }
 
 fn write_model_identity(
@@ -495,9 +510,15 @@ fn write_model_identity(
     spec: &DependencySpec,
     pinned: &PinnedArtifact,
 ) -> Result<(), String> {
+    let path = installed_path(root, spec);
+    let (mut file, _) = crate::file_identity::open_regular_nofollow(&path)
+        .map_err(|error| error.to_string())?;
+    let file_version = crate::file_identity::FileVersion::of(&mut file)
+        .map_err(|error| error.to_string())?;
     let identity = ModelIdentity {
         sha256: pinned.sha256.to_string(),
         bytes: installed_bytes(pinned),
+        file_version: Some(file_version),
     };
     // not recorded: identity for a re-downloadable model, colocated with and
     // meaningless without that model. It is invalidated before replacement.
@@ -1118,9 +1139,7 @@ pub fn state_of(root: &Path, spec: &DependencySpec) -> DependencyState {
         None
     } else {
         match spec.pinned.as_ref() {
-            Some(_) => std::fs::metadata(&path)
-                .ok()
-                .and_then(|metadata| read_model_identity(root, spec, metadata.len())),
+            Some(_) => read_model_identity(root, spec),
             None => installed_ffmpeg_version(root),
         }
     };

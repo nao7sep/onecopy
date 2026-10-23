@@ -1946,8 +1946,9 @@ fn prepare_transcription_attempt(
 fn finish_transcription_attempt(
     attempt: &TranscriptionAttempt<'_>,
     hash: String,
-    result: Result<crate::transcription::Transcript, String>,
+    outcome: crate::ai_dependencies::ModelOutcome<crate::transcription::Transcript>,
 ) -> Result<TranscriptionAttemptOutcome, String> {
+    let crate::ai_dependencies::ModelOutcome { model, result } = outcome;
     match result {
         Ok(transcript) => {
             let issues_changed = crate::derived_state::record_transcript_success(
@@ -1955,7 +1956,7 @@ fn finish_transcription_attempt(
                 &hash,
                 attempt.source_path,
                 &transcript,
-                crate::ai_dependencies::transcription_model(),
+                model,
             )?;
             Ok(TranscriptionAttemptOutcome::Completed {
                 hash,
@@ -1983,11 +1984,12 @@ fn finish_transcription_attempt(
                     &error,
                 )?
             } else {
-                crate::derived_state::record_transcript_failure(
+                crate::derived_state::record_transcript_failure_with_model(
                     attempt.conn,
                     &hash,
                     attempt.source_path,
                     &error,
+                    &model,
                 )?
             };
             Ok(TranscriptionAttemptOutcome::Failed {
@@ -2041,7 +2043,7 @@ fn complete_transcription_attempt_core<'p, Engine>(
 ) -> Result<TranscriptionAttemptOutcome, String>
 where
     Engine: FnOnce(&crate::transcription::TranscriptionClaim, &TranscriptionAttempt<'_>, TranscriptionProgress<'p>)
-        -> Result<crate::transcription::Transcript, String>,
+        -> crate::ai_dependencies::ModelOutcome<crate::transcription::Transcript>,
 {
     let hash = match prepare_transcription_attempt(&attempt, &mut on_identity)? {
         TranscriptionPreparation::Ready(hash) => hash,
@@ -2111,14 +2113,14 @@ where
     // Extraction and inference run outside the index share; a transcript
     // whose content changed meanwhile is discarded like a cancelled one.
     let computed = crate::derived_state::compute_outside_share(attempt.conn, &hash, || {
-        crate::failure_runtime::contain_item(|| engine(
+        crate::failure_runtime::contain_item(|| Ok(engine(
             &claim,
             &attempt,
             Box::new(move |percent| {
                 activity_progress(percent.clamp(0, 100) as u64, 100);
                 on_progress(&progress_hash, percent);
             }),
-        ))
+        )))
     });
     drop(finish_signal);
     if let Some(watch) = watch {
@@ -2136,6 +2138,10 @@ where
     let Some(result) = computed else {
         return Ok(TranscriptionAttemptOutcome::Cancelled { hash });
     };
+    let result = result.unwrap_or_else(|error| crate::ai_dependencies::ModelOutcome {
+        model: crate::ai_dependencies::transcription_model(),
+        result: Err(error),
+    });
     let cancelled_hash = hash.clone();
     let outcome = crate::transcription::publish_if_active(&claim, || {
         finish_transcription_attempt(&attempt, hash, result)
@@ -2170,7 +2176,10 @@ pub fn complete_transcription_attempt_with_inference(
     complete_transcription_attempt_core(attempt, on_identity, on_started, on_progress, |_| {
         Ok(move |_: &crate::transcription::TranscriptionClaim,
                  _: &TranscriptionAttempt<'_>, mut progress: TranscriptionProgress<'_>| {
-            inference(progress.as_mut())
+            crate::ai_dependencies::ModelOutcome {
+                model: crate::ai_dependencies::transcription_model(),
+                result: inference(progress.as_mut()),
+            }
         })
     })
 }

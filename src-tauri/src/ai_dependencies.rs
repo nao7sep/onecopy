@@ -59,35 +59,68 @@ pub fn production_ffmpeg(root: &Path) -> Option<PathBuf> {
     production_path(root, FFMPEG)
 }
 
-/// Which model produced a result, and which exact file of it: the managed
-/// dependency's id and the digest of its pinned artifact. A result of two
-/// models names both, joined by `+`.
+/// Provenance retained by a loaded model instance. Unknown components are
+/// explicit; a compiled download pin never identifies unchecked installed bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModelIdentity {
     pub model: String,
     pub version: String,
 }
 
-fn model_identity(ids: &[&str]) -> ModelIdentity {
-    let version = ids
-        .iter()
-        .map(|id| {
-            binaries_manager::spec_of(id)
-                .and_then(|spec| spec.pinned.as_ref())
-                .map_or("", |pinned| pinned.sha256)
-        })
-        .collect::<Vec<_>>()
-        .join("+");
-    ModelIdentity { model: ids.join("+"), version }
+pub(crate) struct ModelOutcome<T> {
+    pub model: ModelIdentity,
+    pub result: Result<T, String>,
+}
+
+fn model_identity(ids: &[&str], versions: &[Option<String>]) -> ModelIdentity {
+    ModelIdentity {
+        model: ids.join("+"),
+        version: versions.iter().map(|version| version.as_deref().unwrap_or("unknown"))
+            .collect::<Vec<_>>().join("+"),
+    }
 }
 
 pub fn transcription_model() -> ModelIdentity {
-    model_identity(&[WHISPER])
+    transcription_model_with_version(None)
 }
 
-/// The detector finds the faces; the expression model reads each one.
+pub(crate) fn transcription_model_with_version(version: Option<String>) -> ModelIdentity {
+    model_identity(&[WHISPER], &[version])
+}
+
 pub fn face_model() -> ModelIdentity {
-    model_identity(&[ULTRAFACE, HSEMOTION])
+    face_model_with_versions(None, None)
+}
+
+pub(crate) fn face_model_with_versions(detector: Option<String>, emotion: Option<String>) -> ModelIdentity {
+    model_identity(&[ULTRAFACE, HSEMOTION], &[detector, emotion])
+}
+
+/// Bind acquisition evidence to the file observed at native session creation.
+/// This is not a fresh integrity check: unchanged physical-file/version evidence
+/// permits using the acquisition digest. Replacements or unbound legacy records
+/// remain usable, but their exact version is unknown. Once captured, later
+/// artifact updates cannot relabel this model instance's results.
+pub(crate) struct ModelObservation {
+    path: PathBuf,
+    version: Option<crate::file_identity::FileVersion>,
+    digest: Option<String>,
+}
+
+impl ModelObservation {
+    pub(crate) fn before(path: &Path) -> Self {
+        let version = crate::file_identity::open_regular_nofollow(path)
+            .and_then(|(mut file, _)| crate::file_identity::FileVersion::of(&mut file)).ok();
+        Self {
+            path: path.to_path_buf(),
+            version,
+            digest: binaries_manager::verified_model_digest(path),
+        }
+    }
+
+    pub(crate) fn after_load(self) -> Option<String> {
+        if self.version?.matches_path(&self.path).ok()? { self.digest } else { None }
+    }
 }
 
 pub fn production_transcription(root: &Path) -> TranscriptionDependencies {
@@ -108,3 +141,7 @@ pub fn is_model_load_error(error: &str) -> bool {
 pub fn model_error_detail(error: &str) -> &str {
     error.strip_prefix(MODEL_UNAVAILABLE).unwrap_or(error)
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/ai_dependencies.rs"]
+mod tests;

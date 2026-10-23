@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::volume_io::{self, Op, VolumeFile};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FileIdentity {
     #[cfg(unix)]
     device: u64,
@@ -90,7 +90,7 @@ impl FileIdentity {
 /// after copying cannot establish which version supplied the output. Move
 /// takes this before and after the read, then checks it again before cleanup.
 /// Same-size edits preserving modification time remain the accepted limit.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct FileVersion {
     identity: FileIdentity,
     bytes: u64,

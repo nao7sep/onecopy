@@ -60,6 +60,9 @@ fn a_same_size_older_model_remains_update_available() {
     let older = ModelIdentity {
         sha256: "a".repeat(64),
         bytes: pinned.bytes,
+        file_version: Some(crate::file_identity::FileVersion::of(
+            &mut crate::file_identity::open_regular_nofollow(&target).unwrap().0,
+        ).unwrap()),
     };
     let mut document = serde_json::to_value(&older).unwrap();
     document[formats::JSON_KEY] = serde_json::json!(formats::MODEL_IDENTITY);
@@ -344,6 +347,8 @@ fn the_facts_store_and_sidecars_carry_their_format_versions() {
     write_version_sidecar(dir.path(), "9.0").unwrap();
     let spec = spec_of("ultraface-rfb640").unwrap();
     std::fs::create_dir_all(installed_path(dir.path(), spec).parent().unwrap()).unwrap();
+    std::fs::File::create(installed_path(dir.path(), spec)).unwrap()
+        .set_len(installed_bytes(spec.pinned.as_ref().unwrap())).unwrap();
     write_model_identity(dir.path(), spec, spec.pinned.as_ref().unwrap()).unwrap();
     let marker = |path: PathBuf| -> serde_json::Value {
         serde_json::from_slice::<serde_json::Value>(&std::fs::read(path).unwrap()).unwrap()["formatVersion"].clone()
@@ -393,4 +398,89 @@ fn files_a_newer_onecopy_wrote_read_as_absent_and_are_left_as_they_are() {
     std::fs::write(&identity, &identity_bytes).unwrap();
     assert!(invalidate_model_identity(dir.path(), spec).is_err());
     assert_eq!(std::fs::read(&identity).unwrap(), identity_bytes);
+}
+
+
+fn model_identity_fixture() -> (tempfile::TempDir, &'static DependencySpec, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let spec = spec_of("ultraface-rfb640").unwrap();
+    let target = installed_path(dir.path(), spec);
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    std::fs::File::create(&target).unwrap()
+        .set_len(installed_bytes(spec.pinned.as_ref().unwrap())).unwrap();
+    (dir, spec, target)
+}
+
+#[test]
+fn verified_model_digest_uses_published_file_evidence_and_returns_the_full_digest() {
+    let (dir, spec, target) = model_identity_fixture();
+    let pinned = spec.pinned.as_ref().unwrap();
+    write_model_identity(dir.path(), spec, pinned).unwrap();
+    let sidecar = model_identity_path(dir.path(), spec);
+    let mut document: serde_json::Value = serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+    assert!(document.get("fileVersion").is_some_and(|value| !value.is_null()));
+    document["sha256"] = serde_json::json!(pinned.sha256.to_ascii_uppercase());
+    std::fs::write(sidecar, serde_json::to_vec(&document).unwrap()).unwrap();
+    assert_eq!(verified_model_digest(&target).as_deref(), Some(pinned.sha256.to_ascii_lowercase().as_str()));
+    assert_eq!(read_model_identity(dir.path(), spec).as_deref(), Some(pin_version(pinned).as_str()));
+}
+
+#[test]
+fn missing_and_legacy_model_evidence_keep_installed_presence_without_a_version() {
+    let (dir, spec, target) = model_identity_fixture();
+    assert_eq!(verified_model_digest(&target), None);
+    let pinned = spec.pinned.as_ref().unwrap();
+    let document = serde_json::json!({
+        "formatVersion": formats::MODEL_IDENTITY,
+        "sha256": pinned.sha256,
+        "bytes": installed_bytes(pinned),
+    });
+    let sidecar = model_identity_path(dir.path(), spec);
+    let before = serde_json::to_vec(&document).unwrap();
+    std::fs::write(&sidecar, &before).unwrap();
+    let state = state_of(dir.path(), spec);
+    assert_eq!(state.status, BinaryStatus::InstalledUnchecked);
+    assert_eq!(state.installed_version, None);
+    assert_eq!(verified_model_digest(&target), None);
+    assert_eq!(std::fs::read(sidecar).unwrap(), before);
+}
+
+#[test]
+fn replacing_a_model_with_same_size_bytes_invalidates_its_digest_evidence() {
+    let (dir, spec, target) = model_identity_fixture();
+    write_model_identity(dir.path(), spec, spec.pinned.as_ref().unwrap()).unwrap();
+    let before = std::fs::read(model_identity_path(dir.path(), spec)).unwrap();
+    let previous = target.with_extension("previous");
+    std::fs::rename(&target, &previous).unwrap();
+    std::fs::File::create(&target).unwrap()
+        .set_len(installed_bytes(spec.pinned.as_ref().unwrap())).unwrap();
+    assert_eq!(verified_model_digest(&target), None);
+    let state = state_of(dir.path(), spec);
+    assert_eq!(state.status, BinaryStatus::InstalledUnchecked);
+    assert_eq!(state.installed_version, None);
+    assert_eq!(std::fs::read(model_identity_path(dir.path(), spec)).unwrap(), before);
+}
+
+#[test]
+fn invalid_and_newer_model_sidecars_never_supply_verified_digests_or_get_rewritten() {
+    let (dir, spec, target) = model_identity_fixture();
+    write_model_identity(dir.path(), spec, spec.pinned.as_ref().unwrap()).unwrap();
+    let sidecar = model_identity_path(dir.path(), spec);
+    let valid: serde_json::Value = serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+    let cases = [
+        ("sha256", serde_json::json!("a".repeat(63))),
+        ("sha256", serde_json::json!("g".repeat(64))),
+        ("bytes", serde_json::json!(installed_bytes(spec.pinned.as_ref().unwrap()) + 1)),
+        ("fileVersion", serde_json::Value::Null),
+        ("formatVersion", serde_json::json!(formats::MODEL_IDENTITY + 1)),
+    ];
+    for (key, value) in cases {
+        let mut document = valid.clone();
+        document[key] = value;
+        let before = serde_json::to_vec(&document).unwrap();
+        std::fs::write(&sidecar, &before).unwrap();
+        assert_eq!(verified_model_digest(&target), None, "{key}");
+        assert_eq!(state_of(dir.path(), spec).status, BinaryStatus::InstalledUnchecked);
+        assert_eq!(std::fs::read(&sidecar).unwrap(), before);
+    }
 }

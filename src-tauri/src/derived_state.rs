@@ -224,7 +224,8 @@ const FACES_CLASS: &str = "faces";
 const TRANSCRIPTS_CLASS: &str = "transcripts";
 
 /// SQL over a contents alias: whether this launch's latest analysis event
-/// for the content and class is a failure by the current model. A failure is
+/// for the content and class is a failure by the current model family. Its
+/// recorded artifact version is provenance, not permission to retry. A failure is
 /// not retried in the launch that recorded it until a recheck reopens it.
 fn failed_now_sql(alias: &str, class: &str, model: &crate::ai_dependencies::ModelIdentity) -> String {
     let session = crate::records::session_sql();
@@ -232,9 +233,8 @@ fn failed_now_sql(alias: &str, class: &str, model: &crate::ai_dependencies::Mode
         "EXISTS (SELECT 1 FROM records.analysis_events e \
          WHERE e.id = (SELECT MAX(x.id) FROM records.analysis_events x \
            WHERE x.content_hash = {alias}.hash AND x.class = '{class}' AND x.session_id IS {session}) \
-         AND e.event = '{FAILED}' AND e.model = {} AND e.model_version = {})",
+         AND e.event = '{FAILED}' AND e.model = {})",
         crate::records::sql_text(Some(&model.model)),
-        crate::records::sql_text(Some(&model.version)),
     )
 }
 
@@ -1479,6 +1479,16 @@ pub fn record_face_failure(
     path: &str,
     message: &str,
 ) -> Result<bool, String> {
+    record_face_failure_with_model(conn, hash, path, message, &crate::ai_dependencies::face_model())
+}
+
+pub(crate) fn record_face_failure_with_model(
+    conn: &Connection,
+    hash: &str,
+    path: &str,
+    message: &str,
+    model: &crate::ai_dependencies::ModelIdentity,
+) -> Result<bool, String> {
     logged_if_unrecorded(path, FACE_ERROR, message, || {
         let transaction = crate::sqlite::write_transaction(conn)
             .map_err(|error| error.to_string())?;
@@ -1486,7 +1496,7 @@ pub fn record_face_failure(
             &transaction,
             hash,
             FACES_CLASS,
-            &crate::ai_dependencies::face_model(),
+            model,
             path,
             message,
         )?;
@@ -1536,6 +1546,16 @@ pub fn record_transcript_failure(
     path: &str,
     message: &str,
 ) -> Result<bool, String> {
+    record_transcript_failure_with_model(conn, hash, path, message, &crate::ai_dependencies::transcription_model())
+}
+
+pub(crate) fn record_transcript_failure_with_model(
+    conn: &Connection,
+    hash: &str,
+    path: &str,
+    message: &str,
+    model: &crate::ai_dependencies::ModelIdentity,
+) -> Result<bool, String> {
     logged_if_unrecorded(path, TRANSCRIPT_ERROR, message, || {
         let transaction = crate::sqlite::write_transaction(conn)
             .map_err(|error| error.to_string())?;
@@ -1543,7 +1563,7 @@ pub fn record_transcript_failure(
             &transaction,
             hash,
             TRANSCRIPTS_CLASS,
-            &crate::ai_dependencies::transcription_model(),
+            model,
             path,
             message,
         )?;

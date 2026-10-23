@@ -243,7 +243,7 @@ fn a_model_load_failure_keeps_transcription_retryable_and_coalesces_one_class_is
         acceleration: crate::ai_acceleration::Mode::None, cancel_when: None,
     };
     let error = crate::ai_dependencies::model_load_error("invalid model header");
-    let outcome = finish_transcription_attempt(&attempt, "media".into(), Err(error.clone())).unwrap();
+    let outcome = finish_transcription_attempt(&attempt, "media".into(), crate::ai_dependencies::ModelOutcome { model: crate::ai_dependencies::transcription_model(), result: Err(error.clone()) }).unwrap();
     assert!(matches!(outcome, TranscriptionAttemptOutcome::ModelUnavailable { .. }));
     let failed: i64 = conn.query_row("SELECT count(*) FROM active_issues WHERE path != ''", [], |r| r.get(0)).unwrap();
     assert_eq!(failed, 0, "a dependency failure must never blame the media file");
@@ -279,7 +279,7 @@ fn a_transcription_panic_becomes_a_durable_item_failure() {
         acceleration: crate::ai_acceleration::Mode::None, cancel_when: None,
     };
     let result = crate::failure_runtime::contain_item(|| panic!("synthetic transcription panic"));
-    let outcome = finish_transcription_attempt(&attempt, "media".into(), result).unwrap();
+    let outcome = finish_transcription_attempt(&attempt, "media".into(), crate::ai_dependencies::ModelOutcome { model: crate::ai_dependencies::transcription_model(), result }).unwrap();
     assert!(matches!(outcome, TranscriptionAttemptOutcome::Failed { .. }));
     assert_eq!(crate::derived_state::transcript_result(&conn, "media").unwrap().status, crate::derived_state::FAILED);
 }
@@ -297,4 +297,33 @@ fn settled_global_preview_search_waits_for_new_debt_but_denied_turns_do_not_sett
     assert!(cursors.run_preview_search(|| Ok((true, true))).unwrap());
     assert!(cursors.run_preview_search(|| Err("interrupted".to_string())).is_err());
     assert!(cursors.run_preview_search(|| Ok((true, true))).unwrap());
+}
+
+#[test]
+fn transcription_receipts_keep_loaded_identity_and_failures_do_not_retry_for_a_different_version() {
+    let temp = tempfile::tempdir().unwrap();
+    let conn = crate::index_store::open(&temp.path().join("index.sqlite3")).unwrap();
+    let cache = CachePaths::new(temp.path().join("cache"));
+    let model = crate::ai_dependencies::transcription_model_with_version(Some("a".repeat(64)));
+    for hash in ["success", "failure"] {
+        conn.execute("INSERT INTO contents (hash, byte_size, kind) VALUES (?1, 1, 'audio')", [hash]).unwrap();
+        let attempt = TranscriptionAttempt {
+            conn: &conn, cache: &cache, data_root: temp.path(), temp_dir: temp.path().join("temp"),
+            source_hash: hash, source_path: "/media/audio.wav", replace_existing: false,
+            acceleration: crate::ai_acceleration::Mode::None, cancel_when: None,
+        };
+        let result = if hash == "success" { Ok(crate::transcription::Transcript::default()) }
+            else { Err("inference failed".into()) };
+        finish_transcription_attempt(&attempt, hash.into(), crate::ai_dependencies::ModelOutcome {
+            model: model.clone(), result,
+        }).unwrap();
+        let sql = if hash == "success" {
+            "SELECT model_version FROM transcripts WHERE content_hash = ?1"
+        } else {
+            "SELECT model_version FROM records.analysis_events WHERE content_hash = ?1 AND event = 'failed'"
+        };
+        let version: String = conn.query_row(sql, [hash], |r| r.get(0)).unwrap();
+        assert_eq!(version, model.version);
+    }
+    assert_eq!(crate::derived_state::transcript_result(&conn, "failure").unwrap().status, crate::derived_state::FAILED);
 }

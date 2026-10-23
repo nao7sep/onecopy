@@ -227,67 +227,82 @@ pub fn run_whisper(
     model: &Path,
     pcm: &[f32],
     acceleration: crate::ai_acceleration::Mode,
-    mut on_progress: impl FnMut(i32) + 'static,
+    on_progress: impl FnMut(i32) + 'static,
 ) -> Result<Transcript, String> {
+    run_whisper_with_model(model, pcm, acceleration, on_progress).result
+}
+
+fn run_whisper_with_model(
+    model: &Path,
+    pcm: &[f32],
+    acceleration: crate::ai_acceleration::Mode,
+    mut on_progress: impl FnMut(i32) + 'static,
+) -> crate::ai_dependencies::ModelOutcome<Transcript> {
     use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
-    crate::resource_limits::require_available(
-        crate::resource_limits::WHISPER_REQUIRED_AVAILABLE,
-        "Transcription",
-    )?;
+    let mut identity = crate::ai_dependencies::transcription_model();
+    let result = (|| {
+        crate::resource_limits::require_available(
+            crate::resource_limits::WHISPER_REQUIRED_AVAILABLE,
+            "Transcription",
+        )?;
 
-    crate::ai_acceleration::require_supported(
-        crate::ai_acceleration::TRANSCRIPTION,
-        acceleration,
-    )?;
-    // whisper.cpp otherwise writes its internal decoder trace directly to
-    // stderr. The app owns useful progress and errors; the repeated token
-    // dumps are neither and made run-dev unreadable.
-    whisper_rs::install_logging_hooks();
-    if is_cancelled() {
-        return Err(crate::scanner::CANCELLED.to_string());
-    }
-    let mut context_params = WhisperContextParameters::default();
-    context_params.use_gpu(matches!(acceleration, crate::ai_acceleration::Mode::Metal));
-    let context = WhisperContext::new_with_params(model, context_params)
-        .map_err(crate::ai_dependencies::model_load_error)?;
-    let mut state = context
-        .create_state()
-        .map_err(|e| format!("whisper state failed: {e}"))?;
-    if is_cancelled() {
-        return Err(crate::scanner::CANCELLED.to_string());
-    }
+        crate::ai_acceleration::require_supported(
+            crate::ai_acceleration::TRANSCRIPTION,
+            acceleration,
+        )?;
+        // whisper.cpp otherwise writes its internal decoder trace directly to
+        // stderr. The app owns useful progress and errors; the repeated token
+        // dumps are neither and made run-dev unreadable.
+        whisper_rs::install_logging_hooks();
+        if is_cancelled() {
+            return Err(crate::scanner::CANCELLED.to_string());
+        }
+        let mut context_params = WhisperContextParameters::default();
+        context_params.use_gpu(matches!(acceleration, crate::ai_acceleration::Mode::Metal));
+        let observation = crate::ai_dependencies::ModelObservation::before(model);
+        let context = WhisperContext::new_with_params(model, context_params)
+            .map_err(crate::ai_dependencies::model_load_error)?;
+        identity = crate::ai_dependencies::transcription_model_with_version(observation.after_load());
+        let mut state = context
+            .create_state()
+            .map_err(|e| format!("whisper state failed: {e}"))?;
+        if is_cancelled() {
+            return Err(crate::scanner::CANCELLED.to_string());
+        }
 
-    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-    params.set_n_threads(crate::resource_limits::available_transcription_threads());
-    params.set_language(Some("auto"));
-    params.set_print_special(false);
-    params.set_print_progress(false);
-    params.set_print_realtime(false);
-    params.set_print_timestamps(false);
-    params.set_progress_callback_safe(move |progress: i32| on_progress(progress));
-    params.set_abort_callback_safe(is_cancelled);
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        params.set_n_threads(crate::resource_limits::available_transcription_threads());
+        params.set_language(Some("auto"));
+        params.set_print_special(false);
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_timestamps(false);
+        params.set_progress_callback_safe(move |progress: i32| on_progress(progress));
+        params.set_abort_callback_safe(is_cancelled);
 
-    state
-        .full(params, pcm)
-        .map_err(|e| format!("transcription failed: {e}"))?;
+        state
+            .full(params, pcm)
+            .map_err(|e| format!("transcription failed: {e}"))?;
 
-    let count = state.full_n_segments();
-    let mut segments = Vec::with_capacity(count.max(0) as usize);
-    for i in 0..count {
-        let Some(segment) = state.get_segment(i) else {
-            continue;
-        };
-        let text = segment.to_str_lossy().map_err(|e| e.to_string())?.into_owned();
-        // whisper timestamps are in centiseconds.
-        segments.push(Segment {
-            start_ms: segment.start_timestamp() * 10,
-            end_ms: segment.end_timestamp() * 10,
-            text: text.trim().to_string(),
-        });
-    }
-    let language = whisper_rs::get_lang_str(state.full_lang_id_from_state()).map(str::to_owned);
-    Ok(Transcript { language, segments })
+        let count = state.full_n_segments();
+        let mut segments = Vec::with_capacity(count.max(0) as usize);
+        for i in 0..count {
+            let Some(segment) = state.get_segment(i) else {
+                continue;
+            };
+            let text = segment.to_str_lossy().map_err(|e| e.to_string())?.into_owned();
+            // whisper timestamps are in centiseconds.
+            segments.push(Segment {
+                start_ms: segment.start_timestamp() * 10,
+                end_ms: segment.end_timestamp() * 10,
+                text: text.trim().to_string(),
+            });
+        }
+        let language = whisper_rs::get_lang_str(state.full_lang_id_from_state()).map(str::to_owned);
+        Ok(Transcript { language, segments })
+    })();
+    crate::ai_dependencies::ModelOutcome { model: identity, result }
 }
 
 /// Renders segments for display: one `[m:ss] text` line each — the
@@ -317,19 +332,23 @@ pub(crate) fn generate_transcript_claimed(
     media: &Path,
     acceleration: crate::ai_acceleration::Mode,
     on_progress: impl FnMut(i32) + 'static,
-) -> Result<Transcript, String> {
-    let pcm = extract_pcm(ffmpeg, media, temp_dir)?;
+) -> crate::ai_dependencies::ModelOutcome<Transcript> {
+    let pcm = match extract_pcm(ffmpeg, media, temp_dir) {
+        Ok(pcm) => pcm,
+        Err(error) => return crate::ai_dependencies::ModelOutcome {
+            model: crate::ai_dependencies::transcription_model(),
+            result: Err(error),
+        },
+    };
     if !has_audible_signal(&pcm) {
-        return Ok(Transcript::default());
+        return crate::ai_dependencies::ModelOutcome {
+            model: crate::ai_dependencies::transcription_model(),
+            result: Ok(Transcript::default()),
+        };
     }
-    run_whisper(model, &pcm, acceleration, on_progress)
+    run_whisper_with_model(model, &pcm, acceleration, on_progress)
 }
 
-// EXCEPTION to tests-folder conventions: this test pins the private lock that
-// linearizes one process-wide native-engine claim with its publication.
 #[cfg(test)]
-// EXCEPTION to tests-folder conventions: exercises the private
-// `publish_if_active`; promoting it would widen the crate's API only for
-// this test.
 #[path = "../tests/unit/transcription.rs"]
 mod publication_tests;
