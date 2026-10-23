@@ -1597,6 +1597,12 @@ fn quit_workflow_ready(
 }
 
 #[tauri::command]
+fn set_main_menu_available(window: tauri::WebviewWindow, enabled: bool) -> Result<(), String> {
+    if window.label() != "main" { return Err("only Main owns application menu surfaces".into()); }
+    menu::set_main_available(window.app_handle(), enabled).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn session_end_saved(id: u64) {
     quit::session_end_saved(id);
 }
@@ -1649,11 +1655,7 @@ pub fn run() {
             records_placement_state.clone(),
         ))
         .manage(quit::RendererReadiness::default())
-        .on_page_load(|webview, payload| {
-            if webview.label() == "main" && matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
-                webview.state::<quit::RendererReadiness>().document_started();
-            }
-        })
+        .manage(menu::MainSurfaceState::default())
         .manage(theme::ThemeState::default())
         .manage(language)
         .on_window_event(move |window, event| {
@@ -1699,6 +1701,13 @@ pub fn run() {
         // takes the recorded theme as its page starts loading, before it paints.
         .on_page_load(|webview, payload| {
             if payload.event() == tauri::webview::PageLoadEvent::Started {
+                if webview.label() == "main" {
+                    webview.state::<quit::RendererReadiness>().document_started();
+                    if let Err(error) = menu::set_main_available(webview.app_handle(), false) {
+                        logging::warn("native menu could not be disabled for Main reload",
+                            json!({ "error": { "message": error.to_string() } }));
+                    }
+                }
                 quit::window_loaded(&webview.window());
                 let current = webview.state::<theme::ThemeState>().current();
                 if let Err(error) = theme::apply_to_webview(webview, current) {
@@ -1723,6 +1732,7 @@ pub fn run() {
             if event.id() == SAFE_QUIT_MENU_ID {
                 quit::request_quit(app);
             } else if let Some(surface_event) = menu::main_surface_event(event.id().as_ref()) {
+                if !app.state::<menu::MainSurfaceState>().available() { return; }
                 // The native item cannot call into the webview directly; Main
                 // owns the only Settings and About surfaces, the ones its own
                 // Cmd+, and app menu open.
@@ -1782,6 +1792,7 @@ pub fn run() {
         })
         .invoke_handler(startup::gate_commands(tauri::generate_handler![
             load_app_data,
+            set_main_menu_available,
             save_config,
             appearance_preferences,
             system_theme,

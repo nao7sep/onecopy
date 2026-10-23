@@ -33,10 +33,39 @@ pub fn main_surface_event(id: &str) -> Option<&'static str> {
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID, WINDOW_SUBMENU_ID};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-use tauri::{AppHandle, Wry};
+use tauri::{AppHandle, Manager, Wry};
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use crate::i18n;
+
+/// Main enables its commands only after the listeners are installed and no
+/// blocking dialog owns input. Retained here so language rebuilds agree.
+#[derive(Default)]
+pub struct MainSurfaceState(std::sync::atomic::AtomicBool);
+
+impl MainSurfaceState {
+    pub fn available(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+/// Runs on the event thread, like menu rebuilding and native dispatch.
+pub fn set_main_available(app: &AppHandle, enabled: bool) -> tauri::Result<()> {
+    app.state::<MainSurfaceState>().0.store(enabled, std::sync::atomic::Ordering::Release);
+    fn update(items: Vec<tauri::menu::MenuItemKind<Wry>>, enabled: bool) -> tauri::Result<()> {
+        for item in items {
+            match item {
+                tauri::menu::MenuItemKind::MenuItem(item)
+                    if main_surface_event(item.id().as_ref()).is_some() => item.set_enabled(enabled)?,
+                tauri::menu::MenuItemKind::Submenu(menu) => update(menu.items()?, enabled)?,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    if let Some(menu) = app.menu() { update(menu.items()?, enabled)?; }
+    Ok(())
+}
 
 /// Every catalogue key the native menu reads; the tests check each one exists
 /// in every language.
@@ -66,12 +95,13 @@ pub const KEYS: [&str; 21] = [
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn build(app: &AppHandle, language: &str) -> tauri::Result<Menu<Wry>> {
+    let enabled = app.state::<MainSurfaceState>().available();
     let name = app.package_info().name.clone();
     let text = i18n::catalogue(language);
     let t = |key: &str| text.text(key, &name);
     let quit_text = if cfg!(target_os = "macos") { t("nativeMenu.quit") } else { t("nativeMenu.exit") };
     let quit = MenuItem::with_id(app, SAFE_QUIT_MENU_ID, quit_text, true, Some("CmdOrCtrl+Q"))?;
-    let about_item = MenuItem::with_id(app, OPEN_ABOUT_MENU_ID, t("nativeMenu.about"), true, None::<&str>)?;
+    let about_item = MenuItem::with_id(app, OPEN_ABOUT_MENU_ID, t("nativeMenu.about"), enabled, None::<&str>)?;
 
     let file = Submenu::with_items(
         app,
@@ -128,7 +158,7 @@ pub fn build(app: &AppHandle, language: &str) -> tauri::Result<Menu<Wry>> {
             app,
             OPEN_SETTINGS_MENU_ID,
             t("nativeMenu.settings"),
-            true,
+            enabled,
             Some("Cmd+,"),
         )?;
         let app_menu = Submenu::with_items(

@@ -8,7 +8,7 @@ import { useItemsStore } from "../state/items-store";
 import { useComparisonStore } from "../state/comparison-store";
 import { useAppShellStore } from "../state/app-shell-store";
 import { useSectionsStore } from "../state/sections-store";
-import { hasOpenModal } from "../utils/modalStack";
+import { hasOpenModal, subscribeModalStack } from "../utils/modalStack";
 import {
   isEditableTarget,
   isHelpShortcut,
@@ -29,6 +29,8 @@ import { toggleMainPlayback } from "../workflows/playback";
 import { isComposingEvent } from "./useComposing";
 import { useFullscreenViewStore } from "../state/fullscreen-view-store";
 import { confirmsTrashDelete } from "../models/config";
+import { setMainMenuAvailable } from "../repositories/nativeMenu";
+import { reportWindowCall } from "../repositories/logging";
 import { useSyncedWarning } from "./useSyncedWarning";
 
 /** The exact ordered logical items a Main deletion review shows. */
@@ -69,20 +71,30 @@ export function useGlobalCommands() {
   useEffect(() => {
     let disposed = false;
     const stops: Array<() => void> = [];
+    let ready = 0;
+    const update = () => setMainMenuAvailable(ready === 2 && !hasOpenModal(comparisonLayerToken));
+    const unsubscribe = subscribeModalStack(update);
+    update();
     const keep = (stop: () => void) => {
       if (disposed) stop();
-      else stops.push(stop);
+      else {
+        stops.push(stop);
+        ready++;
+        update();
+      }
     };
     void listen("menu://open-settings", () => {
       if (!hasOpenModal(comparisonLayerToken)) openSettings();
-    }).then(keep);
+    }).then(keep).catch(reportWindowCall("listen for native menu commands"));
     // The native About panel shows only the name and version; the app menu's
     // About opens Main's own About surface instead.
     void listen("menu://open-about", () => {
       if (!hasOpenModal(comparisonLayerToken)) useAppShellStore.getState().openUtility("about");
-    }).then(keep);
+    }).then(keep).catch(reportWindowCall("listen for native menu commands"));
     return () => {
       disposed = true;
+      unsubscribe();
+      setMainMenuAvailable(false);
       stops.forEach((stop) => stop());
     };
   }, [openSettings]);

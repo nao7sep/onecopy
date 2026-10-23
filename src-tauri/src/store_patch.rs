@@ -77,11 +77,17 @@ pub fn save_config(app: &AppHandle, mut changes: Value, report_failure: bool) ->
                 )
                 .unwrap_or(state.system_language);
                 state.set_current(resolved);
-                if let Err(error) = menu::build(app, resolved).and_then(|menu| app.set_menu(menu)) {
-                    logging::warn(
-                        "saved language could not be applied to the native menu",
-                        json!({ "error": { "message": error.to_string() } }),
-                    );
+                // Rebuild and availability updates share the event thread, so
+                // a concurrent modal transition cannot publish a stale menu.
+                let menu_app = app.clone();
+                if let Err(error) = app.run_on_main_thread(move || {
+                    if let Err(error) = menu::build(&menu_app, resolved).and_then(|menu| menu_app.set_menu(menu)) {
+                        logging::warn("saved language could not be applied to the native menu",
+                            json!({ "error": { "message": error.to_string() } }));
+                    }
+                }) {
+                    logging::warn("native menu language update could not be scheduled",
+                        json!({ "error": { "message": error.to_string() } }));
                 }
                 if let Err(error) = crate::records_window::retitle(app, resolved) {
                     logging::warn(

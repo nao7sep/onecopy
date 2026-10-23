@@ -10,6 +10,13 @@
 // (delete/Enter/zoom) must go quiet while ANY modal is open — Backspace over
 // an open Settings dialog must never trash files behind the backdrop.
 
+const listeners = new Set<() => void>();
+
+export function subscribeModalStack(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+}
+
 const stack: Array<{ token: object; surface?: HTMLElement; opener: HTMLElement | null }> = [];
 
 // Inert only siblings of the active surface and its ancestors. Making an
@@ -60,6 +67,7 @@ export function pushModal(token: object, surface?: HTMLElement, opener: HTMLElem
     child.opener = surface ?? null;
   }
   updateBackground();
+  listeners.forEach((listener) => listener());
 }
 
 /** Remove a layer and return its valid focus destination, only if it was topmost. */
@@ -72,6 +80,7 @@ export function popModal(token: object, destination?: HTMLElement | null): HTMLE
     if (entry.opener && closed.surface?.contains(entry.opener)) entry.opener = closed.opener;
   }
   updateBackground();
+  listeners.forEach((listener) => listener());
   if (!wasTopmost) return null;
   const remaining = stack[stack.length - 1]?.surface;
   if (destination?.isConnected && (!remaining || remaining.contains(destination))) return destination;
@@ -95,4 +104,5 @@ export function hasOpenModal(except?: object): boolean {
 export function resetModalStack(): void {
   stack.length = 0;
   updateBackground();
+  listeners.forEach((listener) => listener());
 }

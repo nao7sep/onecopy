@@ -167,6 +167,7 @@ let nextWindowListenerFailure: unknown | null = null;
  * is active (the suite's case) focuses that window as Rust would. */
 function installDefaultHandlers(): void {
   handlers.set("activity_record", () => null);
+  handlers.set("set_main_menu_available", () => null);
   // Supported-storage checks answer "nothing special" unless a spec says so.
   handlers.set("items_in_synced_folders", () => false);
   handlers.set("package_source_dirs", () => []);

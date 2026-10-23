@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 
 import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
-import { act, cleanup, fireEvent, render } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { comparisonLayerToken } from "../../src/workflows/comparison";
 import { useGlobalCommands } from "../../src/hooks/useGlobalCommands";
 import type { SectionItem } from "../../src/models/items";
@@ -14,12 +14,13 @@ import { useItemsStore } from "../../src/state/items-store";
 import { currentMainFeedback, useMainFeedbackStore } from "../../src/state/main-feedback-store";
 import { useFullscreenViewStore } from "../../src/state/fullscreen-view-store";
 import { useAppShellStore } from "../../src/state/app-shell-store";
-import { pushModal, resetModalStack } from "../../src/utils/modalStack";
+import { pushModal, popModal, resetModalStack } from "../../src/utils/modalStack";
 import { installPreviewCommandWiring } from "../../src/workflows/preview";
 import {
   fireEvent as fireBackendEvent,
   mockCommand,
   invokeCalls,
+  listen,
   mockSectionItems,
   resetTauriMocks,
   setCurrentMonitor,
@@ -71,6 +72,7 @@ function Harness() {
 }
 
 beforeEach(() => {
+  resetModalStack();
   resetTauriMocks({ keepListeners: true });
   useMainFeedbackStore.setState({ entries: {} });
   usePreviewStore.setState({ follow: false, placement: null, current: null });
@@ -566,4 +568,64 @@ it("retains app dialogs in Comparison and suppresses them under a nested dialog"
   pushModal({});
   fireEvent.keyDown(window, { key: "?" });
   expect(useAppShellStore.getState().utilitySurface).toBeNull();
+});
+
+
+describe("native menu availability", () => {
+  afterEach(() => resetModalStack());
+  const latest = () => invokeCalls.filter((call) => call.command === "set_main_menu_available").at(-1)?.args.enabled;
+
+  it("tracks nested modal unwind, permits Comparison chrome, and disables on owner removal", async () => {
+    const view = render(<Harness />);
+    await waitFor(() => expect(latest()).toBe(true));
+    const parent = {}, child = {};
+    pushModal(comparisonLayerToken);
+    await waitFor(() => expect(latest()).toBe(true));
+    pushModal(parent);
+    await waitFor(() => expect(latest()).toBe(false));
+    pushModal(child);
+    popModal(parent);
+    await act(async () => {});
+    expect(latest()).toBe(false);
+    popModal(child);
+    await waitFor(() => expect(latest()).toBe(true));
+    view.unmount();
+    await waitFor(() => expect(latest()).toBe(false));
+  });
+
+  it("waits for both listeners and removes a listener arriving after unmount", async () => {
+    let ready!: (stop: () => void) => void;
+    listen.mockImplementationOnce(() => new Promise((resolve) => { ready = resolve; }));
+    const view = render(<Harness />);
+    await act(async () => {});
+    expect(latest()).toBe(false);
+    view.unmount();
+    const stop = vi.fn();
+    await act(async () => { ready(stop); });
+    expect(stop).toHaveBeenCalledOnce();
+    expect(latest()).toBe(false);
+  });
+
+  it("coalesces modal changes and replacement owners behind an unsettled native update", async () => {
+    let finish!: () => void;
+    let first = true;
+    mockCommand("set_main_menu_available", () => {
+      if (!first) return null;
+      first = false;
+      return new Promise<void>((resolve) => { finish = resolve; });
+    });
+    const old = render(<Harness />);
+    await act(async () => {});
+    const modal = {};
+    pushModal(modal);
+    popModal(modal);
+    old.unmount();
+    const replacement = render(<Harness />);
+    await act(async () => {});
+    expect(invokeCalls.filter((call) => call.command === "set_main_menu_available")).toHaveLength(1);
+    await act(async () => { finish(); });
+    expect(latest()).toBe(true);
+    replacement.unmount();
+    await waitFor(() => expect(latest()).toBe(false));
+  });
 });
