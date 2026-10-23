@@ -1,5 +1,7 @@
 // @vitest-environment happy-dom
 
+import { seedAppConfig } from "../helpers/config";
+import { useSettingsStore } from "../../src/state/settings-store";
 import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
 import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -58,6 +60,8 @@ let wiringInstalled = false;
 
 beforeEach(async () => {
   resetTauriMocks({ keepListeners: true });
+  seedAppConfig();
+  useSettingsStore.setState({ draft: null, opened: null, saving: false });
   useBinariesStore.setState({ entries: [], loading: false, installing: {}, errors: {}, loadError: null });
   current = snapshot({}, { previews: { state: "queued", queued: 12 } });
   mockCommands({
@@ -158,6 +162,7 @@ describe("Background work", () => {
     const open = [...row.querySelectorAll("button")].find((button) => button.textContent === action)!;
     await act(async () => open.click());
     expect(useAppShellStore.getState().utilitySurface).toBe(surface);
+    if (surface === "settings") expect(useSettingsStore.getState().draft).not.toBeNull();
     // It never installs anything itself.
     expect(invokeCalls.some((call) => call.command.startsWith("binaries_"))).toBe(false);
     const available = [...view.container.querySelectorAll("li")].find((item) => item.textContent?.includes("Thumbnails, previews, and posters"))!;

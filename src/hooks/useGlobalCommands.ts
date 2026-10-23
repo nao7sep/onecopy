@@ -6,7 +6,6 @@ import { listen } from "@tauri-apps/api/event";
 import { useAppStore } from "../state/app-store";
 import { useItemsStore } from "../state/items-store";
 import { useComparisonStore } from "../state/comparison-store";
-import { useSettingsStore } from "../state/settings-store";
 import { useAppShellStore } from "../state/app-shell-store";
 import { useSectionsStore } from "../state/sections-store";
 import { hasOpenModal } from "../utils/modalStack";
@@ -43,12 +42,6 @@ export function useGlobalCommands() {
   const permanentSynced = useSyncedWarning(deleteReview?.permanent === true ? deleteReview.keys : null);
 
   const openSettings = useCallback(() => {
-    const appData = useAppStore.getState().appData;
-    useSettingsStore.getState().beginEditing(
-      appData?.config ?? null,
-      appData?.aiAccelerationCapabilities ?? [],
-      appData?.configDefaults ?? null,
-    );
     useAppShellStore.getState().openUtility("settings");
   }, []);
 

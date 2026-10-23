@@ -2,6 +2,8 @@
 //
 // One current-run diagnostic inbox with actions for the affected condition.
 
+import { seedAppConfig } from "../helpers/config";
+import { useSettingsStore } from "../../src/state/settings-store";
 import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import { render, cleanup, act, fireEvent, screen } from "@testing-library/react";
@@ -32,6 +34,8 @@ function row(id: number, over: Partial<IssueRow> = {}): IssueRow {
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
+  seedAppConfig();
+  useSettingsStore.setState({ draft: null, opened: null, saving: false });
   useItemsStore.setState(useItemsStore.getInitialState());
   useIssuesStore.setState({
     total: 0,
@@ -51,6 +55,7 @@ describe("the issues modal", () => {
     expect(await screen.findByRole("button", { name: "Check source folders" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(useAppShellStore.getState().utilitySurface).toBe("settings");
+    expect(useSettingsStore.getState().draft).not.toBeNull();
     expect(invokeCalls.some((call) => call.command.includes("dismiss"))).toBe(false);
   });
 

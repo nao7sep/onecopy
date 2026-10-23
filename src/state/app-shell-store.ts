@@ -1,4 +1,6 @@
 import { create } from "zustand";
+import { useAppStore } from "./app-store";
+import { useSettingsStore } from "./settings-store";
 
 export type UtilitySurface =
   | "about"
@@ -22,6 +24,20 @@ interface AppShellState {
  */
 export const useAppShellStore = create<AppShellState>((set) => ({
   utilitySurface: null,
-  openUtility: (utilitySurface) => set({ utilitySurface }),
+  openUtility: (utilitySurface) => {
+    // Every Settings route, including recovery links replacing another
+    // utility, needs its draft before the modal becomes visible. Reopening
+    // must not overwrite edits already held by the Settings owner.
+    if (utilitySurface === "settings" && useSettingsStore.getState().draft === null) {
+      const appData = useAppStore.getState().appData;
+      if (appData === null) return;
+      useSettingsStore.getState().beginEditing(
+        appData.config,
+        appData.aiAccelerationCapabilities,
+        appData.configDefaults,
+      );
+    }
+    set({ utilitySurface });
+  },
   closeUtility: () => set({ utilitySurface: null }),
 }));

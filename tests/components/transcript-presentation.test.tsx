@@ -1,5 +1,7 @@
 // @vitest-environment happy-dom
 
+import { seedAppConfig } from "../helpers/config";
+import { useSettingsStore } from "../../src/state/settings-store";
 import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -23,6 +25,8 @@ const detail: ItemDetail = {
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
+  seedAppConfig();
+  useSettingsStore.setState({ draft: null, opened: null, saving: false });
   mockCommands({
     transcript_get: () => ({ status: "ready", text: "[0:01] First line\n[0:02] Final line", message: null }),
     log_event: () => null,
@@ -160,5 +164,6 @@ describe("transcript presentation owners", () => {
     render(<TranscriptBlock hash="clip" medium="video" work={work} />);
     fireEvent.click(await screen.findByRole("button", { name: label }));
     expect(useAppShellStore.getState().utilitySurface).toBe(surface);
+    if (surface === "settings") expect(useSettingsStore.getState().draft).not.toBeNull();
   });
 });

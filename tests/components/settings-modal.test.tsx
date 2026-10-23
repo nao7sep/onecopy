@@ -530,3 +530,19 @@ describe("quitting over unsaved edits", () => {
     useQuitDiscardStore.setState({ choose: null, presented: null });
   });
 });
+
+it.each([
+  ["1e1", 10],
+  ["2e1", 20],
+  ["", 16],
+  ["3.9", 3],
+  ["0", 2],
+])("commits complete numeric Settings input %s as %s", (text, expected) => {
+  render(<SettingsModal open onClose={() => {}} />);
+  fireEvent.click(screen.getByRole("tab", { name: "Media" }));
+  const input = screen.getByLabelText(/Maximum images in Comparison/);
+  fireEvent.focus(input);
+  fireEvent.change(input, { target: { value: text } });
+  fireEvent.blur(input);
+  expect(useSettingsStore.getState().draft?.maximumImagesInComparison).toBe(expected);
+});

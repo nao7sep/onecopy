@@ -234,10 +234,10 @@ function NumberField({
         onFocus={() => setText(String(value))}
         onChange={(e) => setText(e.target.value)}
         onBlur={() => {
-          const parsed = Number.parseInt(text ?? "", 10);
+          const parsed = text === null || text.trim() === "" ? Number.NaN : Number(text);
           onChange(
             Number.isFinite(parsed)
-              ? Math.min(max ?? Number.POSITIVE_INFINITY, Math.max(min, parsed))
+              ? Math.min(max ?? Number.POSITIVE_INFINITY, Math.max(min, Math.trunc(parsed)))
               : value,
           );
           setText(null);
