@@ -999,15 +999,23 @@ fn a_hidden_name_restores_as_an_ordinary_file() {
 }
 
 #[test]
-fn ten_thousand_files_plan_quickly() {
-    // Planning is linear in the selection.
+fn distinct_restore_targets_need_no_conflict_probes() {
     let candidates: Vec<Candidate> = (0..10_000)
         .map(|n| candidate(entry(&format!("d/f{n}.jpg"), &format!("album{}/f{n}.jpg", n % 50))))
         .collect();
-    let started = std::time::Instant::now();
-    let plan = plan(&candidates, &[]);
-    assert_eq!(plan.steps.len(), 10_000);
-    assert!(started.elapsed() < std::time::Duration::from_secs(3), "{:?}", started.elapsed());
+    let mut probes = 0;
+    let plan = plan_restore(
+        &candidates, FolderNames::new(true, true), RenameStyle::SpaceNumber,
+        &mut |_| { probes += 1; Ok(true) }, &|| false,
+    ).unwrap();
+    assert_eq!(probes, 0, "unique observed targets need no additional filesystem probes");
+    assert_eq!(plan.steps.len(), candidates.len());
+    let targets: HashSet<_> = plan.steps.iter().map(|step| match &step.action {
+        Action::Restore { target, renamed: false } => target.clone(),
+        other => panic!("unexpected plan: {other:?}"),
+    }).collect();
+    assert_eq!(targets.len(), candidates.len());
+    assert!(candidates.iter().all(|candidate| targets.contains(candidate.target.as_ref().unwrap())));
 }
 
 // A process that stops after Restore's rename but before its "restored" line:

@@ -137,19 +137,42 @@ fn rows_are_per_path_not_global() {
 
 #[test]
 #[serial(backup_store)]
-fn a_save_never_waits_for_a_locked_history() {
-    let (_dir, file) = unique_store_file("locked");
-    session(&file, "s1", || {
-        assert!(drain(Duration::from_secs(5)));
-        let blocker = Connection::open(&file).unwrap();
-        blocker.execute_batch("BEGIN EXCLUSIVE").unwrap();
-        let started = std::time::Instant::now();
-        for _ in 0..20 {
-            record(Path::new("/abs/locked.json"), b"bytes");
+fn records_finish_before_the_history_consumer_accepts_any_job() {
+    close_for_test();
+    struct Close;
+    impl Drop for Close { fn drop(&mut self) { close_for_test(); } }
+    let _close = Close;
+    let (sender, receiver) = mpsc::channel();
+    lock().sender = Some(sender);
+    let completed = std::thread::scope(|scope| {
+        let (done, finished) = mpsc::channel();
+        let producer = scope.spawn(move || {
+            for value in 0..20u8 {
+                record(Path::new("/abs/locked.json"), &[value]);
+            }
+            done.send(()).unwrap();
+        });
+        // A deadlock watchdog, not a throughput target. The consumer cannot
+        // accept any job before the producer reports that every save returned.
+        let completed = finished.recv_timeout(Duration::from_secs(10));
+        if completed.is_ok() {
+            for value in 0..20u8 {
+                match receiver.try_recv().unwrap() {
+                    Job::Record(path, bytes) => {
+                        assert_eq!(path, "/abs/locked.json");
+                        assert_eq!(bytes, [value]);
+                    }
+                    Job::Drained(_) => panic!("unexpected drain"),
+                }
+            }
+            assert!(matches!(receiver.try_recv(), Err(mpsc::TryRecvError::Empty)));
         }
-        assert!(started.elapsed() < Duration::from_millis(50), "{:?}", started.elapsed());
-        blocker.execute_batch("ROLLBACK").unwrap();
+        // Release a regressed blocking sender before joining it on failure.
+        drop(receiver);
+        producer.join().unwrap();
+        completed
     });
+    assert!(completed.is_ok(), "saves waited for the history consumer");
 }
 
 #[test]
