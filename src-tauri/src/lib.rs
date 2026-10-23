@@ -1472,11 +1472,9 @@ async fn get_section_counts() -> Result<queries::SectionCounts, String> {
     .await
 }
 
-// Receives a structured log object from the webview frontend and writes it to
-// the session file (the frontend has no filesystem access of its own). Left
-// as a plain main-thread command DELIBERATELY: log lines must keep the exact
-// order the frontend sent them in, and dispatch()ing this one onto the
-// blocking pool would let calls race each other and interleave out of order.
+// Enqueues frontend diagnostics for Records (log_lines), with a session-file
+// fallback on storage failure. Admission stays on the command thread to retain
+// frontend order; the bounded logger owns all sink I/O and overload accounting.
 #[tauri::command]
 fn log_event(entry: Value) {
     logging::emit_forwarded(entry);

@@ -204,3 +204,56 @@ fn forwarded_warn_keeps_its_level() {
     logger.emit_forwarded(json!({ "level": "warn", "message": "careful" }));
     assert_eq!(read_lines(&logger, &temp)[0]["level"], json!("warn"));
 }
+
+#[test]
+fn blocked_sink_bounds_slots_and_bytes_without_blocking_callers_or_exit() {
+    // The writer cannot settle until the caller releases it. Exercise both
+    // many small events and a few large events through production admission.
+    for payload_size in [0, QUEUE_BYTES / 8] {
+        let (entered, waiting) = mpsc::channel();
+        let (release, resume) = mpsc::channel();
+        let (stored, records) = mpsc::channel();
+        let logger = Logger::start_writer(false, "blocked-session".into(), move || {
+            let mut first = true;
+            move |line: &Line| {
+                if first {
+                    first = false;
+                    entered.send(()).unwrap();
+                    resume.recv().unwrap();
+                }
+                stored.send(serde_json::from_str::<Value>(&line.text).unwrap()).unwrap();
+            }
+        });
+        logger.emit(Level::Info, "first", json!({}));
+        waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+        let events = QUEUE_SLOTS * 2;
+        let payload = "x".repeat(payload_size);
+        for _ in 0..events {
+            logger.emit(Level::Error, "burst", json!({ "detail": payload }));
+        }
+        assert!(logger.backlog.bytes.load(Ordering::Relaxed) <= QUEUE_BYTES);
+        assert!(logger.backlog.omitted.load(Ordering::Relaxed) > 0);
+        assert!(!logger.flush(Duration::ZERO), "a stalled sink cannot acknowledge flush");
+        release.send(()).unwrap();
+        assert!(logger.flush(Duration::from_secs(5)));
+        let lines: Vec<Value> = records.try_iter().collect();
+        let omitted: u64 = lines.iter().filter_map(|line| line["omittedCount"].as_u64()).sum();
+        let accepted = lines.iter().filter(|line| line["omittedCount"].is_null()).count();
+        assert_eq!(accepted as u64 + omitted, (events + 1) as u64);
+        assert_eq!(logger.backlog.bytes.load(Ordering::Relaxed), 0);
+        logger.emit(Level::Warn, "recovered", json!({}));
+        assert!(logger.flush(Duration::from_secs(5)));
+        assert_eq!(records.try_recv().unwrap()["message"], "recovered");
+    }
+}
+
+#[test]
+fn oversized_event_wakes_idle_writer_to_report_omission() {
+    let (logger, temp) = temp_logger(false);
+    logger.emit(Level::Error, "oversized", json!({ "detail": "x".repeat(QUEUE_BYTES) }));
+    let lines = read_lines(&logger, &temp);
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0]["omittedCount"], 1);
+    assert_eq!(lines[0]["level"], "warn");
+    assert_eq!(lines[0]["sessionId"], "test-session");
+}

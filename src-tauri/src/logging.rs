@@ -13,14 +13,16 @@
 //   - One writer thread owns the records connection, so a caller never waits
 //     on a database lock, including one its own thread holds through an
 //     attached index connection. `flush` waits, bounded, for queued lines.
-//   - Nothing is redacted (logging conventions).
+//   - Overload omits whole diagnostic lines with an explicit count; operation
+//     facts and Issues have independent writers and are not sent here.
 //   - A line the records cannot take goes to this launch's text file under
 //     `logs/`, then to stderr; logging never panics and never stops the app.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{mpsc, OnceLock};
+use std::sync::{mpsc, Arc, OnceLock};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value};
@@ -118,8 +120,20 @@ fn filename_stamp(ms: i64) -> String {
 
 // --- The logger itself ---
 
+// A small diagnostic burst buffer, not a durable delivery queue. Both slots
+// and retained bytes are bounded; overload is recorded as an omitted count.
+const QUEUE_SLOTS: usize = 1024;
+const QUEUE_BYTES: usize = 1024 * 1024;
+
+#[derive(Default)]
+struct Backlog {
+    bytes: AtomicUsize,
+    omitted: AtomicU64,
+}
+
 enum Queued {
     Line(Line),
+    Omitted,
     Flush(mpsc::Sender<()>),
 }
 
@@ -131,8 +145,26 @@ struct Line {
     text: String,
 }
 
+impl Line {
+    fn retained_bytes(&self) -> usize {
+        std::mem::size_of::<Self>() + self.session_id.capacity() + self.time.capacity()
+            + self.level.capacity() + self.message.capacity() + self.text.capacity()
+    }
+
+    fn omission(session: &str, count: u64) -> Self {
+        let time = now_iso_millis();
+        let message = "diagnostic lines omitted during logging overload";
+        let text = serde_json::json!({
+            "time": time, "level": "warn", "message": message,
+            "sessionId": session, "omittedCount": count,
+        }).to_string();
+        Self { session_id: session.to_string(), time, level: "warn".into(), message: message.into(), text }
+    }
+}
+
 pub struct Logger {
-    sender: Option<mpsc::Sender<Queued>>,
+    sender: Option<mpsc::SyncSender<Queued>>,
+    backlog: Arc<Backlog>,
     debug_enabled: bool,
     session_id: String,
 }
@@ -198,21 +230,46 @@ impl Logger {
     /// Starts the writer thread over `records_path`, with `fallback_path` for
     /// lines the records cannot take.
     fn start(records_path: &Path, fallback_path: PathBuf, debug_enabled: bool, session_id: String) -> Self {
-        let (sender, receiver) = mpsc::channel::<Queued>();
         let records_path = records_path.to_path_buf();
+        Self::start_writer(debug_enabled, session_id, move || {
+            let records = crate::records::open(&records_path)
+                .map_err(|error| eprintln!("[onecopy:logging] records unavailable: {error}"))
+                .ok();
+            let mut writer = Writer { records, fallback_path, fallback: None };
+            move |line: &Line| writer.write(line)
+        })
+    }
+
+    fn start_writer<W: FnMut(&Line) + 'static>(
+        debug_enabled: bool,
+        session_id: String,
+        prepare: impl FnOnce() -> W + Send + 'static,
+    ) -> Self {
+        let (sender, receiver) = mpsc::sync_channel::<Queued>(QUEUE_SLOTS);
+        let backlog = Arc::new(Backlog::default());
+        let pending = Arc::clone(&backlog);
+        let session = session_id.clone();
         let spawned = std::thread::Builder::new()
             .name("onecopy-log-writer".to_string())
             .spawn(move || {
-                let records = crate::records::open(&records_path)
-                    .map_err(|error| eprintln!("[onecopy:logging] records unavailable: {error}"))
-                    .ok();
-                let mut writer = Writer { records, fallback_path, fallback: None };
+                let mut write = prepare();
                 for queued in receiver {
-                    match queued {
-                        Queued::Line(line) => writer.write(&line),
-                        Queued::Flush(done) => {
-                            let _ = done.send(());
+                    let acknowledgement = match queued {
+                        Queued::Line(line) => {
+                            let bytes = line.retained_bytes();
+                            write(&line);
+                            pending.bytes.fetch_sub(bytes, Ordering::Relaxed);
+                            None
                         }
+                        Queued::Omitted => None,
+                        Queued::Flush(done) => Some(done),
+                    };
+                    let omitted = pending.omitted.swap(0, Ordering::Relaxed);
+                    if omitted > 0 {
+                        write(&Line::omission(&session, omitted));
+                    }
+                    if let Some(done) = acknowledgement {
+                        let _ = done.send(());
                     }
                 }
             });
@@ -223,15 +280,28 @@ impl Logger {
                 None
             }
         };
-        Logger { sender, debug_enabled, session_id }
+        Logger { sender, backlog, debug_enabled, session_id }
     }
 
-    /// Waits up to `timeout` for every line queued so far to be written.
+    /// Includes queued lines and overload summaries. Queue admission consumes
+    /// the same deadline as the acknowledgement; a full queue cannot hang exit.
     fn flush(&self, timeout: Duration) -> bool {
         let Some(sender) = &self.sender else { return true };
+        let started = std::time::Instant::now();
         let (done, finished) = mpsc::channel();
-        sender.send(Queued::Flush(done)).is_ok() && finished.recv_timeout(timeout).is_ok()
+        let mut marker = Queued::Flush(done);
+        loop {
+            match sender.try_send(marker) {
+                Ok(()) => return finished.recv_timeout(timeout.saturating_sub(started.elapsed())).is_ok(),
+                Err(mpsc::TrySendError::Disconnected(_)) => return false,
+                Err(mpsc::TrySendError::Full(returned)) => marker = returned,
+            }
+            let remaining = timeout.saturating_sub(started.elapsed());
+            if remaining.is_zero() { return false; }
+            std::thread::sleep(remaining.min(Duration::from_millis(1)));
+        }
     }
+
 }
 
 // Installs the process-global logger for this launch: lines go to the
@@ -250,7 +320,7 @@ pub fn init(records_path: &Path, logs_dir: &Path, debug_enabled: bool) {
     }
 }
 
-/// Waits, bounded, until every line logged so far is stored.
+/// Waits, bounded, for admitted lines and summaries of omitted diagnostics.
 pub fn flush(timeout: Duration) -> bool {
     global().is_none_or(|logger| logger.flush(timeout))
 }
@@ -287,13 +357,38 @@ impl Logger {
             }
         };
         let line = Line { session_id: self.session_id.clone(), time, level, message, text };
-        match &self.sender {
-            Some(sender) => {
-                if let Err(mpsc::SendError(Queued::Line(line))) = sender.send(Queued::Line(line)) {
-                    eprintln!("{}", line.text);
-                }
+        let Some(sender) = &self.sender else {
+            eprintln!("{}", line.text);
+            return;
+        };
+        let bytes = line.retained_bytes();
+        let reserved = self.backlog.bytes.try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+            used.checked_add(bytes).filter(|next| *next <= QUEUE_BYTES)
+        }).is_ok();
+        if !reserved {
+            self.omit(sender);
+            return;
+        }
+        match sender.try_send(Queued::Line(line)) {
+            Ok(()) => {}
+            Err(mpsc::TrySendError::Full(_)) => {
+                self.backlog.bytes.fetch_sub(bytes, Ordering::Relaxed);
+                self.omit(sender);
             }
-            None => eprintln!("{}", line.text),
+            Err(mpsc::TrySendError::Disconnected(Queued::Line(line))) => {
+                self.backlog.bytes.fetch_sub(bytes, Ordering::Relaxed);
+                eprintln!("{}", line.text);
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => unreachable!(),
+        }
+    }
+
+    fn omit(&self, sender: &mpsc::SyncSender<Queued>) {
+        self.backlog.omitted.fetch_add(1, Ordering::Relaxed);
+        // If full, an already queued item will wake the writer. Otherwise
+        // wake it even when an oversized event was the only incoming line.
+        if let Err(mpsc::TrySendError::Disconnected(_)) = sender.try_send(Queued::Omitted) {
+            eprintln!("[onecopy:logging] diagnostic line omitted; writer stopped");
         }
     }
 
