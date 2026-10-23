@@ -1060,6 +1060,40 @@ fn close_preview_window(
 }
 
 
+/// Renderer listener failure must not release an Identify batch while its
+/// native flash still exists. Register and request destruction together on
+/// the UI thread, where a window cannot disappear between these operations.
+#[tauri::command]
+async fn close_identify_window(app: AppHandle, label: String) -> Result<(), String> {
+    if !label.starts_with("identify-") {
+        return Err("not a screen identification window".into());
+    }
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let owner = app.clone();
+    app.run_on_main_thread(move || {
+        let Some(window) = owner.get_webview_window(&label) else {
+            let _ = sender.send(Ok(()));
+            return;
+        };
+        let sender = std::sync::Arc::new(std::sync::Mutex::new(Some(sender)));
+        let on_destroy = sender.clone();
+        window.on_window_event(move |event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                if let Some(sender) = on_destroy.lock().unwrap().take() {
+                    let _ = sender.send(Ok(()));
+                }
+            }
+        });
+        if let Err(error) = window.destroy() {
+            if let Some(sender) = sender.lock().unwrap().take() {
+                let _ = sender.send(Err(error.to_string()));
+            }
+        }
+    }).map_err(|error| error.to_string())?;
+    receiver.await.map_err(|error| error.to_string())?
+}
+
+
 // The frontend's throttled input ping — the coordinator's whole view
 // of the user. Atomic store; keeping it plain (main-thread) is deliberate,
 // it must never queue behind async work.
@@ -1776,6 +1810,7 @@ pub fn run() {
             focus_window_while_active,
             place_preview_window,
             close_preview_window,
+            close_identify_window,
             package_source_dirs,
             items_in_synced_folders,
             ensure_preview,

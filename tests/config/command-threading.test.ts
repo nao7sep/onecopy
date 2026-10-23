@@ -82,8 +82,9 @@ const FORBIDDEN_BOUNDARY = [
 // blocking body; everything else async goes through dispatch(). The standalone
 // quit question awaits a dialog that rfd runs on a thread of its own. The
 // folder picker awaits its native completion callback; AppKit sheet setup is
-// queued onto the main thread and never blocks a runtime worker.
-const ASYNC_WITHOUT_DISPATCH = new Set(["quit_question", "pick_directories"]);
+// queued onto the main thread and never blocks a runtime worker. Identify
+// cleanup similarly awaits a native destruction callback after UI-thread setup.
+const ASYNC_WITHOUT_DISPATCH = new Set(["quit_question", "pick_directories", "close_identify_window"]);
 
 const DISPATCH_MARKERS = [/\bdispatch\(/, /spawn_blocking\(/];
 

@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { randomId } from "../utils/randomId";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type { Monitor } from "@tauri-apps/api/window";
@@ -30,9 +31,22 @@ export function identifyScreens(monitors: readonly Monitor[]): Promise<void> {
       focus: false,
     });
     await waitForWindowCreated(window, `Screen ${index + 1} identification`);
-    await new Promise<void>((resolve) => {
-      void window.once("tauri://destroyed", () => resolve());
-    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        void window.once("tauri://destroyed", () => resolve()).catch(reject);
+      });
+    } catch (error) {
+      // A destroy request only queues native work. Keep this batch owned until
+      // native destruction is observed, even when renderer event setup failed.
+      try {
+        await invoke("close_identify_window", { label: window.label });
+      } catch (cleanupError) {
+        throw Object.assign(new Error("Screen identification cleanup failed"), {
+          cause: [toErrorFields(error), toErrorFields(cleanupError)],
+        });
+      }
+      throw error;
+    }
   })).then((results) => {
     const failures = results.filter((result) => result.status === "rejected");
     if (failures.length > 0) {

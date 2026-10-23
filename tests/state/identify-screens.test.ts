@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Monitor } from "@tauri-apps/api/window";
 import { identifyScreens } from "../../src/workflows/identify-screens";
-import { createdWindows, resetTauriMocks, WebviewWindow } from "../mocks/tauri";
+import { createdWindows, mockCommand, resetTauriMocks, WebviewWindow } from "../mocks/tauri";
 
 const monitors = [0, 1, 2].map((index) => ({
   name: `Display ${index}`, position: { x: index * 1920, y: 0 },
@@ -21,6 +21,29 @@ beforeEach(() => { resetTauriMocks(); vi.useFakeTimers(); });
 afterEach(() => { vi.useRealTimers(); });
 
 describe("screen identification operation", () => {
+  it("owns failed destruction registration through native cleanup and permits retry", async () => {
+    let finishCleanup!: () => void;
+    mockCommand("close_identify_window", ({ label }) => {
+      expect(label).toBe(createdWindows[0].label);
+      return new Promise<void>((resolve) => { finishCleanup = resolve; });
+    });
+    const first = identifyScreens(monitors.slice(0, 1));
+    const failed = expect(first).rejects.toThrow("Screen identification failed");
+    const window = (await WebviewWindow.getByLabel(createdWindows[0].label))!;
+    window.once.mockRejectedValueOnce(new Error("destroy listener unavailable"));
+    await outcome(window.label, "tauri://created");
+    for (let index = 0; index < 5; index++) await Promise.resolve();
+    expect(finishCleanup).toBeTypeOf("function");
+    expect(identifyScreens(monitors)).toBe(first);
+    expect(createdWindows).toHaveLength(1);
+    finishCleanup();
+    await failed;
+    const retry = identifyScreens(monitors.slice(0, 1));
+    await outcome(createdWindows.at(-1)!.label, "tauri://created");
+    await outcome(createdWindows.at(-1)!.label, "tauri://destroyed");
+    await retry;
+  });
+
   it("settles creation once, ignores late errors, and never reuses a closing flash identity", async () => {
     const first = identifyScreens(monitors);
     expect(identifyScreens(monitors)).toBe(first);
