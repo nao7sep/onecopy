@@ -174,3 +174,21 @@ it("restores Preview's follow/placement alongside the section on the same restar
 
   expect(restoreFollow).toHaveBeenCalledWith(true, "window");
 });
+
+it.each([
+  {
+    state: { sortOrders: { media: { order: "size", desc: true }, other: { order: "ext", desc: false } } },
+    expected: { media: { order: "size", desc: true }, other: { order: "ext", desc: false } },
+  },
+  {
+    state: { sortOrders: { media: { order: "unsupported", desc: true }, other: null } },
+    expected: { media: { order: "time", desc: false }, other: { order: "name", desc: false } },
+  },
+  {
+    state: { sortOrder: "size", sortOrders: { media: "resolution", other: "ext" } },
+    expected: { media: { order: "time", desc: false }, other: { order: "name", desc: false } },
+  },
+])("restores supported lane sort choices and retains defaults for unsupported state: $state", ({ state, expected }) => {
+  renderHook(() => useAppBootstrapAndRestore({ appData: appData(state), counts, restorePaneIntents: () => {} }));
+  expect(useItemsStore.getState().sortOrders).toEqual(expected);
+});

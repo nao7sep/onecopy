@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { LoadedAppData } from "../repositories";
 import type { SectionCounts } from "../models/sections";
-import { DEFAULT_DESC, type SortChoice, type SortOrder } from "../models/items";
+import type { SortChoice, SortOrder } from "../models/items";
 import { useItemsStore } from "../state/items-store";
 import { retainStatePatch } from "../state/app-store";
 import { usePreviewStore } from "../state/preview-store";
@@ -53,7 +53,6 @@ export function useAppBootstrapAndRestore({
       value === "resolution" ||
       value === "ext";
     const asChoice = (value: unknown): SortChoice | null => {
-      if (isOrder(value)) return { order: value, desc: DEFAULT_DESC[value] };
       if (typeof value !== "object" || value === null) return null;
       const record = value as Record<string, unknown>;
       return isOrder(record.order)
@@ -64,8 +63,7 @@ export function useAppBootstrapAndRestore({
     const savedOrders = (state.sortOrders ?? {}) as Record<string, unknown>;
     useItemsStore.setState((current) => ({
       sortOrders: {
-        media:
-          asChoice(savedOrders.media) ?? asChoice(state.sortOrder) ?? current.sortOrders.media,
+        media: asChoice(savedOrders.media) ?? current.sortOrders.media,
         other: asChoice(savedOrders.other) ?? current.sortOrders.other,
       },
     }));
