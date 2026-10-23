@@ -41,6 +41,9 @@ impl DeleteMode {
 #[derive(Clone, Serialize, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DeleteOutcome {
+    /// Index reconciliation stopped after the physical outcomes below. Those
+    /// outcomes remain authoritative even when the index could not commit.
+    pub error: Option<String>,
     pub deleted_files: u64,
     /// Files not deleted, including `unknown_files`.
     pub failed_files: u64,
@@ -306,7 +309,7 @@ pub fn delete_item(
     accepted.preflight(&|| false)?;
     let targets = collect_delete_targets(conn, item, &roots, &accepted)?;
     let operation = crate::nanoid::generate()?;
-    delete_targets(
+    Ok(delete_targets(
         conn,
         cache,
         &targets,
@@ -314,8 +317,7 @@ pub fn delete_item(
         &trash::TrashContext::new(trash::TrashKind::Delete, &operation),
         &|| false,
         &mut |_, _| {},
-    )
-    .map(|(outcome, _)| outcome)
+    ).0)
 }
 
 /// `trash` names the operation for the deleted-file records; each target
@@ -332,7 +334,7 @@ fn delete_targets(
     trash: &trash::TrashContext,
     cancelled: &dyn Fn() -> bool,
     on_attempt: &mut (impl FnMut(u64, bool) + ?Sized),
-) -> Result<(DeleteOutcome, Vec<i64>), String> {
+) -> (DeleteOutcome, Vec<i64>) {
     let mut outcome = DeleteOutcome::default();
     let mut changed_sources = Vec::new();
     let mut cache_retirement = preview::CacheRetirementBatch::new(cache);
@@ -356,153 +358,160 @@ fn delete_targets(
         };
 
         if cancelled() && result.as_ref().is_err_and(|error| !error.outcome_unknown) { break; }
-        match result {
-            Ok(()) => {
-                outcome.deleted_files += 1;
-                // Row removal and orphan collection are one IMMEDIATE
-                // transaction: a crash or DB error after this point can no
-                // longer leak a `contents` row or cache file with no
-                // surviving path (`reconcile_orphan_contents` is the
-                // backstop for whatever still slips through). The physical
-                // delete/trash already happened above, so a DB failure here
-                // still reports the file as gone rather than silently
-                // losing that fact.
-                let tx = rusqlite::Transaction::new_unchecked(
-                    conn,
-                    rusqlite::TransactionBehavior::Immediate,
-                )
-                .map_err(|e| e.to_string())?;
-                // A partially completed Move may deliver a main file before a
-                // companion output. Detach surviving companions so the main
-                // row can leave without discarding or misrepresenting them.
-                tx.execute(
-                    "UPDATE paths SET companion_of = NULL WHERE companion_of = ?1",
-                    [target.path_id],
-                )
-                .map_err(|e| e.to_string())?;
-                let current_hash = tx
-                    .query_row(
-                        "SELECT content_hash FROM paths WHERE id = ?1",
-                        [target.path_id],
-                        |row| row.get::<_, Option<String>>(0),
+        let reconciliation = (|| -> Result<(), String> {
+            match result {
+                Ok(()) => {
+                    outcome.deleted_files += 1;
+                    on_attempt(target.bytes, false);
+                    // Row removal and orphan collection are one IMMEDIATE
+                    // transaction: a crash or DB error after this point can no
+                    // longer leak a `contents` row or cache file with no
+                    // surviving path (`reconcile_orphan_contents` is the
+                    // backstop for whatever still slips through). The physical
+                    // delete/trash already happened above, so a DB failure here
+                    // still reports the file as gone rather than silently
+                    // losing that fact.
+                    let tx = rusqlite::Transaction::new_unchecked(
+                        conn,
+                        rusqlite::TransactionBehavior::Immediate,
                     )
-                    .optional()
-                    .map_err(|e| e.to_string())?
-                    .flatten()
-                    .or_else(|| target.content_hash.clone());
-                tx.execute("DELETE FROM evidence WHERE path_id = ?1", [target.path_id])
                     .map_err(|e| e.to_string())?;
-                tx.execute("DELETE FROM paths WHERE id = ?1", [target.path_id])
+                    // A partially completed Move may deliver a main file before a
+                    // companion output. Detach surviving companions so the main
+                    // row can leave without discarding or misrepresenting them.
+                    tx.execute(
+                        "UPDATE paths SET companion_of = NULL WHERE companion_of = ?1",
+                        [target.path_id],
+                    )
                     .map_err(|e| e.to_string())?;
-                outcome.removed_rows += 1;
-
-                // Only live files keep a content identity alive. Counting
-                // missing rows too meant one copy on an absent drive pinned the
-                // contents row and every cache entry for that hash forever. A
-                // live companion counts: identical companions beside other main
-                // copies (sidecars a Move left with their own main, a boilerplate
-                // sidecar shared by two photos) must keep their rows.
-                let mut orphaned = false;
-                if let Some(hash) = &current_hash {
-                    let live: i64 = tx
+                    let current_hash = tx
                         .query_row(
-                            "SELECT COUNT(*) FROM paths WHERE content_hash = ?1 AND missing = 0",
-                            [hash],
-                            |r| r.get(0),
+                            "SELECT content_hash FROM paths WHERE id = ?1",
+                            [target.path_id],
+                            |row| row.get::<_, Option<String>>(0),
                         )
+                        .optional()
+                        .map_err(|e| e.to_string())?
+                        .flatten()
+                        .or_else(|| target.content_hash.clone());
+                    tx.execute("DELETE FROM evidence WHERE path_id = ?1", [target.path_id])
                         .map_err(|e| e.to_string())?;
-                    if live == 0 {
-                        // Missing rows are files that are not on disk; they may
-                        // not hold a foreign key into a contents row that is
-                        // about to go. Their evidence and any companion paired
-                        // with them hold foreign keys to those rows in turn.
-                        tx.execute(
-                            "DELETE FROM evidence WHERE path_id IN \
-                             (SELECT id FROM paths WHERE content_hash = ?1)",
-                            [hash],
-                        )
+                    let removed = tx.execute("DELETE FROM paths WHERE id = ?1", [target.path_id])
                         .map_err(|e| e.to_string())?;
-                        tx.execute(
-                            "UPDATE paths SET companion_of = NULL WHERE companion_of IN \
-                             (SELECT id FROM paths WHERE content_hash = ?1)",
-                            [hash],
-                        )
-                        .map_err(|e| e.to_string())?;
-                        tx.execute("DELETE FROM paths WHERE content_hash = ?1", [hash])
+
+                    // Only live files keep a content identity alive. Counting
+                    // missing rows too meant one copy on an absent drive pinned the
+                    // contents row and every cache entry for that hash forever. A
+                    // live companion counts: identical companions beside other main
+                    // copies (sidecars a Move left with their own main, a boilerplate
+                    // sidecar shared by two photos) must keep their rows.
+                    let mut orphaned = false;
+                    if let Some(hash) = &current_hash {
+                        let live: i64 = tx
+                            .query_row(
+                                "SELECT COUNT(*) FROM paths WHERE content_hash = ?1 AND missing = 0",
+                                [hash],
+                                |r| r.get(0),
+                            )
                             .map_err(|e| e.to_string())?;
-                        tx.execute(
-                            "DELETE FROM similar_group_members WHERE content_hash = ?1",
-                            [hash],
-                        )
-                        .map_err(|e| e.to_string())?;
-                        tx.execute("DELETE FROM contents WHERE hash = ?1", [hash])
+                        if live == 0 {
+                            // Missing rows are files that are not on disk; they may
+                            // not hold a foreign key into a contents row that is
+                            // about to go. Their evidence and any companion paired
+                            // with them hold foreign keys to those rows in turn.
+                            tx.execute(
+                                "DELETE FROM evidence WHERE path_id IN \
+                                 (SELECT id FROM paths WHERE content_hash = ?1)",
+                                [hash],
+                            )
                             .map_err(|e| e.to_string())?;
-                        orphaned = true;
+                            tx.execute(
+                                "UPDATE paths SET companion_of = NULL WHERE companion_of IN \
+                                 (SELECT id FROM paths WHERE content_hash = ?1)",
+                                [hash],
+                            )
+                            .map_err(|e| e.to_string())?;
+                            tx.execute("DELETE FROM paths WHERE content_hash = ?1", [hash])
+                                .map_err(|e| e.to_string())?;
+                            tx.execute(
+                                "DELETE FROM similar_group_members WHERE content_hash = ?1",
+                                [hash],
+                            )
+                            .map_err(|e| e.to_string())?;
+                            tx.execute("DELETE FROM contents WHERE hash = ?1", [hash])
+                                .map_err(|e| e.to_string())?;
+                            orphaned = true;
+                        }
+                    }
+                    crate::records::commit(tx).map_err(|e| e.to_string())?;
+                    outcome.removed_rows += removed as u64;
+                    if orphaned {
+                        if let Some(hash) = current_hash { cache_retirement.push(hash); }
                     }
                 }
-                crate::records::commit(tx).map_err(|e| e.to_string())?;
-                if orphaned {
-                    if let Some(hash) = current_hash { cache_retirement.push(hash); }
+                Err(err) if err.source_changed => {
+                    outcome.failed_files += 1;
+                    on_attempt(target.bytes, true);
+                    changed_sources.push(target.path_id);
+                    logging::warn(
+                        "move kept a source changed before final removal",
+                        json!({ "path": target.abs_path, "error": { "message": err.message } }),
+                    );
+                    crate::index_store::upsert_issue_with_descriptor(
+                        conn,
+                        Some(&target.abs_path),
+                        COPY_ERROR,
+                        Some(COPY_SOURCE_CHANGED),
+                        None,
+                        &err.message,
+                    )?;
                 }
-                on_attempt(target.bytes, false);
+                Err(err) if err.outcome_unknown => {
+                    // Given up on while the volume was not responding: the file
+                    // may be gone or still in place. Its row stays; the next
+                    // source check finds it present, or missing (and in Deleted
+                    // files when it was trashed).
+                    outcome.failed_files += 1;
+                    outcome.unknown_files += 1;
+                    on_attempt(target.bytes, true);
+                    logging::warn(
+                        "delete outcome unknown for one copy",
+                        json!({ "path": target.abs_path, "error": { "message": err.message } }),
+                    );
+                    crate::index_store::upsert_issue_with_descriptor(
+                        conn,
+                        Some(&target.abs_path),
+                        DELETE_OUTCOME_UNKNOWN,
+                        Some("notice.deleteOutcomeUnknown"),
+                        None,
+                        &err.message,
+                    )?;
+                }
+                Err(err) => {
+                    outcome.failed_files += 1;
+                    on_attempt(target.bytes, true);
+                    // The issues table is the user surface; the session log is
+                    // the debugging record — mirror the failure where it is
+                    // raised, with its context intact.
+                    logging::warn(
+                        "delete failed for one copy",
+                        json!({ "path": target.abs_path, "error": { "message": err.message } }),
+                    );
+                    crate::index_store::upsert_issue_with_descriptor(
+                        conn,
+                        Some(&target.abs_path),
+                        DELETE_ERROR,
+                        Some("notice.deleteFailed"),
+                        None,
+                        &err.message,
+                    )?;
+                }
             }
-            Err(err) if err.source_changed => {
-                outcome.failed_files += 1;
-                changed_sources.push(target.path_id);
-                logging::warn(
-                    "move kept a source changed before final removal",
-                    json!({ "path": target.abs_path, "error": { "message": err.message } }),
-                );
-                crate::index_store::upsert_issue_with_descriptor(
-                    conn,
-                    Some(&target.abs_path),
-                    COPY_ERROR,
-                    Some(COPY_SOURCE_CHANGED),
-                    None,
-                    &err.message,
-                )?;
-                on_attempt(target.bytes, true);
-            }
-            Err(err) if err.outcome_unknown => {
-                // Given up on while the volume was not responding: the file
-                // may be gone or still in place. Its row stays; the next
-                // source check finds it present, or missing (and in Deleted
-                // files when it was trashed).
-                outcome.failed_files += 1;
-                outcome.unknown_files += 1;
-                logging::warn(
-                    "delete outcome unknown for one copy",
-                    json!({ "path": target.abs_path, "error": { "message": err.message } }),
-                );
-                crate::index_store::upsert_issue_with_descriptor(
-                    conn,
-                    Some(&target.abs_path),
-                    DELETE_OUTCOME_UNKNOWN,
-                    Some("notice.deleteOutcomeUnknown"),
-                    None,
-                    &err.message,
-                )?;
-                on_attempt(target.bytes, true);
-            }
-            Err(err) => {
-                outcome.failed_files += 1;
-                // The issues table is the user surface; the session log is
-                // the debugging record — mirror the failure where it is
-                // raised, with its context intact.
-                logging::warn(
-                    "delete failed for one copy",
-                    json!({ "path": target.abs_path, "error": { "message": err.message } }),
-                );
-                crate::index_store::upsert_issue_with_descriptor(
-                    conn,
-                    Some(&target.abs_path),
-                    DELETE_ERROR,
-                    Some("notice.deleteFailed"),
-                    None,
-                    &err.message,
-                )?;
-                on_attempt(target.bytes, true);
-            }
+            Ok(())
+        })();
+        if let Err(error) = reconciliation {
+            outcome.error = Some(error);
+            break;
         }
     }
 
@@ -517,7 +526,7 @@ fn delete_targets(
         }),
     );
 
-    Ok((outcome, changed_sources))
+    (outcome, changed_sources)
 }
 
 fn collect_delete_targets(
@@ -678,7 +687,7 @@ pub fn delete_accepted_batch(
                 completed_unit = false;
                 break;
             }
-            let step = delete_targets(
+            let (step, _) = delete_targets(
                 conn,
                 cache,
                 std::slice::from_ref(target),
@@ -699,22 +708,16 @@ pub fn delete_accepted_batch(
                     });
                 },
             );
-            let step = match step {
-                Ok((step, _)) => step,
-                Err(error) => {
-                    logging::warn(
-                        "delete batch stopped inside one logical item",
-                        json!({ "error": { "message": error } }),
-                    );
-                    batch.error = Some(error);
-                    completed_unit = false;
-                    break;
-                }
-            };
             outcome.deleted_files = outcome.deleted_files.saturating_add(step.deleted_files);
             outcome.failed_files = outcome.failed_files.saturating_add(step.failed_files);
             outcome.removed_rows = outcome.removed_rows.saturating_add(step.removed_rows);
             outcome.unknown_files = outcome.unknown_files.saturating_add(step.unknown_files);
+            if let Some(error) = step.error {
+                logging::warn("delete batch stopped inside one logical item", json!({ "error": { "message": error } }));
+                batch.error = Some(error);
+                completed_unit = false;
+                break;
+            }
             if cancelled() { batch.cancelled = true; completed_unit = false; break; }
         }
         batch.deleted_files = batch.deleted_files.saturating_add(outcome.deleted_files);
@@ -1298,19 +1301,11 @@ pub fn move_batch_reviewed(
         );
         let mut stopped = None;
         let (outcome, unit_cancelled) = match execution {
-            Ok(MoveUnitResult::Completed(outcome)) => (outcome, false),
-            Ok(MoveUnitResult::Cancelled(outcome)) => (outcome, true),
-            Ok(MoveUnitResult::Stopped(outcome, error)) => {
+            MoveUnitResult::Completed(outcome) => (outcome, false),
+            MoveUnitResult::Cancelled(outcome) => (outcome, true),
+            MoveUnitResult::Stopped(outcome, error) => {
                 stopped = Some(error);
                 (outcome, false)
-            }
-            Err(error) => {
-                logging::warn(
-                    "destination batch stopped inside one logical item",
-                    json!({ "error": { "message": error } }),
-                );
-                batch.error = Some(error);
-                break;
             }
         };
         // Undelivered files already incremented failures with their attempted
@@ -1348,6 +1343,9 @@ pub fn move_batch_reviewed(
             .post_action
             .removed_rows
             .saturating_add(outcome.post_action.removed_rows);
+        if outcome.post_action.error.is_some() {
+            batch.post_action.error = outcome.post_action.error.clone();
+        }
         let has_effect = outcome.exported > 0
             || outcome.skipped_identical > 0
             || !outcome.conflicts.is_empty()
@@ -1357,7 +1355,7 @@ pub fn move_batch_reviewed(
             || outcome.post_action.deleted_files > 0
             || outcome.post_action.failed_files > 0;
         let stopped_by_conflict = !outcome.conflicts.is_empty();
-        if !unit_cancelled || has_effect {
+        if (!unit_cancelled && stopped.is_none()) || has_effect {
             batch.items.push(MoveBatchItemResult {
                 item: unit.item,
                 outcome,
@@ -1365,7 +1363,7 @@ pub fn move_batch_reviewed(
         }
         if let Some(error) = stopped {
             logging::warn(
-                "destination batch stopped: the destination is not responding",
+                "destination batch stopped after a dependency failure",
                 json!({ "error": { "message": error } }),
             );
             batch.error = Some(error);
@@ -1948,7 +1946,7 @@ enum StageResult {
 enum MoveUnitResult {
     Completed(MoveOutOutcome),
     Cancelled(MoveOutOutcome),
-    /// The destination stopped answering; nothing further is attempted.
+    /// A dependency failed after partial effects; nothing further is attempted.
     Stopped(MoveOutOutcome, String),
 }
 
@@ -1968,8 +1966,31 @@ fn execute_move_unit(
     conflict_policy: Option<DestinationConflictPolicy>,
     cancelled: &dyn Fn() -> bool,
     on_progress: &mut dyn FnMut(MoveUnitProgress),
-) -> Result<MoveUnitResult, String> {
+) -> MoveUnitResult {
     let mut outcome = MoveOutOutcome::default();
+    match execute_move_steps(conn, cache, unit, destination_root, operation, mode, conflict_policy, cancelled, on_progress, &mut outcome) {
+        Ok(MoveUnitStop::Completed) => MoveUnitResult::Completed(outcome),
+        Ok(MoveUnitStop::Cancelled) => MoveUnitResult::Cancelled(outcome),
+        Err(error) => MoveUnitResult::Stopped(outcome, error),
+    }
+}
+
+enum MoveUnitStop { Completed, Cancelled }
+
+// Keep accumulated effects outside fallible reconciliation. A later index
+// error must not erase outputs already delivered or sources already removed.
+fn execute_move_steps(
+    conn: &Connection,
+    cache: &CachePaths,
+    unit: &MoveUnit,
+    destination_root: &Path,
+    operation: &str,
+    mode: MoveOutMode,
+    conflict_policy: Option<DestinationConflictPolicy>,
+    cancelled: &dyn Fn() -> bool,
+    on_progress: &mut dyn FnMut(MoveUnitProgress),
+    outcome: &mut MoveOutOutcome,
+) -> Result<MoveUnitStop, String> {
     let mut staged = Vec::<(&DeliveryPlan, StagedOutput, Vec<i64>)>::new();
     let mut replacement_prepared = true;
     // Main copies whose bytes no longer match stay in place, and so do the
@@ -1984,7 +2005,7 @@ fn execute_move_unit(
     let mut kept_mains = Vec::<i64>::new();
     for delivery in &unit.deliveries {
         if cancelled() {
-            return Ok(MoveUnitResult::Cancelled(outcome));
+            return Ok(MoveUnitStop::Cancelled);
         }
         // Move covers other copies only with bytes proven to be the item's
         // recorded content. Copy delivers the file as it currently exists,
@@ -2022,7 +2043,7 @@ fn execute_move_unit(
                 outcome.different_companions.extend(different);
                 staged.push((delivery, output, uncovered))
             }
-            StageResult::Cancelled => return Ok(MoveUnitResult::Cancelled(outcome)),
+            StageResult::Cancelled => return Ok(MoveUnitStop::Cancelled),
             StageResult::Failed(uncovered, changed_families) => {
                 if delivery.primary {
                     changed_mains.extend(&uncovered);
@@ -2056,12 +2077,11 @@ fn execute_move_unit(
 
     for (delivery, mut output, changed_sources) in staged {
         if cancelled() {
-            return Ok(MoveUnitResult::Cancelled(outcome));
+            return Ok(MoveUnitStop::Cancelled);
         }
-        // From publication through this output group's source cleanup,
-        // cancellation is deliberately deferred: each of those short steps
-        // finishes within its own bound. The next output is the next safe
-        // boundary.
+        // Cancellation is checked between physical steps. A settled
+        // publication or source removal keeps its outcome even if cancellation
+        // or index reconciliation stops the remaining work.
         let delivered = match output.private.publish(&output.target) {
             Err(error) if volume_io::wait_failure(&error).is_some() => {
                 return publication_given_up(conn, outcome, &output, &error, on_progress);
@@ -2094,7 +2114,7 @@ fn execute_move_unit(
                         if hash.as_ref().is_err_and(|error| {
                             error.kind() == std::io::ErrorKind::Interrupted && cancelled()
                         }) {
-                            return Ok(MoveUnitResult::Cancelled(outcome));
+                            return Ok(MoveUnitStop::Cancelled);
                         }
                         Some((hash.ok(), file, version, total))
                     }
@@ -2240,7 +2260,7 @@ fn execute_move_unit(
             };
             for source in sources {
                 if cancelled() {
-                    return Ok(MoveUnitResult::Cancelled(outcome));
+                    return Ok(MoveUnitStop::Cancelled);
                 }
                 let main = source.beside.unwrap_or(source.path_id);
                 if kept_mains.contains(&main) {
@@ -2286,7 +2306,7 @@ fn execute_move_unit(
                     &cleanup_context,
                     cancelled,
                     &mut |bytes, failed| on_progress(MoveUnitProgress::Attempt { bytes, failed }),
-                )?;
+                );
                 if changed_sources.contains(&source.path_id) {
                     kept_mains.push(main);
                 }
@@ -2309,7 +2329,11 @@ fn execute_move_unit(
                     .post_action
                     .unknown_files
                     .saturating_add(cleanup.unknown_files);
-                if cancelled() { return Ok(MoveUnitResult::Cancelled(outcome)); }
+                if let Some(error) = cleanup.error {
+                    outcome.post_action.error = Some(error.clone());
+                    return Err(error);
+                }
+                if cancelled() { return Ok(MoveUnitStop::Cancelled); }
             }
         }
         if !outcome.conflicts.is_empty() {
@@ -2317,7 +2341,7 @@ fn execute_move_unit(
         }
     }
 
-    Ok(MoveUnitResult::Completed(outcome))
+    Ok(MoveUnitStop::Completed)
 }
 
 /// Rechecks the covered members of one physical source family immediately
@@ -2382,11 +2406,11 @@ fn source_family_unchanged(
 /// stay in place and nothing further goes to this destination.
 fn publication_given_up(
     conn: &Connection,
-    mut outcome: MoveOutOutcome,
+    outcome: &mut MoveOutOutcome,
     output: &StagedOutput,
     error: &std::io::Error,
     on_progress: &mut dyn FnMut(MoveUnitProgress),
-) -> Result<MoveUnitResult, String> {
+) -> Result<MoveUnitStop, String> {
     on_progress(MoveUnitProgress::Attempt {
         bytes: output.bytes,
         failed: true,
@@ -2397,6 +2421,7 @@ fn publication_given_up(
             "copy-out publication outcome unknown",
             json!({ "target": target, "error": { "message": error.to_string() } }),
         );
+        outcome.unknown.push(target.clone());
         crate::index_store::upsert_issue_with_descriptor(
             conn,
             Some(&target),
@@ -2405,8 +2430,8 @@ fn publication_given_up(
             None,
             &error.to_string(),
         )?;
-        outcome.unknown.push(target);
     } else {
+        outcome.undelivered.push(target.clone());
         crate::index_store::upsert_issue_with_descriptor(
             conn,
             Some(&target),
@@ -2415,9 +2440,8 @@ fn publication_given_up(
             None,
             &error.to_string(),
         )?;
-        outcome.undelivered.push(target);
     }
-    Ok(MoveUnitResult::Stopped(outcome, error.to_string()))
+    Err(error.to_string())
 }
 
 /// Makes a just-published output durable. An output whose directory could not

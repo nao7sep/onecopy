@@ -3429,36 +3429,94 @@ fn a_destination_failing_mid_write_leaves_nothing_behind() {
 // with an error, the rest stay in place, and a later check settles the row.
 #[test]
 fn a_busy_index_after_a_physical_trash_stops_the_batch_without_losing_the_file() {
-    let f = fixture("busy-index-after-trash");
-    for name in ["a.jpg", "b.jpg", "c.jpg"] {
-        std::fs::write(f.root.join(name), format!("{name}-bytes")).unwrap();
-    }
-    scan(&f);
-    let items = vec![item_named(&f, "a.jpg"), item_named(&f, "b.jpg"), item_named(&f, "c.jpg")];
-    f.conn.busy_timeout(std::time::Duration::ZERO).unwrap();
-    let blocker = rusqlite::Connection::open(f._dir.path().join("index.sqlite3")).unwrap();
-    let mut held = false;
-
-    let outcome = delete_batch(&f.conn, &f.app_root, &f.cache, &items, DeleteMode::Trash, &|| false, |progress| {
-        if !held && matches!(progress, DeleteBatchProgress::Deleting { .. }) {
-            blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
-            held = true;
+    for stop_after in [1, 2] {
+        let f = fixture("busy-index-after-trash");
+        for name in ["a.jpg", "b.jpg", "c.jpg"] {
+            std::fs::write(f.root.join(name), format!("{name}-bytes")).unwrap();
         }
-    });
-    blocker.execute_batch("ROLLBACK").unwrap();
-
-    let present: Vec<bool> = ["a.jpg", "b.jpg", "c.jpg"].iter().map(|name| f.root.join(name).exists()).collect();
-    let gone = present.iter().filter(|present| !**present).count();
-    assert_eq!(gone, 1, "only the file in flight left: {present:?}");
-    assert!(outcome.as_ref().map_or(true, |batch| batch.error.is_some() || batch.failed_files > 0), "{outcome:?}");
-    if gone == 1 {
+        scan(&f);
+        let items = vec![item_named(&f, "a.jpg"), item_named(&f, "b.jpg"), item_named(&f, "c.jpg")];
+        f.conn.busy_timeout(std::time::Duration::ZERO).unwrap();
+        let blocker = rusqlite::Connection::open(f._dir.path().join("index.sqlite3")).unwrap();
+        let mut held = false;
+        let mut attempted = 0;
+        let outcome = delete_batch(&f.conn, &f.app_root, &f.cache, &items, DeleteMode::Trash, &|| false, |progress| {
+            if let DeleteBatchProgress::Deleting { files_done, .. } = progress {
+                attempted = files_done;
+                if !held && files_done == stop_after {
+                    blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+                    held = true;
+                }
+            }
+        }).unwrap();
+        blocker.execute_batch("ROLLBACK").unwrap();
+        assert!(outcome.error.is_some());
+        assert_eq!(outcome.deleted_files, stop_after);
+        assert_eq!(outcome.failed_files, 0);
+        assert_eq!(outcome.unknown_files, 0);
+        assert_eq!(outcome.removed_rows, stop_after - 1);
+        assert_eq!(attempted, stop_after, "physical success was published before index reconciliation");
+        assert_eq!(outcome.files_total, 3);
+        let gone = ["a.jpg", "b.jpg", "c.jpg"].iter().filter(|name| !f.root.join(name).exists()).count();
+        assert_eq!(gone as u64, stop_after);
         let listing = onecopy_lib::trash::list_root(&f.root, &f.app_root).unwrap();
-        assert_eq!(listing.entries.len(), 1, "stored with its line");
+        assert_eq!(listing.entries.len() as u64, stop_after);
         assert_eq!(listing.unrecorded_files, 0);
+        scan(&f);
+        let live: i64 = f.conn.query_row("SELECT COUNT(*) FROM paths WHERE missing = 0", [], |r| r.get(0)).unwrap();
+        assert_eq!(live as u64, 3 - stop_after);
     }
+}
+
+#[test]
+fn a_rejected_index_commit_keeps_physical_deletions_but_does_not_count_rolled_back_rows() {
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    for mode in [DeleteMode::Trash, DeleteMode::Permanent] {
+        for stop_after in [1, 2] {
+            let f = fixture("delete-commit-failure");
+            for name in ["a.jpg", "b.jpg", "c.jpg"] { std::fs::write(f.root.join(name), name).unwrap(); }
+            scan(&f);
+            let items = vec![item_named(&f, "a.jpg"), item_named(&f, "b.jpg"), item_named(&f, "c.jpg")];
+            let reject = Arc::new(AtomicBool::new(false));
+            let commit_reject = reject.clone();
+            f.conn.commit_hook(Some(move || commit_reject.load(Ordering::SeqCst))).unwrap();
+            let outcome = delete_batch(&f.conn, &f.app_root, &f.cache, &items, mode, &|| false, |progress| {
+                if matches!(progress, DeleteBatchProgress::Deleting { files_done, .. } if files_done == stop_after) {
+                    reject.store(true, Ordering::SeqCst);
+                }
+            }).unwrap();
+            f.conn.commit_hook(None::<fn() -> bool>).unwrap();
+            assert!(outcome.error.is_some());
+            assert_eq!(outcome.deleted_files, stop_after);
+            assert_eq!(outcome.removed_rows, stop_after - 1);
+            assert_eq!(outcome.failed_files, 0);
+            let rows: i64 = f.conn.query_row("SELECT COUNT(*) FROM paths", [], |row| row.get(0)).unwrap();
+            assert_eq!(rows as u64, 3 - (stop_after - 1));
+            assert_eq!(["a.jpg", "b.jpg", "c.jpg"].iter().filter(|name| !f.root.join(name).exists()).count() as u64, stop_after);
+        }
+    }
+}
+
+#[test]
+fn a_recording_failure_cannot_erase_an_unknown_physical_delete() {
+    let f = fixture("unknown-delete-busy-index");
+    std::fs::write(f.root.join("photo.jpg"), b"image-bytes").unwrap();
     scan(&f);
-    let live: i64 = f.conn.query_row("SELECT COUNT(*) FROM paths WHERE missing = 0", [], |r| r.get(0)).unwrap();
-    assert_eq!(live as usize, 3 - gone);
+    let item = item_named(&f, "photo.jpg");
+    let volume = FakeStallingVolume::mount(&f.root, STALL_BOUND);
+    volume.stall(&[Op::Remove], None);
+    f.conn.busy_timeout(std::time::Duration::ZERO).unwrap();
+    let blocker = Connection::open(f._dir.path().join(onecopy_lib::records::RECORDS_DB_FILE_NAME)).unwrap();
+    blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let outcome = delete_batch(&f.conn, &f.app_root, &f.cache, &[item], DeleteMode::Permanent, &|| false, |_| {}).unwrap();
+    blocker.execute_batch("ROLLBACK").unwrap();
+    volume.release();
+    assert!(volume.wait_until_settled(SETTLE));
+    assert!(outcome.error.is_some());
+    assert_eq!(outcome.deleted_files, 0);
+    assert_eq!(outcome.failed_files, 1);
+    assert_eq!(outcome.unknown_files, 1);
+    assert_eq!(outcome.removed_rows, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -3794,5 +3852,36 @@ windows_test! {
             std::ffi::OsString::from_wide(&units)
         };
         native_name_lifecycle(vec![name(0xd800), name(0xd801), std::ffi::OsString::from("image\u{FFFD}.jpg")]);
+    }
+}
+
+
+#[test]
+fn move_keeps_delivered_and_removed_counts_when_cleanup_cannot_commit() {
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    for mode in [MoveOutMode::MoveTrashRest, MoveOutMode::MoveDeleteRest] {
+        let f = fixture("move-cleanup-commit-failure");
+        let source = f.root.join("photo.jpg");
+        std::fs::write(&source, b"image-bytes").unwrap();
+        scan(&f);
+        let item = item_named(&f, "photo.jpg");
+        let destination = f._dir.path().join("destination");
+        std::fs::create_dir(&destination).unwrap();
+        let reject = Arc::new(AtomicBool::new(false));
+        let on_commit = reject.clone();
+        f.conn.commit_hook(Some(move || on_commit.load(Ordering::SeqCst))).unwrap();
+        let outcome = move_batch(&f.conn, &f.app_root, &f.cache, &[item], &destination, mode, &|| false, |_| {
+            if !source.exists() { reject.store(true, Ordering::SeqCst); }
+        }).unwrap();
+        f.conn.commit_hook(None::<fn() -> bool>).unwrap();
+        assert!(outcome.error.is_some());
+        assert_eq!(outcome.exported, 1);
+        assert_eq!(outcome.post_action.deleted_files, 1);
+        assert_eq!(outcome.post_action.removed_rows, 0);
+        assert!(outcome.post_action.error.is_some());
+        assert_eq!(outcome.items.len(), 1);
+        assert_eq!(std::fs::read(destination.join("photo.jpg")).unwrap(), b"image-bytes");
+        assert!(!source.exists());
+        assert_eq!(row_state(&f, "photo.jpg"), Some(0), "the failed index transaction rolled back");
     }
 }
