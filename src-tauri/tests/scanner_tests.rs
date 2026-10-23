@@ -3079,3 +3079,35 @@ fn an_earlier_roots_absence_remains_owed_when_a_later_root_fails() {
     assert_eq!(count(&f.conn, "SELECT companion_of IS NULL FROM paths WHERE file_name = 'IMG.ARW'"), 1);
     assert_eq!(count(&f.conn, "SELECT count(*) FROM scan_dirs WHERE relationship_dirty = 1"), 0);
 }
+
+
+#[test]
+fn malformed_timestamp_receipts_reopen_extraction_without_publishing_a_fallback_date() {
+    for source in ["metadata", "filename"] {
+        for raw in [Some("{malformed"), None] {
+            let f = fixture("malformed-timestamp");
+            std::fs::write(f.root.join("20200102.txt"), b"dated").unwrap();
+            std::fs::write(f.root.join("plain.txt"), b"fallback").unwrap();
+            walk_root(&f.conn, &f.root, &lists()).unwrap();
+            extract_pending(&f.conn).unwrap();
+            resolve_from_evidence(&f.conn, &resolution_config(), ResolveScope::PendingOnly).unwrap();
+            let id: i64 = f.conn.query_row("SELECT id FROM paths WHERE file_name = '20200102.txt'", [], |row| row.get(0)).unwrap();
+            f.conn.execute("DELETE FROM evidence WHERE path_id = ?1 AND source = ?2", rusqlite::params![id, source]).unwrap();
+            f.conn.execute("INSERT INTO evidence(path_id, source, raw) VALUES (?1, ?2, ?3)", rusqlite::params![id, source, raw]).unwrap();
+            let result = resolve_from_evidence(&f.conn, &resolution_config(), ResolveScope::All).unwrap();
+            assert_eq!(result.failed, 1);
+            assert_eq!(result.resolved, 1, "ordinary absent metadata still permits filesystem evidence");
+            assert_eq!(result.undated, 0, "a damaged receipt is not a successful undated result");
+            assert_eq!(count(&f.conn, "SELECT count(*) FROM paths WHERE indexed_at_utc IS NULL AND resolved_source IS NULL AND resolved_utc_ms IS NULL AND metadata_attempt_failed = 0"), 1);
+            assert_eq!(count(&f.conn, "SELECT count(*) FROM active_issues WHERE kind = 'metadata-read-error'"), 1);
+            assert!(pending_index_work_exists(&f.conn).unwrap());
+            assert_eq!(extract_pending(&f.conn).unwrap().extracted, 1);
+            let repaired = resolve_from_evidence(&f.conn, &resolution_config(), ResolveScope::PendingOnly).unwrap();
+            assert_eq!(repaired.failed, 0);
+            assert_eq!(repaired.resolved, 1);
+            assert_eq!(count(&f.conn, "SELECT count(*) FROM active_issues WHERE kind = 'metadata-read-error'"), 0);
+            let source: String = f.conn.query_row("SELECT resolved_source FROM paths WHERE id = ?1", [id], |row| row.get(0)).unwrap();
+            assert_eq!(source, "filename");
+        }
+    }
+}

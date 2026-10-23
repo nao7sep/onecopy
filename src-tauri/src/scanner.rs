@@ -946,6 +946,7 @@ fn run_index_tail_scoped(
     )?;
     summary.resolved = resolve_stats.resolved;
     summary.undated = resolve_stats.undated;
+    summary.failures += resolve_stats.failed;
 
     let pair_stats =
         pair_companions_with_progress(conn, settings.pairing_enabled, pair_dirs, progress)?;
@@ -2166,12 +2167,13 @@ pub enum ResolveScope {
 pub struct ResolveStats {
     pub resolved: u64,
     pub undated: u64,
+    pub failed: u64,
 }
 
 pub const RESOLVE_PAGE_SIZE: usize = 256;
 
-/// The pure resolution pass: stored evidence + stat columns → resolved
-/// timestamp columns. Never opens a file.
+/// Stored evidence + stat columns → resolved timestamp columns. Malformed
+/// app-owned evidence reopens extraction debt; this pass never opens a file.
 pub fn resolve_from_evidence(
     conn: &Connection,
     config: &ResolutionConfig,
@@ -2320,6 +2322,7 @@ fn resolve_from_evidence_with_progress(
             date_only: bool,
         },
         Undated,
+        NeedsExtraction { path: String, detail: String },
     }
 
     loop {
@@ -2347,11 +2350,12 @@ fn resolve_from_evidence_with_progress(
                 done,
                 total,
                 &abs,
-                0,
+                stats.failed,
                 ScanPhase::Pair,
             ));
             let mut meta_ts: Option<metadata::MetadataTimestamp> = None;
             let mut file_ts: Option<timestamps::FilenameTimestamp> = None;
+            let mut malformed = None;
             {
                 let found: Vec<(String, Option<String>)> = evidence_stmt
                     .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))
@@ -2359,27 +2363,40 @@ fn resolve_from_evidence_with_progress(
                     .collect::<rusqlite::Result<Vec<_>>>()
                     .map_err(|e| e.to_string())?;
                 for (source, raw) in found {
-                    let Some(raw) = raw else { continue };
-                    match source.as_str() {
-                        "metadata" => meta_ts = serde_json::from_str(&raw).ok(),
-                        "filename" => file_ts = serde_json::from_str(&raw).ok(),
-                        _ => {}
+                    if source != "metadata" && source != "filename" { continue; }
+                    let Some(raw) = raw else {
+                        malformed = Some(format!("Stored {source} timestamp evidence is missing its value"));
+                        break;
+                    };
+                    let parsed = if source == "metadata" {
+                        serde_json::from_str(&raw).map(|value| meta_ts = Some(value))
+                    } else {
+                        serde_json::from_str(&raw).map(|value| file_ts = Some(value))
+                    };
+                    if let Err(error) = parsed {
+                        malformed = Some(format!("Stored {source} timestamp evidence is invalid: {error}"));
+                        break;
                     }
                 }
             }
 
-            let resolution = match resolution::resolve(meta_ts, file_ts, mtime_ms, birthtime_ms, config) {
-                Some(resolved) => {
-                    stats.resolved += 1;
-                    RowResolution::Resolved {
-                        unix_ms: resolved.unix_ms,
-                        source: resolved.source.as_str(),
-                        date_only: resolved.date_only,
+            let resolution = if let Some(detail) = malformed {
+                stats.failed += 1;
+                RowResolution::NeedsExtraction { path: abs.clone(), detail }
+            } else {
+                match resolution::resolve(meta_ts, file_ts, mtime_ms, birthtime_ms, config) {
+                    Some(resolved) => {
+                        stats.resolved += 1;
+                        RowResolution::Resolved {
+                            unix_ms: resolved.unix_ms,
+                            source: resolved.source.as_str(),
+                            date_only: resolved.date_only,
+                        }
                     }
-                }
-                None => {
-                    stats.undated += 1;
-                    RowResolution::Undated
+                    None => {
+                        stats.undated += 1;
+                        RowResolution::Undated
+                    }
                 }
             };
             page_ids.push(id);
@@ -2391,7 +2408,7 @@ fn resolve_from_evidence_with_progress(
                 done,
                 total,
                 &abs,
-                0,
+                stats.failed,
                 ScanPhase::Pair,
             ));
         }
@@ -2444,6 +2461,21 @@ fn resolve_from_evidence_with_progress(
                                 .execute(params![id])
                                 .map_err(|e| e.to_string())?;
                         }
+                        RowResolution::NeedsExtraction { path, detail } => {
+                            // Never publish a fallback date from a damaged
+                            // receipt. Re-extraction and its visible condition
+                            // are one durable publication, without pinning a
+                            // transient repair behind a failed-attempt flag.
+                            tx.execute(
+                                "UPDATE paths SET indexed_at_utc = NULL, metadata_attempt_failed = 0,
+                                 resolved_utc_ms = NULL, resolved_source = NULL, date_only = 0 WHERE id = ?1",
+                                [id],
+                            ).map_err(|error| error.to_string())?;
+                            crate::index_store::upsert_issue_with_descriptor(
+                                tx, Some(path), METADATA_READ_ERROR,
+                                Some("reason.recheckSection"), None, detail,
+                            )?;
+                        }
                     }
                 }
                 Ok(())
@@ -2464,7 +2496,7 @@ fn resolve_from_evidence_with_progress(
     progress(ScanProgress::completed(
         ScanPhase::Resolve,
         total,
-        0,
+        stats.failed,
         Some(ScanPhase::Pair),
     ));
 
