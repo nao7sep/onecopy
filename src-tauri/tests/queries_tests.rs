@@ -846,6 +846,70 @@ fn copy_count_counts_every_live_path_for_one_content() {
 }
 
 #[test]
+fn work_status_follows_the_representative_copy_including_audio() {
+    let conn = db();
+    seed_image(&conn, "shared", None, "photo.jpg");
+    // The backup copy established the content before its image was discovered.
+    conn.execute("UPDATE contents SET kind = 'other' WHERE hash = 'shared'", []).unwrap();
+    for (name, kind, time) in [("photo.jpg.bak", "other", 1767312000000i64), ("voice.wav", "audio", 1767398400000i64)] {
+        conn.execute(
+            "INSERT INTO paths(abs_path, dir_path, file_name, kind, content_hash, size, resolved_utc_ms, resolved_source)
+             VALUES (?1, '/root', ?2, ?3, 'shared', 100, ?4, 'metadata')",
+            params![format!("/root/{name}"), name, kind, time],
+        ).unwrap();
+    }
+    let image = queries::item_by_hash(&conn, "shared", projection()).unwrap().unwrap();
+    assert_eq!(image.file_name, "photo.jpg");
+    assert!(image.derived_work.preview.is_some());
+    assert!(image.derived_work.similarity.is_some());
+    assert!(image.derived_work.faces.is_some());
+    let window = section_items(&conn, "image", "2026-01", Tz::UTC);
+    assert_eq!(window[0].derived_work, image.derived_work);
+
+    conn.execute("UPDATE paths SET missing = 1 WHERE file_name = 'photo.jpg'", []).unwrap();
+    let other = queries::item_by_hash(&conn, "shared", projection()).unwrap().unwrap();
+    assert_eq!(other.file_name, "photo.jpg.bak");
+    assert!(other.derived_work.preview.is_none());
+    assert!(other.derived_work.similarity.is_none());
+    assert!(other.derived_work.faces.is_none());
+    assert!(other.derived_work.transcripts.is_none());
+    let window = section_items(&conn, "other", "2026-01", Tz::UTC);
+    assert_eq!(window[0].derived_work, other.derived_work);
+
+    conn.execute("UPDATE paths SET missing = 1 WHERE file_name = 'photo.jpg.bak'", []).unwrap();
+    let audio = queries::item_by_hash(&conn, "shared", projection()).unwrap().unwrap();
+    assert_eq!(audio.file_name, "voice.wav");
+    assert!(audio.derived_work.preview.is_none());
+    assert!(audio.derived_work.transcripts.is_some(), "Other files retains audio's transcription eligibility");
+    let window = section_items(&conn, "other", "2026-01", Tz::UTC);
+    assert_eq!(window[0].derived_work, audio.derived_work);
+}
+
+#[test]
+fn derived_updates_share_section_directory_labels_and_companion_exclusion() {
+    let conn = db();
+    seed_image(&conn, "single", None, "one.jpg");
+    conn.execute("UPDATE paths SET abs_path = ?1, dir_path = ?2 WHERE content_hash = 'single'",
+        params![r"\\?\C:\Photos\one.jpg", r"\\?\C:\Photos"]).unwrap();
+    let owner: i64 = conn.query_row("SELECT id FROM paths WHERE content_hash = 'single'", [], |row| row.get(0)).unwrap();
+    for (path, dir, companion, missing) in [
+        (r"\\?\UNC\server\share\one.jpg", r"\\?\UNC\server\share", None, false),
+        (r"\\?\C:\Companions\one.xmp", r"\\?\C:\Companions", Some(owner), false),
+        (r"\\?\C:\Missing\one.jpg", r"\\?\C:\Missing", None, true),
+    ] {
+        conn.execute(
+            "INSERT INTO paths(abs_path, dir_path, file_name, kind, content_hash, size, companion_of, missing, resolved_utc_ms, resolved_source)
+             VALUES (?1, ?2, 'one.jpg', 'image', 'single', 100, ?3, ?4, 1767225600000, 'metadata')",
+            params![path, dir, companion, missing],
+        ).unwrap();
+    }
+    let window = section_items(&conn, "image", "2026-01", Tz::UTC);
+    let update = queries::item_by_hash(&conn, "single", projection()).unwrap().unwrap();
+    assert_eq!(window[0].dir_paths, [r"C:\Photos", r"\\server\share"]);
+    assert_eq!(update.dir_paths, window[0].dir_paths);
+}
+
+#[test]
 fn one_derived_item_can_be_projected_without_reading_its_section() {
     let conn = db();
     seed_image(&conn, "single", Some("2026-01-02T03:04:05.000Z"), "one.jpg");

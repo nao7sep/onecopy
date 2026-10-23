@@ -1509,17 +1509,9 @@ pub fn item_by_hash(
         .optional()
         .map_err(|error| error.to_string())?;
     if let Some(item) = &mut item {
-        let mut statement = conn
-            .prepare(
-                "SELECT DISTINCT dir_path FROM paths
-                 WHERE content_hash = ?1 AND missing = 0 ORDER BY dir_path",
-            )
-            .map_err(|error| error.to_string())?;
-        item.dir_paths = statement
-            .query_map([hash], |row| row.get::<_, String>(0))
-            .map_err(|error| error.to_string())?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|error| error.to_string())?;
+        item.dir_paths = hashed_dirs_for_hashes(conn, &[hash])?
+            .remove(hash)
+            .unwrap_or_default();
     }
     Ok(item)
 }
@@ -1599,7 +1591,7 @@ fn hashed_section_select() -> String {
                     CROSS JOIN paths comp INDEXED BY idx_paths_companion \
                     WHERE pri.content_hash = c.hash AND pri.missing = 0 \
                       AND comp.companion_of = pri.id AND comp.missing = 0), \
-            c.duration_ms, c.kind, c.derived_at_utc, \
+            c.duration_ms, rp.kind, c.derived_at_utc, \
             c.derived_version, c.strip_frames, {face_state}, {face_score}, \
             {transcript_state}, \
             EXISTS (
