@@ -1,0 +1,12 @@
+[
+  {
+    "hash": "abc123",
+    "index": 2,
+    "key": "strip-abc123-2"
+  },
+  {
+    "hash": "ab-cd",
+    "index": 12,
+    "key": "strip-ab-cd-12"
+  }
+]

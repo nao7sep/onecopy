@@ -47,21 +47,72 @@ fn valid_key_accepts_ordinary_media_keys_and_rejects_traversal() {
 }
 
 #[test]
-fn mediacache_refuses_a_key_that_would_escape_the_cache_root() {
-    let request = tauri::http::Request::builder()
-        .uri("mediacache://localhost/thumb-../x")
-        .body(Vec::new())
-        .unwrap();
-    assert_eq!(serve_cache(&request).status(), tauri::http::StatusCode::NOT_FOUND);
-}
+fn prepared_handlers_serve_valid_keys_and_refuse_traversal() {
+    const CHILD_ROOT: &str = "ONECOPY_MEDIA_PROTOCOL_TEST_ROOT";
+    let Some(root) = std::env::var_os(CHILD_ROOT) else {
+        // Startup's root is immutable. Use a separate test process so this
+        // real startup boundary cannot leak into unrelated unit tests.
+        let root = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "media_protocol::tests::prepared_handlers_serve_valid_keys_and_refuse_traversal", "--nocapture"])
+            .env(CHILD_ROOT, root.path())
+            .output().unwrap();
+        assert!(output.status.success(), "{}\n{}",
+            String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        assert!(root.path().join("protocol-verified").is_file(), "child must execute the handler checks");
+        return;
+    };
+    let root = std::path::PathBuf::from(root);
+    crate::paths::settle_data_root(root.clone()).unwrap();
+    let request = |protocol: &str, key: &str| tauri::http::Request::builder()
+        .uri(format!("{protocol}://localhost/{key}"))
+        .body(Vec::new()).unwrap();
+    let bytes = b"\x89PNG\r\n\x1a\nprotocol fixture";
+    let cache = crate::preview::CachePaths::new(crate::paths::cache_root().unwrap());
+    let valid = cache.thumb("abc123");
+    std::fs::create_dir_all(valid.parent().unwrap()).unwrap();
+    std::fs::write(&valid, bytes).unwrap();
+    let response = serve_cache(&request("mediacache", "thumb-abc123"));
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.body(), bytes);
 
-#[test]
-fn mediafile_refuses_a_key_that_would_escape_the_index_lookup() {
-    let request = tauri::http::Request::builder()
-        .uri("mediafile://localhost/../etc-passwd")
-        .body(Vec::new())
-        .unwrap();
-    assert_eq!(serve_original(&request).status(), tauri::http::StatusCode::NOT_FOUND);
+    // This path exists outside the cache; without the handler's guard the
+    // request would successfully serve it instead of merely missing a file.
+    let outside = root.join("outside.webp");
+    std::fs::write(&outside, b"outside sentinel").unwrap();
+    assert_eq!(std::fs::read(cache.thumb("../outside")).unwrap(), b"outside sentinel");
+    assert_eq!(serve_cache(&request("mediacache", "thumb-../outside")).status(), 404);
+    assert_eq!(std::fs::read(&outside).unwrap(), b"outside sentinel");
+
+    let conn = crate::index_store::open(&root.join(crate::storage::INDEX_DB_FILE_NAME)).unwrap();
+    for (hash, name) in [("abc123", "valid.png"), ("../outside", "outside.png")] {
+        let original = root.join(name);
+        std::fs::write(&original, bytes).unwrap();
+        conn.execute("INSERT INTO contents (hash, byte_size, kind) VALUES (?1, ?2, 'image')",
+            rusqlite::params![hash, bytes.len() as i64]).unwrap();
+        conn.execute("INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash)
+                      VALUES (?1, ?2, ?3, 'image', ?4)",
+            rusqlite::params![crate::native_path::encode(&original), crate::native_path::encode(&root), name, hash]).unwrap();
+    }
+    let response = serve_original(&request("mediafile", "abc123"));
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.body(), bytes);
+    // Deliberately seed a forbidden key that lookup could otherwise resolve.
+    assert!(crate::indexed_file::live_path(&conn, Some("../outside"), None).is_ok());
+    assert_eq!(serve_original(&request("mediafile", "../outside")).status(), 404);
+
+    let fixtures: serde_json::Value = serde_json::from_str(include_str!("../../../tests/fixtures/media-strip-keys.json")).unwrap();
+    for fixture in fixtures.as_array().unwrap() {
+        let hash = fixture["hash"].as_str().unwrap();
+        let index = fixture["index"].as_u64().unwrap() as u32;
+        let file = crate::video::strip_path(&cache, hash, index);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, bytes).unwrap();
+        let response = serve_cache(&request("mediacache", fixture["key"].as_str().unwrap()));
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.body(), bytes);
+    }
+    std::fs::write(root.join("protocol-verified"), b"complete").unwrap();
 }
 
 #[test]

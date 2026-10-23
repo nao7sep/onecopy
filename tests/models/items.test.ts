@@ -1,3 +1,4 @@
+import stripKeys from "../fixtures/media-strip-keys.json";
 import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
 import { describe, expect, it } from "vitest";
 import {
@@ -132,13 +133,12 @@ describe("duration formatting", () => {
 // parse — a change to either that is not matched in the other shows up as a
 // missing image, not as a type error.
 describe("cache and file URLs", () => {
-  it("builds the strip key the Rust handler parses back", () => {
-    // lib.rs splits on the LAST '-' to recover the index, so the shape here
-    // and the parse there are one contract. A hash containing '-' would break
-    // it, which is why the index must be the final segment.
-    const url = stripUrl("abc123", 2);
-    expect(url).toContain("strip-abc123-2");
-    expect(url.split("/").pop()!.split("-").pop()).toBe("2");
+  it("builds the strip keys served by the Rust handler", () => {
+    // media_protocol.rs splits at the last hyphen, preserving hyphens inside
+    // the identity. The native handler reads these same contract fixtures.
+    for (const fixture of stripKeys) {
+      expect(stripUrl(fixture.hash, fixture.index)).toContain(`/${fixture.key}`);
+    }
   });
 
   it("prefixes thumb and preview keys distinctly", () => {
