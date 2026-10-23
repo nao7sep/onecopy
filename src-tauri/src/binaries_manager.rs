@@ -554,23 +554,34 @@ fn invalidate_model_identity(root: &Path, spec: &DependencySpec) -> Result<(), S
     }
 }
 
-/// Runs the installed ffmpeg and reads the version out of its banner. Bounded
-/// like every other subprocess in the app, so a wedged binary cannot hang the
-/// caller; a failure to run, a non-zero exit, or unrecognized output all yield
-/// None — present-but-unreadable, which is not the same as absent.
+const FFMPEG_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Presence remains distinct from a version that this machine can actually
+/// read. Failed installed probes remain unknown and retryable.
 fn probe_ffmpeg_version(root: &Path) -> Option<String> {
-    let mut command = std::process::Command::new(ffmpeg_path(root));
+    probe_ffmpeg_at(&ffmpeg_path(root), &|| false, None).ok()
+}
+
+fn probe_ffmpeg_at(
+    path: &Path,
+    cancelled: &dyn Fn() -> bool,
+    owner: Option<Arc<dyn Send + Sync>>,
+) -> Result<String, String> {
+    let timeout = FFMPEG_PROBE_TIMEOUT;
+    let started = std::time::Instant::now();
+    let mut command = std::process::Command::new(path);
     command.arg("-version");
-    // A healthy -version answers in milliseconds; ten seconds covers a cold
-    // start off a spun-down disk without letting a wedged binary hold the
-    // status read for the media default of 120s.
-    let run =
-        subprocess::run_bounded_idle(command, &|| false, std::time::Duration::from_secs(10))
-            .ok()?;
+    let result = subprocess::run_bounded_idle_retaining(command,
+        &|| cancelled() || started.elapsed() >= timeout, timeout, owner);
+    if started.elapsed() >= timeout {
+        return Err("ffmpeg version probe timed out".to_string());
+    }
+    let run = result?;
     if !run.status_ok {
-        return None;
+        return Err(format!("ffmpeg version probe failed: {}", run.stderr_text()));
     }
     binaries::parse_ffmpeg_version(&String::from_utf8_lossy(&run.stdout))
+        .ok_or_else(|| "ffmpeg did not report a recognizable version".to_string())
 }
 
 struct ObservedFfmpegVersion {
@@ -928,6 +939,40 @@ pub fn install_entry_started(
     }
 }
 
+/// The checksum-verified, platform-prepared stage must run before replacing
+/// the working tool. Its cleanup follows the physical probe owner on timeout.
+fn activate_ffmpeg(
+    root: &Path,
+    staged: &Path,
+    version: &str,
+    cancelled: &AtomicBool,
+    deadline: &acquisition::OperationDeadline,
+    cleanup: Arc<acquisition::RemoveFilesOnDrop>,
+) -> Result<(), String> {
+    deadline.check(cancelled)?;
+    let staged_version = binary_file_version(staged)?;
+    let probe = probe_ffmpeg_at(staged, &|| deadline.check(cancelled).is_err(),
+        Some(cleanup.clone()));
+    deadline.check(cancelled)?;
+    let reported = probe?;
+    if ffmpeg_reports_its_own_version() && reported != binaries::normalize_version(version) {
+        return Err(format!("ffmpeg reported version {reported}, but the selected build is {version}"));
+    }
+    staged_version.require_path(staged).map_err(|error| error.to_string())?;
+    let target = ffmpeg_path(root);
+    let parent = target.parent().ok_or_else(|| "installed ffmpeg path has no parent".to_string())?;
+    std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    deadline.check(cancelled)?;
+    // not recorded: a verified, re-downloadable managed executable.
+    acquisition::publish_staged(staged, &target)?;
+    forget_installed_ffmpeg_version();
+    if !ffmpeg_reports_its_own_version() {
+        write_version_sidecar(root, version, staged_version)?;
+        forget_installed_ffmpeg_version();
+    }
+    Ok(())
+}
+
 fn install_ffmpeg_started(
     root: &Path,
     guard: BusyGuard,
@@ -960,8 +1005,8 @@ fn install_ffmpeg_started(
     ));
 
     let partial = temp.join(format!("ffmpeg-{}.partial", nanoid::generate()?));
-    let staged = temp.join(format!("ffmpeg-{}.staged", nanoid::generate()?));
-    let _cleanup = acquisition::RemoveFilesOnDrop::new(vec![partial.clone(), staged.clone()]);
+    let staged = temp.join(format!("ffmpeg-{}-{}", nanoid::generate()?, ffmpeg_file_name()));
+    let cleanup = Arc::new(acquisition::RemoveFilesOnDrop::new(vec![partial.clone(), staged.clone()]));
     let result = (|| -> Result<BinaryFacts, String> {
         guard.deadline.check(&guard.cancelled)?;
         acquisition::download_to(
@@ -1015,31 +1060,7 @@ fn install_ffmpeg_started(
         )?;
         acquisition::make_runnable(&staged, &guard.cancelled, &guard.deadline)?;
 
-        let target = ffmpeg_path(root);
-        let parent = target
-            .parent()
-            .ok_or_else(|| format!("installed path has no parent: {}", crate::native_path::label(&target)))?;
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        let staged_version = binary_file_version(&staged)?;
-        guard.deadline.check(&guard.cancelled)?;
-        // Replace-in-place: rename over any previous install (same volume).
-        // not recorded: the installed executable is a re-downloadable binary.
-        acquisition::publish_staged(&staged, &target)?;
-
-        // The binary has landed — drop the cached read FIRST, so even a failed
-        // sidecar write below cannot leave the pre-install answer cached; a
-        // fresh read sees whatever is actually on disk.
-        forget_installed_ffmpeg_version();
-        // Where the binary cannot report a comparable version, record the
-        // resolved one beside it — AFTER the publish, so a failure here leaves
-        // a present binary reading version-unknown (which offers a re-acquire)
-        // rather than an old binary wearing the new version's label.
-        if !ffmpeg_reports_its_own_version() {
-            write_version_sidecar(root, &resolved.version, staged_version)?;
-            // The write changed what a read would see; drop again in case a
-            // concurrent status read cached between the two.
-            forget_installed_ffmpeg_version();
-        }
+        activate_ffmpeg(root, &staged, &resolved.version, &guard.cancelled, &guard.deadline, cleanup.clone())?;
 
         // Only the upstream fact is persisted. What is now installed is read back
         // from the binary itself.
@@ -1055,7 +1076,7 @@ fn install_ffmpeg_started(
         ));
         logging::info(
             "ffmpeg installed",
-            serde_json::json!({ "version": resolved.version, "path": crate::native_path::encode(&target) }),
+            serde_json::json!({ "version": resolved.version, "path": crate::native_path::encode(&ffmpeg_path(root)) }),
         );
         Ok(facts)
     })();

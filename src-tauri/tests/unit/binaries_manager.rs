@@ -541,3 +541,64 @@ fn ffmpeg_sidecar_cannot_label_a_replacement_or_unidentified_legacy_binary() {
     assert_eq!(read_version_sidecar(root.path()), None);
     assert_eq!(std::fs::read(version_sidecar_path(root.path())).unwrap(), legacy, "inspection preserves unbound legacy evidence");
 }
+
+#[cfg(unix)]
+fn probe_fixture(path: &Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn staged_ffmpeg_must_run_and_report_the_selected_version_before_replacement() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join(BIN_DIR_NAME)).unwrap();
+    let target = ffmpeg_path(root.path());
+    probe_fixture(&target, "echo 'ffmpeg version 9.0'");
+    let original = std::fs::read(&target).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let deadline = acquisition::OperationDeadline::for_install(None);
+    for (index, body) in ["echo incompatible >&2; exit 1", "echo unexpected-banner", "echo 'ffmpeg version 8.0'"].into_iter().enumerate() {
+        let staged = root.path().join(format!("candidate-{index}"));
+        probe_fixture(&staged, body);
+        let cleanup = Arc::new(acquisition::RemoveFilesOnDrop::new(vec![staged.clone()]));
+        assert!(activate_ffmpeg(root.path(), &staged, "9.1", &cancelled, &deadline, cleanup).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), original, "failed activation preserves the working tool");
+    }
+    let staged = root.path().join("candidate-good");
+    probe_fixture(&staged, "echo 'ffmpeg version 9.1'");
+    let replacement = std::fs::read(&staged).unwrap();
+    let cleanup = Arc::new(acquisition::RemoveFilesOnDrop::new(vec![staged.clone()]));
+    activate_ffmpeg(root.path(), &staged, "9.1", &cancelled, &deadline, cleanup).unwrap();
+    assert_eq!(std::fs::read(&target).unwrap(), replacement);
+    assert_eq!(probe_ffmpeg_version(root.path()).as_deref(), Some("9.1"));
+}
+
+#[cfg(unix)]
+#[test]
+fn staged_ffmpeg_cancellation_preserves_the_working_tool() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join(BIN_DIR_NAME)).unwrap();
+    let target = ffmpeg_path(root.path());
+    std::fs::write(&target, b"working tool").unwrap();
+    let staged = root.path().join("candidate");
+    probe_fixture(&staged, "echo 'ffmpeg version 9.1'");
+    let cleanup = Arc::new(acquisition::RemoveFilesOnDrop::new(vec![staged.clone()]));
+    let error = activate_ffmpeg(root.path(), &staged, "9.1", &AtomicBool::new(true),
+        &acquisition::OperationDeadline::for_install(None), cleanup).unwrap_err();
+    assert!(is_cancelled_error(&error));
+    assert_eq!(std::fs::read(&target).unwrap(), b"working tool");
+    assert!(!staged.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_noisy_ffmpeg_probe_still_has_a_total_deadline() {
+    let root = tempfile::tempdir().unwrap();
+    let staged = root.path().join("noisy-probe");
+    probe_fixture(&staged, r#": > "$0.ready"; while :; do echo waiting; sleep 0.05; done"#);
+    let error = probe_ffmpeg_at(&staged, &|| false, None).unwrap_err();
+    assert!(root.path().join("noisy-probe.ready").is_file(), "the fixture must reach execution before its deadline");
+    assert_eq!(error, "ffmpeg version probe timed out");
+}

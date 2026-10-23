@@ -287,13 +287,24 @@ pub fn run_bounded_idle(
     run_bounded_idle_output(command, cancelled, idle_timeout, STDOUT_BYTES)
 }
 
+/// Retains caller-owned staging until the physical process and pipe readers
+/// settle, even when cancellation returns to the caller before they do.
+pub(crate) fn run_bounded_idle_retaining(
+    command: Command,
+    cancelled: &dyn Fn() -> bool,
+    idle_timeout: Duration,
+    owner: Option<Arc<dyn Send + Sync>>,
+) -> Result<Run, String> {
+    start_owned(command, cancelled, idle_timeout, StdoutTarget::Capture(STDOUT_BYTES), owner)
+}
+
 fn run_bounded_idle_output(
     command: Command,
     cancelled: &dyn Fn() -> bool,
     idle_timeout: Duration,
     max_stdout: usize,
 ) -> Result<Run, String> {
-    start_owned(command, cancelled, idle_timeout, StdoutTarget::Capture(max_stdout))
+    start_owned(command, cancelled, idle_timeout, StdoutTarget::Capture(max_stdout), None)
 }
 
 /// Streams bounded stdout into an exclusively created private file. The
@@ -304,7 +315,7 @@ pub(crate) fn run_bounded_to_file(
     output: Arc<StagedOutput>,
     max_bytes: u64,
 ) -> Result<Run, String> {
-    start_owned(command, cancelled, IDLE_TIMEOUT, StdoutTarget::File(output, max_bytes))
+    start_owned(command, cancelled, IDLE_TIMEOUT, StdoutTarget::File(output, max_bytes), None)
 }
 
 enum OwnerEvent {
@@ -317,6 +328,7 @@ fn start_owned(
     cancelled: &dyn Fn() -> bool,
     idle_timeout: Duration,
     target: StdoutTarget,
+    owner: Option<Arc<dyn Send + Sync>>,
 ) -> Result<Run, String> {
     if cancelled() { return Err(crate::scanner::CANCELLED.to_string()); }
     // A brief busy period queues at the caller, without creating another
@@ -341,6 +353,7 @@ fn start_owned(
         .spawn(move || {
             let _capacity = capacity;
             let _job = job;
+            let _owner = owner;
             let result = crate::failure_runtime::contain_item(|| {
                 run_owned(command, &owner_cancellation, idle_timeout, target, &settled)
             });
