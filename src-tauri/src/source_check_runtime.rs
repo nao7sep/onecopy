@@ -245,19 +245,15 @@ fn run(
     // A foreground action parks the walk in place; one that reset the index
     // or applied Settings makes it start again with the current configuration.
     let summary = loop {
-        let settings = crate::scanner::settings_from_config(
-            Some(&*crate::storage::config(&data_root)?),
-            &data_root,
-            chrono::Utc::now().timestamp_millis(),
-        );
         let parked = app.clone();
-        let result = crate::scan_runtime::with_source_check_claim(
+        let result = with_admitted_settings(
+            &data_root,
             || state().cancelled(),
             move |waiting| {
                 state().set_waiting(waiting);
                 emit_state(&parked);
             },
-            || {
+            |settings| {
                 let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::SourceCheck, None, None);
                 let report = trace.progress_reporter();
                 // The volume-substitution gate is enforced per
@@ -267,7 +263,7 @@ fn run(
                 // checked.
                 let result = crate::index_store::open(&db_file).and_then(|conn| {
                     sections.track(&conn);
-                    let result = crate::scanner::run_source_check(&conn, &settings, &|value| {
+                    let result = crate::scanner::run_source_check(&conn, settings, &|value| {
                         report(value.done, value.total);
                         progress(value, &|| sections.changed_since_last(&conn));
                     });
@@ -291,6 +287,32 @@ fn run(
     crate::failure_runtime::clear("source-check-failed", None);
     Ok(summary)
 }
+
+// Read settings only after admission has captured the walk's restart epoch.
+// A queued check must observe a Settings apply that finished while it waited;
+// a later apply at a yield still invalidates that epoch and restarts the walk.
+fn with_admitted_settings<T>(
+    data_root: &std::path::Path,
+    cancelled: impl Fn() -> bool + 'static,
+    on_yield: impl Fn(bool) + 'static,
+    work: impl FnOnce(&crate::scanner::ScanSettings) -> Result<T, String>,
+) -> Result<T, String> {
+    crate::scan_runtime::with_source_check_claim(cancelled, on_yield, || {
+        let settings = crate::scanner::settings_from_config(
+            Some(&*crate::storage::config(data_root)?),
+            data_root,
+            chrono::Utc::now().timestamp_millis(),
+        );
+        work(&settings)
+    })
+}
+
+#[cfg(test)]
+// EXCEPTION to tests-folder conventions: this private admission/configuration
+// boundary is shared with production; testing a separate claim closure would
+// not catch configuration being captured before the claim is acquired.
+#[path = "../tests/unit/source_check_runtime.rs"]
+mod tests;
 
 fn finish(result: ResultState) -> bool {
     state().finish(result)
