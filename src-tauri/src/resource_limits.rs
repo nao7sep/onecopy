@@ -234,7 +234,7 @@ fn image_worker_capacity_for(
 }
 
 #[cfg(target_os = "macos")]
-fn available_memory_bytes() -> Option<u64> {
+pub(crate) fn available_memory_bytes() -> Option<u64> {
     unsafe extern "C" {
         fn mach_host_self() -> libc::mach_port_t;
     }
@@ -273,7 +273,7 @@ fn macos_reclaimable_pages(statistics: &libc::vm_statistics64_data_t) -> u64 {
 }
 
 #[cfg(windows)]
-fn available_memory_bytes() -> Option<u64> {
+pub(crate) fn available_memory_bytes() -> Option<u64> {
     #[repr(C)]
     struct MemoryStatusEx {
         length: u32,
@@ -305,7 +305,7 @@ fn available_memory_bytes() -> Option<u64> {
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]
-fn available_memory_bytes() -> Option<u64> {
+pub(crate) fn available_memory_bytes() -> Option<u64> {
     None
 }
 

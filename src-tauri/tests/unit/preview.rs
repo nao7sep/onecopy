@@ -81,7 +81,7 @@ fn decoder_panics_record_one_failure_and_continue_in_serial_and_parallel() {
 }
 
 #[test]
-fn startup_sweep_cannot_run_between_an_identity_promotions_commit_and_its_rename() {
+fn a_sweep_cohort_cannot_run_between_an_identity_promotions_commit_and_its_rename() {
     // `scanner::promote_identity` commits the DB
     // move from a provisional hash to the real one, then renames the cache
     // files to match — two steps that cannot be one filesystem+DB
@@ -144,13 +144,19 @@ fn startup_sweep_cannot_run_between_an_identity_promotions_commit_and_its_rename
     // sequence, must now block instead of running ahead of the rename.
     let sweep_cache = CachePaths::new(cache_root.clone());
     let sweep_db_path = db_path.clone();
+    let (blocked, observed) = std::sync::mpsc::channel();
     let sweep = std::thread::spawn(move || {
+        IDENTITY_LOCK_BLOCKED.with(|hook| *hook.borrow_mut() = Some(blocked));
         let sweep_conn = crate::index_store::open(&sweep_db_path).unwrap();
-        startup_sweep(&sweep_conn, &sweep_cache, launched, &|| false)
+        let cohort = vec![
+            ("thumbs".to_string(), sweep_cache.thumb("p1")),
+            ("previews".to_string(), sweep_cache.preview("p1")),
+        ];
+        sweep_cohort(&sweep_conn, &cohort, launched)
     });
 
-    // Give the sweep thread every chance to run if it were not blocked.
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    // Notification is emitted only after the real mutex refuses try_lock.
+    observed.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
     assert!(
         cache.thumb("p1").exists() && cache.preview("p1").exists(),
         "the sweep must not touch the provisional cache files while the lock is held"
@@ -190,9 +196,11 @@ fn an_identity_promotion_waiting_for_the_sweep_never_holds_sqlites_writer() {
     // writer, or the two owners wait for each other in the reverse order.
     let identity_lock = lock_cache_identity();
     let (writer_entered, writer_observed) = std::sync::mpsc::channel();
+    let (blocked, observed) = std::sync::mpsc::channel();
     let ready = std::sync::Arc::new(std::sync::Barrier::new(2));
     let promotion_ready = ready.clone();
     let promotion = std::thread::spawn(move || {
+        IDENTITY_LOCK_BLOCKED.with(|hook| *hook.borrow_mut() = Some(blocked));
         let conn = crate::index_store::open(&db_path).unwrap();
         conn.create_collation("promotion_writer", move |left, right| {
             let _ = writer_entered.send(());
@@ -208,11 +216,9 @@ fn an_identity_promotion_waiting_for_the_sweep_never_holds_sqlites_writer() {
         crate::scanner::promote_identity(&conn, &CachePaths::new(cache_root), "p1", "real1")
     });
     ready.wait();
-    // The trigger positively observes the old implementation holding a real
-    // SQLite write transaction. With reservation-first acquisition it cannot
-    // run yet; the bounded receive only lets that competing attempt settle.
-    let held_writer = writer_observed.recv_timeout(std::time::Duration::from_millis(200)).is_ok();
-    let sweep_result = reconcile_orphan_contents(&sweep_conn);
+    observed.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    let held_writer = writer_observed.try_recv().is_ok();
+    let sweep_result = reconcile_orphan_batch(&sweep_conn, "").map(|(_, removed)| removed);
     drop(identity_lock);
     let promotion_result = promotion.join().unwrap();
 
@@ -234,4 +240,100 @@ fn orientation_read_distinguishes_missing_metadata_from_failed_source_io() {
     let _decoded = crate::resource_limits::decode_file(&path).unwrap();
     std::fs::remove_file(&path).unwrap();
     assert!(read_orientation(&path).is_err());
+}
+
+
+#[test]
+fn retirement_visits_a_shared_strip_shard_once_per_hash_cohort() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = CachePaths::new(dir.path().join("cache"));
+    let hashes: Vec<_> = (0..129).map(|index| format!("ab{index:04}")).collect();
+    for hash in &hashes {
+        for frame in 0..3 {
+            let path = crate::video::strip_path(&cache, hash, frame);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"frame").unwrap();
+        }
+    }
+    STRIP_DIRECTORY_VISITS.with(|count| count.set(0));
+    remove_entries_batch(&cache, &hashes);
+    STRIP_DIRECTORY_VISITS.with(|count| assert_eq!(count.get(), 2));
+    assert!(hashes.iter().all(|hash| !crate::video::strip_path(&cache, hash, 0).exists()));
+}
+
+#[test]
+fn retirement_flushes_full_cohorts_and_drop_flushes_the_committed_tail() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = CachePaths::new(dir.path().join("cache"));
+    let hashes: Vec<_> = (0..129).map(|index| format!("ab{index:04}")).collect();
+    for hash in &hashes {
+        let path = cache.thumb(hash);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"thumb").unwrap();
+    }
+    {
+        let mut retirement = CacheRetirementBatch::new(&cache);
+        for hash in &hashes[..128] { retirement.push(hash.clone()); }
+        assert!(!cache.thumb(&hashes[0]).exists());
+        retirement.push(hashes[128].clone());
+        assert!(cache.thumb(&hashes[128]).exists());
+    }
+    assert!(!cache.thumb(&hashes[128]).exists());
+}
+
+#[test]
+fn sweep_membership_is_shared_within_one_reservation_but_not_across_cohorts() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = crate::index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    let cache = CachePaths::new(dir.path().join("cache"));
+    let launched = std::time::SystemTime::now() + std::time::Duration::from_secs(120);
+    let paths: Vec<_> = (0..128).map(|frame| ("strips".to_string(), crate::video::strip_path(&cache, "abcdef", frame))).collect();
+    for (_, path) in &paths {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"frame").unwrap();
+    }
+    SWEEP_MEMBERSHIP_QUERIES.with(|count| count.set(0));
+    assert_eq!(sweep_cohort(&conn, &paths, launched).unwrap(), 128);
+    SWEEP_MEMBERSHIP_QUERIES.with(|count| assert_eq!(count.get(), 1));
+    conn.execute("INSERT INTO contents(hash, byte_size, kind) VALUES ('abcdef', 1, 'video')", []).unwrap();
+    std::fs::write(&paths[0].1, b"new frame").unwrap();
+    assert_eq!(sweep_cohort(&conn, &paths[..1], launched).unwrap(), 0);
+    assert!(paths[0].1.exists());
+    SWEEP_MEMBERSHIP_QUERIES.with(|count| assert_eq!(count.get(), 2));
+}
+
+#[test]
+fn orphan_reconciliation_limits_each_writer_batch_to_one_keyset_cohort() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = crate::index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    for index in 0..260 {
+        conn.execute("INSERT INTO contents(hash, byte_size, kind) VALUES (?1, 1, 'image')", [format!("h{index:04}")]).unwrap();
+    }
+    let _identity_lock = lock_cache_identity();
+    let (first, count) = reconcile_orphan_batch(&conn, "").unwrap();
+    assert_eq!((first.len(), count), (128, 128));
+    let (second, count) = reconcile_orphan_batch(&conn, first.last().unwrap()).unwrap();
+    assert_eq!((second.len(), count), (128, 128));
+    let (tail, count) = reconcile_orphan_batch(&conn, second.last().unwrap()).unwrap();
+    assert_eq!((tail.len(), count), (4, 4));
+}
+
+#[test]
+fn live_contents_also_advance_the_bounded_orphan_cursor() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = crate::index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    for index in 0..260 {
+        let hash = format!("h{index:04}");
+        conn.execute("INSERT INTO contents(hash, byte_size, kind) VALUES (?1, 1, 'image')", [&hash]).unwrap();
+        conn.execute("INSERT INTO paths(abs_path, dir_path, file_name, kind, content_hash) VALUES (?1, '/', ?1, 'image', ?1)", [&hash]).unwrap();
+    }
+    conn.execute("INSERT INTO contents(hash, byte_size, kind) VALUES ('z-orphan', 1, 'image')", []).unwrap();
+    let _identity = lock_cache_identity();
+    let (visited, removed) = reconcile_orphan_batch(&conn, "").unwrap();
+    assert_eq!((visited.len(), removed), (128, 0));
+    let (visited, removed) = reconcile_orphan_batch(&conn, visited.last().unwrap()).unwrap();
+    assert_eq!((visited.len(), removed), (128, 0));
+    let (visited, removed) = reconcile_orphan_batch(&conn, visited.last().unwrap()).unwrap();
+    assert_eq!((visited.len(), removed), (5, 1));
+    assert_eq!(conn.query_row("SELECT count(*) FROM contents", [], |row| row.get::<_, i64>(0)).unwrap(), 260);
 }

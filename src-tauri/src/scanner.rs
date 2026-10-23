@@ -666,8 +666,8 @@ pub fn forget_unconfigured_roots(
             },
         )?;
         forgotten += removed as u64;
-        for hash in &orphaned_hashes {
-            crate::preview::remove_entries(cache, hash);
+        for cohort in orphaned_hashes.chunks(128) {
+            crate::preview::remove_entries_batch(cache, cohort);
         }
         if removed > 0 {
             logging::info(
@@ -1682,7 +1682,7 @@ pub fn promote_identity(
         Some(strip_frames.unwrap_or(0))
     };
     // The reservation remains held through the cache rename/removal below, so
-    // the startup sweep (which takes the same lock for its whole pass) can
+    // the startup sweep (which reserves each check/delete cohort) can
     // never run its "is this key still in `contents`?" check in the gap
     // between this commit and the cache files actually moving — otherwise it
     // can see the just-vacated provisional key as orphaned and delete the

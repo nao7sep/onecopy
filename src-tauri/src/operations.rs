@@ -331,6 +331,7 @@ fn delete_targets(
 ) -> Result<(DeleteOutcome, Vec<i64>), String> {
     let mut outcome = DeleteOutcome::default();
     let mut changed_sources = Vec::new();
+    let mut cache_retirement = preview::CacheRetirementBatch::new(cache);
 
     for target in targets {
         let file = Path::new(&target.abs_path);
@@ -439,7 +440,7 @@ fn delete_targets(
                 }
                 crate::records::commit(tx).map_err(|e| e.to_string())?;
                 if orphaned {
-                    preview::remove_entries(cache, current_hash.as_deref().unwrap_or_default());
+                    if let Some(hash) = current_hash { cache_retirement.push(hash); }
                 }
                 on_attempt(target.bytes, false);
             }

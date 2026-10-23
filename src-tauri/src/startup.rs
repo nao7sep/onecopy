@@ -292,7 +292,7 @@ fn start_runtime(app: &tauri::App, state: StartupState, debug_enabled: bool) {
                             &conn,
                             &cache,
                             launched,
-                            &crate::app_lifecycle::shutting_down,
+                            &|| crate::app_lifecycle::shutting_down() || crate::scan_runtime::foreground_pending(),
                         )?;
                         if crate::app_lifecycle::shutting_down() {
                             return Ok(());

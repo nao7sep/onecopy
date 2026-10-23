@@ -391,7 +391,7 @@ fn cache_entries_go_when_the_last_copy_goes() {
         .query_row("SELECT content_hash FROM paths LIMIT 1", [], |r| r.get(0))
         .unwrap();
     // Simulate derived cache entries.
-    for path in [f.cache.thumb(&hash), f.cache.preview(&hash)] {
+    for path in [f.cache.thumb(&hash), f.cache.preview(&hash), f.cache.fullres(&hash)] {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, b"webp").unwrap();
     }
@@ -406,6 +406,7 @@ fn cache_entries_go_when_the_last_copy_goes() {
     .unwrap();
     assert!(!f.cache.thumb(&hash).exists());
     assert!(!f.cache.preview(&hash).exists());
+    assert!(!f.cache.fullres(&hash).exists());
 }
 
 #[test]
@@ -423,7 +424,7 @@ fn cache_entries_survive_while_another_copy_remains() {
         .conn
         .query_row("SELECT content_hash FROM paths LIMIT 1", [], |r| r.get(0))
         .unwrap();
-    for path in [f.cache.thumb(&hash), f.cache.preview(&hash)] {
+    for path in [f.cache.thumb(&hash), f.cache.preview(&hash), f.cache.fullres(&hash)] {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, b"webp").unwrap();
     }
@@ -433,6 +434,7 @@ fn cache_entries_survive_while_another_copy_remains() {
     std::fs::remove_file(f.root.join("b").join("x.jpg")).unwrap();
     scanner::walk_root(&f.conn, &f.root, &lists()).unwrap();
     assert!(f.cache.thumb(&hash).exists(), "a live copy still needs it");
+    assert!(f.cache.fullres(&hash).exists(), "a live copy still needs the render");
 
     // Now the last LIVE copy goes. The missing sibling must not pin the
     // identity: contents and cache both go, or they leak for the life of the
@@ -456,6 +458,7 @@ fn cache_entries_survive_while_another_copy_remains() {
     assert_eq!(contents, 0, "a missing sibling must not pin the identity");
     assert!(!f.cache.thumb(&hash).exists());
     assert!(!f.cache.preview(&hash).exists());
+    assert!(!f.cache.fullres(&hash).exists());
 }
 
 #[test]

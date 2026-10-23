@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use image::DynamicImage;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::logging;
 use crate::nanoid;
@@ -66,7 +66,7 @@ impl CachePaths {
 
     /// Full-resolution conversion of a format the webview cannot paint
     /// (HEIC/AVIF), decoded on demand for the 100% view. PNG: lossless, so
-    /// pixel-peeping stays honest. It lives for the session
+    /// pixel-peeping stays honest. Inactive renders may be evicted during the session
     /// ([`clear_session_renders`]).
     pub fn fullres(&self, hash: &str) -> PathBuf {
         self.root
@@ -434,9 +434,20 @@ pub fn ensure_fullres(
     hash: &str,
 ) -> Result<(), String> {
     let target = cache.fullres(hash);
-    if target.exists() { // data root
-        return Ok(());
-    }
+    let dimensions: Option<(Option<i64>, Option<i64>)> = conn.query_row(
+        "SELECT width, height FROM contents WHERE hash = ?1", [hash],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).optional().map_err(|e| e.to_string())?;
+    // Reserve a conservative 16-bit RGBA PNG envelope when dimensions are
+    // known; unknown dimensions can use only the owner's remaining budget.
+    let expected = dimensions.and_then(|(w, h)| {
+        let (w, h) = (u64::try_from(w?).ok()?, u64::try_from(h?).ok()?);
+        w.checked_mul(h)?.checked_mul(10)?.checked_add(1024 * 1024)
+    });
+    let (producer, max_bytes) = match crate::fullres_cache::begin(&cache.root.join("fullres"), &target, expected)? {
+        crate::fullres_cache::Admission::Existing => return Ok(()),
+        crate::fullres_cache::Admission::Produce(producer, limit) => (producer, limit),
+    };
     let Some(ffmpeg) = ffmpeg else {
         return Err("ffmpeg is not installed — install it from Background work & tools".to_string());
     };
@@ -452,25 +463,23 @@ pub fn ensure_fullres(
     std::fs::create_dir_all(parent) // data root
         .map_err(|e| crate::resource_limits::cache_write_error("full-resolution cache", e))?;
     let stem = target.file_stem().and_then(|s| s.to_str()).unwrap_or("cache");
-    let max_bytes = crate::resource_limits::available_storage_bytes(parent)? / 2;
-    let staged = Arc::new(crate::subprocess::StagedOutput::new(
+    let staged = Arc::new(crate::subprocess::StagedOutput::with_owner(
         parent.join(format!("{stem}-{}.tmp", crate::nanoid::generate()?)),
+        Some(producer.clone()),
     ).map_err(|error| crate::resource_limits::cache_write_error("full-resolution staging", error))?);
     convert_full_resolution(ffmpeg, src, Arc::clone(&staged), max_bytes)?;
-    std::fs::rename(staged.path(), &target) // data root
-        .map_err(|error| crate::resource_limits::cache_write_error("full-resolution cache", error)) // data root
+    let _identity = lock_cache_identity();
+    let still_present: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM contents WHERE hash = ?1)", [hash], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    if !still_present { return Err(crate::scanner::CANCELLED.to_string()); }
+    producer.publish(staged.path())
 }
 
 /// Deletes every full-resolution render: at clean exit, and at launch for
 /// whatever an earlier session left.
 pub fn clear_session_renders(cache: &CachePaths) {
-    match std::fs::remove_dir_all(cache.root.join("fullres")) { // data root
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => logging::warn(
-            "full-resolution renders could not be cleared",
-            serde_json::json!({ "path": cache.root.join("fullres"), "error": { "message": error.to_string() } }),
-        ),
+    if let Err(error) = crate::fullres_cache::clear(&cache.root.join("fullres")) {
+        logging::warn("full-resolution renders could not be cleared", serde_json::json!({"error": error}));
     }
 }
 
@@ -974,33 +983,74 @@ fn derive_candidate_rows_with(
     Ok(stats)
 }
 
-/// Best-effort removal of one hash's cache entries — the synchronous half of
-/// cache GC, called when the last path bearing the hash leaves the index.
+const CACHE_COHORT_SIZE: usize = 128;
+
+/// Best-effort removal after the last indexed path for a hash leaves.
 pub fn remove_entries(cache: &CachePaths, hash: &str) {
-    crate::fs_recovery::remove_file(&cache.thumb(hash), "thumbnail cache cleanup");
-    crate::fs_recovery::remove_file(&cache.preview(hash), "preview cache cleanup");
-    // A video's strip frames are one file each and their number lives in the row that is
-    // leaving, so they are found on disk rather than counted.
-    for frame in strip_frames_on_disk(cache, hash) {
-        crate::fs_recovery::remove_file(&frame, "strip cache cleanup");
+    remove_entries_batch(cache, &[hash.to_string()]);
+}
+
+/// Bounded hash cohorts visit each affected strip shard only once.
+pub(crate) fn remove_entries_batch(cache: &CachePaths, hashes: &[String]) {
+    for cohort in hashes.chunks(CACHE_COHORT_SIZE) {
+        let mut shards: std::collections::HashMap<PathBuf, std::collections::HashSet<&str>> =
+            std::collections::HashMap::new();
+        for hash in cohort {
+            crate::fs_recovery::remove_file(&cache.thumb(hash), "thumbnail cache cleanup");
+            crate::fs_recovery::remove_file(&cache.preview(hash), "preview cache cleanup");
+            crate::fullres_cache::retire(&cache.fullres(hash));
+            if let Some(shard) = crate::video::strip_path(cache, hash, 0).parent() {
+                shards.entry(shard.to_path_buf()).or_default().insert(hash);
+            }
+        }
+        for (shard, hashes) in shards {
+            #[cfg(test)]
+            STRIP_DIRECTORY_VISITS.with(|count| count.set(count.get() + 1));
+            let Ok(entries) = std::fs::read_dir(&shard) else { continue }; // data root
+            for entry in entries.flatten() {
+                if cache_entry_hash("strips", &entry.file_name().to_string_lossy())
+                    .is_some_and(|hash| hashes.contains(hash.as_str()))
+                {
+                    crate::fs_recovery::remove_file(&entry.path(), "strip cache cleanup");
+                }
+            }
+        }
     }
 }
 
-/// Every strip frame written for one hash, read from the shard it shares with its siblings.
-fn strip_frames_on_disk(cache: &CachePaths, hash: &str) -> Vec<std::path::PathBuf> {
-    let Some(shard) = crate::video::strip_path(cache, hash, 0).parent().map(|p| p.to_path_buf()) else {
-        return Vec::new();
-    };
-    let Ok(entries) = std::fs::read_dir(&shard) else { // data root
-        return Vec::new();
-    };
-    entries
-        .flatten()
-        .filter(|entry| {
-            cache_entry_hash("strips", &entry.file_name().to_string_lossy()).as_deref() == Some(hash)
-        })
-        .map(|entry| entry.path())
-        .collect()
+/// Keeps committed orphan cleanup owned through early error returns.
+pub(crate) struct CacheRetirementBatch<'a> {
+    cache: &'a CachePaths,
+    hashes: Vec<String>,
+}
+
+impl<'a> CacheRetirementBatch<'a> {
+    pub(crate) fn new(cache: &'a CachePaths) -> Self {
+        Self { cache, hashes: Vec::with_capacity(CACHE_COHORT_SIZE) }
+    }
+
+    pub(crate) fn push(&mut self, hash: String) {
+        self.hashes.push(hash);
+        if self.hashes.len() == CACHE_COHORT_SIZE {
+            self.flush();
+        }
+    }
+
+    pub(crate) fn flush(&mut self) {
+        remove_entries_batch(self.cache, &self.hashes);
+        self.hashes.clear();
+    }
+}
+
+impl Drop for CacheRetirementBatch<'_> {
+    fn drop(&mut self) { self.flush(); }
+}
+
+#[cfg(test)]
+thread_local! {
+    static IDENTITY_LOCK_BLOCKED: std::cell::RefCell<Option<std::sync::mpsc::Sender<()>>> = const { std::cell::RefCell::new(None) };
+    static STRIP_DIRECTORY_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static SWEEP_MEMBERSHIP_QUERIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// The content hash a cache file belongs to, or `None` when the name is not one this app
@@ -1024,40 +1074,34 @@ pub(crate) fn cache_entry_hash(tree: &str, name: &str) -> Option<String> {
     Some(hash.to_string())
 }
 
-/// Serializes the startup sweep's cache-tree scan against an identity
-/// promotion's database decision and cache rename/removal (`scanner::promote_identity`).
-/// Both sides act on the same invariant — "a cache file's key names a live
-/// `contents` row" — from two different angles: the sweep deletes a file
-/// whose key is NOT in `contents`, while a promotion commits a key OUT of
-/// `contents` and then renames or removes the file that key still names.
-/// Without a shared lock, the sweep can run its existence check in the gap
-/// between a promotion's commit and its rename, see the just-vacated
-/// provisional key as orphaned, and delete the file out from under the
-/// rename that was about to move it — losing a derived thumb/preview that
-/// then has to be regenerated. Held for the sweep's entire pass (it runs
-/// once, at startup) and from before a single promotion's write transaction
-/// through its committed cache effect. Both owners acquire this reservation
-/// before SQLite's writer, so neither waits for it while holding that writer.
+/// Serializes each sweep cohort's membership decision/removal with promotion's
+/// commit-to-cache transition. Both acquire this before SQLite's writer;
+/// directory enumeration never holds the reservation.
 static CACHE_IDENTITY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// `pub` (not `pub(crate)`) so the race this closes can be exercised directly
-/// from an integration test in `tests/`, per tests-folder-conventions,
-/// instead of an inline unit-test exception widening the module for testing
-/// alone.
 pub(crate) fn lock_cache_identity() -> std::sync::MutexGuard<'static, ()> {
-    CACHE_IDENTITY_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    match CACHE_IDENTITY_LOCK.try_lock() {
+        Ok(guard) => guard,
+        Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            #[cfg(test)]
+            IDENTITY_LOCK_BLOCKED.with(|hook| {
+                if let Some(sender) = hook.borrow().as_ref() { let _ = sender.send(()); }
+            });
+            CACHE_IDENTITY_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        }
+    }
 }
 
 /// Moves one identity's cache entries to a new key (provisional→real
 /// promotion): thumb, preview, and any strip frames. Best-effort — a missing
 /// source has nothing to move, and the startup sweep collects strays.
 pub fn rename_entries(cache: &CachePaths, old: &str, new: &str, strip_frames: i64) {
+    // Session renders retain physical-reader ownership; regenerate at the new key.
+    crate::fullres_cache::retire(&cache.fullres(old));
     let mut moves = vec![
         (cache.thumb(old), cache.thumb(new)),
         (cache.preview(old), cache.preview(new)),
-        (cache.fullres(old), cache.fullres(new)),
     ];
     for i in 0..strip_frames.max(0) as u32 {
         moves.push((
@@ -1077,128 +1121,138 @@ pub fn rename_entries(cache: &CachePaths, old: &str, new: &str, strip_frames: i6
     }
 }
 
-/// Reconciles `contents` rows a crash or DB error left with no surviving
-/// `paths` row at all (`operations::delete_targets` and
-/// `scanner::forget_unconfigured_roots` collect their own orphans inline;
-/// this is the backstop for whatever a crash between statements still lets
-/// through). It never runs on its own schedule — only from `startup_sweep`,
-/// which already walks the cache tree once per launch — because a leaked
-/// `contents` row is exactly what keeps `startup_sweep`'s own cache-file
-/// check from ever firing for that hash.
-fn reconcile_orphan_contents(conn: &Connection) -> Result<u64, String> {
-    conn.execute(
-        "DELETE FROM similar_group_members WHERE content_hash NOT IN \
-         (SELECT content_hash FROM paths WHERE content_hash IS NOT NULL)",
-        [],
-    )
-    .map_err(|e| e.to_string())?;
-    conn.execute(
-        "DELETE FROM contents WHERE hash NOT IN \
-         (SELECT content_hash FROM paths WHERE content_hash IS NOT NULL)",
-        [],
-    )
-    .map_err(|e| e.to_string())
-    .map(|removed| removed as u64)
+/// One short keyset batch, called with the identity reservation already held.
+fn reconcile_orphan_batch(conn: &Connection, after: &str) -> Result<(Vec<String>, u64), String> {
+    let tx = crate::sqlite::write_transaction(conn).map_err(|e| e.to_string())?;
+    let hashes = tx.prepare(
+        "SELECT hash FROM contents WHERE hash > ?1 ORDER BY hash LIMIT 128",
+    ).and_then(|mut statement| {
+        statement.query_map([after], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+    }).map_err(|e| e.to_string())?;
+    let mut removed = 0;
+    for hash in &hashes {
+        tx.execute("DELETE FROM similar_group_members WHERE content_hash = ?1
+                    AND NOT EXISTS (SELECT 1 FROM paths WHERE content_hash = ?1)", [hash])
+            .map_err(|e| e.to_string())?;
+        removed += tx.execute("DELETE FROM contents WHERE hash = ?1
+                    AND NOT EXISTS (SELECT 1 FROM paths WHERE content_hash = ?1)", [hash])
+            .map_err(|e| e.to_string())? as u64;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok((hashes, removed))
 }
 
-/// Startup sweep — the crash-leftover half of cache GC: reconciles any
-/// leaked `contents` row (see `reconcile_orphan_contents`), then deletes
-/// cache entries whose hash is no longer in `contents`, plus stranded `.tmp`
-/// staging files. It runs beside this launch's preview derivation, which
-/// stages `.tmp` files and writes an entry before its `contents` row exists,
-/// so it collects only files last written before `launched`: what earlier
-/// runs left. Touches only the cache tree and the DB.
+fn reconcile_orphan_contents(conn: &Connection, cancel_when: &impl Fn() -> bool) -> Result<u64, String> {
+    let mut after = String::new();
+    let mut removed = 0;
+    loop {
+        if cancel_when() { return Ok(removed); }
+        let (hashes, count) = {
+            let _identity_lock = lock_cache_identity();
+            reconcile_orphan_batch(conn, &after)?
+        };
+        removed += count;
+        let Some(last) = hashes.last() else { return Ok(removed) };
+        after.clone_from(last);
+        if hashes.len() < CACHE_COHORT_SIZE { return Ok(removed); }
+    }
+}
+
+/// Re-stat and decide each bounded cohort under one identity reservation.
+/// Membership answers are valid only until that reservation is released.
+fn sweep_cohort(
+    conn: &Connection,
+    cohort: &[(String, PathBuf)],
+    launched: std::time::SystemTime,
+) -> Result<u64, String> {
+    let _identity_lock = lock_cache_identity();
+    let mut membership = std::collections::HashMap::new();
+    let mut exists = conn.prepare("SELECT 1 FROM contents WHERE hash = ?1").map_err(|e| e.to_string())?;
+    let mut removed = 0u64;
+    for (sub, path) in cohort {
+        // Recheck after waiting for promotion; enumeration metadata can be stale.
+        let old = std::fs::symlink_metadata(path).ok().filter(|meta| meta.is_file()) // data root
+            .and_then(|meta| meta.modified().ok())
+            .is_some_and(|modified| modified + std::time::Duration::from_secs(2) < launched);
+        if !old { continue; }
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        let orphan = if let Some(hash) = cache_entry_hash(sub, &name) {
+            let present = match membership.get(&hash) {
+                Some(present) => *present,
+                None => {
+                    #[cfg(test)]
+                    SWEEP_MEMBERSHIP_QUERIES.with(|count| count.set(count.get() + 1));
+                    let present = exists.exists([&hash]).map_err(|e| e.to_string())?;
+                    membership.insert(hash, present);
+                    present
+                }
+            };
+            !present
+        } else { name.ends_with(".tmp") };
+        if !orphan { continue; }
+        if sub == "fullres" {
+            crate::fullres_cache::retire(path);
+            continue;
+        }
+        match std::fs::remove_file(path) { // data root
+            Ok(()) => removed = removed.saturating_add(1),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Err(error) => crate::logging::warn(
+                "stale cache entry removal failed",
+                serde_json::json!({ "path": path, "error": { "message": error.to_string() } }),
+            ),
+        }
+    }
+    Ok(removed)
+}
+
+/// Startup crash-leftover collection. Enumeration runs outside the identity
+/// reservation; bounded decisions recheck file age and membership under it.
 pub fn startup_sweep(
     conn: &Connection,
     cache: &CachePaths,
     launched: std::time::SystemTime,
     cancel_when: &impl Fn() -> bool,
 ) -> Result<u64, String> {
-    // Held for the whole sweep (see `CACHE_IDENTITY_LOCK`): an identity
-    // promotion must wait for the sweep to finish before taking SQLite's
-    // writer and renaming or removing its provisional cache files, so the
-    // sweep's existence check is never answered against a key a promotion
-    // has already committed out of `contents` but not yet acted on.
-    let _identity_lock = lock_cache_identity();
-    reconcile_orphan_contents(conn)?;
-    let mut removed = 0u64;
-    let mut exists = conn
-        .prepare("SELECT 1 FROM contents WHERE hash = ?1")
-        .map_err(|e| e.to_string())?;
-
-    for sub in ["thumbs", "previews", "strips"] {
-        if cancel_when() {
-            return Ok(removed);
-        }
+    reconcile_orphan_contents(conn, cancel_when)?;
+    let mut removed = 0;
+    let mut cohort = Vec::with_capacity(CACHE_COHORT_SIZE);
+    for sub in ["thumbs", "previews", "strips", "fullres"] {
+        if cancel_when() { return Ok(removed); }
         let tree = cache.root.join(sub);
-        let tree_exists = match tree.try_exists() { // data root
-            Ok(exists) => exists,
+        match tree.try_exists() { // data root
+            Ok(true) => {},
+            Ok(false) => continue,
             Err(error) => {
-                crate::logging::warn(
-                    "cache tree inspection failed",
-                    serde_json::json!({
-                        "path": tree,
-                        "error": { "message": error.to_string() },
-                    }),
-                );
+                crate::logging::warn("cache tree inspection failed", serde_json::json!({
+                    "path": tree, "error": { "message": error.to_string() }
+                }));
                 continue;
             }
-        };
-        if !tree_exists {
-            continue;
         }
         for entry in walkdir::WalkDir::new(&tree).follow_links(false) { // data root
-            if cancel_when() {
-                return Ok(removed);
-            }
+            if cancel_when() { return Ok(removed); }
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(error) => {
-                    crate::logging::warn(
-                        "cache tree traversal failed",
-                        serde_json::json!({
-                            "path": tree,
-                            "error": { "message": error.to_string() },
-                        }),
-                    );
+                    crate::logging::warn("cache tree traversal failed", serde_json::json!({
+                        "path": tree, "error": { "message": error.to_string() }
+                    }));
                     continue;
                 }
             };
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            // Coarse filesystem clocks round a fresh write down by up to two
-            // seconds; anything that recent is left for the next launch.
-            let written_this_run = entry.metadata().ok().and_then(|meta| meta.modified().ok()) // data root
-                .is_none_or(|modified| {
-                    modified + std::time::Duration::from_secs(2) >= launched
-                });
-            if written_this_run {
-                continue;
-            }
-            let name = entry.file_name().to_string_lossy().to_string();
-            let orphan = if let Some(hash) = cache_entry_hash(sub, &name) {
-                !exists
-                    .exists([hash])
-                    .map_err(|e| e.to_string())?
-            } else {
-                // Stranded temps (or anything foreign) in a reconstructible tree.
-                name.ends_with(".tmp")
-            };
-            if orphan {
-                match std::fs::remove_file(entry.path()) { // data root
-                    Ok(()) => removed = removed.saturating_add(1),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => crate::logging::warn(
-                        "stale cache entry removal failed",
-                        serde_json::json!({
-                            "path": entry.path(),
-                            "error": { "message": error.to_string() },
-                        }),
-                    ),
-                }
+            if !entry.file_type().is_file() { continue; }
+            cohort.push((sub.to_string(), entry.into_path()));
+            if cohort.len() == CACHE_COHORT_SIZE {
+                if cancel_when() { return Ok(removed); }
+                removed += sweep_cohort(conn, &cohort, launched)?;
+                cohort.clear();
             }
         }
+    }
+    if !cohort.is_empty() && !cancel_when() {
+        removed += sweep_cohort(conn, &cohort, launched)?;
     }
     Ok(removed)
 }
@@ -1219,7 +1273,8 @@ pub fn purge_for_rebuild(cache: &CachePaths, discard_previews: bool) -> Result<(
             path.display()
         )),
     };
-    for tree in ["thumbs", "previews", "fullres", "strips"] {
+    crate::fullres_cache::clear_where(&cache.root.join("fullres"), !discard_previews)?;
+    for tree in ["thumbs", "previews", "strips"] {
         let tree = cache.root.join(tree);
         if discard_previews {
             remove(&tree)?;

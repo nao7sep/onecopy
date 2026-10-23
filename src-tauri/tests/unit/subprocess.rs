@@ -232,6 +232,7 @@ fn output_write_failure_is_signalled_to_the_process_owner() {
     let output = Arc::new(StagedOutput {
         path: path.clone(),
         file: Mutex::new(Some(std::fs::File::open(&path).unwrap())),
+        _owner: None,
     });
     let failure = Arc::new(Mutex::new(None));
     let reader = start_reader("stdout", std::io::Cursor::new(b"bytes"), StdoutTarget::File(output, 100),

@@ -263,7 +263,15 @@ pub(crate) fn serve_cache(
     } else {
         return not_found();
     };
-    serve_cache_path(&file, key)
+    let reader = if path.starts_with("fullres-") {
+        match crate::fullres_cache::read(&cache.root_dir().join("fullres"), &file) {
+            Ok(reader) => Some(reader),
+            Err(_) => return not_found(),
+        }
+    } else { None };
+    let mut response = serve_cache_path(&file, key);
+    if let Some(reader) = reader { response.extensions_mut().insert(reader); }
+    response
 }
 
 fn serve_cache_path(path: &std::path::Path, key: &str) -> tauri::http::Response<Vec<u8>> {

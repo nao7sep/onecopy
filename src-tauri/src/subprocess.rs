@@ -66,10 +66,15 @@ impl Drop for Capacity {
 pub(crate) struct StagedOutput {
     path: PathBuf,
     file: Mutex<Option<std::fs::File>>,
+    _owner: Option<Arc<dyn Send + Sync>>,
 }
 
 impl StagedOutput {
     pub(crate) fn new(path: PathBuf) -> std::io::Result<Self> {
+        Self::with_owner(path, None)
+    }
+
+    pub(crate) fn with_owner(path: PathBuf, owner: Option<Arc<dyn Send + Sync>>) -> std::io::Result<Self> {
         let mut options = std::fs::OpenOptions::new(); // data root
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -78,7 +83,7 @@ impl StagedOutput {
             options.mode(0o600);
         }
         let file = options.open(&path)?;
-        Ok(Self { path, file: Mutex::new(Some(file)) })
+        Ok(Self { path, file: Mutex::new(Some(file)), _owner: owner })
     }
 
     pub(crate) fn path(&self) -> &Path { &self.path }
