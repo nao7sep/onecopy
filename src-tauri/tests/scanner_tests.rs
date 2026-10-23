@@ -3021,3 +3021,61 @@ fn two_hard_links_to_one_file_count_as_one_copy() {
     assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM logical_contents"), 1);
     assert_eq!(count(&f.conn, "SELECT live_copy_count FROM logical_contents"), 2);
 }
+
+
+#[test]
+fn absence_and_its_relationship_receipt_publish_atomically() {
+    let f = fixture("absence-receipt-atomic");
+    let path = f.root.join("gone.txt");
+    std::fs::write(&path, b"old").unwrap();
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+    std::fs::remove_file(path).unwrap();
+    f.conn.execute_batch(
+        "CREATE TEMP TRIGGER refuse_relationship_receipt BEFORE UPDATE OF relationship_dirty ON scan_dirs
+         WHEN NEW.relationship_dirty = 1
+         BEGIN SELECT RAISE(ABORT, 'injected relationship receipt failure'); END;",
+    ).unwrap();
+    let error = walk_root(&f.conn, &f.root, &lists()).unwrap_err();
+    assert!(error.contains("injected relationship receipt failure"));
+    assert_eq!(count(&f.conn, "SELECT missing FROM paths"), 0);
+    assert_eq!(count(&f.conn, "SELECT relationship_dirty FROM scan_dirs"), 0);
+    f.conn.execute_batch("DROP TRIGGER refuse_relationship_receipt").unwrap();
+    assert_eq!(walk_root(&f.conn, &f.root, &lists()).unwrap().marked_missing, 1);
+    assert_eq!(count(&f.conn, "SELECT missing FROM paths"), 1);
+    assert_eq!(count(&f.conn, "SELECT relationship_dirty FROM scan_dirs"), 1);
+}
+
+#[test]
+fn an_earlier_roots_absence_remains_owed_when_a_later_root_fails() {
+    let f = fixture("absence-before-later-failure");
+    let other = f._dir.path().join("other");
+    std::fs::create_dir(&other).unwrap();
+    std::fs::write(f.root.join("IMG.JPG"), b"jpeg").unwrap();
+    std::fs::write(f.root.join("IMG.ARW"), b"raw").unwrap();
+    let settings = ScanSettings {
+        source_dirs: vec![f.root.to_string_lossy().into_owned(), other.to_string_lossy().into_owned()],
+        lists: lists(), resolution: resolution_config(), pairing_enabled: true,
+        cache_root: f._dir.path().join("apphome").join("cache"),
+    };
+    run_source_check(&f.conn, &settings, &|_| {}).unwrap();
+    run_index_tail(&f.conn, &settings, &|_| {}, &mut ScanSummary::default()).unwrap();
+    assert_eq!(count(&f.conn, "SELECT companion_of IS NOT NULL FROM paths WHERE file_name = 'IMG.ARW'"), 1);
+    std::fs::remove_file(f.root.join("IMG.JPG")).unwrap();
+    f.conn.execute_batch("CREATE TEMP TABLE refused_walk (root TEXT)").unwrap();
+    f.conn.execute("INSERT INTO refused_walk VALUES (?1)", [&settings.source_dirs[1]]).unwrap();
+    f.conn.execute_batch(
+        "CREATE TEMP TRIGGER refuse_later_walk BEFORE INSERT ON scan_dirs
+         WHEN NEW.configured_root IN (SELECT root FROM refused_walk)
+         BEGIN SELECT RAISE(ABORT, 'injected later-root failure'); END;",
+    ).unwrap();
+    let error = run_source_check(&f.conn, &settings, &|_| {}).unwrap_err();
+    assert!(error.contains("injected later-root failure"));
+    assert_eq!(count(&f.conn, "SELECT missing FROM paths WHERE file_name = 'IMG.JPG'"), 1);
+    assert_eq!(count(&f.conn, "SELECT count(*) FROM scan_dirs WHERE relationship_dirty = 1"), 1);
+    f.conn.execute_batch("DROP TRIGGER refuse_later_walk").unwrap();
+    // An unchanged subsequent walk must not erase the durable obligation.
+    run_source_check(&f.conn, &settings, &|_| {}).unwrap();
+    run_index_tail(&f.conn, &settings, &|_| {}, &mut ScanSummary::default()).unwrap();
+    assert_eq!(count(&f.conn, "SELECT companion_of IS NULL FROM paths WHERE file_name = 'IMG.ARW'"), 1);
+    assert_eq!(count(&f.conn, "SELECT count(*) FROM scan_dirs WHERE relationship_dirty = 1"), 0);
+}

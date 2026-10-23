@@ -1476,6 +1476,15 @@ fn walk_root_with_progress(
                         [],
                     )
                     .map_err(|error| error.to_string())? as u64;
+                if stats.marked_missing > 0 {
+                    // Absence creates no pending extraction row. Its pairing
+                    // obligation must commit with the missing flags, before
+                    // any later root or completion work can fail or cancel.
+                    tx.execute(
+                        "UPDATE scan_dirs SET relationship_dirty = 1 WHERE root = ?1",
+                        [&root_str],
+                    ).map_err(|error| error.to_string())?;
+                }
                 Ok(())
             },
         )?;
