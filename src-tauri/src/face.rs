@@ -481,8 +481,7 @@ fn complete_face_scoring_attempt_with_model(
     // content changed meanwhile is discarded like a cancelled one.
     let computed = crate::derived_state::compute_outside_share(conn, hash, || {
         crate::failure_runtime::contain_item(|| {
-            let bytes = std::fs::read(&preview).map_err(|error| error.to_string())?;
-            let image = crate::resource_limits::decode_bytes(&bytes)?;
+            let image = crate::resource_limits::decode_file(&preview)?;
             inference(&image)
         })
     })?;

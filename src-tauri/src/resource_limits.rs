@@ -6,7 +6,7 @@
 //! deliberately not user-configurable: a setting that can disable OOM
 //! protection is not a preference.
 
-use std::io::Cursor;
+use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -93,16 +93,53 @@ fn image_limits() -> Limits {
     limits
 }
 
-/// Decodes the image at `path`, reading it through bounded `volume_io`
-/// reads: a drive that stops answering fails the decode within one read's
-/// bound instead of pinning the decoding thread.
-pub fn decode_file(path: &Path) -> Result<DynamicImage, String> {
-    let file = crate::volume_io::open_read(path).map_err(|error| error.to_string())?;
-    let mut reader = ImageReader::new(std::io::BufReader::with_capacity(1024 * 1024, file))
+// Some codecs buffer their encoded stream before pixel limits apply. Leave
+// room for Vec growth within the encoded half of IMAGE_JOB_RESERVATION.
+const MAX_ENCODED_IMAGE_READ: u64 = MAX_DECODE_ALLOC / 2;
+
+struct ImageReadBudget<R> {
+    inner: R,
+    remaining: u64,
+}
+
+impl<R: Read> Read for ImageReadBudget<R> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        if bytes.is_empty() { return Ok(0); }
+        if self.remaining == 0 {
+            let mut probe = [0];
+            return if self.inner.read(&mut probe)? == 0 { Ok(0) }
+                else { Err(std::io::Error::new(std::io::ErrorKind::OutOfMemory,
+                    "encoded image reads exceed the native decode budget")) };
+        }
+        let limit = bytes.len().min(self.remaining as usize);
+        let read = self.inner.read(&mut bytes[..limit])?;
+        self.remaining -= read as u64;
+        Ok(read)
+    }
+}
+
+impl<R: Seek> Seek for ImageReadBudget<R> {
+    fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+        // Skipping data does not allocate it. Seeking back cannot replenish
+        // the budget and admit an unbounded sequence of buffered rereads.
+        self.inner.seek(position)
+    }
+}
+
+fn decode_reader(reader: impl Read + Seek, encoded_budget: u64) -> Result<DynamicImage, String> {
+    let budgeted = ImageReadBudget { inner: reader, remaining: encoded_budget };
+    let mut reader = ImageReader::new(std::io::BufReader::with_capacity(1024 * 1024, budgeted))
         .with_guessed_format()
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| decode_error(image::ImageError::IoError(error)))?;
     reader.limits(image_limits());
     reader.decode().map_err(decode_error)
+}
+
+/// Decodes through bounded volume reads, with separate encoded-read and pixel
+/// allocation limits. Streaming formats need not consume their entire file.
+pub fn decode_file(path: &Path) -> Result<DynamicImage, String> {
+    let file = crate::volume_io::open_read(path).map_err(|error| error.to_string())?;
+    decode_reader(file, MAX_ENCODED_IMAGE_READ)
 }
 
 pub fn decode_bytes(bytes: &[u8]) -> Result<DynamicImage, String> {
@@ -114,7 +151,9 @@ pub fn decode_bytes(bytes: &[u8]) -> Result<DynamicImage, String> {
 }
 
 fn decode_error(error: image::ImageError) -> String {
-    if matches!(error, image::ImageError::Limits(_)) {
+    if matches!(&error, image::ImageError::IoError(cause) if cause.kind() == std::io::ErrorKind::OutOfMemory) {
+        format!("{DECODE_LIMIT_PREFIX}encoded image reads exceed the native decode budget")
+    } else if matches!(error, image::ImageError::Limits(_)) {
         format!(
             "{DECODE_LIMIT_PREFIX}image decode exceeds OneCopy's {} MiB safety limit",
             MAX_DECODE_ALLOC / 1024 / 1024

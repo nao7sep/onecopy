@@ -279,3 +279,34 @@ fn corrupt_face_models_fail_as_a_dependency_before_any_media_receipt() {
     let failures: i64 = conn.query_row("SELECT count(*) FROM active_issues WHERE path != ''", [], |r| r.get(0)).unwrap();
     assert_eq!(failures, 0);
 }
+
+
+#[test]
+fn a_large_encoded_preview_uses_bounded_file_decoding_for_face_scoring() {
+    use onecopy_lib::volume_io::{FakeStallingVolume, Op};
+    use std::time::Duration;
+    let database = db();
+    let conn = &database.conn;
+    seed_image(conn, "streamed", "streamed.png");
+    let cache = onecopy_lib::preview::CachePaths::new(database._dir.path().join("cache"));
+    let preview = cache.preview("streamed");
+    std::fs::create_dir_all(preview.parent().unwrap()).unwrap();
+    image::DynamicImage::new_rgb8(2, 2).save_with_format(&preview, image::ImageFormat::Png).unwrap();
+    // A complete small first image followed by a large sparse encoded tail.
+    // The decoder does not need that tail to obtain the frame.
+    std::fs::OpenOptions::new().write(true).open(&preview).unwrap().set_len(64 * 1024 * 1024).unwrap();
+    let volume = FakeStallingVolume::mount(cache.root_dir(), Duration::from_secs(5));
+    volume.stall(&[Op::Read], Some(&preview));
+    let outcome = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            assert!(volume.wait_until_held(1, Duration::from_secs(5)), "face decode must use the bounded file reader");
+            volume.release();
+        });
+        face::complete_face_scoring_attempt(conn, &cache, "streamed", "/pics/streamed.png", &|| false, |_| {}, |image| {
+            assert_eq!((image.width(), image.height()), (2, 2));
+            Ok(Vec::new())
+        })
+    }).unwrap();
+    assert!(matches!(outcome, face::FaceScoringAttemptOutcome::Completed { .. }));
+    assert!(volume.wait_until_settled(Duration::from_secs(5)));
+}

@@ -202,33 +202,35 @@ pub fn generate_for_image(
     preview_long_edge: u32,
     ffmpeg: Option<&Path>,
 ) -> Result<DerivedFacts, String> {
-    let (decoded, orientation) = decode_for_preview(src, preview_long_edge, ffmpeg)?;
-    derive_from_decoded(decoded, orientation, src, hash, cache, thumb_edge, preview_long_edge)
+    let decoded = decode_for_preview(src, preview_long_edge, ffmpeg)?;
+    derive_from_decoded(decoded, src, hash, cache, thumb_edge, preview_long_edge)
+}
+
+struct PreviewDecode {
+    image: DynamicImage,
+    orientation: u16,
+    original_unscaled: bool,
 }
 
 fn decode_for_preview(
     src: &Path,
     preview_long_edge: u32,
     ffmpeg: Option<&Path>,
-) -> Result<(DynamicImage, u16), String> {
+) -> Result<PreviewDecode, String> {
+    let scaled = |ffmpeg| -> Result<PreviewDecode, String> {
+        Ok(PreviewDecode { image: decode_via_ffmpeg_bounded(ffmpeg, src, Some(preview_long_edge))?,
+            orientation: 1, original_unscaled: false })
+    };
     if needs_ffmpeg_decode(src) {
-        let ffmpeg = ffmpeg.ok_or_else(|| "ffmpeg is not installed".to_string())?;
-        return Ok((
-            decode_via_ffmpeg_bounded(ffmpeg, src, Some(preview_long_edge))?,
-            1,
-        ));
+        return scaled(ffmpeg.ok_or_else(|| "ffmpeg is not installed".to_string())?);
     }
     match decode_image(src, ffmpeg) {
-        Ok(decoded) => Ok(decoded),
+        Ok((image, orientation)) => Ok(PreviewDecode { image, orientation, original_unscaled: true }),
         Err(error) if crate::resource_limits::is_decode_limit(&error) => {
-            let ffmpeg = ffmpeg.ok_or(error)?;
-            // One lower-working-set retry: ffmpeg scales before its BMP
-            // reaches this process, so an enormous but valid still can still
-            // produce the bounded preview the UI actually needs.
-            Ok((
-                decode_via_ffmpeg_bounded(ffmpeg, src, Some(preview_long_edge))?,
-                1,
-            ))
+            // One supervised lower-working-set retry scales before its BMP
+            // reaches this process. Its dimensions cannot authorize copying
+            // the full original back into the preview cache.
+            scaled(ffmpeg.ok_or(error)?)
         }
         Err(error) => Err(error),
     }
@@ -255,10 +257,9 @@ pub fn generate_for_image_teeing(
                 error.to_string()
             }
         })?;
-    let (decoded, orientation) = decode_for_preview(src, preview_long_edge, ffmpeg)?;
+    let decoded = decode_for_preview(src, preview_long_edge, ffmpeg)?;
     let facts = derive_from_decoded(
         decoded,
-        orientation,
         src,
         &real_hash,
         cache,
@@ -269,15 +270,15 @@ pub fn generate_for_image_teeing(
 }
 
 fn derive_from_decoded(
-    decoded: DynamicImage,
-    orientation: u16,
+    decoded: PreviewDecode,
     src: &Path,
     hash: &str,
     cache: &CachePaths,
     thumb_edge: u32,
     preview_long_edge: u32,
 ) -> Result<DerivedFacts, String> {
-    let oriented = apply_orientation(decoded, orientation);
+    let PreviewDecode { image, orientation, original_unscaled } = decoded;
+    let oriented = apply_orientation(image, orientation);
     let (width, height) = (oriented.width(), oriented.height());
 
     // Preview first (higher quality resize), thumbnail from the preview so the
@@ -291,7 +292,7 @@ fn derive_from_decoded(
     // transform applied, a full-size re-encode adds nothing: the preview
     // entry becomes a byte-copy of the original (the .webp cache name is
     // load-bearing, so the serving protocol sniffs the real content type).
-    if width.max(height) <= preview_long_edge && orientation == 1 && displayable_as_is(src) {
+    if original_unscaled && width.max(height) <= preview_long_edge && orientation == 1 && displayable_as_is(src) {
         copy_file_atomic(src, &cache.preview(hash))?;
     } else {
         write_webp(&preview, &cache.preview(hash), 80.0)?;

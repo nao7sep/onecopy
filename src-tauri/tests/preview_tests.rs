@@ -82,16 +82,13 @@ fn oversized_native_preview_retries_once_through_scaled_ffmpeg() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
-    let source = dir.path().join("oversized.bmp");
-    let mut header = vec![0u8; 54];
-    header[0..2].copy_from_slice(b"BM");
-    header[10..14].copy_from_slice(&54u32.to_le_bytes());
-    header[14..18].copy_from_slice(&40u32.to_le_bytes());
-    header[18..22].copy_from_slice(&30_000i32.to_le_bytes());
-    header[22..26].copy_from_slice(&30_000i32.to_le_bytes());
-    header[26..28].copy_from_slice(&1u16.to_le_bytes());
-    header[28..30].copy_from_slice(&24u16.to_le_bytes());
-    std::fs::write(&source, header).unwrap();
+    let source = dir.path().join("oversized.jpg");
+    image::RgbImage::from_pixel(2, 2, image::Rgb([10, 20, 30])).save(&source).unwrap();
+    let mut jpeg = std::fs::read(&source).unwrap();
+    let sof = jpeg.windows(2).position(|bytes| bytes == [0xff, 0xc0]).expect("baseline JPEG frame header");
+    jpeg[sof + 5..sof + 7].copy_from_slice(&30_000u16.to_be_bytes());
+    jpeg[sof + 7..sof + 9].copy_from_slice(&30_000u16.to_be_bytes());
+    std::fs::write(&source, jpeg).unwrap();
 
     let fallback = dir.path().join("fallback.bmp");
     image::RgbImage::from_pixel(2, 2, image::Rgb([10, 20, 30]))
@@ -105,7 +102,9 @@ fn oversized_native_preview_retries_once_through_scaled_ffmpeg() {
     let facts = generate_for_image(&source, "large", &cache, 320, 1600, Some(&ffmpeg)).unwrap();
     assert_eq!((facts.width, facts.height), (2, 2));
     assert!(cache.thumb("large").is_file());
-    assert!(cache.preview("large").is_file());
+    let cached = onecopy_lib::resource_limits::decode_file(&cache.preview("large")).unwrap();
+    assert_eq!((cached.width(), cached.height()), (2, 2));
+    assert_ne!(std::fs::read(cache.preview("large")).unwrap(), std::fs::read(source).unwrap());
 }
 
 /// The decoder reads the format from the bytes, so a BMP saved as `.jpg`

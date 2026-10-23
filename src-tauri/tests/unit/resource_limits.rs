@@ -129,3 +129,30 @@ fn cpu_thread_budget_never_claims_every_core() {
     let budget = cpu_thread_budget();
     assert!((1..=ceiling).contains(&budget));
 }
+
+
+#[test]
+fn encoded_image_budget_limits_buffering_codecs_and_allows_streaming_to_skip_the_tail() {
+    use std::io::{Cursor, Read, Seek, SeekFrom};
+    let mut exact = super::ImageReadBudget { inner: Cursor::new(b"12345678"), remaining: 8 };
+    let mut bytes = Vec::new();
+    exact.read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes, b"12345678");
+    exact.seek(SeekFrom::Start(0)).unwrap();
+    assert_eq!(exact.read(&mut [0]).unwrap_err().kind(), std::io::ErrorKind::OutOfMemory);
+
+    let image = image::DynamicImage::new_rgb8(2, 2);
+    let mut jpeg = Cursor::new(Vec::new());
+    image.write_to(&mut jpeg, image::ImageFormat::Jpeg).unwrap();
+    jpeg.get_mut().resize(4 * 1024 * 1024, 0);
+    jpeg.set_position(0);
+    let error = super::decode_reader(jpeg, 2 * 1024 * 1024).unwrap_err();
+    assert!(super::is_decode_limit(&error), "{error}");
+
+    let mut png = Cursor::new(Vec::new());
+    image.write_to(&mut png, image::ImageFormat::Png).unwrap();
+    png.get_mut().resize(4 * 1024 * 1024, 0);
+    png.set_position(0);
+    let decoded = super::decode_reader(png, 2 * 1024 * 1024).unwrap();
+    assert_eq!((decoded.width(), decoded.height()), (2, 2));
+}

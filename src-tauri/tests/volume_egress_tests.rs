@@ -21,7 +21,6 @@ const DATA_ROOT_MODULES: &[(&str, &str)] = &[
     ("binaries.rs", "managed tools"),
     ("binaries_acquisition.rs", "managed tool downloads"),
     ("binaries_manager.rs", "managed tools"),
-    ("face.rs", "preview cache and face models"),
     ("index_store.rs", "index database"),
     ("instance_owner.rs", "instance lock"),
     ("logging.rs", "records fallback log files"),
