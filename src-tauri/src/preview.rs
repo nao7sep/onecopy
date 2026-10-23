@@ -848,6 +848,40 @@ fn derive_candidate_rows_with(
     rows: Vec<(String, String)>, capacity: usize, priority_changed: &dyn Fn() -> bool,
     decode: &(dyn Fn(&str, &str, Option<&Path>) -> DeriveOutcome + Sync),
 ) -> Result<DeriveStats, String> {
+    if rows.is_empty() { return Ok(DeriveStats::default()); }
+    let total = rows.len() as u64;
+    let mut trace = crate::activity::WorkTrace::begin(
+        crate::activity::ActivityOwner::BackgroundWork,
+        Some(crate::activity::ActivitySubject::Previews), None,
+    );
+    trace.progress(0, total);
+    let result = derive_candidate_rows_inner_with(conn, cache, ffmpeg, on_item,
+        Some(&|done, total| {
+            trace.progress(done, total);
+            if let Some(report) = progress { report(done, total); }
+        }), rows, capacity, priority_changed, decode);
+    use crate::activity::ActivityState;
+    let state = match &result {
+        Ok(stats) if stats.failed > 0 => ActivityState::Failed,
+        Ok(stats) if stats.blocked_no_ffmpeg > 0 || stats.derived < total => ActivityState::Waiting,
+        Ok(_) => ActivityState::Succeeded,
+        Err(error) => match preview_failure_kind(error, ffmpeg.is_some()) {
+            PreviewFailureKind::Cancelled => ActivityState::Cancelled,
+            PreviewFailureKind::Dependency | PreviewFailureKind::Storage => ActivityState::Waiting,
+            PreviewFailureKind::Content => ActivityState::Failed,
+        },
+    };
+    trace.finish(state, None);
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn derive_candidate_rows_inner_with(
+    conn: &Connection, cache: &CachePaths, ffmpeg: Option<&Path>,
+    on_item: Option<&dyn Fn(&str)>, progress: Option<&dyn Fn(u64, u64)>,
+    rows: Vec<(String, String)>, capacity: usize, priority_changed: &dyn Fn() -> bool,
+    decode: &(dyn Fn(&str, &str, Option<&Path>) -> DeriveOutcome + Sync),
+) -> Result<DeriveStats, String> {
     let mut stats = DeriveStats::default();
 
     let total = rows.len() as u64;

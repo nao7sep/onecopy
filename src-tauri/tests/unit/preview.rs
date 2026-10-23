@@ -403,3 +403,75 @@ fn requested_and_automatic_decode_limits_share_retryable_dependency_debt() {
         assert!(crate::derived_state::image_candidates(&conn, true, None, None).unwrap().is_empty());
     }
 }
+
+#[test]
+fn automatic_preview_turn_records_one_ordinary_terminal_outcome() {
+    const CHILD_ROOT: &str = "ONECOPY_PREVIEW_ACTIVITY_TEST_ROOT";
+    let Some(root) = std::env::var_os(CHILD_ROOT) else {
+        let root = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "preview::tests::automatic_preview_turn_records_one_ordinary_terminal_outcome", "--nocapture"])
+            .env(CHILD_ROOT, root.path()).output().unwrap();
+        assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        assert!(root.path().join("activity-verified").is_file());
+        return;
+    };
+    let root = std::path::PathBuf::from(root);
+    let records_path = root.join(crate::records::RECORDS_DB_FILE_NAME);
+    crate::logging::init(&records_path, &root.join("logs"), false);
+    crate::activity::init(records_path.clone());
+    assert!(!crate::logging::debug_enabled());
+    let conn = crate::index_store::open(&root.join("index.sqlite3")).unwrap();
+    let reader = crate::records::open(&records_path).unwrap();
+    let cache = CachePaths::new(root.join("cache"));
+    for (case, expected) in [
+        ("success", "succeeded"), ("failure", "failed"), ("dependency", "waiting"),
+        ("cancel", "cancelled"), ("storage", "waiting"), ("yield", "waiting"),
+        ("empty", "none"),
+    ] {
+        let before: i64 = reader.query_row("SELECT coalesce(max(id), 0) FROM activity_events", [], |row| row.get(0)).unwrap();
+        let mut rows = Vec::new();
+        if case != "empty" {
+            for index in 0..2 {
+                let hash = format!("{case}-{index}");
+                let path = root.join(format!("{hash}.jpg"));
+                std::fs::write(&path, b"decode fixture").unwrap();
+                conn.execute("INSERT INTO contents (hash, byte_size, kind) VALUES (?1, 1, 'image')", [&hash]).unwrap();
+                let path = crate::native_path::encode(&path).into_owned();
+                conn.execute("INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash) VALUES (?1, ?2, ?3, 'image', ?3)",
+                    rusqlite::params![path, crate::native_path::encode(&root), hash]).unwrap();
+                rows.push((hash, path));
+            }
+        }
+        let result = derive_candidate_rows_with(&conn, &cache, None, None, None, rows, 1,
+            &|| case == "yield", &|_, _, _| match case {
+                "failure" => Err("bad image".into()),
+                "dependency" => Err(NEEDS_FFMPEG.into()),
+                "cancel" => Err(crate::scanner::CANCELLED.into()),
+                "storage" => Err(format!("{}fixture", crate::resource_limits::STORAGE_UNAVAILABLE_PREFIX)),
+                _ => Ok((None, DerivedFacts { width: 2, height: 2, sharpness: 1.0, phash: 1 })),
+            });
+        assert_eq!(result.is_err(), matches!(case, "cancel" | "storage"));
+        let mut query = reader.prepare("SELECT draft_json, user_visible FROM activity_events WHERE id > ?1 ORDER BY id").unwrap();
+        let events = query.query_map([before], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+            .unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+        if case == "empty" { assert!(events.is_empty()); continue; }
+        let drafts: Vec<serde_json::Value> = events.iter().map(|(json, visible)| {
+            assert_eq!(*visible, 1);
+            serde_json::from_str(json).unwrap()
+        }).collect();
+        assert_eq!(drafts.iter().filter(|draft| draft["kind"] == "started").count(), 1, "{case}");
+        let operation = &drafts[0]["operationId"];
+        for draft in &drafts {
+            assert_eq!(&draft["operationId"], operation);
+            assert_eq!(draft["subject"], "previews");
+            assert!(draft["targetHash"].is_null(), "per-item detail must stay debug-only");
+        }
+        let terminal = drafts.last().unwrap();
+        assert_eq!(terminal["current"], expected, "{case}");
+        assert_eq!(terminal["total"], 2);
+        assert_eq!(terminal["done"], if matches!(case, "success" | "failure" | "dependency") { 2 } else { 0 });
+    }
+    assert!(crate::logging::flush(std::time::Duration::from_secs(5)));
+    std::fs::write(root.join("activity-verified"), b"complete").unwrap();
+}
