@@ -15,9 +15,10 @@
 //! SQLite into the binary, so the store adds no packaging churn. Content is a
 //! BLOB of raw bytes, so CR/LF, a BOM and non-UTF-8 bytes stay byte-identical.
 //!
-//! Best effort: any failure (the store cannot open, a write fails) is logged
-//! once at `warn` and swallowed; a successful record logs nothing. A lost
-//! record heals on the file's next save.
+//! Best effort: an unavailable store logs a warning when its writer opens;
+//! each failed record also logs a warning. These failures do not fail the
+//! original save, and successful records log nothing. A lost record heals on
+//! the file's next save.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
