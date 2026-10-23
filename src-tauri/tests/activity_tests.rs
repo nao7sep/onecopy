@@ -2,6 +2,7 @@ use onecopy_lib::activity::{
     ActivityDraft, ActivityKind, ActivityOwner, ActivityReason, ActivityRecorder, ActivityState,
     ActivitySubject,
 };
+use onecopy_lib::records_view::{self, Cursor, RecordKind, RecordsQuery};
 
 fn draft(operation_id: Option<&str>) -> ActivityDraft {
     ActivityDraft {
@@ -32,7 +33,7 @@ fn recorder(session: &str) -> (tempfile::TempDir, ActivityRecorder) {
 
 #[test]
 fn recorder_assigns_one_session_and_monotonic_sequence() {
-    let (_temp, recorder) = recorder("session-one");
+    let (temp, recorder) = recorder("session-one");
     let first = recorder
         .record_at(
             draft(Some("section:1")),
@@ -51,37 +52,39 @@ fn recorder_assigns_one_session_and_monotonic_sequence() {
     assert_eq!(first.session_id, "session-one");
     assert_eq!(first.sequence, 1);
     assert_eq!(second.sequence, 2);
-    let (events, cursor) = recorder.page(None, 10).unwrap();
-    assert_eq!(events, vec![second, first]);
-    assert_eq!(cursor, None);
+    let reader = records_view::open_reader(&temp.path().join("records.sqlite3")).unwrap();
+    let page = records_view::page(&reader, &RecordsQuery { kind: Some(RecordKind::Activity), ..Default::default() }).unwrap();
+    assert_eq!(page.records.iter().map(|row| row.id).collect::<Vec<_>>(), vec![second.event_id, first.event_id]);
+    assert!(page.records.iter().all(|row| row.session.as_deref() == Some("session-one")));
+    assert!(!page.more);
 }
 
 #[test]
 fn recorder_persists_every_event_and_pages_with_a_stable_cursor() {
-    let (_temp, recorder) = recorder("session-one");
-    for sequence in 1..=3 {
-        recorder
-            .record_at(
-                draft(Some(&format!("section:{sequence}"))),
-                "2026-09-07T00:00:00.000Z".to_string(),
-                sequence,
-            )
-            .unwrap();
+    let (temp, recorder) = recorder("session-one");
+    let mut ids = Vec::new();
+    for sequence in 1..=records_view::PAGE_SIZE + 1 {
+        let event = recorder.record_at(
+            draft(Some(&format!("section:{sequence}"))),
+            "2026-09-07T00:00:00.000Z".to_string(),
+            sequence as u64,
+        ).unwrap();
+        ids.push(event.event_id);
     }
-    let (newest, cursor) = recorder.page(None, 2).unwrap();
-    assert_eq!(
-        newest
-            .iter()
-            .map(|event| event.sequence)
-            .collect::<Vec<_>>(),
-        vec![3, 2]
-    );
-    let (older, end) = recorder.page(cursor, 2).unwrap();
-    assert_eq!(
-        older.iter().map(|event| event.sequence).collect::<Vec<_>>(),
-        vec![1]
-    );
-    assert_eq!(end, None);
+    let reader = records_view::open_reader(&temp.path().join("records.sqlite3")).unwrap();
+    let query = RecordsQuery { kind: Some(RecordKind::Activity), ..Default::default() };
+    let newest = records_view::page(&reader, &query).unwrap();
+    assert!(newest.more);
+    assert_eq!(newest.records.iter().map(|row| row.id).collect::<Vec<_>>(), ids[1..].iter().rev().copied().collect::<Vec<_>>());
+    let last = newest.records.last().unwrap();
+    // New writes between pages cannot repeat or displace the cursor's older row.
+    recorder.record_at(draft(Some("section:new")), "2026-09-07T00:00:01.000Z".into(), 1000).unwrap();
+    let older = records_view::page(&reader, &RecordsQuery {
+        after: Some(Cursor { time: last.time.clone(), kind: last.kind, id: last.id }),
+        ..query
+    }).unwrap();
+    assert_eq!(older.records.iter().map(|row| row.id).collect::<Vec<_>>(), vec![ids[0]]);
+    assert!(!older.more);
 }
 
 #[test]
@@ -240,10 +243,16 @@ fn the_purge_drops_old_start_and_progress_events_and_keeps_every_operation_reada
     let records = onecopy_lib::records::open(&temp.path().join("records.sqlite3")).unwrap();
     assert_eq!(onecopy_lib::records::purge_transient(&records, now).unwrap(), 3);
 
-    let (events, cursor) = recorder.page(None, 100).unwrap();
-    assert_eq!(cursor, None);
-    assert_eq!(events.len(), 2);
-    assert_eq!(events[0].draft.operation_id.as_deref(), Some("recent"));
-    assert_eq!(events[1].draft.operation_id.as_deref(), Some("old"));
-    assert_eq!(events[1].draft.kind, ActivityKind::Completed);
+    let reader = records_view::open_reader(&temp.path().join("records.sqlite3")).unwrap();
+    let page = records_view::page(&reader, &RecordsQuery { kind: Some(RecordKind::Activity), ..Default::default() }).unwrap();
+    assert!(!page.more);
+    assert_eq!(page.records.len(), 2);
+    let drafts = page.records.iter().map(|row| {
+        let detail = records_view::detail(&reader, row.kind, row.id).unwrap().unwrap();
+        let value = &detail.fields.iter().find(|field| field.name == "draft_json").unwrap().value;
+        serde_json::from_str::<ActivityDraft>(value.as_str().unwrap()).unwrap()
+    }).collect::<Vec<_>>();
+    assert_eq!(drafts[0].operation_id.as_deref(), Some("recent"));
+    assert_eq!(drafts[1].operation_id.as_deref(), Some("old"));
+    assert_eq!(drafts[1].kind, ActivityKind::Completed);
 }

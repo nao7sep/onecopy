@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn debug_diagnostics_do_not_create_ordinary_work_rows() {
+fn records_details_retain_debug_diagnostic_visibility_evidence() {
     let temp = tempfile::tempdir().unwrap();
     let recorder =
         ActivityRecorder::new("one".into(), temp.path().join("records.sqlite3")).unwrap();
@@ -9,10 +9,15 @@ fn debug_diagnostics_do_not_create_ordinary_work_rows() {
     recorder
         .record_with_visibility(draft, "2026-09-09T00:00:00.000Z".into(), 0, false)
         .unwrap();
-    assert_eq!(recorder.page(None, 100).unwrap().0.len(), 1);
-    let connection = crate::records::open(&temp.path().join("records.sqlite3")).unwrap();
-    let visible: bool = connection.query_row("SELECT user_visible FROM activity_events", [], |row| row.get(0)).unwrap();
-    assert!(!visible);
+    use crate::records_view::{self, RecordKind, RecordsQuery};
+    let connection = records_view::open_reader(&temp.path().join("records.sqlite3")).unwrap();
+    let page = records_view::page(&connection, &RecordsQuery {
+        kind: Some(RecordKind::Activity), ..Default::default()
+    }).unwrap();
+    assert_eq!(page.records.len(), 1);
+    let detail = records_view::detail(&connection, RecordKind::Activity, page.records[0].id).unwrap().unwrap();
+    let visible = &detail.fields.iter().find(|field| field.name == "user_visible").unwrap().value;
+    assert_eq!(visible, &serde_json::json!(0));
 }
 
 // Per-item background preview traces must never become ordinary

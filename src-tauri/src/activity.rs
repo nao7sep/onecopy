@@ -10,7 +10,6 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-const MAX_PAGE_SIZE: usize = 500;
 const MAX_ID_LEN: usize = 64;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -205,6 +204,8 @@ impl ActivityRecorder {
         })
     }
 
+    /// Explicit-time fixture edge for deterministic ordering and retention checks.
+    /// Live recording uses the session clock through record_now.
     pub fn record_at(
         &self,
         draft: ActivityDraft,
@@ -267,61 +268,6 @@ impl ActivityRecorder {
             user_visible,
         )
     }
-
-    pub fn page(
-        &self,
-        before: Option<i64>,
-        limit: usize,
-    ) -> Result<(Vec<ActivityEvent>, Option<i64>), String> {
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| "activity history is unavailable".to_string())?;
-        let state = state.as_ref().ok_or("activity history is closed")?;
-        read_page(&state.connection, before, limit)
-    }
-}
-
-fn read_page(
-    connection: &Connection,
-    before: Option<i64>,
-    limit: usize,
-) -> Result<(Vec<ActivityEvent>, Option<i64>), String> {
-    let limit = limit.clamp(1, MAX_PAGE_SIZE);
-    let before = before.unwrap_or(i64::MAX);
-    let mut statement = connection.prepare(
-        "SELECT id, session_id, sequence, event_time_utc, monotonic_ms, draft_json FROM activity_events WHERE id < ?1 ORDER BY id DESC LIMIT ?2"
-    ).map_err(|error| error.to_string())?;
-    let mut events = statement
-        .query_map(params![before, (limit + 1) as i64], |row| {
-            let draft_json: String = row.get(5)?;
-            let draft = serde_json::from_str::<ActivityDraft>(&draft_json).map_err(|error| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    5,
-                    rusqlite::types::Type::Text,
-                    Box::new(error),
-                )
-            })?;
-            Ok(ActivityEvent {
-                event_id: row.get(0)?,
-                session_id: row.get(1)?,
-                sequence: row.get::<_, i64>(2)? as u64,
-                event_time_utc: row.get(3)?,
-                monotonic_ms: row.get::<_, i64>(4)? as u64,
-                draft,
-            })
-        })
-        .map_err(|error| error.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())?;
-    let has_more = events.len() > limit;
-    events.truncate(limit);
-    let next_cursor = if has_more {
-        events.last().map(|event| event.event_id)
-    } else {
-        None
-    };
-    Ok((events, next_cursor))
 }
 
 fn validate_id(id: &str) -> bool {
