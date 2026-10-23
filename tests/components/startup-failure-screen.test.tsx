@@ -5,10 +5,10 @@
 // sentences.
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, render, fireEvent, screen, waitFor } from "@testing-library/react";
 import StartupFailureScreen from "../../src/components/StartupFailureScreen";
 import { useAppStore } from "../../src/state/app-store";
-import { resetTauriMocks } from "../mocks/tauri";
+import { resetTauriMocks, mockCommands, invokeCalls } from "../mocks/tauri";
 import { t } from "../helpers/i18n";
 
 const failure = {
@@ -62,4 +62,30 @@ it("renders native store names and paths with visible invalid-unit escapes", () 
   expect(view.getByText("config\\xFF.json")).toBeTruthy();
   expect(view.getByText("/app/\\uD800/config\\xFF.json")).toBeTruthy();
   expect(useAppStore.getState().startupFailure?.newerStores[0]).toMatchObject({ file, path });
+});
+
+
+it("keeps full diagnostics behind Details and reveals the retained startup folder", async () => {
+  mockCommands({ reveal_startup_data_folder: () => null });
+  useAppStore.setState({ startupFailure: {
+    ...failure, newerStores: [], diagnostic: "EACCES /private/staging STARTUP_SENTINEL", dataRoot: "/app/data",
+  } });
+  render(<StartupFailureScreen />);
+  expect(screen.queryByText(/STARTUP_SENTINEL/)).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: t("records.details") }));
+  expect(screen.getByText("EACCES /private/staging STARTUP_SENTINEL")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: t("startup.revealDataFolder") }));
+  await waitFor(() => expect(invokeCalls).toContainEqual({ command: "reveal_startup_data_folder", args: {} }));
+  expect(invokeCalls.some((call) => call.command === "reveal_data_subdir")).toBe(false);
+});
+
+it("retains the diagnostic record when opening its folder fails", async () => {
+  mockCommands({ reveal_startup_data_folder: () => { throw new Error("EIO /private/OPEN_SENTINEL"); }, log_event: () => null });
+  useAppStore.setState({ startupFailure: { ...failure, newerStores: [], diagnostic: "startup record", dataRoot: "/app/data" } });
+  render(<StartupFailureScreen />);
+  fireEvent.click(screen.getByRole("button", { name: t("records.details") }));
+  fireEvent.click(screen.getByRole("button", { name: t("startup.revealDataFolder") }));
+  expect(await screen.findByText(t("startup.dataFolderFailed"))).toBeTruthy();
+  expect(screen.getByText("startup record")).toBeTruthy();
+  expect(screen.queryByText(/OPEN_SENTINEL/)).toBeNull();
 });

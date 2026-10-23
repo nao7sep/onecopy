@@ -683,31 +683,19 @@ async fn reveal_native_path(path: String) -> Result<(), String> {
     }).await
 }
 
-// Opens a subdirectory of the app's data root in the OS file manager (the
-// "Reveal logs folder" menu item). The path is BUILT HERE from paths.rs and a
-// vetted subdir name — the frontend names a folder, never a path (paths.rs:
-// "the frontend never reconstructs ~/.onecopy itself"). Routing through the
-// opener plugin's RUST api rather than its JS command also sidesteps the
-// plugin's permission scope, which applies to webview calls only — the JS
-// route silently rejected every path because the scope allow-list was empty,
-// and a `void openPath(...)` threw the rejection away.
+// This diagnostic-only route uses the root retained by failed preparation,
+// never a renderer-supplied path or a store that requires successful startup.
 #[tauri::command]
-async fn reveal_data_subdir(name: String) -> Result<(), String> {
-    dispatch(move || {
-        let root = paths::data_root()?;
-        let target = paths::revealable_data_subdir(&root, &name)?;
-        tauri_plugin_opener::open_path(&target, None::<&str>)
-            .map_err(|e| e.to_string())
-    })
-    .await
+async fn reveal_startup_data_folder(startup: tauri::State<'_, startup::StartupGate>) -> Result<(), String> {
+    let root = startup.diagnostic_root()?;
+    dispatch(move || native_shell::reveal(&root)).await
 }
 
 // Opens an indexed item in its OS default app (the preview's "Open in player"
 // codec-fallback). The path comes from the INDEX, never from the webview — a
 // hash is resolved to a live copy here, so this can only ever open a file the
-// scan actually indexed. Same reason as reveal_data_subdir for the Rust-side
-// opener: the JS route was scope-rejected into a silent no-op, which left the
-// fallback button for unplayable codecs doing nothing at all.
+// scan actually indexed. Native shell calls preserve exact filesystem names
+// and keep path authority in the core.
 #[tauri::command]
 async fn open_item_externally(
     app: AppHandle,
@@ -1810,7 +1798,7 @@ pub fn run() {
             create_subdir,
             delete_empty_dir,
             reveal_native_path,
-            reveal_data_subdir,
+            reveal_startup_data_folder,
             open_item_externally,
             text_preview,
             text_preview_options,

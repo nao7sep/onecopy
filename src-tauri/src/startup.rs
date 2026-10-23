@@ -12,7 +12,7 @@ use tauri::Manager;
 use serde_json::{json, Value};
 
 const BLOCKED_TITLE: &str = "OneCopy could not start safely";
-const BLOCKED_MESSAGE: &str = "OneCopy could not safely open its application data. Your photos were not changed. Review the newest session log in the OneCopy data folder, then quit and try again.";
+const BLOCKED_MESSAGE: &str = "OneCopy could not safely open its application data. Your photos were not changed. Open Details to inspect the startup record, then quit and try again.";
 static WORKERS: Mutex<Vec<JoinHandle<()>>> = Mutex::new(Vec::new());
 
 #[derive(Clone, Serialize)]
@@ -23,6 +23,11 @@ pub(crate) struct StartupFailure {
     /// Required stores a newer OneCopy wrote, which stopped the launch and
     /// were left as they are; empty for any other failure.
     pub(crate) newer_stores: Vec<crate::formats::NewerStore>,
+    /// Complete diagnostic content, never ordinary error presentation copy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) diagnostic: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) data_root: Option<String>,
 }
 
 pub(crate) struct StartupOutcome {
@@ -35,7 +40,7 @@ impl StartupOutcome {
     }
 
     fn blocked() -> Self {
-        Self::stopped(Vec::new())
+        Self::stopped(Vec::new()).with_diagnostics(Some("Startup preparation ended before completion.".into()), None)
     }
 
     fn newer(stores: Vec<crate::formats::NewerStore>) -> Self {
@@ -48,8 +53,18 @@ impl StartupOutcome {
                 title: BLOCKED_TITLE,
                 message: BLOCKED_MESSAGE,
                 newer_stores,
+                diagnostic: None,
+                data_root: None,
             }),
         }
+    }
+
+    fn with_diagnostics(mut self, diagnostic: Option<String>, data_root: Option<&Path>) -> Self {
+        if let Some(failure) = &mut self.failure {
+            failure.diagnostic = diagnostic;
+            failure.data_root = data_root.map(|path| crate::native_path::encode(path).into_owned());
+        }
+        self
     }
 
     pub(crate) fn failure(&self) -> Option<StartupFailure> {
@@ -79,6 +94,16 @@ impl StartupGate {
         }
     }
 
+    pub(crate) fn diagnostic_root(&self) -> Result<PathBuf, String> {
+        let outcome = self.outcome.borrow();
+        match &*outcome {
+            Some(Err(failure)) => failure.data_root.as_ref()
+                .map(|path| crate::native_path::from_text(path).into_owned())
+                .ok_or_else(|| "startup did not prepare a data folder".into()),
+            _ => Err("startup is not blocked".into()),
+        }
+    }
+
     pub(crate) fn ready(&self) -> bool {
         matches!(&*self.outcome.borrow(), Some(Ok(())))
     }
@@ -88,7 +113,7 @@ impl StartupGate {
 /// the pending/blocked shell can still log diagnostics and quit.
 fn may_run_before_ready(command: &str) -> bool {
     matches!(command, "load_app_data" | "appearance_preferences" | "logging_debug_enabled"
-        | "log_event" | "system_theme" | "media_use_current" | "media_use_released" | "request_app_exit" | "quit_workflow_ready" | "session_end_saved" | "quit_question")
+        | "log_event" | "system_theme" | "media_use_current" | "media_use_released" | "request_app_exit" | "quit_workflow_ready" | "reveal_startup_data_folder" | "session_end_saved" | "quit_question")
 }
 
 pub(crate) fn gate_commands(
@@ -117,6 +142,7 @@ pub(crate) fn initialize(
     let gate = StartupGate { outcome, debug_enabled, appearance };
     let mut workers = WORKERS.lock().unwrap_or_else(|p| p.into_inner());
     let failure_app = app.clone();
+    let failure_sender = complete.clone();
     let worker = std::thread::Builder::new().name("onecopy-bootstrap".into()).spawn(move || {
         let saved = crate::window_placement::load_main();
         let shell = app.clone();
@@ -137,8 +163,10 @@ pub(crate) fn initialize(
     match worker {
         Ok(worker) => workers.push(worker),
         Err(error) => {
-            // Dropping the sender wakes every waiter with the blocked result.
+            let diagnostic = format!("startup worker could not start: {error}");
             crate::logging::error("startup worker could not start", json!({ "error": error.to_string() }));
+            failure_sender.send_replace(Some(Err(StartupOutcome::blocked()
+                .with_diagnostics(Some(diagnostic), None).failure().unwrap())));
             // Still in setup on the interface thread: reveal the authored
             // blocked surface even when no preparation thread was created.
             if let Some(window) = failure_app.get_webview_window("main") {
@@ -274,9 +302,10 @@ fn prepare_data(data_root: &Path) -> Result<PreparedData, String> {
     })
 }
 
-fn prepare(app: &tauri::AppHandle, debug_enabled: bool) -> Result<StartupState, StartupError> {
+fn prepare(app: &tauri::AppHandle, debug_enabled: bool, diagnostic_root: &mut Option<PathBuf>) -> Result<StartupState, StartupError> {
     let started = Instant::now();
     let data_root = crate::paths::resolve_data_root(app)?;
+    *diagnostic_root = Some(data_root.clone());
     let records_path = data_root.join(crate::records::RECORDS_DB_FILE_NAME);
     // Before the log writer opens the records, so it opens the fresh store.
     let records_set_aside = crate::records::set_aside_if_unreadable(&records_path)?;
@@ -582,21 +611,23 @@ fn initialize_data(
     records: crate::window_placement::PlacementState,
 ) -> StartupOutcome {
     if crate::app_lifecycle::shutting_down() { return StartupOutcome::blocked(); }
-    let prepared =
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| prepare(app, debug_enabled)));
+    let mut diagnostic_root = None;
+    let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        prepare(app, debug_enabled, &mut diagnostic_root)
+    }));
 
     let state = match prepared {
         Ok(Ok(state)) => state,
         Ok(Err(StartupError::Failed(error))) => {
             crate::logging::error("startup blocked", json!({ "error": { "message": error } }));
-            return StartupOutcome::blocked();
+            return StartupOutcome::blocked().with_diagnostics(Some(error), diagnostic_root.as_deref());
         }
         Ok(Err(StartupError::Newer(stores))) => {
             crate::logging::error(
                 "startup stopped: stores written by a newer OneCopy were left as they are",
                 json!({ "stores": stores }),
             );
-            return StartupOutcome::newer(stores);
+            return StartupOutcome::newer(stores).with_diagnostics(None, diagnostic_root.as_deref());
         }
         Err(payload) => {
             let error = crate::failure_runtime::panic_message(payload);
@@ -604,7 +635,9 @@ fn initialize_data(
                 "startup blocked",
                 json!({ "error": { "message": format!("startup panicked: {error}") } }),
             );
-            return StartupOutcome::blocked();
+            return StartupOutcome::blocked().with_diagnostics(
+                Some(format!("startup panicked: {error}")), diagnostic_root.as_deref(),
+            );
         }
     };
 

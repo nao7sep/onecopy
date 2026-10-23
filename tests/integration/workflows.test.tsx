@@ -257,26 +257,29 @@ describe("the culling workflow", () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
-  it("offers access to application logs from the blocked-start shell", async () => {
+  it("offers startup diagnostics and its retained data folder while ordinary commands stay blocked", async () => {
     mockCommand("load_app_data", () => ({
       status: "blocked",
       failure: {
         title: "OneCopy could not start safely",
         message: "Your photos were not changed.",
+        newerStores: [],
+        diagnostic: "startup record",
+        dataRoot: "/app/data",
       },
     }));
-    mockCommand("reveal_data_subdir", () => null);
+    mockCommand("reveal_startup_data_folder", () => null);
 
     const view = render(<App />);
     await settle();
     await settle();
-
-    view.getByRole("button", { name: "Reveal logs folder" }).click();
+    view.getByRole("button", { name: "Details" }).click();
     await settle();
-    expect(invokeCalls.some((call) =>
-      call.command === "reveal_data_subdir" &&
-      (call.args as Record<string, unknown>).name === "logs",
-    )).toBe(true);
+    expect(view.getByText("startup record")).toBeTruthy();
+    view.getByRole("button", { name: "Show data folder" }).click();
+    await settle();
+    expect(invokeCalls.some((call) => call.command === "reveal_startup_data_folder")).toBe(true);
+    expect(invokeCalls.some((call) => call.command === "get_section_counts")).toBe(false);
   });
 
   it("starts the configured source check quietly only after usable bootstrap", async () => {

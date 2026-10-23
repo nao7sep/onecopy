@@ -247,22 +247,9 @@ fn absolutize(home: &Path, path: PathBuf) -> PathBuf {
     }
 }
 
-/// A data-root subfolder the webview may ask the OS to reveal. A vetted set,
-/// not a join of caller input: the reveal command must never become "open any
-/// path the webview asks for". Created on first reveal.
-pub(crate) fn revealable_data_subdir(root: &Path, name: &str) -> Result<PathBuf, String> {
-    let target = match name {
-        "logs" => root.join(LOGS_DIR_NAME),
-        other => return Err(format!("not a revealable folder: {other}")),
-    };
-    std::fs::create_dir_all(&target)
-        .map_err(|error| format!("could not create {}: {error}", crate::native_path::label(&target)))?;
-    Ok(target)
-}
-
 #[cfg(test)]
 // EXCEPTION to tests-folder conventions: exercises the private
-// `resolve_root` and the crate-private `revealable_data_subdir`; promoting it would widen the crate's API only for this
+// `resolve_root`; promoting it would widen the crate's API only for this
 // test.
 #[path = "../tests/unit/paths.rs"]
 mod tests;

@@ -9,25 +9,22 @@ import Button from "./ui/Button";
 import OperationResult from "./ui/OperationResult";
 import BoundedText from "./ui/BoundedText";
 
-/** The application-owned terminal bootstrap state. The webview is healthy, but
- * backend work is gated off because required application data is not. The
- * screen says why in the reader's language: required stores a newer OneCopy
- * wrote are named with their paths, and any other failure is one pair of
- * sentences whose diagnostic stays in the session log — reachable here, since
- * a fatal startup halt must name a safe next step AND provide access to the
- * logs when they can help. */
+/** A blocked shell retains safe recovery and an explicit diagnostic view,
+ * independently of ordinary stores and application commands. */
 export default function StartupFailureScreen() {
   const { t } = useI18n();
-  const newerStores = useAppStore((state) => state.startupFailure?.newerStores) ?? [];
-  const [openLogsFailed, setOpenLogsFailed] = useState(false);
+  const failure = useAppStore((state) => state.startupFailure);
+  const newerStores = failure?.newerStores ?? [];
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const [openFolderFailed, setOpenFolderFailed] = useState(false);
   const quit = () => {
     void getCurrentWindow().close().catch(reportWindowCall("startup quit"));
   };
-  const openLogFolder = () => {
-    setOpenLogsFailed(false);
-    void invoke("reveal_data_subdir", { name: "logs" }).catch((error) => {
-      log.warn("startup screen reveal logs failed", toErrorFields(error));
-      setOpenLogsFailed(true);
+  const openDataFolder = () => {
+    setOpenFolderFailed(false);
+    void invoke("reveal_startup_data_folder").catch((error) => {
+      log.warn("startup screen reveal data folder failed", toErrorFields(error));
+      setOpenFolderFailed(true);
     });
   };
 
@@ -39,7 +36,7 @@ export default function StartupFailureScreen() {
       aria-describedby="startup-failure-message"
       className="fixed inset-0 z-[1000] flex items-center justify-center bg-background p-8 text-ink"
     >
-      <div className="w-full max-w-lg rounded-xl border border-border bg-surface p-8 shadow-xl">
+      <div className="max-h-full w-full max-w-lg overflow-y-auto rounded-xl border border-border bg-surface p-8 shadow-xl">
         <h1 id="startup-failure-title" className="text-xl font-semibold text-ink-strong">
           {t("startup.blockedTitle")}
         </h1>
@@ -60,13 +57,22 @@ export default function StartupFailureScreen() {
             </ul>
           </BoundedText>
         ) : null}
-        {openLogsFailed ? (
+        {showDiagnostics ? (
+          <BoundedText className="mt-3 max-h-64">
+            {failure?.diagnostic ? <pre className="whitespace-pre-wrap break-words text-xs">{failure.diagnostic}</pre> : null}
+            {failure?.dataRoot ? <p className="mt-2 break-all text-xs">{displayNativePath(failure.dataRoot)}</p> : null}
+          </BoundedText>
+        ) : null}
+        {openFolderFailed ? (
           <OperationResult level="error" className="mt-3 text-sm">
-            {t("app.revealLogsFailed")}
+            {t("startup.dataFolderFailed")}
           </OperationResult>
         ) : null}
-        <div className="mt-6 flex justify-end gap-2">
-          <Button onClick={openLogFolder}>{t("app.revealLogs")}</Button>
+        <div className="mt-6 flex flex-wrap justify-end gap-2">
+          {failure?.diagnostic || failure?.dataRoot ? (
+            <Button onClick={() => setShowDiagnostics(!showDiagnostics)} aria-expanded={showDiagnostics}>{t("records.details")}</Button>
+          ) : null}
+          {showDiagnostics && failure?.dataRoot ? <Button onClick={openDataFolder}>{t("startup.revealDataFolder")}</Button> : null}
           <Button type="button" variant="primary" size="md" onClick={quit} autoFocus>
             {t("startup.quit")}
           </Button>

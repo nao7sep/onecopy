@@ -195,7 +195,30 @@ fn pending_shell_allows_bootstrap_and_quit_but_not_normal_effects() {
     assert!(may_run_before_ready("appearance_preferences"));
     assert!(may_run_before_ready("request_app_exit"));
     assert!(may_run_before_ready("quit_workflow_ready"));
+    assert!(may_run_before_ready("reveal_startup_data_folder"));
+    assert!(!may_run_before_ready("reveal_data_subdir"));
     for command in ["save_config", "patch_state", "start_source_check", "delete_items", "ensure_preview"] {
         assert!(!may_run_before_ready(command), "{command}");
     }
+}
+
+
+#[test]
+fn blocked_diagnostics_preserve_the_failure_and_only_the_prepared_root() {
+    let (complete, gate) = pending_gate();
+    assert!(gate.diagnostic_root().is_err());
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let diagnostic = "PermissionDenied EACCES /private/staging STARTUP_SENTINEL".to_string();
+    let failure = StartupOutcome::blocked()
+        .with_diagnostics(Some(diagnostic.clone()), Some(root)).failure().unwrap();
+    assert_eq!(failure.diagnostic.as_deref(), Some(diagnostic.as_str()));
+    assert!(!failure.message.contains("STARTUP_SENTINEL"));
+    complete.send_replace(Some(Err(failure)));
+    assert!(!gate.ready());
+    assert_eq!(gate.diagnostic_root().unwrap(), root);
+    complete.send_replace(Some(Err(StartupOutcome::blocked().failure().unwrap())));
+    assert!(gate.diagnostic_root().is_err());
+    complete.send_replace(Some(Ok(())));
+    assert!(gate.diagnostic_root().is_err());
 }

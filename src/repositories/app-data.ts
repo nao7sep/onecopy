@@ -28,6 +28,9 @@ export interface StartupFailure {
   /** Required stores a newer OneCopy wrote, which stopped the launch and were
    * left as they are; empty for any other failure. */
   newerStores: NewerStore[];
+  /** Diagnostic record, shown only in the explicitly opened Details view. */
+  diagnostic?: string;
+  dataRoot?: string;
 }
 
 /** Mirrors formats::NewerStore. */
