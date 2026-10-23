@@ -1,6 +1,6 @@
 //! Connection setup shared by the independently owned SQLite stores.
 use rusqlite::{Connection, Transaction, TransactionBehavior};
-use std::{path::Path, sync::Mutex, time::Duration};
+use std::{path::{Path, PathBuf}, sync::Mutex, time::Duration};
 
 /// Sets aside a store SQLite reports as not a database or corrupt, and, when
 /// `unmarked_unreadable`, one whose schema has no format marker, renaming it
@@ -15,13 +15,16 @@ pub(crate) fn set_aside_if_unreadable(
     unmarked_unreadable: bool,
 ) -> Result<Option<crate::storage::QuarantineRecord>, String> {
     use rusqlite::ErrorCode;
+    if let Some(intent) = read_quarantine_intent(path)? {
+        return resume_quarantine(path, &intent, &mut crate::fs_publish::rename_no_replace).map(Some);
+    }
     let malformed = |error: &rusqlite::Error| {
         matches!(
             error.sqlite_error_code(),
             Some(ErrorCode::NotADatabase | ErrorCode::DatabaseCorrupt)
         )
     };
-    if !path.exists() { // data root
+    if !path.try_exists().map_err(|error| quarantine_error(path, error))? { // data root
         return Ok(None);
     }
     let unreadable = {
@@ -50,27 +53,114 @@ pub(crate) fn set_aside_if_unreadable(
     if !unreadable {
         return Ok(None);
     }
-    let set_aside = crate::storage::quarantine_name(path);
+    let intent = prepare_quarantine(path)?;
+    resume_quarantine(path, &intent, &mut crate::fs_publish::rename_no_replace).map(Some)
+}
+
+// This small recovery record must reach disk before any member moves. Startup
+// resumes it before probing or opening the canonical database, even when that
+// database has already moved. A malformed intent blocks replacement writes.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QuarantineIntent {
+    target: String,
+    wal: bool,
+    shm: bool,
+}
+
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+fn quarantine_intent_path(path: &Path) -> PathBuf {
+    with_suffix(path, ".quarantine.json")
+}
+
+fn quarantine_error(path: &Path, error: impl std::fmt::Display) -> String {
+    format!("could not preserve the unreadable {}: {error}", crate::native_path::label(path))
+}
+
+fn read_quarantine_intent(path: &Path) -> Result<Option<QuarantineIntent>, String> {
+    let intent_path = quarantine_intent_path(path);
+    use std::io::Read;
+    let file = match std::fs::File::open(&intent_path) { // data root
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(quarantine_error(&intent_path, error)),
+    };
+    let mut bytes = Vec::new();
+    file.take(4097).read_to_end(&mut bytes).map_err(|error| quarantine_error(&intent_path, error))?;
+    if bytes.len() > 4096 { return Err(quarantine_error(&intent_path, "oversized recovery record")); }
+    let intent: QuarantineIntent = serde_json::from_slice(&bytes)
+        .map_err(|error| quarantine_error(&intent_path, error))?;
+    let target = crate::native_path::from_text(&intent.target);
+    // Recovery names only a sibling, never an arbitrary path from stored text.
+    if target.file_name() != Some(target.as_os_str()) || target == path.file_name().unwrap_or_default() {
+        return Err(quarantine_error(&intent_path, "invalid recovery target"));
+    }
+    Ok(Some(intent))
+}
+
+fn prepare_quarantine(path: &Path) -> Result<QuarantineIntent, String> {
+    use std::io::Write;
+    let target = crate::storage::quarantine_name(path);
     for suffix in ["", "-wal", "-shm"] {
-        let mut from = path.as_os_str().to_os_string();
-        from.push(suffix);
-        let from = std::path::PathBuf::from(from);
-        if suffix.is_empty() || from.exists() { // data root
-            let mut to = set_aside.as_os_str().to_os_string();
-            to.push(suffix);
-            let to = std::path::PathBuf::from(to);
-            crate::fs_publish::rename_no_replace(&from, &to).map_err(|error| {
-                format!("could not set aside the unreadable {}: {error}", crate::native_path::label(&from))
-            })?;
+        if with_suffix(&target, suffix).try_exists().map_err(|error| quarantine_error(path, error))? {
+            return Err(quarantine_error(path, "the recovery destination is already occupied"));
         }
     }
-    Ok(Some(crate::storage::QuarantineRecord {
-        file: path
-            .file_name()
-            .map(|name| crate::native_path::encode(name).into_owned())
-            .unwrap_or_else(|| crate::native_path::encode(path).into_owned()),
-        quarantined_to: crate::native_path::encode(&set_aside).into_owned(),
-    }))
+    let intent = QuarantineIntent {
+        target: crate::native_path::encode(target.file_name().ok_or("store has no file name")?).into_owned(),
+        wal: with_suffix(path, "-wal").try_exists().map_err(|error| quarantine_error(path, error))?,
+        shm: with_suffix(path, "-shm").try_exists().map_err(|error| quarantine_error(path, error))?,
+    };
+    let bytes = serde_json::to_vec(&intent).map_err(|error| quarantine_error(path, error))?;
+    let mut options = std::fs::OpenOptions::new(); // data root
+    options.write(true).create_new(true);
+    #[cfg(unix)] {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let intent_path = quarantine_intent_path(path);
+    let mut file = options.open(&intent_path).map_err(|error| quarantine_error(&intent_path, error))?;
+    file.write_all(&bytes).map_err(|error| quarantine_error(&intent_path, error))?;
+    Ok(intent)
+}
+
+fn resume_quarantine(
+    path: &Path,
+    intent: &QuarantineIntent,
+    rename: &mut dyn FnMut(&Path, &Path) -> std::io::Result<()>,
+) -> Result<crate::storage::QuarantineRecord, String> {
+    let parent = path.parent().ok_or("store has no parent")?;
+    let target = parent.join(crate::native_path::from_text(&intent.target));
+    let intent_path = quarantine_intent_path(path);
+    // Also applies on retry after a failed intent flush, before any rename.
+    std::fs::OpenOptions::new().read(true).write(true).open(&intent_path) // data root
+        .and_then(|file| file.sync_all()).map_err(|error| quarantine_error(&intent_path, error))?;
+    crate::fs_publish::sync_directory(parent).map_err(|error| quarantine_error(&intent_path, error))?;
+    for (suffix, present) in [("", true), ("-wal", intent.wal), ("-shm", intent.shm)] {
+        let source = with_suffix(path, suffix);
+        let destination = with_suffix(&target, suffix);
+        let source_exists = source.try_exists().map_err(|error| quarantine_error(&source, error))?;
+        let destination_exists = destination.try_exists().map_err(|error| quarantine_error(&destination, error))?;
+        match (present, source_exists, destination_exists) {
+            (true, true, false) => rename(&source, &destination).map_err(|error| quarantine_error(&source, error))?,
+            (true, false, true) | (false, false, false) => {}
+            _ => return Err(quarantine_error(&source, "recovery files changed; kept every remaining file")),
+        }
+    }
+    // Commit the entire family before retiring its recovery obligation. Only
+    // then may startup create a replacement database at the canonical name.
+    crate::fs_publish::sync_directory(parent).map_err(|error| quarantine_error(path, error))?;
+    std::fs::remove_file(quarantine_intent_path(path)).map_err(|error| quarantine_error(path, error))?; // data root
+    crate::fs_publish::sync_directory(parent).map_err(|error| quarantine_error(path, error))?;
+    Ok(crate::storage::QuarantineRecord {
+        file: crate::native_path::encode(path.file_name().ok_or("store has no file name")?).into_owned(),
+        quarantined_to: crate::native_path::encode(&target).into_owned(),
+    })
 }
 
 // transaction-and-external-effect-conventions. With an attached records store,

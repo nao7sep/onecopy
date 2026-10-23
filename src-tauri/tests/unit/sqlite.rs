@@ -65,6 +65,89 @@ fn a_damaged_index_is_set_aside_but_an_unmarked_one_is_left_for_its_rebuild() {
     assert_eq!(std::fs::read(&record.quarantined_to).unwrap(), b"not a database");
 }
 
+#[test]
+fn interrupted_quarantine_resumes_each_move_before_replacement_can_open() {
+    for stop_after in 0..=3 {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("records.sqlite3");
+        for (suffix, bytes) in [("", b"broken database".as_slice()), ("-wal", b"newest records"), ("-shm", b"index") ] {
+            std::fs::write(with_suffix(&path, suffix), bytes).unwrap();
+        }
+        let intent = prepare_quarantine(&path).unwrap();
+        let mut moved = 0;
+        let interrupted = resume_quarantine(&path, &intent, &mut |source, target| {
+            if moved == stop_after { return Err(std::io::Error::other("interrupted")); }
+            crate::fs_publish::rename_no_replace(source, target)?;
+            moved += 1;
+            if moved == stop_after { return Err(std::io::Error::other("interrupted after move")); }
+            Ok(())
+        });
+        assert!(interrupted.is_err());
+        assert!(quarantine_intent_path(&path).exists());
+        let result = set_aside_if_unreadable(&path, true).unwrap().unwrap();
+        let retained = crate::native_path::from_text(&result.quarantined_to);
+        for (suffix, bytes) in [("", b"broken database".as_slice()), ("-wal", b"newest records"), ("-shm", b"index") ] {
+            assert_eq!(std::fs::read(with_suffix(&retained, suffix)).unwrap(), bytes);
+            assert!(!with_suffix(&path, suffix).exists());
+        }
+        assert!(!quarantine_intent_path(&path).exists());
+        Connection::open(&path).unwrap().execute_batch("CREATE TABLE replacement(value)").unwrap();
+        assert_eq!(std::fs::read(with_suffix(&retained, "-wal")).unwrap(), b"newest records");
+    }
+}
+
+#[test]
+fn resumed_quarantine_retains_committed_rows_that_exist_only_in_the_wal() {
+    let root = tempfile::tempdir().unwrap();
+    let original = root.path().join("source.sqlite3");
+    let path = root.path().join("records.sqlite3");
+    let writer = Connection::open(&original).unwrap();
+    writer.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE evidence(value); INSERT INTO evidence VALUES(42)").unwrap();
+    for suffix in ["", "-wal", "-shm"] {
+        std::fs::copy(with_suffix(&original, suffix), with_suffix(&path, suffix)).unwrap();
+    }
+    drop(writer);
+    let wal = std::fs::read(with_suffix(&path, "-wal")).unwrap();
+    let intent = prepare_quarantine(&path).unwrap();
+    let error = resume_quarantine(&path, &intent, &mut |source, target| {
+        crate::fs_publish::rename_no_replace(source, target)?;
+        Err(std::io::Error::other("stopped after main file"))
+    });
+    assert!(error.is_err());
+    assert!(!path.exists());
+    let result = set_aside_if_unreadable(&path, true).unwrap().unwrap();
+    let retained = crate::native_path::from_text(&result.quarantined_to);
+    assert_eq!(std::fs::read(with_suffix(&retained, "-wal")).unwrap(), wal);
+    let recovered = Connection::open(&retained).unwrap();
+    assert_eq!(recovered.query_row("SELECT value FROM evidence", [], |row| row.get::<_, i64>(0)).unwrap(), 42);
+}
+
+#[test]
+fn quarantine_never_replaces_an_occupied_recovery_member() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("records.sqlite3");
+    std::fs::write(&path, b"original").unwrap();
+    std::fs::write(with_suffix(&path, "-wal"), b"retained log").unwrap();
+    let intent = prepare_quarantine(&path).unwrap();
+    let target = root.path().join(&intent.target);
+    std::fs::write(with_suffix(&target, "-wal"), b"other recovery").unwrap();
+    assert!(set_aside_if_unreadable(&path, true).is_err());
+    assert_eq!(std::fs::read(&target).unwrap(), b"original");
+    assert_eq!(std::fs::read(with_suffix(&target, "-wal")).unwrap(), b"other recovery");
+    assert_eq!(std::fs::read(with_suffix(&path, "-wal")).unwrap(), b"retained log");
+    assert!(quarantine_intent_path(&path).exists());
+}
+
+#[test]
+fn a_partial_recovery_record_blocks_replacement_without_moving_original_bytes() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("records.sqlite3");
+    std::fs::write(&path, b"original").unwrap();
+    std::fs::write(quarantine_intent_path(&path), b"{\"target\":").unwrap();
+    assert!(set_aside_if_unreadable(&path, true).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), b"original");
+}
+
 // A store another connection holds locked is busy, not damaged.
 #[test]
 fn a_locked_store_is_never_set_aside() {
