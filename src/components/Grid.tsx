@@ -580,13 +580,6 @@ export default function Grid({
   const setSortOrder = useItemsStore((s) => s.setSortOrder);
   const sortCatalogue = SORT_ORDERS[lane];
   const effectiveTotalItems = totalItems > 0 ? totalItems : items.length;
-  const effectivePositions = useMemo(
-    () =>
-      itemPositions.size > 0
-        ? itemPositions
-        : new Map(items.map((item, offset) => [itemKey(item), windowStart + offset])),
-    [itemPositions, items, windowStart],
-  );
   const selectionOrdinals = useMemo(
     () => new Map([...selectedKeys].map((key, index) => [key, index + 1])),
     [selectedKeys],
@@ -807,7 +800,7 @@ export default function Grid({
       rowHeight,
       current:
         selectedItem !== null
-          ? (effectivePositions.get(selectedItem) ?? selectedPositions.get(selectedItem) ?? -1)
+          ? (itemPositions.get(selectedItem) ?? selectedPositions.get(selectedItem) ?? -1)
           : -1,
       total: effectiveTotalItems,
     });
