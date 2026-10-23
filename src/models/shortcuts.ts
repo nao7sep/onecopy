@@ -107,5 +107,3 @@ export function shortcutColumns(): ShortcutGroup[][] {
     ],
   ];
 }
-
-export function shortcutGroups(): ShortcutGroup[] { return shortcutColumns().flat(); }

@@ -7,6 +7,7 @@
 // events, sidebar clicks, window and grid keystrokes), and every assertion is
 // about what the user would see or what the core was actually told.
 
+import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
 import { StrictMode } from "react";
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import { render, cleanup, act } from "@testing-library/react";
@@ -21,7 +22,7 @@ import { useMutationStore } from "../../src/state/mutation-store";
 import { usePreviewStore } from "../../src/state/preview-store";
 import { useFullscreenViewStore } from "../../src/state/fullscreen-view-store";
 import { useComparisonStore } from "../../src/state/comparison-store";
-import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
+import type { SectionItem } from "../../src/models/items";
 import {
   close,
   fireEvent,

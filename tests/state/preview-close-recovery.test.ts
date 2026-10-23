@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 
+import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
 import { expect, it, vi } from "vitest";
-import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
+import type { SectionItem } from "../../src/models/items";
 import { useItemsStore } from "../../src/state/items-store";
 import { usePreviewStore } from "../../src/state/preview-store";
 import { installItemWorkflow } from "../../src/workflows/items";

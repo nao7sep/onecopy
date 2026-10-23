@@ -52,17 +52,6 @@ export function Row({
   );
 }
 
-export function Section({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <section className="mb-6 last:mb-0">
-      <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-muted">
-        {title}
-      </h2>
-      {children}
-    </section>
-  );
-}
-
 export function TextInput({
   invalid = false,
   size = "standard",

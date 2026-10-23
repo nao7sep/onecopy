@@ -8,6 +8,7 @@
 // terminal events; managed-tool progress alone is event-driven and is
 // correlated to the authoritative command-owned terminal boundary.
 
+import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   fireEvent,
@@ -25,7 +26,7 @@ import {
 } from "../../src/state/binaries-store";
 import { installScanEventWiring } from "../../src/workflows/scan-events";
 import type { ScanProgress } from "../../src/models/scan";
-import { EMPTY_ITEM_WORK } from "../../src/models/items";
+
 
 // The application workflow registers event wiring once. The listener registry
 // is deliberately NOT cleared between specs — clearing it would leave this

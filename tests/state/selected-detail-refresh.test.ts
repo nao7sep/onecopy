@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
 
+import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { useItemsStore } from "../../src/state/items-store";
 import { usePreviewStore } from "../../src/state/preview-store";
 import { installItemWorkflow } from "../../src/workflows/items";
-import { EMPTY_ITEM_WORK, type ItemDetail, type SectionItem } from "../../src/models/items";
+import { type ItemDetail, type SectionItem } from "../../src/models/items";
 import { invokeCalls, mockCommands, mockSectionItems, resetTauriMocks } from "../mocks/tauri";
 
 beforeAll(() => installItemWorkflow());

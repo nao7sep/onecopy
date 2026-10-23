@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
 
+import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import FullscreenViewWindow from "../../src/windows/FullscreenViewWindow";
-import { EMPTY_ITEM_WORK } from "../../src/models/items";
+
 import type { FullscreenViewBroadcast } from "../../src/workflows/fullscreen-view";
 import { emitCalls, fireEvent as deliver, resetTauriMocks } from "../mocks/tauri";
 

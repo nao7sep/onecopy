@@ -4,8 +4,6 @@
 import { describe, expect, it } from "vitest";
 import {
   ZOOM_LEVELS,
-  ZOOM_MAX,
-  ZOOM_MIN,
   stepZoomIn,
   stepZoomOut,
 } from "../../src/utils/zoom";
@@ -24,10 +22,12 @@ describe("the zoom ladder", () => {
   });
 
   it("clamps at both ends instead of running off the ladder", () => {
-    expect(stepZoomIn(ZOOM_MAX)).toBe(ZOOM_MAX);
-    expect(stepZoomOut(ZOOM_MIN)).toBe(ZOOM_MIN);
-    expect(stepZoomIn(999)).toBe(ZOOM_MAX);
-    expect(stepZoomOut(0.01)).toBe(ZOOM_MIN);
+    const minimum = ZOOM_LEVELS[0];
+    const maximum = ZOOM_LEVELS[ZOOM_LEVELS.length - 1];
+    expect(stepZoomIn(maximum)).toBe(maximum);
+    expect(stepZoomOut(minimum)).toBe(minimum);
+    expect(stepZoomIn(999)).toBe(maximum);
+    expect(stepZoomOut(0.01)).toBe(minimum);
   });
 
   it("keeps the ladder ascending and containing 100%", () => {

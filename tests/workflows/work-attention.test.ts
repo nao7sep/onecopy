@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
+import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installWorkAttention, setWorkViewport } from "../../src/workflows/work-attention";
 import { useItemsStore } from "../../src/state/items-store";
 import { useComparisonStore } from "../../src/state/comparison-store";
 import { useFullscreenViewStore } from "../../src/state/fullscreen-view-store";
-import { EMPTY_ITEM_WORK } from "../../src/models/items";
+
 import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
 beforeEach(() => {

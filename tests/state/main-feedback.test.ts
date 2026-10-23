@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 
+import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { beginMainFeedback, currentMainFeedback, invalidateMainFeedback, useMainFeedbackStore } from "../../src/state/main-feedback-store";
 import { useItemsStore } from "../../src/state/items-store";
@@ -7,7 +8,7 @@ import { useComparisonStore } from "../../src/state/comparison-store";
 import { useNotificationsStore } from "../../src/state/notifications-store";
 import { requestComparisonFromMain } from "../../src/workflows/comparison";
 import { openFullscreenView } from "../../src/workflows/fullscreen-view";
-import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
+import type { SectionItem } from "../../src/models/items";
 import { invokeCalls, mockCommands, mockSectionItems, resetTauriMocks } from "../mocks/tauri";
 import { message } from "../../src/i18n/translate";
 import { inEnglish } from "../helpers/i18n";

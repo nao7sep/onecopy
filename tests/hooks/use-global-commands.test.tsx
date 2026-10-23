@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
 
+import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
 import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { comparisonLayerToken } from "../../src/workflows/comparison";
 import { useGlobalCommands } from "../../src/hooks/useGlobalCommands";
-import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
+import type { SectionItem } from "../../src/models/items";
 import { useComparisonStore } from "../../src/state/comparison-store";
 import { useAppStore } from "../../src/state/app-store";
 import { installItemWorkflow } from "../../src/workflows/items";

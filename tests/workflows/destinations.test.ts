@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 
+import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   addDestinationRoot,
@@ -9,7 +10,7 @@ import {
 import { useDestinationsStore } from "../../src/state/destinations-store";
 import { resetConfigWritesForTests, useAppStore } from "../../src/state/app-store";
 import { useItemsStore } from "../../src/state/items-store";
-import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
+import type { SectionItem } from "../../src/models/items";
 import {
   invokeCalls,
   mockCommands,

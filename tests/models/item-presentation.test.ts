@@ -1,3 +1,4 @@
+import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
 import { describe, expect, it } from "vitest";
 import {
   faceStarRating,
@@ -6,7 +7,6 @@ import {
   workPresentationRows,
 } from "../../src/models/itemPresentation";
 import {
-  EMPTY_ITEM_WORK,
   type ItemWorkState,
   type ItemWorkStates,
   type ItemDetail,

@@ -4,8 +4,9 @@
 // which renders the sentence in the language the document declares, so these
 // specs need a document even though the subject is pure workflow logic.
 
+import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
+import type { SectionItem } from "../../src/models/items";
 import { useItemsStore } from "../../src/state/items-store";
 import { useFullscreenViewStore } from "../../src/state/fullscreen-view-store";
 import type { ViewerSequenceSnapshot } from "../../src/models/viewerSession";

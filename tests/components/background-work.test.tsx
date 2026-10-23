@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 
+import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
 import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { useBinariesStore } from "../../src/state/binaries-store";
@@ -16,7 +17,7 @@ import {
   type BackgroundWorkSnapshot,
   useDerivedWorkStore,
 } from "../../src/state/derived-work-store";
-import { EMPTY_ITEM_WORK } from "../../src/models/items";
+
 import { fireEvent, invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 import { useSectionsStore } from "../../src/state/sections-store";
 import { useAppShellStore } from "../../src/state/app-shell-store";

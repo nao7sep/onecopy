@@ -1,6 +1,7 @@
+import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { PlaybackSession } from "../../src/models/playback";
-import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
+import type { SectionItem } from "../../src/models/items";
 import type { ActiveViewerSession } from "../../src/models/viewerSession";
 import { flushConfigForShutdown, resetConfigWritesForTests, useAppStore } from "../../src/state/app-store";
 import { usePreviewStore } from "../../src/state/preview-store";

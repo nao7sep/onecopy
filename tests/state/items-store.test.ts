@@ -4,11 +4,12 @@
 // sentence in the language the document declares, so this spec needs a document
 // even though the subject is not the interface.
 
+import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useItemsStore } from "../../src/state/items-store";
 import { currentMainFeedback, useMainFeedbackStore } from "../../src/state/main-feedback-store";
 import { captureDeleteSelection, deleteItems } from "../../src/workflows/items";
-import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
+import type { SectionItem } from "../../src/models/items";
 import {
   invokeCalls,
   mockCommand,

@@ -30,14 +30,6 @@ export interface ItemWorkStates {
   transcripts: ItemWorkState | null;
 }
 
-export const EMPTY_ITEM_WORK: ItemWorkStates = {
-  preview: null,
-  snapshots: null,
-  similarity: null,
-  faces: null,
-  transcripts: null,
-};
-
 export interface SectionItem {
   hash: string | null;
   pathId: number;

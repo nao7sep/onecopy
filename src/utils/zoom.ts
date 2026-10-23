@@ -56,8 +56,6 @@ import { hasMod } from "./shortcuts";
 export const ZOOM_LEVELS = [0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.2, 1.4, 1.7, 2.0, 2.4, 2.9, 3.5, 4.2, 5.0];
 
 export const ZOOM_DEFAULT = 1.0;
-export const ZOOM_MIN = ZOOM_LEVELS[0];
-export const ZOOM_MAX = ZOOM_LEVELS[ZOOM_LEVELS.length - 1];
 
 // Returns the nearest zoom level in ZOOM_LEVELS to the given value.
 // Used to snap an arbitrary stored value onto the discrete list.

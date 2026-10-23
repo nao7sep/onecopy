@@ -1,9 +1,10 @@
 // @vitest-environment happy-dom
 
+import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
 import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Accessibility } from "@dnd-kit/dom";
-import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
+import type { SectionItem } from "../../src/models/items";
 import { useDestinationsStore } from "../../src/state/destinations-store";
 import { useItemsStore } from "../../src/state/items-store";
 import { cancelDestinationDrag } from "../../src/workflows/destinations";

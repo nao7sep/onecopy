@@ -5,6 +5,7 @@
 // is the count of tile renders. The test viewport has no height, so only the
 // first rows mount.
 
+import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import { mockCommands, mockFullscreenDisplay, mockSectionItems, resetTauriMocks } from "../mocks/tauri";
@@ -23,7 +24,6 @@ vi.mock("../../src/models/items", async (importOriginal) => {
 });
 
 const { default: Grid } = await import("../../src/components/Grid");
-const { EMPTY_ITEM_WORK } = await import("../../src/models/items");
 const { useItemsStore } = await import("../../src/state/items-store");
 const { useDerivedWorkStore } = await import("../../src/state/derived-work-store");
 type SectionItem = import("../../src/models/items").SectionItem;

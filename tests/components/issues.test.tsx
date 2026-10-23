@@ -2,6 +2,7 @@
 //
 // One current-run diagnostic inbox with actions for the affected condition.
 
+import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import { render, cleanup, act, fireEvent, screen } from "@testing-library/react";
 import { useState } from "react";
@@ -11,7 +12,7 @@ import { useIssuesStore, type IssueRow } from "../../src/state/issues-store";
 import { invokeCalls, mockCommands, mockSectionItems, resetTauriMocks } from "../mocks/tauri";
 import { useSectionsStore } from "../../src/state/sections-store";
 import { useItemsStore } from "../../src/state/items-store";
-import { EMPTY_ITEM_WORK } from "../../src/models/items";
+
 import { I18nProvider } from "../../src/i18n/I18nContext";
 
 function row(id: number, over: Partial<IssueRow> = {}): IssueRow {

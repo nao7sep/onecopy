@@ -1,5 +1,6 @@
 // These tests cover the Preview follower and explicit pane/window choice.
 
+import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   resolvePlacement,
@@ -12,7 +13,7 @@ import { handleSpaceFullscreenView } from "../../src/workflows/fullscreen-view";
 import { useItemsStore } from "../../src/state/items-store";
 import { togglePreview } from "../../src/workflows/preview";
 import { installItemWorkflow } from "../../src/workflows/items";
-import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
+import type { SectionItem } from "../../src/models/items";
 import { mockCommands, mockSectionItems, mockFullscreenDisplay, resetTauriMocks } from "../mocks/tauri";
 
 function item(pathId: number): SectionItem {

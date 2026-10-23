@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import PreviewWindow from "../../src/windows/PreviewWindow";
@@ -6,7 +7,7 @@ import FullscreenViewWindow from "../../src/windows/FullscreenViewWindow";
 import PreviewSurface from "../../src/components/PreviewSurface";
 import { useTranscriptStore } from "../../src/state/transcript-store";
 import { useContentSessionStore } from "../../src/state/content-session-store";
-import { EMPTY_ITEM_WORK } from "../../src/models/items";
+
 import { emitCalls, fireEvent as deliver, mockCommands, resetTauriMocks, invokeCalls } from "../mocks/tauri";
 
 const detail = {

@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
 
+import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import MetadataPane from "../../src/components/MetadataPane";
 import TranscriptBlock from "../../src/components/TranscriptBlock";
-import { EMPTY_ITEM_WORK, type ItemDetail, type ItemWorkState, type SectionItem } from "../../src/models/items";
+import { type ItemDetail, type ItemWorkState, type SectionItem } from "../../src/models/items";
 import { useContentSessionStore } from "../../src/state/content-session-store";
 import { useTranscriptStore } from "../../src/state/transcript-store";
 import { useDerivedWorkStore } from "../../src/state/derived-work-store";

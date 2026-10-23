@@ -4,10 +4,11 @@
 // destructive-safety machinery, not UI polish: what the dialog counts must
 // be exactly what the confirm changes.
 
+import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
 import { beforeEach, describe, expect, it } from "vitest";
 import { useDestinationsStore, type DirListing } from "../../src/state/destinations-store";
 import { useItemsStore } from "../../src/state/items-store";
-import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
+import type { SectionItem } from "../../src/models/items";
 import {
   invokeCalls,
   mockCommands,

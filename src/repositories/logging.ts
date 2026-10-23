@@ -1,8 +1,9 @@
 // Frontend logging. The sandboxed webview never opens a log file itself; it
 // builds the JSON-Lines envelope and forwards each structured event to the Rust
-// core (the `log_event` command), which owns the per-session file and applies
-// the debug gate authoritatively. If
-// forwarding fails, this degrades to the console and never throws — logging
+// core (the `log_event` command), which normally writes to Records `log_lines`
+// and uses a per-session text file only as a fallback. The core applies the
+// debug gate authoritatively. If forwarding fails, this degrades to the console
+// and never throws — logging
 // must never break the app.
 //
 // Levels: error / warn / info / debug. `debug` is developer-only — emitted only

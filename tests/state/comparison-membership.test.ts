@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 
+import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   useComparisonStore,
@@ -16,7 +17,7 @@ import {
 import { useItemsStore } from "../../src/state/items-store";
 import { useSectionsStore } from "../../src/state/sections-store";
 import { useIssuesStore } from "../../src/state/issues-store";
-import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
+import type { SectionItem } from "../../src/models/items";
 import { usePreviewStore } from "../../src/state/preview-store";
 
 function member(index: number): GroupMember {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shortcutColumns, shortcutGroups } from "../../src/models/shortcuts";
+import { shortcutColumns } from "../../src/models/shortcuts";
 import { primaryModWord } from "../../src/utils/shortcuts";
 import { t } from "../helpers/i18n";
 
@@ -17,11 +17,10 @@ describe("shortcut catalogue", () => {
     // A column is as tall as its rows plus a heading and context line per group.
     const lengths = columns.map((column) => column.reduce((n, group) => n + group.rows.length + 2, 0));
     expect(Math.max(...lengths) - Math.min(...lengths)).toBeLessThanOrEqual(4);
-    expect(columns.flat()).toEqual(shortcutGroups());
   });
 
   it("names keycaps consistently and gives every group an honest context", () => {
-    for (const group of shortcutGroups()) {
+    for (const group of shortcutColumns().flat()) {
       expect(t(group.context)).not.toContain("anywhere");
       expect(t(group.context).length).toBeGreaterThan(0);
       for (const row of group.rows) {
@@ -32,7 +31,7 @@ describe("shortcut catalogue", () => {
   });
 
   it("distinguishes selection scope, keep decisions, and viewer round trips", () => {
-    const groups = shortcutGroups();
+    const groups = shortcutColumns().flat();
     const row = (title: string, chord: string) => {
       const action = groups
         .find((group) => t(group.title) === title)

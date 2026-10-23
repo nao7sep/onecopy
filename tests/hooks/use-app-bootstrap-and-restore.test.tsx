@@ -9,12 +9,13 @@
 // does) rather than spying on the store's own method, so the assertion is on
 // the actual restored selection, not on how the hook happens to call it.
 
+import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useAppBootstrapAndRestore } from "../../src/hooks/useAppBootstrapAndRestore";
 import { useItemsStore } from "../../src/state/items-store";
 import { usePreviewStore } from "../../src/state/preview-store";
-import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
+import type { SectionItem } from "../../src/models/items";
 import type { LoadedAppData } from "../../src/repositories";
 import type { SectionCounts } from "../../src/models/sections";
 import { mockCommands, mockSectionItems, resetTauriMocks } from "../mocks/tauri";

@@ -5,11 +5,12 @@
 // a navigation annoyance — it is the wrong photo selected for a destructive
 // action.
 
+import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import { render, cleanup, act, fireEvent } from "@testing-library/react";
 import Grid from "../../src/components/Grid";
 import { useItemsStore } from "../../src/state/items-store";
-import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
+import type { SectionItem } from "../../src/models/items";
 import { usePreviewStore } from "../../src/state/preview-store";
 import { useFullscreenViewStore } from "../../src/state/fullscreen-view-store";
 import {
