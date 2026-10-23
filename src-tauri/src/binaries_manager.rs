@@ -753,8 +753,8 @@ pub fn wait_for_idle() {
     }
 }
 
-/// A claim acquired before the blocking worker starts, so a Cancel click can
-/// never race ahead of the operation's registration on a slow machine.
+/// A claim acquired at command admission, before queueing the blocking worker,
+/// so cancellation can reach an operation whose worker has not started.
 pub struct StartedInstall(BusyGuard);
 
 pub fn begin_install(id: &str, operation_id: &str) -> Result<StartedInstall, String> {
@@ -1258,10 +1258,12 @@ pub enum InstallResult {
 pub fn install_reported(
     app: &tauri::AppHandle,
     root: &Path,
-    id: &str,
-    operation_id: &str,
+    started: StartedInstall,
 ) -> Result<InstallResult, String> {
-    let started = begin_install(id, operation_id)?;
+    let id = started.0.id.clone();
+    let operation_id = started.0.operation_id.clone();
+    let id = id.as_str();
+    let operation_id = operation_id.as_str();
     let progress_event_failed = std::cell::Cell::new(false);
     let mut throttle = crate::progress_throttle::ProgressThrottle::<InstallPhase>::default();
     let emit = |progress: InstallProgress| {

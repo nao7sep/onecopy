@@ -360,10 +360,13 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
       itemCount: 1,
     });
     try {
-      await invoke<boolean>("binaries_cancel", {
+      const accepted = await invoke<boolean>("binaries_cancel", {
         id,
         operationId: previous.operationId,
       });
+      if (!accepted && get().installing[id]?.operationId === previous.operationId) {
+        throw new Error("The install operation did not accept cancellation.");
+      }
     } catch (error) {
       const current = get().installing[id];
       if (
@@ -392,7 +395,7 @@ export const useBinariesStore = create<BinariesState>((set, get) => ({
           s.installing[id]?.cancelling !== true
         ) return s;
         const installing = { ...s.installing };
-        installing[id] = previous;
+        installing[id] = { ...installing[id]!, cancelling: false };
         return { installing };
       });
     }

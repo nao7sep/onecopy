@@ -391,3 +391,33 @@ it("records monotonic check duration when the wall clock moves backward", async 
     wall.mockRestore();
   }
 });
+
+it("keeps current progress and permits retry when cancellation was not accepted", async () => {
+  let finishInstall!: (result: BinaryInstallResult) => void;
+  let finishCancel!: (accepted: boolean) => void;
+  let operationId = "";
+  mockCommands({
+    binaries_install: (args) => {
+      operationId = String(args.operationId);
+      return new Promise<BinaryInstallResult>((resolve) => { finishInstall = resolve; });
+    },
+    binaries_cancel: () => new Promise<boolean>((resolve) => { finishCancel = resolve; }),
+  });
+  const install = useBinariesStore.getState().install("ffmpeg");
+  const cancel = useBinariesStore.getState().cancel("ffmpeg");
+  const progress = { phase: "download" as const, done: 30, total: 100, nextPhase: "verify" as const };
+  useBinariesStore.setState((state) => ({
+    installing: { ...state.installing, ffmpeg: { ...state.installing.ffmpeg!, progress } },
+  }));
+  finishCancel(false);
+  await cancel;
+  expect(useBinariesStore.getState().installing.ffmpeg?.cancelling).toBe(false);
+  expect(useBinariesStore.getState().installing.ffmpeg?.progress).toEqual(progress);
+  expect(useBinariesStore.getState().errors.ffmpeg).toBeDefined();
+  mockCommands({ binaries_cancel: () => true });
+  await useBinariesStore.getState().cancel("ffmpeg");
+  expect(useBinariesStore.getState().installing.ffmpeg?.cancelling).toBe(true);
+  finishInstall({ outcome: "cancelled", operationId, state: entry("ffmpeg", "not-installed") });
+  await install;
+  expect(useBinariesStore.getState().installing.ffmpeg).toBeUndefined();
+});

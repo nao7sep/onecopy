@@ -602,3 +602,27 @@ fn a_noisy_ffmpeg_probe_still_has_a_total_deadline() {
     assert!(root.path().join("noisy-probe.ready").is_file(), "the fixture must reach execution before its deadline");
     assert_eq!(error, "ffmpeg version probe timed out");
 }
+
+#[test]
+fn cancellation_registered_at_admission_reaches_a_worker_that_has_not_started() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join(BIN_DIR_NAME)).unwrap();
+    std::fs::write(ffmpeg_path(root.path()), b"working tool").unwrap();
+    let started = begin_install("ffmpeg", "queued-install").unwrap();
+    let worker_root = root.path().to_path_buf();
+    let (release, queued) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        queued.recv().unwrap();
+        install_entry_started(&worker_root, started, |_| panic!("cancelled queued work must not start acquisition"))
+    });
+    assert!(!cancel_entry("ffmpeg", "older-install"));
+    assert!(cancel_entry("ffmpeg", "queued-install"));
+    assert!(begin_install("ffmpeg", "replacement-install").is_err(), "queued ownership still excludes a replacement");
+    release.send(()).unwrap();
+    assert!(is_cancelled_error(&worker.join().unwrap().unwrap_err()));
+    assert_eq!(std::fs::read(ffmpeg_path(root.path())).unwrap(), b"working tool");
+    assert!(!cancel_entry("ffmpeg", "queued-install"));
+    let replacement = begin_install("ffmpeg", "replacement-install").unwrap();
+    assert!(!cancel_entry("ffmpeg", "queued-install"));
+    assert!(!replacement.0.cancelled.load(Ordering::SeqCst));
+}

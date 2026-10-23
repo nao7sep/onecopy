@@ -178,7 +178,7 @@ describe("parallel installs", () => {
     expect(document.body.textContent).toContain("Cancelling…");
   });
 
-  it("keeps cancellation visible until the owning operation settles", async () => {
+  it("offers cancellation again when the operation did not accept the request", async () => {
     mockCommands({ binaries_cancel: () => false });
     useBinariesStore.setState({
       installing: { "whisper-large-v3-turbo": downloading },
@@ -189,8 +189,10 @@ describe("parallel installs", () => {
 
     expect(
       useBinariesStore.getState().installing["whisper-large-v3-turbo"]?.cancelling,
-    ).toBe(true);
-    expect(document.body.textContent).toContain("Cancelling…");
+    ).toBe(false);
+    expect(document.body.textContent).not.toContain("Cancelling…");
+    expect(buttons("Cancel")).toHaveLength(1);
+    expect(useBinariesStore.getState().errors["whisper-large-v3-turbo"]).toBeDefined();
   });
 });
 

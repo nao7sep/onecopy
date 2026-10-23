@@ -1350,9 +1350,10 @@ async fn binaries_install(
     id: String,
     operation_id: String,
 ) -> Result<binaries_manager::InstallResult, String> {
+    let started = binaries_manager::begin_install(&id, &operation_id)?;
     dispatch(move || {
         let data_root = paths::data_root()?;
-        binaries_manager::install_reported(&app, &data_root, &id, &operation_id)
+        binaries_manager::install_reported(&app, &data_root, started)
     })
     .await
 }
