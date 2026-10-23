@@ -222,3 +222,19 @@ fn blocked_diagnostics_preserve_the_failure_and_only_the_prepared_root() {
     complete.send_replace(Some(Ok(())));
     assert!(gate.diagnostic_root().is_err());
 }
+
+#[test]
+fn folder_protection_requires_a_blocked_privacy_failure_not_merely_a_retained_path() {
+    let (complete, gate) = pending_gate();
+    assert!(may_run_before_ready("protect_startup_data_folder"));
+    assert!(gate.privacy_root().is_err());
+    let directory = tempfile::tempdir().unwrap();
+    let mut failure = StartupOutcome::blocked().with_diagnostics(Some("diagnostic".into()), Some(directory.path())).failure().unwrap();
+    complete.send_replace(Some(Err(failure.clone())));
+    assert!(gate.privacy_root().is_err());
+    failure.privacy_required = true;
+    complete.send_replace(Some(Err(failure)));
+    assert_eq!(gate.privacy_root().unwrap(), directory.path());
+    complete.send_replace(Some(Ok(())));
+    assert!(gate.privacy_root().is_err());
+}

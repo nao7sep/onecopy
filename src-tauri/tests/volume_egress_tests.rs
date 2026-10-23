@@ -26,6 +26,7 @@ const DATA_ROOT_MODULES: &[(&str, &str)] = &[
     ("instance_owner.rs", "instance lock"),
     ("logging.rs", "records fallback log files"),
     ("paths.rs", "data folder layout"),
+    ("data_root_privacy.rs", "consented protection of the application data folder"),
     ("records.rs", "records database"),
     ("sqlite.rs", "index database"),
     ("storage.rs", "config and state files"),

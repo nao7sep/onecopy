@@ -88,9 +88,9 @@ fn create_data_root(root: &Path) -> std::io::Result<()> {
         .create(root)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 fn create_data_root(root: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(root)
+    crate::data_root_privacy::prepare(root)
 }
 
 /// Restricts the data root to the owner (0700) so previews, transcripts, the
@@ -246,6 +246,43 @@ fn absolutize(home: &Path, path: PathBuf) -> PathBuf {
         home.join(path)
     }
 }
+
+#[cfg(any(windows, test))]
+pub(crate) const PRIVATE_ROOT_CERTIFICATE: &str = ".onecopy-private-root.json";
+
+#[cfg(any(windows, test))]
+/// Standard owned roots only. An unrelated file beside the app's stores is
+/// never recursively visited or given a different DACL by recovery.
+pub(crate) fn owned_data_entry(name: &std::ffi::OsStr) -> Option<bool> {
+    let folded = name.to_str()?.to_ascii_lowercase();
+    let name = folded.as_str();
+    if [crate::storage::CACHE_DIR_NAME, LOGS_DIR_NAME, BIN_DIR_NAME,
+        MODELS_DIR_NAME, TEMP_DIR_NAME].contains(&name) { return Some(true); }
+    if [PRIVATE_ROOT_CERTIFICATE, "instance.lock", "instance.endpoint"].contains(&name) { return Some(false); }
+    let stores = [crate::storage::CONFIG_FILE_NAME, crate::storage::STATE_FILE_NAME, crate::storage::WINDOW_FILE_NAME,
+        crate::storage::PREVIEW_WINDOW_FILE_NAME, crate::storage::RECORDS_WINDOW_FILE_NAME, crate::storage::INDEX_DB_FILE_NAME,
+        crate::records::RECORDS_DB_FILE_NAME, crate::backup_store::BACKUPS_DB_FILE_NAME,
+        DEPENDENCIES_FILE_NAME, SOURCE_VOLUMES_FILE_NAME, crate::file_identity::INSTALLATION_ID_FILE_NAME];
+    for store in stores {
+        if name == store { return Some(false); }
+        if let Some(suffix) = name.strip_prefix(store) {
+            if store.ends_with(".sqlite3") && ["-wal", "-shm", "-journal"].contains(&suffix) { return Some(false); }
+        }
+        let stem = Path::new(store).file_stem()?.to_str()?;
+        let Some(rest) = name.strip_prefix(stem).and_then(|rest| rest.strip_prefix('-')) else { continue; };
+        if let Some(id) = rest.strip_suffix(".tmp") {
+            if id.len() == 21 && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-') { return Some(false); }
+        }
+        let rest = rest.strip_suffix("-wal").or_else(|| rest.strip_suffix("-shm")).unwrap_or(rest);
+        if let Some(stamp) = rest.strip_suffix(".invalid") {
+            let bytes = stamp.as_bytes();
+            if bytes.len() == 19 && bytes[8] == b'-' && &bytes[15..] == b"-utc"
+                && bytes[..8].iter().chain(&bytes[9..15]).all(u8::is_ascii_digit) { return Some(false); }
+        }
+    }
+    None
+}
+
 
 #[cfg(test)]
 // EXCEPTION to tests-folder conventions: exercises the private

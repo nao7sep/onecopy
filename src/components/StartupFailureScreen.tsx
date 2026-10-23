@@ -17,6 +17,17 @@ export default function StartupFailureScreen() {
   const newerStores = failure?.newerStores ?? [];
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [openFolderFailed, setOpenFolderFailed] = useState(false);
+  const [protecting, setProtecting] = useState(false);
+  const [protectedFolder, setProtectedFolder] = useState(false);
+  const [protectionFailure, setProtectionFailure] = useState<string | null>(null);
+  const makePrivate = () => {
+    setProtecting(true);
+    setProtectionFailure(null);
+    void invoke("protect_startup_data_folder").then(() => setProtectedFolder(true), (error) => {
+      log.warn("startup data folder protection failed", toErrorFields(error));
+      setProtectionFailure(String(error));
+    }).finally(() => setProtecting(false));
+  };
   const quit = () => {
     void getCurrentWindow().close().catch(reportWindowCall("startup quit"));
   };
@@ -41,7 +52,7 @@ export default function StartupFailureScreen() {
           {t("startup.blockedTitle")}
         </h1>
         <p id="startup-failure-message" className="mt-3 leading-relaxed text-ink-muted">
-          {newerStores.length > 0 ? t("startup.newerBody") : t("startup.blockedBody")}
+          {t(failure?.privacyRequired ? "startup.privateBody" : newerStores.length > 0 ? "startup.newerBody" : "startup.blockedBody")}
         </p>
         {newerStores.length > 0 ? (
           // Each store's path is read whole; the list scrolls inside a
@@ -60,9 +71,13 @@ export default function StartupFailureScreen() {
         {showDiagnostics ? (
           <BoundedText className="mt-3 max-h-64">
             {failure?.diagnostic ? <pre className="whitespace-pre-wrap break-words text-xs">{failure.diagnostic}</pre> : null}
+            {protectionFailure !== null ? <pre className="mt-2 whitespace-pre-wrap break-words text-xs">{protectionFailure}</pre> : null}
             {failure?.dataRoot ? <p className="mt-2 break-all text-xs">{displayNativePath(failure.dataRoot)}</p> : null}
           </BoundedText>
         ) : null}
+        {protecting ? <p role="status" className="mt-3 text-sm">{t("startup.privateWorking")}</p> : null}
+        {protectedFolder ? <OperationResult level="info" className="mt-3 text-sm">{t("startup.privateReady")}</OperationResult> : null}
+        {protectionFailure !== null ? <OperationResult level="error" className="mt-3 text-sm">{t("startup.privateFailed")}</OperationResult> : null}
         {openFolderFailed ? (
           <OperationResult level="error" className="mt-3 text-sm">
             {t("startup.dataFolderFailed")}
@@ -73,6 +88,7 @@ export default function StartupFailureScreen() {
             <Button onClick={() => setShowDiagnostics(!showDiagnostics)} aria-expanded={showDiagnostics}>{t("records.details")}</Button>
           ) : null}
           {showDiagnostics && failure?.dataRoot ? <Button onClick={openDataFolder}>{t("startup.revealDataFolder")}</Button> : null}
+          {failure?.privacyRequired && !protectedFolder ? <Button onClick={makePrivate} disabled={protecting}>{t("startup.makePrivate")}</Button> : null}
           <Button type="button" variant="primary" size="md" onClick={quit} autoFocus>
             {t("startup.quit")}
           </Button>

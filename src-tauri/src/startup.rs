@@ -28,6 +28,7 @@ pub(crate) struct StartupFailure {
     pub(crate) diagnostic: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) data_root: Option<String>,
+    pub(crate) privacy_required: bool,
 }
 
 pub(crate) struct StartupOutcome {
@@ -55,6 +56,7 @@ impl StartupOutcome {
                 newer_stores,
                 diagnostic: None,
                 data_root: None,
+                privacy_required: false,
             }),
         }
     }
@@ -104,6 +106,15 @@ impl StartupGate {
         }
     }
 
+    pub(crate) fn privacy_root(&self) -> Result<PathBuf, String> {
+        let outcome = self.outcome.borrow();
+        if !matches!(&*outcome, Some(Err(failure)) if failure.privacy_required) {
+            return Err("startup is not awaiting folder privacy consent".into());
+        }
+        drop(outcome);
+        self.diagnostic_root()
+    }
+
     pub(crate) fn ready(&self) -> bool {
         matches!(&*self.outcome.borrow(), Some(Ok(())))
     }
@@ -113,7 +124,7 @@ impl StartupGate {
 /// the pending/blocked shell can still log diagnostics and quit.
 fn may_run_before_ready(command: &str) -> bool {
     matches!(command, "load_app_data" | "appearance_preferences" | "logging_debug_enabled"
-        | "log_event" | "system_theme" | "media_use_current" | "media_use_released" | "request_app_exit" | "quit_workflow_ready" | "reveal_startup_data_folder" | "session_end_saved" | "quit_question")
+        | "log_event" | "system_theme" | "media_use_current" | "media_use_released" | "request_app_exit" | "quit_workflow_ready" | "reveal_startup_data_folder" | "protect_startup_data_folder" | "session_end_saved" | "quit_question")
 }
 
 pub(crate) fn gate_commands(
@@ -192,6 +203,8 @@ struct PreparedData {
 
 /// Why the launch stopped before any runtime work.
 enum StartupError {
+    #[cfg(windows)]
+    Privacy(String),
     Failed(String),
     /// Required stores a newer OneCopy wrote (store-recovery conventions).
     Newer(Vec<crate::formats::NewerStore>),
@@ -306,6 +319,9 @@ fn prepare(app: &tauri::AppHandle, debug_enabled: bool, diagnostic_root: &mut Op
     let started = Instant::now();
     let data_root = crate::paths::resolve_data_root(app)?;
     *diagnostic_root = Some(data_root.clone());
+    #[cfg(windows)]
+    crate::data_root_privacy::verify(&data_root)
+        .map_err(|error| StartupError::Privacy(error.to_string()))?;
     let records_path = data_root.join(crate::records::RECORDS_DB_FILE_NAME);
     // Before the log writer opens the records, so it opens the fresh store.
     let records_set_aside = crate::records::set_aside_if_unreadable(&records_path)?;
@@ -618,6 +634,12 @@ fn initialize_data(
 
     let state = match prepared {
         Ok(Ok(state)) => state,
+        #[cfg(windows)]
+        Ok(Err(StartupError::Privacy(error))) => {
+            let mut outcome = StartupOutcome::blocked().with_diagnostics(Some(error), diagnostic_root.as_deref());
+            outcome.failure.as_mut().unwrap().privacy_required = true;
+            return outcome;
+        }
         Ok(Err(StartupError::Failed(error))) => {
             crate::logging::error("startup blocked", json!({ "error": { "message": error } }));
             return StartupOutcome::blocked().with_diagnostics(Some(error), diagnostic_root.as_deref());

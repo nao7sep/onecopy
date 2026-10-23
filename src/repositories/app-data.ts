@@ -31,6 +31,7 @@ export interface StartupFailure {
   /** Diagnostic record, shown only in the explicitly opened Details view. */
   diagnostic?: string;
   dataRoot?: string;
+  privacyRequired?: boolean;
 }
 
 /** Mirrors formats::NewerStore. */

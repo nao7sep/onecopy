@@ -89,3 +89,31 @@ it("retains the diagnostic record when opening its folder fails", async () => {
   expect(screen.getByText("startup record")).toBeTruthy();
   expect(screen.queryByText(/OPEN_SENTINEL/)).toBeNull();
 });
+
+it("makes a blocked data folder private only after explicit consent and keeps normal startup blocked", async () => {
+  let complete!: () => void;
+  mockCommands({ protect_startup_data_folder: () => new Promise<void>((resolve) => { complete = resolve; }) });
+  useAppStore.setState({ startupFailure: { ...failure, newerStores: [], diagnostic: "shared folder", dataRoot: "/app/data", privacyRequired: true } });
+  render(<StartupFailureScreen />);
+  expect(screen.getByText(t("startup.privateBody"))).toBeTruthy();
+  expect(invokeCalls).toHaveLength(0);
+  fireEvent.click(screen.getByRole("button", { name: t("startup.makePrivate") }));
+  expect(screen.getByRole("button", { name: t("startup.makePrivate") }).hasAttribute("disabled")).toBe(true);
+  complete();
+  expect(await screen.findByText(t("startup.privateReady"))).toBeTruthy();
+  expect(useAppStore.getState().startupFailure?.privacyRequired).toBe(true);
+  expect(screen.queryByRole("button", { name: t("startup.makePrivate") })).toBeNull();
+  expect(invokeCalls).toEqual([{ command: "protect_startup_data_folder", args: {} }]);
+});
+
+it("keeps a failed privacy recovery retryable and its raw failure behind Details", async () => {
+  mockCommands({ protect_startup_data_folder: () => { throw new Error("RECOVERY_SENTINEL"); }, log_event: () => null });
+  useAppStore.setState({ startupFailure: { ...failure, newerStores: [], diagnostic: "shared folder", dataRoot: "/app/data", privacyRequired: true } });
+  render(<StartupFailureScreen />);
+  fireEvent.click(screen.getByRole("button", { name: t("startup.makePrivate") }));
+  expect(await screen.findByText(t("startup.privateFailed"))).toBeTruthy();
+  expect(screen.queryByText(/RECOVERY_SENTINEL/)).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: t("records.details") }));
+  expect(screen.getByText(/RECOVERY_SENTINEL/)).toBeTruthy();
+  await waitFor(() => expect(screen.getByRole("button", { name: t("startup.makePrivate") }).hasAttribute("disabled")).toBe(false));
+});

@@ -96,6 +96,10 @@ pub mod transcription;
 pub mod restore;
 pub mod trash;
 mod trash_privacy;
+#[cfg(windows)]
+mod windows_account_privacy;
+#[cfg(windows)]
+mod data_root_privacy;
 pub mod video;
 pub mod viewer_sequence;
 pub mod volume;
@@ -689,6 +693,19 @@ async fn reveal_native_path(path: String) -> Result<(), String> {
 async fn reveal_startup_data_folder(startup: tauri::State<'_, startup::StartupGate>) -> Result<(), String> {
     let root = startup.diagnostic_root()?;
     dispatch(move || native_shell::reveal(&root)).await
+}
+
+// Only the blocked privacy recovery surface can request this consented
+// change. It cannot name arbitrary paths or operate on a running data root.
+#[tauri::command]
+async fn protect_startup_data_folder(startup: tauri::State<'_, startup::StartupGate>) -> Result<(), String> {
+    let root = startup.privacy_root()?;
+    dispatch(move || {
+        #[cfg(windows)]
+        { data_root_privacy::protect(&root).map_err(|error| error.to_string()) }
+        #[cfg(not(windows))]
+        { let _ = root; Err("folder privacy recovery is only available on Windows".into()) }
+    }).await
 }
 
 // Opens an indexed item in its OS default app (the preview's "Open in player"
@@ -1799,6 +1816,7 @@ pub fn run() {
             delete_empty_dir,
             reveal_native_path,
             reveal_startup_data_folder,
+            protect_startup_data_folder,
             open_item_externally,
             text_preview,
             text_preview_options,

@@ -129,3 +129,16 @@ fn ensure_private_restricts_a_world_readable_root_to_the_owner() {
     let mode = std::fs::metadata(&root).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o700, "the data root must be readable only by its owner");
 }
+
+#[test]
+fn privacy_recovery_visits_only_known_app_owned_root_entries() {
+    let kind = |name: &str| owned_data_entry(std::ffi::OsStr::new(name));
+    for name in ["cache", "logs", "models", "bin", "temp"] { assert_eq!(kind(name), Some(true)); }
+    for name in ["config.json", "index.sqlite3-wal", "records.sqlite3-shm", "installation-id",
+        "config-20261024-010203-utc.invalid", "records-20261024-010203-utc.invalid-wal",
+        "state-abcdefghijklmnopqrstu.tmp", "installation-id-abcdefghijklmnopqrstu.tmp", "CONFIG.JSON", PRIVATE_ROOT_CERTIFICATE] { assert_eq!(kind(name), Some(false), "{name}"); }
+    for name in ["photos", "notes.txt", "config-my-notes.invalid", "config-🙂.tmp", "logs-old",
+        "config-20261024-010203-utx.invalid", "config-abcdefgh-010203-utc.invalid", "config.json-wal"] {
+        assert_eq!(kind(name), None, "{name}");
+    }
+}

@@ -9,7 +9,7 @@ use std::{fs::File, io, path::Path, sync::Arc};
 #[cfg(unix)]
 mod unix;
 #[cfg(windows)]
-mod windows;
+use crate::windows_account_privacy as windows;
 #[cfg(unix)]
 use unix as platform;
 #[cfg(windows)]
