@@ -1814,9 +1814,9 @@ fn hash_pending_with_progress(
         Ok(())
     };
 
-    // Full-hashes one row and lands its identity (promotion for provisional
-    // rows, creation/collapse otherwise). Returns the hash for disagreement
-    // accounting.
+    // Lands a complete identity, reusing this pass's verified whole-file
+    // prehash when available. Otherwise reads the full file. Returns the
+    // hash for disagreement accounting.
     let issues_present = crate::index_store::any_issues(conn)?;
     let land_full_hash =
         |row: &Row, stats: &mut HashStats, done_before: u64| -> Result<Option<String>, String> {
@@ -1829,11 +1829,21 @@ fn hash_pending_with_progress(
                 Some(bytes_total),
             );
         };
-        match hashing::full_hash_cancellable_with_progress(
-            crate::native_path::from_text(&row.abs).as_ref(),
-            &SCAN_CANCEL,
-            &byte_progress,
-        ) {
+        let path = crate::native_path::from_text(&row.abs);
+        let hash = if let Some(version) = row.complete_version {
+            // Only this pass's complete read carries version evidence. A
+            // persisted partial prehash can never authorize a real identity.
+            version.matches_path(path.as_ref()).and_then(|matches| {
+                if matches {
+                    Ok(row.prehash.clone().expect("complete prehash has its digest"))
+                } else {
+                    Err(std::io::Error::other("source changed after its complete prehash"))
+                }
+            })
+        } else {
+            hashing::full_hash_cancellable_with_progress(path.as_ref(), &SCAN_CANCEL, &byte_progress)
+        };
+        match hash {
             Ok(hash) => {
                 stats.full_hashed += 1;
                 // A read that succeeds proves the earlier failure resolved —
@@ -1907,8 +1917,9 @@ fn hash_pending_with_progress(
                     // equal prefixes on different pages still meet.
                     match row.prehash.as_deref() {
                         Some(pre) => cohort.set_prehash(row.id, pre)?,
-                        None => match hashing::prehash(crate::native_path::from_text(&row.abs).as_ref()) {
-                            Ok(pre) => {
+                        None => match hashing::prehash_evidence(crate::native_path::from_text(&row.abs).as_ref()) {
+                            Ok(evidence) => {
+                                let pre = evidence.hash;
                                 stats.prehashed += 1;
                                 if issues_present {
                                     crate::index_store::clear_issues(conn, &row.abs, &["read-error"])?;
@@ -1916,6 +1927,9 @@ fn hash_pending_with_progress(
                                 execute_cached(conn, "UPDATE paths SET prehash = ?2 WHERE id = ?1",
                                     params![row.id, pre])?;
                                 cohort.set_prehash(row.id, &pre)?;
+                                if let Some(version) = evidence.complete_version {
+                                    cohort.set_complete_version(row.id, version)?;
+                                }
                             }
                             Err(err) => {
                                 check_cancel()?;
@@ -2783,8 +2797,8 @@ fn pair_companions_with_progress(
 
 #[cfg(test)]
 // EXCEPTION to tests-folder conventions: these assertions exercise the
-// private pairing SQL builders and extraction progress boundary. Duplicating
-// those decisions in an integration test could pass after production regressed.
+// private pairing SQL builders and extraction/hash progress boundaries.
+// Duplicating those decisions could pass after production regressed.
 #[path = "../tests/unit/scanner.rs"]
 mod pairing_plan_tests;
 

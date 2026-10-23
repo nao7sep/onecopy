@@ -81,3 +81,47 @@ fn read_back_rejects_corrupted_output_and_preserves_the_source() {
     assert!(!stage.exists(), "rejected output must remain private and be removed");
     assert_eq!(std::fs::read(&source).unwrap(), original);
 }
+
+#[test]
+fn only_whole_file_prehashes_carry_complete_version_evidence() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("source.bin");
+    for size in [0, 1, PREHASH_WINDOW, 2 * PREHASH_WINDOW, 2 * PREHASH_WINDOW + 1] {
+        std::fs::write(&path, vec![7; size as usize]).unwrap();
+        let evidence = prehash_evidence(&path).unwrap();
+        assert_eq!(evidence.complete_version.is_some(), size <= 2 * PREHASH_WINDOW);
+        if let Some(version) = evidence.complete_version {
+            assert!(version.matches_path(&path).unwrap());
+            assert_eq!(evidence.hash, full_hash(&path).unwrap());
+        }
+    }
+}
+
+#[test]
+fn a_changed_file_cannot_supply_complete_prehash_evidence() {
+    use crate::volume_io::{FakeStallingVolume, Op};
+    use std::time::Duration;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("source.bin");
+    std::fs::write(&path, b"old").unwrap();
+    let volume = FakeStallingVolume::mount(directory.path(), Duration::from_secs(30));
+    volume.stall(&[Op::Read], None);
+    let worker_path = path.clone();
+    let worker = std::thread::spawn(move || prehash_evidence(&worker_path));
+    let held = volume.wait_until_held(1, Duration::from_secs(5));
+    std::fs::write(&path, b"replacement").unwrap();
+    volume.release();
+    let result = worker.join().unwrap();
+    assert!(held);
+    assert!(result.err().unwrap().to_string().contains("source changed"));
+}
+
+#[test]
+fn an_early_end_cannot_satisfy_a_complete_prehash_range() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("short.bin");
+    std::fs::write(&path, b"short").unwrap();
+    let mut file = volume_io::open_read(&path).unwrap();
+    let error = copy_exact_into(&mut file, &mut blake3::Hasher::new(), 6).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+}

@@ -3078,3 +3078,33 @@ fn malformed_timestamp_receipts_reopen_extraction_without_publishing_a_fallback_
         }
     }
 }
+
+#[test]
+fn small_colliding_files_reuse_the_complete_prehash_without_reading_bytes_again() {
+    use onecopy_lib::volume_io::{FakeStallingVolume, Op};
+    use std::time::Duration;
+    for size in [32, 2 * onecopy_lib::hashing::PREHASH_WINDOW as usize] {
+        let f = fixture("complete-prehash");
+        let first = f.root.join("first.bin");
+        for path in [&first, &f.root.join("second.bin")] {
+            std::fs::write(path, vec![7; size]).unwrap();
+        }
+        walk_root(&f.conn, &f.root, &lists()).unwrap();
+        let volume = FakeStallingVolume::mount(&f.root, Duration::from_millis(200));
+        // One or two payload reads, plus the closes of the prehash and
+        // version-check descriptors. A second byte read pass exceeds this
+        // budget; metadata checks remain available.
+        let reads_and_closes = size.div_ceil(onecopy_lib::hashing::PREHASH_WINDOW as usize) + 2;
+        volume.stall_after(&[Op::Read], Some(&first), reads_and_closes);
+        let result = hash_pending(&f.conn, &test_cache(&f));
+        let exceeded = volume.is_stalled();
+        volume.release();
+        assert!(volume.wait_until_settled(Duration::from_secs(5)));
+        let stats = result.unwrap();
+        assert!(!exceeded, "complete bytes were read a second time");
+        assert_eq!(stats.prehashed, 2);
+        assert_eq!(stats.full_hashed, 2);
+        assert_eq!(stats.errors, 0);
+        assert_eq!(count(&f.conn, "SELECT count(*) FROM contents"), 1);
+    }
+}

@@ -29,8 +29,20 @@ fn cancelled_error() -> std::io::Error {
 /// blake3 over the first and last 64 KB (whole file when ≤128 KB). Cheap
 /// same-size disambiguation only — never a collapse criterion.
 pub fn prehash(path: &Path) -> std::io::Result<String> {
-    let mut file = volume_io::open_read(path)?;
+    prehash_evidence(path).map(|evidence| evidence.hash)
+}
+
+pub(crate) struct PrehashEvidence {
+    pub hash: String,
+    // Present only when every byte was read from this verified version.
+    pub complete_version: Option<crate::file_identity::FileVersion>,
+}
+
+pub(crate) fn prehash_evidence(path: &Path) -> std::io::Result<PrehashEvidence> {
+    let (mut file, _) = crate::file_identity::open_regular_nofollow(path)?;
     let size = file.metadata()?.len();
+    let complete_version = (size <= 2 * PREHASH_WINDOW)
+        .then(|| crate::file_identity::FileVersion::of(&mut file)).transpose()?;
     let mut hasher = blake3::Hasher::new();
 
     let head_len = size.min(PREHASH_WINDOW);
@@ -44,7 +56,12 @@ pub fn prehash(path: &Path) -> std::io::Result<String> {
         copy_exact_into(&mut file, &mut hasher, size - PREHASH_WINDOW)?;
     }
 
-    Ok(hasher.finalize().to_hex().to_string())
+    if let Some(before) = complete_version {
+        if file.metadata()?.len() != size || crate::file_identity::FileVersion::of(&mut file)? != before {
+            return Err(std::io::Error::other("source changed while computing its complete prehash"));
+        }
+    }
+    Ok(PrehashEvidence { hash: hasher.finalize().to_hex().to_string(), complete_version })
 }
 
 /// Full streaming blake3 of the file's bytes.
@@ -333,7 +350,10 @@ fn copy_exact_into(
         let want = buf.len().min(remaining as usize);
         let n = file.read_cancellable(&mut buf[..want], None)?;
         if n == 0 {
-            break; // size raced smaller since stat; hash what exists
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "source ended before its recorded prehash range was read",
+            ));
         }
         hasher.update(&buf[..n]);
         remaining -= n as u64;

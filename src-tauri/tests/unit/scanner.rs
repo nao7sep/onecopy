@@ -251,3 +251,33 @@ fn cancelling_extraction_leaves_remaining_pages_eligible_for_resume() {
     assert_eq!(conn.query_row("SELECT count(*) FROM paths WHERE indexed_at_utc IS NOT NULL", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
     assert_eq!(super::extract_pending(&conn).unwrap().extracted, (total - 1) as u64);
 }
+
+#[test]
+fn complete_prehash_cannot_identify_a_file_changed_before_cohort_publication() {
+    let _serial = crate::scan_runtime::serial_test();
+    super::SCAN_CANCEL.store(false, std::sync::atomic::Ordering::SeqCst);
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("source");
+    std::fs::create_dir(&root).unwrap();
+    let first = root.join("first.bin");
+    let second = root.join("second.bin");
+    std::fs::write(&first, b"same").unwrap();
+    std::fs::write(&second, b"same").unwrap();
+    let conn = crate::index_store::open(&directory.path().join("index.sqlite3")).unwrap();
+    let lists = crate::scanner::settings_from_config(None, directory.path(), 0).lists;
+    // Explicit order makes the progress boundary occur after the first read.
+    for path in [&first, &second] {
+        super::upsert_file(&conn, path, &std::fs::metadata(path).unwrap(), &lists, 0).unwrap();
+    }
+    let changed = std::cell::Cell::new(false);
+    let cache = crate::preview::CachePaths::new(directory.path().join("cache"));
+    let result = super::hash_pending_with_progress(&conn, &cache, &|progress| {
+        if progress.current_path.as_deref() == Some(crate::native_path::encode(&second).as_ref()) && !changed.replace(true) {
+            std::fs::write(&first, b"replacement").unwrap();
+        }
+    }).unwrap();
+    assert!(changed.get());
+    assert_eq!(result.errors, 1);
+    assert_eq!(conn.query_row("SELECT content_hash IS NULL FROM paths WHERE file_name = 'first.bin'", [], |row| row.get::<_, bool>(0)).unwrap(), true);
+    assert_eq!(conn.query_row("SELECT hash_attempt_failed FROM paths WHERE file_name = 'first.bin'", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+}

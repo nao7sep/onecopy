@@ -22,6 +22,7 @@ pub(crate) struct Row {
     pub(crate) kind: String,
     pub(crate) provisional: Option<String>,
     pub(crate) prehash: Option<String>,
+    pub(crate) complete_version: Option<crate::file_identity::FileVersion>,
 }
 
 pub(crate) struct Cohort<'a> {
@@ -34,6 +35,7 @@ impl<'a> Cohort<'a> {
             "CREATE TEMP TABLE onecopy_hash_cohort (
                id INTEGER PRIMARY KEY,
                prehash TEXT,
+               complete_version TEXT,
                landed_hash TEXT
              );",
         ).map_err(|error| error.to_string())?;
@@ -68,10 +70,10 @@ impl<'a> Cohort<'a> {
 
     pub(crate) fn rows(&self, after_id: i64, prehash: Option<&str>) -> Result<Vec<Row>, String> {
         let sql = match prehash {
-            None => "SELECT p.id, p.abs_path, p.size, p.kind, p.content_hash, p.prehash
+            None => "SELECT p.id, p.abs_path, p.size, p.kind, p.content_hash, p.prehash, c.complete_version
                      FROM temp.onecopy_hash_cohort c JOIN paths p ON p.id = c.id
                      WHERE c.id > ?1 ORDER BY c.id LIMIT 128",
-            Some(_) => "SELECT p.id, p.abs_path, p.size, p.kind, p.content_hash, p.prehash
+            Some(_) => "SELECT p.id, p.abs_path, p.size, p.kind, p.content_hash, p.prehash, c.complete_version
                         FROM temp.onecopy_hash_cohort c JOIN paths p ON p.id = c.id
                         WHERE c.id > ?1 AND c.prehash = ?2 ORDER BY c.id LIMIT 128",
         };
@@ -83,6 +85,11 @@ impl<'a> Cohort<'a> {
             kind: row.get(3)?,
             provisional: row.get(4)?,
             prehash: row.get(5)?,
+            complete_version: row.get::<_, Option<String>>(6)?.map(|value| {
+                serde_json::from_str(&value).map_err(|error| rusqlite::Error::FromSqlConversionFailure(
+                    6, rusqlite::types::Type::Text, Box::new(error),
+                ))
+            }).transpose()?,
         });
         let rows = match prehash {
             None => statement.query_map(params![after_id], read),
@@ -118,6 +125,12 @@ impl<'a> Cohort<'a> {
             "UPDATE temp.onecopy_hash_cohort SET prehash = ?2 WHERE id = ?1",
             params![id, prehash],
         ).map(|_| ()).map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn set_complete_version(&self, id: i64, version: crate::file_identity::FileVersion) -> Result<(), String> {
+        let value = serde_json::to_string(&version).map_err(|error| error.to_string())?;
+        self.conn.execute("UPDATE temp.onecopy_hash_cohort SET complete_version = ?2 WHERE id = ?1", params![id, value])
+            .map(|_| ()).map_err(|error| error.to_string())
     }
 
     pub(crate) fn discard(&self, id: i64) -> Result<(), String> {
