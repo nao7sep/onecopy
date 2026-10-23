@@ -344,7 +344,8 @@ fn the_facts_store_and_sidecars_carry_their_format_versions() {
         .unwrap();
     save_check_attempt(dir.path(), MANAGED_TOOL_UPDATE_ATTEMPT_KEY, "2026-10-05T00:00:00.000Z").unwrap();
     std::fs::create_dir_all(dir.path().join(BIN_DIR_NAME)).unwrap();
-    write_version_sidecar(dir.path(), "9.0").unwrap();
+    std::fs::write(ffmpeg_path(dir.path()), b"verified executable fixture").unwrap();
+    write_version_sidecar(dir.path(), "9.0", binary_file_version(&ffmpeg_path(dir.path())).unwrap()).unwrap();
     let spec = spec_of("ultraface-rfb640").unwrap();
     std::fs::create_dir_all(installed_path(dir.path(), spec).parent().unwrap()).unwrap();
     std::fs::File::create(installed_path(dir.path(), spec)).unwrap()
@@ -388,7 +389,8 @@ fn files_a_newer_onecopy_wrote_read_as_absent_and_are_left_as_they_are() {
     let sidecar_bytes = newer(formats::FFMPEG_VERSION_SIDECAR, serde_json::json!({ "version": "9.0" }));
     std::fs::write(version_sidecar_path(dir.path()), &sidecar_bytes).unwrap();
     assert_eq!(read_version_sidecar(dir.path()), None);
-    assert!(write_version_sidecar(dir.path(), "8.0").is_err());
+    std::fs::write(ffmpeg_path(dir.path()), b"verified executable fixture").unwrap();
+    assert!(write_version_sidecar(dir.path(), "8.0", binary_file_version(&ffmpeg_path(dir.path())).unwrap()).is_err());
     assert_eq!(std::fs::read(version_sidecar_path(dir.path())).unwrap(), sidecar_bytes);
 
     let spec = spec_of("ultraface-rfb640").unwrap();
@@ -483,4 +485,59 @@ fn invalid_and_newer_model_sidecars_never_supply_verified_digests_or_get_rewritt
         assert_eq!(state_of(dir.path(), spec).status, BinaryStatus::InstalledUnchecked);
         assert_eq!(std::fs::read(&sidecar).unwrap(), before);
     }
+}
+
+#[test]
+fn failed_ffmpeg_probe_retries_and_success_belongs_to_the_observed_artifact() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join(BIN_DIR_NAME)).unwrap();
+    let path = ffmpeg_path(root.path());
+    std::fs::write(&path, b"first binary").unwrap();
+    let cache = std::sync::Mutex::new(None);
+    assert_eq!(installed_ffmpeg_version_with(root.path(), &cache, |_| None), None);
+    assert_eq!(installed_ffmpeg_version_with(root.path(), &cache, |_| Some("9.0".into())).as_deref(), Some("9.0"));
+    assert_eq!(installed_ffmpeg_version_with(root.path(), &cache, |_| panic!("successful observation should be reused")).as_deref(), Some("9.0"));
+    std::fs::rename(&path, path.with_extension("old")).unwrap();
+    std::fs::write(&path, b"second binary").unwrap();
+    assert_eq!(installed_ffmpeg_version_with(root.path(), &cache, |_| Some("9.1".into())).as_deref(), Some("9.1"));
+}
+
+#[test]
+fn ffmpeg_replacement_during_probe_cannot_cache_the_old_answer() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join(BIN_DIR_NAME)).unwrap();
+    let path = ffmpeg_path(root.path());
+    std::fs::write(&path, b"first binary").unwrap();
+    let cache = std::sync::Mutex::new(None);
+    let result = installed_ffmpeg_version_with(root.path(), &cache, |_| {
+        std::fs::rename(&path, path.with_extension("old")).unwrap();
+        std::fs::write(&path, b"second binary").unwrap();
+        Some("9.0".into())
+    });
+    assert!(result.is_none());
+    assert!(cache.lock().unwrap().is_none());
+    assert_eq!(installed_ffmpeg_version_with(root.path(), &cache, |_| Some("9.1".into())).as_deref(), Some("9.1"));
+}
+
+#[test]
+fn ffmpeg_sidecar_cannot_label_a_replacement_or_unidentified_legacy_binary() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join(BIN_DIR_NAME)).unwrap();
+    let path = ffmpeg_path(root.path());
+    std::fs::write(&path, b"first binary").unwrap();
+    let first = binary_file_version(&path).unwrap();
+    write_version_sidecar(root.path(), "autobuild-first", first).unwrap();
+    assert_eq!(read_version_sidecar(root.path()).as_deref(), Some("autobuild-first"));
+    std::fs::rename(&path, path.with_extension("old")).unwrap();
+    std::fs::write(&path, b"second binary").unwrap();
+    let old_record = std::fs::read(version_sidecar_path(root.path())).unwrap();
+    assert_eq!(read_version_sidecar(root.path()), None, "interruption before the sidecar write leaves identity unknown");
+    assert!(write_version_sidecar(root.path(), "autobuild-first", first).is_err());
+    assert_eq!(std::fs::read(version_sidecar_path(root.path())).unwrap(), old_record);
+    write_version_sidecar(root.path(), "autobuild-second", binary_file_version(&path).unwrap()).unwrap();
+    assert_eq!(read_version_sidecar(root.path()).as_deref(), Some("autobuild-second"));
+    storage::write_json_file(&version_sidecar_path(root.path()), &serde_json::json!({"version": "autobuild-legacy"}), formats::FFMPEG_VERSION_SIDECAR, false).unwrap();
+    let legacy = std::fs::read(version_sidecar_path(root.path())).unwrap();
+    assert_eq!(read_version_sidecar(root.path()), None);
+    assert_eq!(std::fs::read(version_sidecar_path(root.path())).unwrap(), legacy, "inspection preserves unbound legacy evidence");
 }

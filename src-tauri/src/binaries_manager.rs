@@ -430,9 +430,13 @@ fn ffmpeg_reports_its_own_version() -> bool {
 /// version-unknown, which offers a re-acquire — where writing the sidecar
 /// first would leave the OLD binary wearing the NEW version's label and
 /// reading as up to date.
-fn write_version_sidecar(root: &Path, version: &str) -> Result<(), String> {
+fn write_version_sidecar(root: &Path, version: &str, file_version: crate::file_identity::FileVersion) -> Result<(), String> {
+    if !file_version.matches_path(&ffmpeg_path(root)).map_err(|error| error.to_string())? {
+        return Err("ffmpeg changed before its installed version could be recorded".to_string());
+    }
     let payload = serde_json::json!({
         "version": version,
+        "fileVersion": file_version,
         "installedAt": logging::now_iso_millis(),
     });
     // not recorded: a sidecar colocated in the binary-bearing bin/ directory,
@@ -456,6 +460,8 @@ fn read_version_sidecar(root: &Path) -> Option<String> {
         }
         _ => return None,
     };
+    let expected: crate::file_identity::FileVersion = serde_json::from_value(value.get("fileVersion")?.clone()).ok()?;
+    if !expected.matches_path(&ffmpeg_path(root)).ok()? { return None; }
     let version = value.get("version")?.as_str()?.trim();
     (!version.is_empty()).then(|| binaries::normalize_version(version))
 }
@@ -567,12 +573,23 @@ fn probe_ffmpeg_version(root: &Path) -> Option<String> {
     binaries::parse_ffmpeg_version(&String::from_utf8_lossy(&run.stdout))
 }
 
-/// The ffmpeg probe is a subprocess spawn, so its answer is held for the
-/// process and re-read only after an install replaces the binary — it must
-/// never run per render, and `state_of` is called on every status read.
+struct ObservedFfmpegVersion {
+    path: PathBuf,
+    file_version: crate::file_identity::FileVersion,
+    version: String,
+}
+
+/// Retain successful artifact-bound observations across status reads. A failed
+/// probe is retryable at the next explicit status refresh, not cached for the
+/// launch. Rendering consumes the application store and never probes here.
 static INSTALLED_FFMPEG_VERSION: std::sync::LazyLock<
-    std::sync::Mutex<Option<Option<String>>>,
+    std::sync::Mutex<Option<ObservedFfmpegVersion>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
+fn binary_file_version(path: &Path) -> Result<crate::file_identity::FileVersion, String> {
+    let (mut file, _) = crate::file_identity::open_regular_nofollow(path).map_err(|error| error.to_string())?;
+    crate::file_identity::FileVersion::of(&mut file).map_err(|error| error.to_string())
+}
 
 fn forget_installed_ffmpeg_version() {
     *INSTALLED_FFMPEG_VERSION
@@ -581,19 +598,29 @@ fn forget_installed_ffmpeg_version() {
 }
 
 fn installed_ffmpeg_version(root: &Path) -> Option<String> {
-    let mut cached = INSTALLED_FFMPEG_VERSION
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    if let Some(known) = cached.as_ref() {
-        return known.clone();
+    installed_ffmpeg_version_with(root, &INSTALLED_FFMPEG_VERSION, |root| {
+        if ffmpeg_reports_its_own_version() { probe_ffmpeg_version(root) }
+        else { read_version_sidecar(root) }
+    })
+}
+
+fn installed_ffmpeg_version_with(
+    root: &Path,
+    observations: &std::sync::Mutex<Option<ObservedFfmpegVersion>>,
+    read: impl FnOnce(&Path) -> Option<String>,
+) -> Option<String> {
+    let path = ffmpeg_path(root);
+    let file_version = binary_file_version(&path).ok()?;
+    let mut cached = observations.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(known) = cached.as_ref().filter(|known| known.path == path && known.file_version == file_version) {
+        return Some(known.version.clone());
     }
-    let read = if ffmpeg_reports_its_own_version() {
-        probe_ffmpeg_version(root)
-    } else {
-        read_version_sidecar(root)
-    };
-    *cached = Some(read.clone());
-    read
+    *cached = None;
+    let version = read(root)?;
+    // A replacement during the probe cannot attach the old answer to new bytes.
+    if !file_version.matches_path(&path).ok()? { return None; }
+    *cached = Some(ObservedFfmpegVersion { path, file_version, version: version.clone() });
+    Some(version)
 }
 
 // --- Resolution ---
@@ -993,6 +1020,7 @@ fn install_ffmpeg_started(
             .parent()
             .ok_or_else(|| format!("installed path has no parent: {}", crate::native_path::label(&target)))?;
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        let staged_version = binary_file_version(&staged)?;
         guard.deadline.check(&guard.cancelled)?;
         // Replace-in-place: rename over any previous install (same volume).
         // not recorded: the installed executable is a re-downloadable binary.
@@ -1007,7 +1035,7 @@ fn install_ffmpeg_started(
         // a present binary reading version-unknown (which offers a re-acquire)
         // rather than an old binary wearing the new version's label.
         if !ffmpeg_reports_its_own_version() {
-            write_version_sidecar(root, &resolved.version)?;
+            write_version_sidecar(root, &resolved.version, staged_version)?;
             // The write changed what a read would see; drop again in case a
             // concurrent status read cached between the two.
             forget_installed_ffmpeg_version();
