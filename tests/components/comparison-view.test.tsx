@@ -62,3 +62,24 @@ describe("Comparison view and decision store composition", () => {
     expect(second.getAttribute("aria-selected")).toBe("false");
   });
 });
+
+it("contains Tab in Comparison and restores its opener after closing", () => {
+  const opener = document.createElement("button");
+  document.body.append(opener);
+  opener.focus();
+  const view = render(<ComparisonView onRevealTrash={vi.fn()} />);
+  const dialog = view.getByRole("dialog");
+  expect(opener.closest("[inert]")).not.toBeNull();
+  expect(document.activeElement).toBe(view.getByRole("listbox"));
+  const buttons = dialog.querySelectorAll<HTMLButtonElement>("button:not([disabled])");
+  const last = buttons[buttons.length - 1];
+  last.focus();
+  fireEvent.keyDown(last, { key: "Tab" });
+  expect(document.activeElement).toBe(buttons[0]);
+  fireEvent.keyDown(buttons[0], { key: "Tab", shiftKey: true });
+  expect(document.activeElement).toBe(last);
+  act(() => useComparisonStore.setState({ open: false }));
+  expect(opener.closest("[inert]")).toBeNull();
+  expect(document.activeElement).toBe(opener);
+  opener.remove();
+});

@@ -29,7 +29,7 @@ import { restorePreviewAfterComparison } from "../state/preview-store";
 import { useSectionsStore } from "../state/sections-store";
 import { presentEscapedFailure, recordInterfaceFailure } from "../utils/failureSurface";
 import { createEventInstaller } from "../utils/eventInstallation";
-import { hasOpenModal } from "../utils/modalStack";
+import { hasOpenModal, isTopmostModal } from "../utils/modalStack";
 import {
   latestActivityOperationId,
   newActivityOperationId,
@@ -413,6 +413,10 @@ export type ComparisonAppKey = ComparisonProjection & {
   altKey: boolean;
 };
 
+// The local view and commands forwarded by secondary displays belong to the
+// same blocking surface; a confirmation above it still suppresses both.
+export const comparisonLayerToken = {};
+
 export function handleComparisonKey(event: {
   key: string;
   repeat?: boolean;
@@ -422,7 +426,7 @@ export function handleComparisonKey(event: {
   altKey?: boolean;
 }): boolean {
   const store = useComparisonStore.getState();
-  if (!store.open || hasOpenModal()) return false;
+  if (!store.open || (hasOpenModal() && !isTopmostModal(comparisonLayerToken))) return false;
   if (store.busy) {
     if (
       event.key === "Escape" &&
@@ -544,7 +548,7 @@ const installEvents = createEventInstaller(
       mode: "activate" | "toggle" | "range";
     }>("comparison://select", (event) => {
       const store = useComparisonStore.getState();
-      if (!comparisonProjectionIsCurrent(event.payload) || store.busy || hasOpenModal()) return;
+      if (!comparisonProjectionIsCurrent(event.payload) || store.busy || (hasOpenModal() && !isTopmostModal(comparisonLayerToken))) return;
       if (visibleMembers(store)[event.payload.slotIndex]?.hash !== event.payload.hash) return;
       store.selectSlot(event.payload.slotIndex, event.payload.mode);
     });

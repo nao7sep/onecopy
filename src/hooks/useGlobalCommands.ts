@@ -18,7 +18,7 @@ import {
   isSettingsShortcut,
   shadowsMacTextEditing,
 } from "../utils/shortcuts";
-import { requestComparisonFromMain } from "../workflows/comparison";
+import { comparisonLayerToken, requestComparisonFromMain } from "../workflows/comparison";
 import {
   captureDeleteSelection,
   deleteItems,
@@ -54,16 +54,16 @@ export function useGlobalCommands() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || isComposingEvent(event) || hasOpenModal()) return;
+      if (event.defaultPrevented || isComposingEvent(event) || hasOpenModal(comparisonLayerToken)) return;
       const editable = isEditableTarget(event.target);
       if (editable && (event.key === "?" || shadowsMacTextEditing(event)))
         return;
       if (isHelpShortcut(event)) {
         event.preventDefault();
-        if (!hasOpenModal()) useAppShellStore.getState().openUtility("shortcuts");
+        if (!hasOpenModal(comparisonLayerToken)) useAppShellStore.getState().openUtility("shortcuts");
       } else if (isSettingsShortcut(event)) {
         event.preventDefault();
-        if (!hasOpenModal()) openSettings();
+        if (!hasOpenModal(comparisonLayerToken)) openSettings();
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -81,12 +81,12 @@ export function useGlobalCommands() {
       else stops.push(stop);
     };
     void listen("menu://open-settings", () => {
-      if (!hasOpenModal()) openSettings();
+      if (!hasOpenModal(comparisonLayerToken)) openSettings();
     }).then(keep);
     // The native About panel shows only the name and version; the app menu's
     // About opens Main's own About surface instead.
     void listen("menu://open-about", () => {
-      if (!hasOpenModal()) useAppShellStore.getState().openUtility("about");
+      if (!hasOpenModal(comparisonLayerToken)) useAppShellStore.getState().openUtility("about");
     }).then(keep);
     return () => {
       disposed = true;

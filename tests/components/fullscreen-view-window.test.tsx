@@ -56,6 +56,32 @@ it("keeps the chrome hover- and focus-revealed, not permanently shown", async ()
   expect(document.activeElement?.getAttribute("aria-label")).toBe("Previous item");
 });
 
+it("lets Space activate a focused chrome button instead of forwarding viewer Space", async () => {
+  const user = userEvent.setup();
+  render(<FullscreenViewWindow />);
+  await act(async () => deliver("fullscreen-view://state", state));
+  screen.getByRole("button", { name: "Previous item" }).focus();
+  await user.keyboard(" ");
+  expect(emitCalls.filter((call) => call.event === "fullscreen-view://key")).toEqual([
+    { event: "fullscreen-view://key", payload: { key: "ArrowLeft", shiftKey: false, token: "session-1", itemKey: "photo" } },
+  ]);
+});
+
+it.each(["audio", "video"])("leaves native %s control Space unconsumed", async (tag) => {
+  render(<FullscreenViewWindow />);
+  await act(async () => deliver("fullscreen-view://state", state));
+  const media = document.createElement(tag);
+  media.setAttribute("controls", "");
+  screen.getByLabelText("Fullscreen view").appendChild(media);
+  let reachedControl = false;
+  media.addEventListener("keydown", () => { reachedControl = true; });
+  const space = new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true });
+  media.dispatchEvent(space);
+  expect(space.defaultPrevented).toBe(false);
+  expect(reachedControl).toBe(true);
+  expect(emitCalls.filter((call) => call.event === "fullscreen-view://key")).toEqual([]);
+});
+
 it("does not steal confirmation focus on reactivation or forward its decision keys", async () => {
   const user = userEvent.setup();
   render(<FullscreenViewWindow />);

@@ -1,3 +1,4 @@
+import { useId, useRef } from "react";
 import { useBlockingSurface } from "../hooks/useBlockingSurface";
 import { useI18n } from "../i18n/I18nContext";
 import Button from "./ui/Button";
@@ -69,19 +70,30 @@ export function SubstitutedSourceGate({
   onRecheck: () => void;
   onReconfigure: () => void;
 }) {
-  useBlockingSurface();
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  useBlockingSurface(surfaceRef);
   const { t } = useI18n();
   return (
     <div className="fixed inset-0 z-10 flex items-center justify-center bg-background p-6">
-      <div className="w-[min(820px,calc(100vw-3rem))] rounded-2xl border border-border bg-surface p-7 shadow-xl">
-        <h1 className="mb-1 text-lg font-semibold text-ink-strong">
-          {t(unknown ? "source.substitutedCheckFailedTitle" : "source.substitutedTitle")}
-        </h1>
-        <p className="mb-3 text-sm text-ink-muted">
-          {t(unknown ? "source.substitutedCheckFailedBody" : "source.substitutedBody")}
-        </p>
-        {unknown ? null : (
-          <BoundedText className="mb-4 max-h-64">
+      <div
+        ref={surfaceRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        className="flex max-h-[90vh] w-[min(820px,calc(100vw-3rem))] flex-col rounded-2xl border border-border bg-surface shadow-xl"
+      >
+        <header className="shrink-0 border-b border-control-edge px-5 py-3">
+          <h1 id={titleId} className="text-lg font-semibold text-ink-strong">
+            {t(unknown ? "source.substitutedCheckFailedTitle" : "source.substitutedTitle")}
+          </h1>
+        </header>
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          <p className="mb-3 text-sm text-ink-muted">
+            {t(unknown ? "source.substitutedCheckFailedBody" : "source.substitutedBody")}
+          </p>
+          {unknown ? null : (
             <ul>
               {substituted.map((path) => (
                 <li
@@ -92,16 +104,16 @@ export function SubstitutedSourceGate({
                 </li>
               ))}
             </ul>
-          </BoundedText>
-        )}
-        <div className="flex justify-end gap-2">
+          )}
+        </div>
+        <footer className="flex shrink-0 justify-end gap-2 border-t border-control-edge px-5 py-3">
           <Button size="md" onClick={onReconfigure}>
             {t("source.rerunSetup")}
           </Button>
           <Button autoFocus variant="primary" size="md" onClick={onRecheck}>
             {t("app.checkSources")}
           </Button>
-        </div>
+        </footer>
       </div>
     </div>
   );

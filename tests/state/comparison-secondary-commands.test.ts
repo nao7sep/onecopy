@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { broadcastComparison, useComparisonStore, type ComparisonBroadcast, type GroupMember } from "../../src/state/comparison-store";
 import { useItemsStore } from "../../src/state/items-store";
 import { useSectionsStore } from "../../src/state/sections-store";
@@ -8,8 +8,12 @@ import { useIssuesStore } from "../../src/state/issues-store";
 import { useAppStore } from "../../src/state/app-store";
 import { restorePreviewAfterComparison, usePreviewStore } from "../../src/state/preview-store";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { closeComparison, comparisonAppKey, decideComparisonPage, installComparisonEventWiring, openComparison, requestComparisonFromMain } from "../../src/workflows/comparison";
+import { comparisonLayerToken, closeComparison, comparisonAppKey, decideComparisonPage, installComparisonEventWiring, openComparison, requestComparisonFromMain } from "../../src/workflows/comparison";
 import { createdWindows, emitCalls, fireEvent, invokeCalls, mockCommands, resetTauriMocks, setCurrentMonitor, setMonitors } from "../mocks/tauri";
+
+import { pushModal, resetModalStack } from "../../src/utils/modalStack";
+
+afterEach(resetModalStack);
 
 function members(count = 8): GroupMember[] {
   return Array.from({ length: count }, (_, index) => ({
@@ -26,6 +30,8 @@ function renderedProjection(): ComparisonBroadcast {
 }
 
 beforeEach(async () => {
+  resetModalStack();
+  pushModal(comparisonLayerToken);
   resetTauriMocks({ keepListeners: true });
   mockCommands({
     set_window_fullscreen: () => null, set_spread_fullscreen: () => null,
@@ -370,4 +376,13 @@ it("replays a secondary display's app shortcut in Main, focusing Main only for a
   } finally {
     window.removeEventListener("keydown", record);
   }
+});
+
+it("suppresses current secondary decisions under a nested dialog", () => {
+  const shown = renderedProjection();
+  pushModal({});
+  fireEvent("comparison://select", { ...shown, slotIndex: 2, hash: "h2", mode: "toggle" });
+  fireEvent("comparison://key", { ...shown, key: "Enter" });
+  expect(useComparisonStore.getState().selected).toEqual(new Set(["h1"]));
+  expect(useComparisonStore.getState().pendingAction).toBeNull();
 });

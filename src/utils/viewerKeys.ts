@@ -30,7 +30,8 @@ export function controlOwnsForwardableKey(event: KeyboardEvent): boolean {
 export function fullscreenViewOwnsKey(event: KeyboardEvent, kind: string | null, fileName: string): boolean {
   if (event.defaultPrevented || isComposingEvent(event) || isEditableTarget(event.target)
     || event.metaKey || event.ctrlKey || event.altKey) return false;
-  if (event.key === " " || event.key === "Escape") return !event.shiftKey;
+  if (event.key === " ") return !event.shiftKey && !controlOwnsForwardableKey(event);
+  if (event.key === "Escape") return !event.shiftKey;
   if (event.key === "Delete" || event.key === "Backspace") return true;
   if (controlOwnsForwardableKey(event)) return false;
   // Up and Down are never the view's: the sequence moves with Left and

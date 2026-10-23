@@ -17,7 +17,8 @@ const FOCUSABLE_SELECTOR = [
 ].join(",");
 
 export function getFocusableElements(container: HTMLElement): HTMLElement[] {
-  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
+  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
+    .filter((element) => !element.closest("[inert], [hidden]"));
 }
 
 /** A field worth opening ON: one the user can immediately type into.

@@ -2,6 +2,7 @@
 
 import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { comparisonLayerToken } from "../../src/workflows/comparison";
 import { useGlobalCommands } from "../../src/hooks/useGlobalCommands";
 import { EMPTY_ITEM_WORK, type SectionItem } from "../../src/models/items";
 import { useComparisonStore } from "../../src/state/comparison-store";
@@ -552,4 +553,16 @@ it.each(["offscreen-selection", "path-1001"])("rejects stale Preview Delete afte
     command: "delete_items",
     args: { items: [{ hash: current.hash, pathId: current.pathId }], permanent: false },
   }]);
+});
+
+it("retains app dialogs in Comparison and suppresses them under a nested dialog", () => {
+  render(<Harness />);
+  useComparisonStore.setState({ open: true });
+  pushModal(comparisonLayerToken);
+  fireEvent.keyDown(window, { key: "?" });
+  expect(useAppShellStore.getState().utilitySurface).toBe("shortcuts");
+  useAppShellStore.getState().closeUtility();
+  pushModal({});
+  fireEvent.keyDown(window, { key: "?" });
+  expect(useAppShellStore.getState().utilitySurface).toBeNull();
 });

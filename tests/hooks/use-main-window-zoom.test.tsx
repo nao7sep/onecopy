@@ -1,6 +1,8 @@
 // @vitest-environment happy-dom
-import { act, cleanup, fireEvent, renderHook } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { Menu, MenuItem } from "../../src/components/Menu";
+import { comparisonLayerToken } from "../../src/workflows/comparison";
 import { useMainWindowLifecycle } from "../../src/hooks/useMainWindowLifecycle";
 import { useAppStore } from "../../src/state/app-store";
 import { pushModal, resetModalStack } from "../../src/utils/modalStack";
@@ -41,4 +43,34 @@ it("does not zoom after another owner consumes the event, during composition, or
   pushModal({});
   fireEvent.keyDown(window, { key: "=", metaKey: true });
   expect(setZoom).not.toHaveBeenCalled();
+});
+
+it("keeps Comparison zoom available until a nested dialog opens", async () => {
+  renderHook(() => useMainWindowLifecycle({ appData, splitOpen: false }));
+  await act(async () => {});
+  pushModal(comparisonLayerToken);
+  fireEvent.keyDown(window, { key: "=", metaKey: true });
+  expect(setZoom).toHaveBeenLastCalledWith(1.2);
+  pushModal({});
+  fireEvent.keyDown(window, { key: "=", metaKey: true });
+  expect(setZoom).toHaveBeenCalledTimes(1);
+});
+
+it("keeps global zoom shortcuts available from an open menu", async () => {
+  function Harness() {
+    const zoom = useMainWindowLifecycle({ appData, splitOpen: false });
+    return <Menu ariaLabel="Commands" trigger={(props) => <button {...props}>Menu</button>}>
+      <MenuItem onSelect={() => undefined}>Settings</MenuItem>
+      <div><button onClick={zoom.zoomOut}>Zoom out</button><button onClick={zoom.zoomIn}>Zoom in</button></div>
+    </Menu>;
+  }
+  render(<Harness />);
+  await act(async () => {});
+  fireEvent.click(screen.getByText("Menu"));
+  const command = screen.getByRole("menuitem");
+  fireEvent.keyDown(command, { key: "=", metaKey: true });
+  expect(setZoom).toHaveBeenLastCalledWith(1.2);
+  fireEvent.keyDown(command, { key: "-", metaKey: true });
+  expect(setZoom).toHaveBeenLastCalledWith(1);
+  expect(screen.getByRole("menu")).toBeTruthy();
 });

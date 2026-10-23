@@ -12,6 +12,40 @@
 
 const stack: Array<{ token: object; surface?: HTMLElement; opener: HTMLElement | null }> = [];
 
+// Inert only siblings of the active surface and its ancestors. Making an
+// ancestor inert would disable the modal itself, including nested dialogs.
+const inerted = new Map<HTMLElement, string | null>();
+let observer: MutationObserver | null = null;
+
+function updateBackground(): void {
+  for (const [element, original] of inerted) {
+    if (original === null) element.removeAttribute("inert");
+    else element.setAttribute("inert", original);
+  }
+  inerted.clear();
+  observer?.disconnect();
+  observer = null;
+  let surface: HTMLElement | undefined;
+  for (let index = stack.length - 1; index >= 0; index--) {
+    if (stack[index].surface !== undefined) { surface = stack[index].surface; break; }
+  }
+  if (!surface?.isConnected) return;
+  let branch: HTMLElement = surface;
+  while (branch.parentElement) {
+    for (const sibling of branch.parentElement.children) {
+      if (sibling === branch || !(sibling instanceof HTMLElement)) continue;
+      inerted.set(sibling, sibling.getAttribute("inert"));
+      sibling.setAttribute("inert", "");
+    }
+    if (branch.parentElement === document.body) break;
+    branch = branch.parentElement;
+  }
+  // Portals or other siblings can mount while a blocking surface is open.
+  // Observe structure only: our own inert attributes cannot retrigger this.
+  observer = new MutationObserver(updateBackground);
+  observer.observe(document.body, { childList: true, subtree: true });
+}
+
 export function pushModal(token: object, surface?: HTMLElement, opener: HTMLElement | null = null): void {
   // Nested layers may mount in one React commit, whose child layout effects
   // run before the parent's. Containment establishes that child's precedence.
@@ -25,6 +59,7 @@ export function pushModal(token: object, surface?: HTMLElement, opener: HTMLElem
     stack.splice(descendant, 0, { token, surface, opener: child.opener });
     child.opener = surface ?? null;
   }
+  updateBackground();
 }
 
 /** Remove a layer and return its valid focus destination, only if it was topmost. */
@@ -36,6 +71,7 @@ export function popModal(token: object, destination?: HTMLElement | null): HTMLE
   for (const entry of stack) {
     if (entry.opener && closed.surface?.contains(entry.opener)) entry.opener = closed.opener;
   }
+  updateBackground();
   if (!wasTopmost) return null;
   const remaining = stack[stack.length - 1]?.surface;
   if (destination?.isConnected && (!remaining || remaining.contains(destination))) return destination;
@@ -47,8 +83,10 @@ export function isTopmostModal(token: object): boolean {
   return stack.length > 0 && stack[stack.length - 1].token === token;
 }
 
-export function hasOpenModal(): boolean {
-  return stack.length > 0;
+// A full-window workspace may retain its own app-chrome commands, while
+// still blocking commands for covered content. Nested dialogs always block.
+export function hasOpenModal(except?: object): boolean {
+  return stack.some((entry) => entry.token !== except);
 }
 
 /** Empties the stack. Test-only: the stack is module-global, so a spec that
@@ -56,4 +94,5 @@ export function hasOpenModal(): boolean {
  * `hasOpenModal()` lie about the next one. */
 export function resetModalStack(): void {
   stack.length = 0;
+  updateBackground();
 }

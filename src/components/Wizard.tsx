@@ -1,3 +1,4 @@
+import { useId, useRef } from "react";
 import { useWizardStore, type WizardStep } from "../state/wizard-store";
 import { finishWizard } from "../workflows/wizard";
 import { useBlockingSurface } from "../hooks/useBlockingSurface";
@@ -76,7 +77,9 @@ function WizardContent() {
   // Keeps System's zone current when the computer's zone changes.
   useDisplayZone();
 
-  useBlockingSurface();
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  useBlockingSurface(surfaceRef);
 
   /** A re-run offers Cancel on EVERY page (developer, 2026-08-17 — being
    * four pages deep is no reason to walk back out first), beside Back on
@@ -99,173 +102,167 @@ function WizardContent() {
 
   return (
     <div className="fixed inset-0 z-10 flex items-center justify-center bg-background p-6">
-      <div className="w-[min(860px,calc(100vw-3rem))] rounded-2xl border border-border bg-surface p-7 shadow-xl">
-        <h1 className="text-xl font-semibold tracking-tight text-ink-strong">
-          {reconfigure ? t("wizard.reconfigureTitle") : t("wizard.setupTitle")}
-        </h1>
-        <p className="mt-1 mb-6 text-sm text-ink-muted">
-          {t("wizard.step", { step, total: WIZARD_STEPS })}
-        </p>
-        {error !== null ? (
-          <OperationResult level="error" className="mb-4 text-sm">
-            {text(error)}
-          </OperationResult>
-        ) : null}
+      <div
+        ref={surfaceRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        className="flex max-h-[90vh] w-[min(860px,calc(100vw-3rem))] flex-col rounded-2xl border border-border bg-surface shadow-xl"
+      >
+        <header className="shrink-0 border-b border-control-edge px-5 py-3">
+          <h1 id={titleId} className="text-xl font-semibold tracking-tight text-ink-strong">
+            {reconfigure ? t("wizard.reconfigureTitle") : t("wizard.setupTitle")}
+          </h1>
+          <p className="mt-1 text-sm text-ink-muted">
+            {t("wizard.step", { step, total: WIZARD_STEPS })}
+          </p>
+        </header>
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          {error !== null ? (
+            <OperationResult level="error" className="mb-4 text-sm">
+              {text(error)}
+            </OperationResult>
+          ) : null}
 
-        {step === 1 ? (
-          <section>
-            <h2 className="mb-1 text-sm font-semibold text-ink-strong">
-              {t("wizard.language")}
-            </h2>
-            <p className="mb-2 text-sm text-ink-muted">
-              {t("wizard.languageHint")}
-            </p>
-            <div className="mb-6">
-              <Select
-                autoFocus
-                value={language}
-                onChange={(e) => {
-                  void setLanguage(normalizeLanguagePreference(e.target.value)).catch((error) => {
-                    log.warn("language preview failed", toErrorFields(error));
-                    recordInterfaceFailure(message("app.appearanceUpdateFailed"), error);
-                  });
-                }}
-              >
-                <option value="system">
-                  {t("settings.languageSystem", { language: languageNameIn(systemLanguage, interfaceLanguage) })}
-                </option>
-                {LANGUAGES.map((tag) => (
-                  <option key={tag} value={tag} lang={tag}>
-                    {LANGUAGE_NAMES[tag]}
+          {step === 1 ? (
+            <section>
+              <h2 className="mb-1 text-sm font-semibold text-ink-strong">
+                {t("wizard.language")}
+              </h2>
+              <p className="mb-2 text-sm text-ink-muted">
+                {t("wizard.languageHint")}
+              </p>
+              <div>
+                <Select
+                  autoFocus
+                  value={language}
+                  onChange={(e) => {
+                    void setLanguage(normalizeLanguagePreference(e.target.value)).catch((error) => {
+                      log.warn("language preview failed", toErrorFields(error));
+                      recordInterfaceFailure(message("app.appearanceUpdateFailed"), error);
+                    });
+                  }}
+                >
+                  <option value="system">
+                    {t("settings.languageSystem", { language: languageNameIn(systemLanguage, interfaceLanguage) })}
                   </option>
-                ))}
-              </Select>
-            </div>
-            <div className="flex items-center justify-between">
-              {leading}
-              <Button variant="primary" onClick={() => setStep(2)}>
-                {t("wizard.next")}
-              </Button>
-            </div>
-          </section>
-        ) : null}
+                  {LANGUAGES.map((tag) => (
+                    <option key={tag} value={tag} lang={tag}>
+                      {LANGUAGE_NAMES[tag]}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            </section>
+          ) : null}
 
-        {step === 2 ? (
-          <section>
-            <h2 className="mb-1 text-sm font-semibold text-ink-strong">
-              {t("wizard.directories")}
-            </h2>
-            <p className="mb-3 text-sm text-ink-muted">
-              {t("wizard.directoriesHint")}
-            </p>
-            <ul className="mb-4 max-h-64 space-y-1.5 overflow-y-auto">
-              {dirs.length === 0 ? (
-                <li className="text-sm text-ink-muted">
-                  {t("wizard.noDirectories")}
-                </li>
-              ) : null}
-              {dirs.map((dir) => (
-                <li key={dir.path}>
-                  <DirectoryRow path={dir.path} onRemove={() => removeDir(dir.path)} />
-                </li>
+          {step === 2 ? (
+            <section>
+              <h2 className="mb-1 text-sm font-semibold text-ink-strong">
+                {t("wizard.directories")}
+              </h2>
+              <p className="mb-3 text-sm text-ink-muted">
+                {t("wizard.directoriesHint")}
+              </p>
+              <ul className="mb-4 space-y-1.5">
+                {dirs.length === 0 ? (
+                  <li className="text-sm text-ink-muted">
+                    {t("wizard.noDirectories")}
+                  </li>
+                ) : null}
+                {dirs.map((dir) => (
+                  <li key={dir.path}>
+                    <DirectoryRow path={dir.path} onRemove={() => removeDir(dir.path)} />
+                  </li>
+                ))}
+              </ul>
+              <Button autoFocus onClick={() => void addDirs()}>
+                <Plus size={14} />
+                {t("settings.addDirectory")}
+              </Button>
+            </section>
+          ) : null}
+
+          {step === 3 ? (
+            <section>
+              <h2 className="mb-1 text-sm font-semibold text-ink-strong">
+                {t("settings.defaultTimezone")}
+              </h2>
+              <p className="mb-2 text-sm text-ink-muted">
+                {t("wizard.timezoneHint")}
+              </p>
+              <div>
+                <Select
+                  autoFocus
+                  className="w-full"
+                  value={timezone}
+                  onChange={(e) => setTimezone(e.target.value)}
+                >
+                  <option value={SYSTEM_TIME_ZONE}>
+                    {t("settings.timezoneSystem", { zone: computerTimeZone() })}
+                  </option>
+                  {timeZoneOptions(timezone).map((zone) => (
+                    <option key={zone} value={zone}>
+                      {zone}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            </section>
+          ) : null}
+
+          {step === 4 ? (
+            <section>
+              <h2 className="mb-1 text-sm font-semibold text-ink-strong">
+                {t("wizard.alwaysPrepares")}
+              </h2>
+              <p className="mb-2 text-sm text-ink-muted">
+                {t("wizard.alwaysPreparesHint")}
+              </p>
+              <h2 className="mb-1 mt-5 text-sm font-semibold text-ink-strong">
+                {t("wizard.additionalFeatures")}
+              </h2>
+              <p className="mb-2 text-sm text-ink-muted">
+                {t("wizard.additionalFeaturesHint")}
+              </p>
+              {(
+                [
+                  ["videoSnapshotsEnabled", "wizard.videoSnapshots"],
+                  ["similarPhotoAnalysisEnabled", "wizard.similarPhotoAnalysis"],
+                  ["scoreFaces", "wizard.faceScoring"],
+                  ["videoTranscriptionEnabled", "wizard.videoTranscription"],
+                  ["audioTranscriptionEnabled", "wizard.audioTranscription"],
+                ] as const satisfies readonly [OptionalFeatureId, string][]
+              ).map(([id, label], index) => (
+                <Row key={id} label={t(label)}>
+                  <Toggle
+                    autoFocus={index === 0}
+                    checked={optionalFeatures[id]}
+                    disabled={finishing}
+                    onChange={(enabled) => setOptionalFeature(id, enabled)}
+                  />
+                </Row>
               ))}
-            </ul>
-            <Button autoFocus className="mb-6" onClick={() => void addDirs()}>
-              <Plus size={14} />
-              {t("settings.addDirectory")}
+            </section>
+          ) : null}
+        </div>
+        <footer className="flex shrink-0 items-center justify-between border-t border-control-edge px-5 py-3">
+          {leading}
+          {step < 4 ? (
+            <Button
+              variant="primary"
+              disabled={(step === 2 && dirs.length === 0) || (step === 3 && timezone.trim() === "")}
+              onClick={() => setStep((step + 1) as WizardStep)}
+            >
+              {t("wizard.next")}
             </Button>
-            <div className="flex items-center justify-between">
-              {leading}
-              <Button variant="primary" disabled={dirs.length === 0} onClick={() => setStep(3)}>
-                {t("wizard.next")}
-              </Button>
-            </div>
-          </section>
-        ) : null}
-
-        {step === 3 ? (
-          <section>
-            <h2 className="mb-1 text-sm font-semibold text-ink-strong">
-              {t("settings.defaultTimezone")}
-            </h2>
-            <p className="mb-2 text-sm text-ink-muted">
-              {t("wizard.timezoneHint")}
-            </p>
-            <div className="mb-6">
-              <Select
-                autoFocus
-                className="w-full"
-                value={timezone}
-                onChange={(e) => setTimezone(e.target.value)}
-              >
-                <option value={SYSTEM_TIME_ZONE}>
-                  {t("settings.timezoneSystem", { zone: computerTimeZone() })}
-                </option>
-                {timeZoneOptions(timezone).map((zone) => (
-                  <option key={zone} value={zone}>
-                    {zone}
-                  </option>
-                ))}
-              </Select>
-            </div>
-            <div className="flex items-center justify-between">
-              {leading}
-              <Button
-                variant="primary"
-                disabled={timezone.trim() === ""}
-                onClick={() => setStep(4)}
-              >
-                {t("wizard.next")}
-              </Button>
-            </div>
-          </section>
-        ) : null}
-
-        {step === 4 ? (
-          <section>
-            <h2 className="mb-1 text-sm font-semibold text-ink-strong">
-              {t("wizard.alwaysPrepares")}
-            </h2>
-            <p className="mb-2 text-sm text-ink-muted">
-              {t("wizard.alwaysPreparesHint")}
-            </p>
-            <h2 className="mb-1 mt-5 text-sm font-semibold text-ink-strong">
-              {t("wizard.additionalFeatures")}
-            </h2>
-            <p className="mb-2 text-sm text-ink-muted">
-              {t("wizard.additionalFeaturesHint")}
-            </p>
-            {(
-              [
-                ["videoSnapshotsEnabled", "wizard.videoSnapshots"],
-                ["similarPhotoAnalysisEnabled", "wizard.similarPhotoAnalysis"],
-                ["scoreFaces", "wizard.faceScoring"],
-                ["videoTranscriptionEnabled", "wizard.videoTranscription"],
-                ["audioTranscriptionEnabled", "wizard.audioTranscription"],
-              ] as const satisfies readonly [OptionalFeatureId, string][]
-            ).map(([id, label], index) => (
-              <Row key={id} label={t(label)}>
-                <Toggle
-                  autoFocus={index === 0}
-                  checked={optionalFeatures[id]}
-                  disabled={finishing}
-                  onChange={(enabled) => setOptionalFeature(id, enabled)}
-                />
-              </Row>
-            ))}
-            <div className="mt-6 flex items-center justify-between">
-              {leading}
-              <Button
-                variant="primary"
-                disabled={finishing}
-                onClick={() => void finishWizard()}
-              >
-                {finishing ? t("wizard.finishing") : t("wizard.finish")}
-              </Button>
-            </div>
-          </section>
-        ) : null}
-
+          ) : (
+            <Button variant="primary" disabled={finishing} onClick={() => void finishWizard()}>
+              {finishing ? t("wizard.finishing") : t("wizard.finish")}
+            </Button>
+          )}
+        </footer>
       </div>
     </div>
   );

@@ -7,12 +7,15 @@ import { acquireScrollLock, releaseScrollLock } from "../utils/scrollLock";
 /** Shared behavior for both framed dialogs and full-window transient layers. */
 export function useModalLayer(
   surfaceRef: RefObject<HTMLElement | null>,
-  onClose: () => void,
+  onClose: (event: KeyboardEvent) => void,
   closeDisabled = false,
   footerArrowNavigation = false,
   returnFocus?: () => HTMLElement | null,
+  layerToken?: object,
 ): object {
-  const tokenRef = useRef<object>({});
+  const tokenRef = useRef<object>(layerToken ?? {});
+  // Capture before child autoFocus runs during the mount commit.
+  const openerRef = useRef(document.activeElement as HTMLElement | null);
   const onCloseRef = useRef(onClose);
   const closeDisabledRef = useRef(closeDisabled);
   const returnFocusRef = useRef(returnFocus);
@@ -24,10 +27,12 @@ export function useModalLayer(
     const token = tokenRef.current;
     const surface = surfaceRef.current;
     if (surface === null) return;
-    const opener = document.activeElement as HTMLElement | null;
+    const opener = openerRef.current;
     pushModal(token, surface, opener);
     acquireScrollLock();
-    if (isTopmostModal(token)) resolveInitialFocus(surface).focus();
+    if (isTopmostModal(token) && !surface.contains(document.activeElement)) {
+      resolveInitialFocus(surface).focus();
+    }
     const onKeyDown = (event: KeyboardEvent) => {
       if (!isTopmostModal(token) || event.defaultPrevented || isComposingEvent(event)) return;
       if (footerArrowNavigation && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey
@@ -45,7 +50,7 @@ export function useModalLayer(
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
-        if (!event.repeat && !closeDisabledRef.current) onCloseRef.current();
+        if (!event.repeat && !closeDisabledRef.current) onCloseRef.current(event);
       } else if (event.key === "Tab") {
         const surface = surfaceRef.current;
         if (surface === null) return;

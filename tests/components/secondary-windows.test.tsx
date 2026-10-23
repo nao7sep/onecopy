@@ -10,6 +10,7 @@
 
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import { render, cleanup, act } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import PreviewWindow from "../../src/windows/PreviewWindow";
 import ComparisonWindow from "../../src/windows/ComparisonWindow";
 import type { ComparisonBroadcast } from "../../src/state/comparison-store";
@@ -162,6 +163,35 @@ describe("the preview window", () => {
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", repeat: true }));
     expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("lets Space activate a focused native button", async () => {
+    const user = userEvent.setup();
+    const view = render(<PreviewWindow />);
+    await act(async () => {});
+    const button = document.createElement("button");
+    let clicked = false;
+    button.addEventListener("click", () => { clicked = true; });
+    view.container.appendChild(button);
+    button.focus();
+    await user.keyboard(" ");
+    expect(clicked).toBe(true);
+    expect(emitCalls.some((call) => call.event === "preview://key")).toBe(false);
+  });
+
+  it.each(["audio", "video"])("leaves native %s control Space unconsumed", async (tag) => {
+    const view = render(<PreviewWindow />);
+    await act(async () => {});
+    const media = document.createElement(tag);
+    media.setAttribute("controls", "");
+    view.container.appendChild(media);
+    let reachedControl = false;
+    media.addEventListener("keydown", () => { reachedControl = true; });
+    const space = new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true });
+    media.dispatchEvent(space);
+    expect(space.defaultPrevented).toBe(false);
+    expect(reachedControl).toBe(true);
+    expect(emitCalls.some((call) => call.event === "preview://key")).toBe(false);
   });
 
   it("shows a failure Main publishes for the preview", async () => {

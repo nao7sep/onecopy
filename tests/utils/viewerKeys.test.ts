@@ -22,9 +22,19 @@ describe("fullscreen view command ownership", () => {
     target.setAttribute("controls", "");
     expect(owns("Enter", "video", "movie.mp4", target)).toBe(false);
     expect(owns("ArrowRight", "video", "movie.mp4", target)).toBe(false);
-    expect(owns(" ", "video", "movie.mp4", target)).toBe(true);
+    expect(owns(" ", "video", "movie.mp4", target)).toBe(false);
     expect(owns("Escape", "video", "movie.mp4", target)).toBe(true);
     expect(owns("f", "video", "movie.mp4", target)).toBe(false);
+  });
+
+  it("retains bare-surface Space and deletion from ordinary buttons", () => {
+    expect(owns(" ")).toBe(true);
+    expect(owns(" ", "video", "movie.mp4")).toBe(true);
+    expect(owns(" ", "image", "photo.jpg", document.createElement("div"), { shiftKey: true })).toBe(false);
+    for (const key of ["Delete", "Backspace"]) {
+      expect(owns(key, "image", "photo.jpg", document.createElement("button"))).toBe(true);
+      expect(owns(key, "image", "photo.jpg", document.createElement("textarea"))).toBe(false);
+    }
   });
 
   it("leaves Up and Down to the item, so they do nothing on fitted media", () => {

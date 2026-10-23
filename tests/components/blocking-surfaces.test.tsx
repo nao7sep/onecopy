@@ -12,7 +12,8 @@
 // asserting it is asserting the fix.
 
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
-import { render, cleanup, act, fireEvent } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { render, cleanup, act, fireEvent, within } from "@testing-library/react";
 import {
   MissingSourcesNotice,
   SubstitutedSourceGate,
@@ -67,6 +68,45 @@ describe("the presence gate", () => {
     opener.remove();
   });
 
+  it("keeps a long source list in one body between its fixed title and actions", () => {
+    const paths = Array.from({ length: 80 }, (_, index) => `/Volumes/Photos-${index}`);
+    const view = render(
+      <SubstitutedSourceGate substituted={paths} unknown={false} onRecheck={() => {}} onReconfigure={() => {}} />,
+    );
+    const surface = view.getByRole("dialog");
+    expect(surface.getAttribute("aria-modal")).toBe("true");
+    expect(surface.getAttribute("tabindex")).toBe("-1");
+    const title = view.getByRole("heading", { level: 1 });
+    expect(surface.getAttribute("aria-labelledby")).toBe(title.id);
+    expect(surface.classList.contains("max-h-[90vh]")).toBe(true);
+    const [header, body, footer] = Array.from(surface.children);
+    expect(header?.contains(title)).toBe(true);
+    expect(header?.classList.contains("shrink-0")).toBe(true);
+    expect(body?.classList.contains("min-h-0")).toBe(true);
+    expect(body?.classList.contains("overflow-y-auto")).toBe(true);
+    expect(within(body as HTMLElement).getAllByRole("listitem")).toHaveLength(paths.length);
+    expect(surface.querySelectorAll(".overflow-y-auto")).toHaveLength(1);
+    expect(footer?.classList.contains("shrink-0")).toBe(true);
+    expect(footer?.contains(view.getByRole("button", { name: "Check source folders" }))).toBe(true);
+  });
+
+  it("cycles Tab through the gate actions without reaching controls behind it", async () => {
+    const user = userEvent.setup();
+    const outside = document.createElement("button");
+    document.body.append(outside);
+    const view = render(
+      <SubstitutedSourceGate substituted={["/Volumes/Photos"]} unknown={false} onRecheck={() => {}} onReconfigure={() => {}} />,
+    );
+    const recheck = view.getByRole("button", { name: "Check source folders" });
+    const setup = view.getByRole("button", { name: "Re-run setup" });
+    expect(document.activeElement).toBe(recheck);
+    await user.tab();
+    expect(document.activeElement).toBe(setup);
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(recheck);
+    outside.remove();
+  });
+
   it("releases the command layer once it closes", () => {
     const view = render(
       <SubstitutedSourceGate
@@ -116,7 +156,7 @@ describe("the presence gate", () => {
 
 describe("the setup wizard", () => {
   beforeEach(() => {
-    useWizardStore.setState({ step: 1, dirs: [], timezone: "UTC", error: null });
+    useWizardStore.setState({ step: 1, dirs: [], language: "en", timezone: "UTC", error: null, reconfigure: false, finishing: false });
   });
 
   it("separates required preparation from optional features without adding an install page", () => {

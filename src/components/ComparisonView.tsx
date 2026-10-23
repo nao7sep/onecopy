@@ -9,10 +9,12 @@ import {
   useComparisonStore,
 } from "../state/comparison-store";
 import { useMutationStore } from "../state/mutation-store";
-import { hasOpenModal } from "../utils/modalStack";
+import { isTopmostModal } from "../utils/modalStack";
+import { useModalLayer } from "../hooks/useModalLayer";
 import { isEditableTarget } from "../utils/shortcuts";
 import {
   closeComparison,
+  comparisonLayerToken,
   confirmComparisonAction,
   decideComparisonPage,
   handleComparisonKey,
@@ -41,7 +43,14 @@ export default function ComparisonView({
 }: {
   onRevealTrash: () => void;
 }) {
+  const open = useComparisonStore((state) => state.open);
+  return open ? <OpenComparisonView onRevealTrash={onRevealTrash} /> : null;
+}
+
+function OpenComparisonView({ onRevealTrash }: { onRevealTrash: () => void }) {
   const { t, text, number } = useI18n();
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const modalToken = useModalLayer(surfaceRef, (event) => { handleComparisonKey(event); }, false, false, undefined, comparisonLayerToken);
   const itemArea = useRef<HTMLDivElement>(null);
   const [revealMember, setRevealMember] = useState<{
     hash: string;
@@ -65,12 +74,11 @@ export default function ComparisonView({
 
   useEffect(() => {
     if (!open) return;
-    itemArea.current?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
       if (
         event.defaultPrevented ||
         isComposingEvent(event) ||
-        hasOpenModal() ||
+        !isTopmostModal(modalToken) ||
         isEditableTarget(event.target) ||
         interactiveTarget(event.target)
       ) {
@@ -83,7 +91,7 @@ export default function ComparisonView({
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [open]);
+  }, [open, modalToken]);
 
   if (!open) return null;
 
@@ -129,7 +137,7 @@ export default function ComparisonView({
           );
 
   return (
-    <div className="fixed inset-0 z-20 flex flex-col bg-background">
+    <div ref={surfaceRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="comparison-title" className="fixed inset-0 z-20 flex flex-col bg-background">
       {pendingAction !== null ? (
         <ConfirmModal
           title={confirmTitle}
@@ -153,7 +161,7 @@ export default function ComparisonView({
 
       <header className="flex shrink-0 items-center justify-between gap-4 border-b border-border bg-surface px-3 py-2">
         <div className="min-w-0">
-          <h1 className="text-sm font-semibold text-ink-strong">
+          <h1 id="comparison-title" className="text-sm font-semibold text-ink-strong">
             {t("comparison.title")}
           </h1>
           <p className="text-xs text-ink-muted">
@@ -208,6 +216,7 @@ export default function ComparisonView({
 
       <div
         id="comparison-item-area"
+        data-modal-initial-focus
         ref={itemArea}
         tabIndex={0}
         role="listbox"
