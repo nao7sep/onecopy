@@ -1,3 +1,4 @@
+import { displayNativePath } from "../utils/nativePath";
 import { useId, useRef } from "react";
 import { useWizardStore, type WizardStep } from "../state/wizard-store";
 import { finishWizard } from "../workflows/wizard";
@@ -121,7 +122,7 @@ function WizardContent() {
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
           {error !== null ? (
             <OperationResult level="error" className="mb-4 text-sm">
-              {text(error)}
+              {displayNativePath(text(error))}
             </OperationResult>
           ) : null}
 

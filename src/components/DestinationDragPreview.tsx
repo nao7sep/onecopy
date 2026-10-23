@@ -1,3 +1,4 @@
+import { displayNativePath } from "../utils/nativePath";
 import { File } from "lucide-react";
 import { thumbUrl } from "../models/items";
 import { useDestinationsStore } from "../state/destinations-store";
@@ -37,11 +38,11 @@ export default function DestinationDragPreview({
         <span className="block truncate text-sm font-semibold text-ink-strong">
           {multiple
             ? t("destinations.dragSelectedItems", { count: itemCount })
-            : source.label}
+            : displayNativePath(source.label)}
         </span>
         <span className="block truncate text-xs text-ink-muted">
           {multiple
-            ? t("destinations.dragIncludes", { name: source.label })
+            ? t("destinations.dragIncludes", { name: displayNativePath(source.label) })
             : t("destinations.dragSelectedItem")}
         </span>
       </span>

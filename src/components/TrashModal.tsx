@@ -1,3 +1,4 @@
+import { displayNativePath } from "../utils/nativePath";
 import { useEffect, useRef, useState } from "react";
 import { useMutationRefresh } from "../hooks/useMutationRefresh";
 import { invoke } from "@tauri-apps/api/core";
@@ -196,7 +197,7 @@ export default function TrashModal({
             t("trash.confirmMessage", {
               count: confirm.files,
               size: formatBytes(confirm.bytes, number),
-              root: confirm.root,
+              root: displayNativePath(confirm.root),
             }),
             ...(confirm.synced ? [t("trash.syncedEmptyWarning")] : []),
           ].join(" ")}

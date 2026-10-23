@@ -13,7 +13,6 @@
   "permissions": [
     "core:default",
     "opener:default",
-    "dialog:allow-open",
     "core:window:allow-destroy",
     "core:window:allow-close",
     "core:window:allow-set-min-size",

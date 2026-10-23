@@ -432,7 +432,7 @@ pub fn load_from_root(root: &Path) -> Result<LoadedAppData, String> {
         config,
         config_defaults: effective_config(None),
         state: normalize_presentation_state(state_read.value),
-        data_root: root.to_string_lossy().into_owned(),
+        data_root: crate::native_path::encode(root).into_owned(),
         debug_enabled: false,
         ai_acceleration_capabilities: crate::ai_acceleration::capabilities(None)
             .expect("built-in acceleration features are valid"),
@@ -490,7 +490,7 @@ fn configured_roots_in(config: Option<&JsonValue>) -> ConfiguredRoots {
             .into_iter()
             .flatten()
             .filter_map(JsonValue::as_str)
-            .map(PathBuf::from)
+            .map(|path| crate::native_path::from_text(path).into_owned())
             .collect::<Vec<_>>()
     };
     ConfiguredRoots {
@@ -829,14 +829,14 @@ fn quarantine_invalid_store(path: &Path, reason: &str) -> Result<JsonRead, Strin
     crate::fs_publish::rename_no_replace(path, &quarantined).map_err(|rename_error| {
         format!(
             "could not quarantine invalid {}: {rename_error} ({reason})",
-            path.display()
+            crate::native_path::label(&path)
         )
     })?;
     logging::warn(
         "invalid JSON store quarantined; using built-ins",
         serde_json::json!({
-            "file": path.to_string_lossy(),
-            "quarantinedTo": quarantined.to_string_lossy(),
+            "file": crate::native_path::encode(path),
+            "quarantinedTo": crate::native_path::encode(&quarantined),
             "error": { "message": reason },
         }),
     );
@@ -846,9 +846,9 @@ fn quarantine_invalid_store(path: &Path, reason: &str) -> Result<JsonRead, Strin
         quarantined: Some(QuarantineRecord {
             file: path
                 .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.to_string_lossy().into_owned()),
-            quarantined_to: quarantined.to_string_lossy().into_owned(),
+                .map(|name| crate::native_path::encode(name).into_owned())
+                .unwrap_or_else(|| crate::native_path::encode(path).into_owned()),
+            quarantined_to: crate::native_path::encode(&quarantined).into_owned(),
         }),
     })
 }
@@ -937,7 +937,7 @@ fn write_atomic_inner(
             if let Err(cleanup_error) = writable {
                 crate::logging::warn(
                     "atomic store staging permissions cleanup failed",
-                    serde_json::json!({ "path": tmp, "error": { "message": cleanup_error.to_string() } }),
+                    serde_json::json!({ "path": crate::native_path::encode(&tmp), "error": { "message": cleanup_error.to_string() } }),
                 );
             }
         }
@@ -954,7 +954,7 @@ fn write_atomic_inner(
         crate::logging::warn(
             "atomic store directory sync failed",
             serde_json::json!({
-                "path": parent,
+                "path": crate::native_path::encode(parent),
                 "error": { "message": error.to_string() },
             }),
         );

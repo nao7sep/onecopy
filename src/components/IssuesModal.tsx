@@ -1,3 +1,4 @@
+import { displayNativePath } from "../utils/nativePath";
 import { recheckSources } from "../workflows/source-availability";
 import { useEffect, useRef, useState } from "react";
 import { modelIssueLabel } from "../models/workReasons";
@@ -81,7 +82,7 @@ export default function IssuesModal({ open, onClose }: {
       )}
       footerResult={revealResult !== null ? (
         <OperationResult level={revealResult.level}>{t(revealResult.message)}</OperationResult>
-      ) : error !== null ? <OperationResult level="error">{text(error)}</OperationResult> : undefined}
+      ) : error !== null ? <OperationResult level="error">{displayNativePath(text(error))}</OperationResult> : undefined}
       primaryAction={total > 0 ? (
         <Button onClick={() => void dismissAll()}>{t("issues.dismissAll")}</Button>
       ) : undefined}
@@ -121,7 +122,7 @@ export default function IssuesModal({ open, onClose }: {
                   Issues is where a notice is read in full, so its path, its
                   sentence and the recorded detail are kept whole. */}
               {row.path ? <LinkButton tone="primary" wrap className="mt-2 block select-text underline decoration-primary/40 enabled:hover:decoration-primary"
-                title={t("issues.revealInMain")} onClick={() => void reveal(row.path!)}>{row.path}</LinkButton> : null}
+                title={t("issues.revealInMain")} onClick={() => void reveal(row.path!)}>{displayNativePath(row.path)}</LinkButton> : null}
               {modelIssueLabel(row.kind) !== null ? (
                 <h3 className="mt-2 font-semibold text-ink-strong">{t(modelIssueLabel(row.kind)!)}</h3>
               ) : null}
@@ -130,7 +131,7 @@ export default function IssuesModal({ open, onClose }: {
                   older row's recorded text is its sentence, so both scroll
                   inside a height limit. */}
               <BoundedText className="mt-1.5 max-h-48 select-text break-words leading-relaxed text-ink-muted">
-                {noticeSentence(row, text)}
+                {displayNativePath(noticeSentence(row, text))}
               </BoundedText>
               {modelIssueLabel(row.kind) !== null ? (
                 <Button className="mt-2" onClick={() => useAppShellStore.getState().openUtility("backgroundWork")}>
@@ -150,7 +151,7 @@ export default function IssuesModal({ open, onClose }: {
                   pushes the rest of the list away. */}
               {recordedDetail(row) !== null ? (
                 <BoundedText className="mt-1 max-h-48 select-text break-words text-xs leading-relaxed text-ink-muted opacity-80">
-                  {recordedDetail(row)}
+                  {displayNativePath(recordedDetail(row)!)}
                 </BoundedText>
               ) : null}
             </li>

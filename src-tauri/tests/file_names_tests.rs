@@ -30,3 +30,21 @@ windows_test! {
         assert!(is_name_error(&error), "{error:?}");
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn native_names_compare_and_rename_without_replacement_aliases() {
+    use onecopy_lib::file_names::{renamed, FolderNames, RenameStyle};
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+    let first = Path::new(std::ffi::OsStr::from_bytes(b"image\xff.jpg"));
+    let other = Path::new(std::ffi::OsStr::from_bytes(b"image\xfe.jpg"));
+    for rules in [FolderNames::new(false, false), FolderNames::new(true, true)] {
+        assert!(!rules.same(first, other));
+        assert!(!rules.same(first, Path::new("image\u{FFFD}.jpg")));
+    }
+    assert_eq!(
+        renamed(first, 2, RenameStyle::SpaceNumber).unwrap(),
+        Path::new(std::ffi::OsStr::from_bytes(b"image\xff 2.jpg"))
+    );
+}

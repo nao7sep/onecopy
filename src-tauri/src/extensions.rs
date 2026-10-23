@@ -68,7 +68,7 @@ pub fn classify(
 
 /// Extracts the lowercase extension of a file name (no dot); empty when none.
 pub fn lowercase_ext(file_name: &str) -> String {
-    std::path::Path::new(file_name)
+    crate::native_path::from_text(file_name)
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase())

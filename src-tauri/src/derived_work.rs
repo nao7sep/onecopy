@@ -1906,7 +1906,7 @@ fn prepare_transcription_attempt(
         attempt.conn,
         attempt.cache,
         attempt.source_hash,
-        Path::new(attempt.source_path),
+        crate::native_path::from_text(attempt.source_path).as_ref(),
     ) {
         Ok(hash) => hash,
         Err(error) if error == crate::scanner::CANCELLED => {
@@ -2016,7 +2016,7 @@ pub fn complete_transcription_attempt(
         let ffmpeg = dependencies.ffmpeg.ok_or_else(||
             "ffmpeg is not installed — install it from Background work & tools".to_string())?;
         let temp_dir = attempt.temp_dir.clone();
-        let source_path = PathBuf::from(attempt.source_path);
+        let source_path = crate::native_path::from_text(attempt.source_path).into_owned();
         let acceleration = attempt.acceleration;
         Ok(move |claim: &crate::transcription::TranscriptionClaim,
                  _: &TranscriptionAttempt<'_>, progress: TranscriptionProgress<'static>| {
@@ -2482,7 +2482,7 @@ pub fn request_transcription(
                     class,
                     run,
                     &worker_hash,
-                    &source_path.to_string_lossy(),
+                    &crate::native_path::encode(&source_path),
                 )
             })();
             // The run could not reach an outcome: its requester still hears

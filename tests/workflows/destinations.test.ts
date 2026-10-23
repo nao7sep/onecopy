@@ -14,7 +14,6 @@ import type { SectionItem } from "../../src/models/items";
 import {
   invokeCalls,
   mockCommands,
-  openDialog,
   resetTauriMocks,
 } from "../mocks/tauri";
 import { inEnglish } from "../helpers/i18n";
@@ -67,7 +66,7 @@ beforeEach(() => {
 
 describe("destination root failures", () => {
   it("keeps a failed directory picker visible", async () => {
-    openDialog.mockRejectedValueOnce(new Error("picker unavailable"));
+    mockCommands({ pick_directories: () => Promise.reject(new Error("picker unavailable")) });
 
     await addDestinationRoot();
 
@@ -106,7 +105,7 @@ describe("destination root failures", () => {
         return saved;
       },
     });
-    openDialog.mockResolvedValueOnce("/added");
+    mockCommands({ pick_directories: () => ["/added"] });
 
     const add = addDestinationRoot();
     await settle();
@@ -162,4 +161,18 @@ describe("destination drag selection scope", () => {
     // Starting the drag from a selected member never changes the anchor.
     expect(useItemsStore.getState().selectedItem).toBe("h2");
   });
+});
+
+
+it("persists the exact native destination chosen and treats cancellation as no change", async () => {
+  const path = "/destination/\u0000bff";
+  mockCommands({ pick_directories: () => [path] });
+  await addDestinationRoot();
+  expect(useDestinationsStore.getState().roots).toEqual(["/existing", path]);
+  expect(invokeCalls.find((call) => call.command === "pick_directories")?.args).toEqual({ multiple: false });
+  expect(invokeCalls.find((call) => call.command === "save_config")?.args.changes).toEqual({ destinationRoots: ["/existing", path] });
+  const saves = invokeCalls.filter((call) => call.command === "save_config").length;
+  mockCommands({ pick_directories: () => [] });
+  await addDestinationRoot();
+  expect(invokeCalls.filter((call) => call.command === "save_config")).toHaveLength(saves);
 });

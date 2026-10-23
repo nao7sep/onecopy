@@ -111,7 +111,7 @@ impl DirectoryFacts {
             let metadata =
                 crate::volume_io::metadata(dir).map_err(|error| error.to_string())?;
             (
-                Some(parent.to_string_lossy().into_owned()),
+                Some(crate::native_path::encode(&parent).into_owned()),
                 visibility::entry_flags(dir, &metadata),
                 inherited,
             )
@@ -128,7 +128,7 @@ impl DirectoryFacts {
         own: i64,
         inherited: i64,
     ) -> Result<(), String> {
-        let abs = dir.to_string_lossy();
+        let abs = crate::native_path::encode(&dir);
         let flags = own | inherited;
         let previous = conn.query_row("SELECT parent_path, own_flags, flags FROM visibility_directories WHERE abs_path = ?1", [&abs],
             |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?)))
@@ -188,15 +188,14 @@ impl DirectoryFacts {
 pub fn root_for(roots: &[String], path: &Path) -> Option<PathBuf> {
     let depth = roots
         .iter()
-        .map(|root| crate::winpath::for_fs(Path::new(root)).into_owned())
+        .map(|root| crate::winpath::for_fs(crate::native_path::from_text(root).as_ref()).into_owned())
         .filter(|root| {
             let mut components = path.components();
             root.components().all(|root_part| {
                 components.next().is_some_and(|part| {
                     if cfg!(target_os = "windows") {
-                        part.as_os_str()
-                            .to_string_lossy()
-                            .eq_ignore_ascii_case(&root_part.as_os_str().to_string_lossy())
+                        crate::native_path::encode(part.as_os_str())
+                            .eq_ignore_ascii_case(&crate::native_path::encode(root_part.as_os_str()))
                     } else {
                         part == root_part
                     }
@@ -215,12 +214,11 @@ pub fn source_root_spellings(conn: &Connection, roots: &[String]) -> Result<Vec<
         // Watcher events may use the configured alias while the index uses
         // the scanner's settled spelling. Both name the configured boundary.
         spellings.push(
-            crate::winpath::for_fs(Path::new(root))
-                .to_string_lossy()
+            crate::native_path::encode(crate::winpath::for_fs(crate::native_path::from_text(root).as_ref()).as_ref())
                 .into_owned(),
         );
-        match crate::scanner::settled_root(conn, Path::new(root)) {
-            Ok(path) => spellings.push(path.to_string_lossy().into_owned()),
+        match crate::scanner::settled_root(conn, crate::native_path::from_text(root).as_ref()) {
+            Ok(path) => spellings.push(crate::native_path::encode(&path).into_owned()),
             Err(error) => {
                 crate::index_store::upsert_issue_with_descriptor(
                     conn,
@@ -272,7 +270,8 @@ pub fn complete_missing_facts(conn: &Connection, roots: &[String]) -> Result<(),
                 return Err(crate::scanner::CANCELLED.into());
             }
             after = id;
-            let path = Path::new(&abs);
+            let native_path = crate::native_path::from_text(&abs);
+            let path = native_path.as_ref();
             let Some(root) = root_for(&roots, path) else {
                 // Old inventory outside today's configured sources is not
                 // authority to stat personal files or keep this worker busy.

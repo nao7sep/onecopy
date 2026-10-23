@@ -269,8 +269,8 @@ describe("loaded directory projection", () => {
 
 describe("adding source folders", () => {
   it("refuses a folder inside a library or app and keeps the others", async () => {
-    const { openDialog, mockCommand } = await import("../mocks/tauri");
-    openDialog.mockResolvedValueOnce(["/Pictures/Photos Library.photoslibrary/originals", "/Pictures/Trip"] as never);
+    const { mockCommand } = await import("../mocks/tauri");
+    mockCommand("pick_directories", () => ["/Pictures/Photos Library.photoslibrary/originals", "/Pictures/Trip"]);
     mockCommand("package_source_dirs", () => ["/Pictures/Photos Library.photoslibrary/originals"]);
     useWizardStore.setState({ dirs: [], error: null });
 
@@ -279,4 +279,26 @@ describe("adding source folders", () => {
     expect(useWizardStore.getState().dirs.map((dir) => dir.path)).toEqual(["/Pictures/Trip"]);
     expect(inEnglish(useWizardStore.getState().error!)).toContain("inside a library or app");
   });
+});
+
+
+it("keeps native picker identities through source validation and configuration persistence", async () => {
+  const paths = ["/photos/\u0000bfe", "/photos/\u0000bff", "/photos/\ufffd", "C:\\photos\\\u0000wd800"];
+  mockCommands({ pick_directories: () => paths, package_source_dirs: () => [] });
+  useWizardStore.setState({ dirs: [] });
+  await useWizardStore.getState().addDirs();
+  // Re-picking the same directory does not collapse distinct invalid names.
+  await useWizardStore.getState().addDirs();
+  expect(useWizardStore.getState().dirs.map((dir) => dir.path)).toEqual(paths);
+  expect(invokeCalls.find((call) => call.command === "pick_directories")?.args).toEqual({ multiple: true });
+  expect(invokeCalls.find((call) => call.command === "package_source_dirs")?.args.paths).toEqual(paths);
+  await finishWizard();
+  expect(Object.assign({}, ...saveConfigPayloads()).sourceDirs).toEqual(paths);
+});
+
+it("leaves source folders unchanged after native picker cancellation", async () => {
+  mockCommands({ pick_directories: () => [] });
+  await useWizardStore.getState().addDirs();
+  expect(useWizardStore.getState().dirs.map((dir) => dir.path)).toEqual(["/root"]);
+  expect(invokeCalls.some((call) => call.command === "package_source_dirs")).toBe(false);
 });

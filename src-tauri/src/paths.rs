@@ -67,7 +67,7 @@ pub fn resolve_data_root(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|e| format!("could not resolve home directory: {e}"))?;
     let root = resolve_root(&home, std::env::var(DATA_DIR_ENV_VAR).ok())?;
     create_data_root(&root)
-        .map_err(|e| format!("could not create storage root {}: {e}", root.display()))?;
+        .map_err(|e| format!("could not create storage root {}: {e}", crate::native_path::label(&root)))?;
     #[cfg(unix)]
     ensure_private(&root);
     Ok(root)
@@ -112,7 +112,7 @@ fn ensure_private(root: &Path) {
         crate::logging::warn(
             "could not restrict the data root to the owner",
             serde_json::json!({
-                "path": root,
+                "path": crate::native_path::encode(root),
                 "error": { "message": error.to_string() },
             }),
         );
@@ -256,7 +256,7 @@ pub(crate) fn revealable_data_subdir(root: &Path, name: &str) -> Result<PathBuf,
         other => return Err(format!("not a revealable folder: {other}")),
     };
     std::fs::create_dir_all(&target)
-        .map_err(|error| format!("could not create {}: {error}", target.display()))?;
+        .map_err(|error| format!("could not create {}: {error}", crate::native_path::label(&target)))?;
     Ok(target)
 }
 

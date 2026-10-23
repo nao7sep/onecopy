@@ -1,12 +1,17 @@
+/** Normalize only Windows spelling: Unix backslashes and case are identity. */
+function normalizePath(value: string): string {
+  const windows = /^[a-z]:/i.test(value) || value.startsWith("\\\\") || value.startsWith("//");
+  const path = windows
+    ? value.replace(/\\/g, "/").replace(/^\/\/\?\/UNC\//i, "//").replace(/^\/\/\?\//, "").toLowerCase()
+    : value;
+  return path.replace(/\/+$/, "");
+}
+
 /** Directory ancestry uses path components, including Windows path spelling. */
 export function pathUnavailable(path: string, unavailableRoots: readonly string[]): boolean {
-  const normalize = (value: string) => {
-    const slash = value.replace(/\\/g, "/").replace(/^\/\/\?\/UNC\//i, "//").replace(/^\/\/\?\//, "").replace(/\/+$/, "");
-    return (/^[a-z]:/i.test(slash) || slash.startsWith("//")) ? slash.toLowerCase() : slash;
-  };
-  const candidate = normalize(path);
+  const candidate = normalizePath(path);
   return unavailableRoots.some((root) => {
-    const parent = normalize(root);
+    const parent = normalizePath(root);
     return candidate === parent || candidate.startsWith(`${parent}/`);
   });
 }

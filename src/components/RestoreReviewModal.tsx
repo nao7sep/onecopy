@@ -1,3 +1,4 @@
+import { displayNativePath } from "../utils/nativePath";
 // The restore review: shown only when something needs a decision or a
 // warning (name conflicts, folders to recreate, skipped files, a companion
 // that will not pair with its main file restored earlier under another name).
@@ -60,7 +61,7 @@ export default function RestoreReviewModal({
           <ul className="mt-1 list-inside list-disc">
             {review.folders.map((folder) => (
               <li key={folder} className="break-all">
-                {folder}
+                {displayNativePath(folder)}
               </li>
             ))}
           </ul>
@@ -69,17 +70,17 @@ export default function RestoreReviewModal({
       <div className="overflow-hidden rounded-lg border border-border">
         {review.files.map((file) => (
           <div key={file.id} className="border-b border-border px-3 py-2 last:border-b-0">
-            <p className="break-all text-sm text-ink-strong">{file.original ?? file.id}</p>
+            <p className="break-all text-sm text-ink-strong">{displayNativePath(file.original ?? file.id)}</p>
             <p className="break-all text-xs text-ink-muted">
               {file.skip !== null
                 ? t(SKIP_REASONS[file.skip])
                 : file.renamed
-                  ? t("restoreReview.renamed", { path: file.target ?? "" })
-                  : t("restoreReview.target", { path: file.target ?? "" })}
+                  ? t("restoreReview.renamed", { path: displayNativePath(file.target ?? "") })
+                  : t("restoreReview.target", { path: displayNativePath(file.target ?? "") })}
             </p>
             {file.mainRestoredAs !== null ? (
               <p className="break-all text-xs text-warning">
-                {t("restoreReview.companionUnpaired", { path: file.mainRestoredAs })}
+                {t("restoreReview.companionUnpaired", { path: displayNativePath(file.mainRestoredAs) })}
               </p>
             ) : null}
           </div>
@@ -91,7 +92,7 @@ export default function RestoreReviewModal({
           <ul className="mt-1 list-inside list-disc">
             {review.companionsLeft.map((path) => (
               <li key={path} className="break-all">
-                {path}
+                {displayNativePath(path)}
               </li>
             ))}
           </ul>

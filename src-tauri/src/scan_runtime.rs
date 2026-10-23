@@ -935,7 +935,7 @@ pub(crate) fn recheck_section(
             for dir in &dirs {
                 changed += crate::watcher::restat_dir(
                     &conn,
-                    std::path::Path::new(dir),
+                    crate::native_path::from_text(dir).as_ref(),
                     &settings.lists,
                     &settings.source_dirs,
                     &data_root,

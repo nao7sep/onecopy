@@ -18,7 +18,7 @@ pub fn remove_file(path: &Path, context: &str) {
             json!({
                 "operation": "removeFile",
                 "context": context,
-                "path": path,
+                "path": crate::native_path::encode(path),
                 "error": { "message": error.to_string() },
             }),
         ),
@@ -34,7 +34,7 @@ pub fn create_dir_all(path: &Path, context: &str) -> bool {
                 json!({
                     "operation": "createDirectory",
                     "context": context,
-                    "path": path,
+                    "path": crate::native_path::encode(path),
                     "error": { "message": error.to_string() },
                 }),
             );
@@ -50,8 +50,8 @@ pub fn rename(from: &Path, to: &Path, context: &str) {
             json!({
                 "operation": "rename",
                 "context": context,
-                "from": from,
-                "to": to,
+                "from": crate::native_path::encode(from),
+                "to": crate::native_path::encode(to),
                 "error": { "message": error.to_string() },
             }),
         );
@@ -65,7 +65,7 @@ pub fn sync_all(file: &std::fs::File, path: &Path, context: &str) {
             json!({
                 "operation": "sync",
                 "context": context,
-                "path": path,
+                "path": crate::native_path::encode(path),
                 "error": { "message": error.to_string() },
             }),
         );

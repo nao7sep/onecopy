@@ -1,3 +1,4 @@
+import { displayNativePath } from "../utils/nativePath";
 import { useId, useRef } from "react";
 import { useBlockingSurface } from "../hooks/useBlockingSurface";
 import { useI18n } from "../i18n/I18nContext";
@@ -97,10 +98,10 @@ export function SubstitutedSourceGate({
             <ul>
               {substituted.map((path) => (
                 <li
-                  key={path}
+                  key={displayNativePath(path)}
                   className="mb-1.5 break-all rounded-lg bg-danger-surface px-3 py-2 text-sm leading-relaxed text-danger"
                 >
-                  {path}
+                  {displayNativePath(path)}
                 </li>
               ))}
             </ul>

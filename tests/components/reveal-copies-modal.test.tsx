@@ -6,12 +6,13 @@ import RevealCopiesModal from "../../src/components/RevealCopiesModal";
 import {
   mockCommands,
   resetTauriMocks,
-  revealItemInDir,
+  invokeCalls,
 } from "../mocks/tauri";
 
 beforeEach(() => {
   resetTauriMocks();
   mockCommands({
+    reveal_native_path: () => null,
     get_item_detail: () => ({
       fileName: "photo.jpg",
       kind: "image",
@@ -44,6 +45,19 @@ describe("Comparison physical-copy reveal", () => {
     await act(async () => {});
 
     fireEvent.click(view.getByRole("button", { name: "/two/photo.jpg" }));
-    expect(revealItemInDir).toHaveBeenCalledWith("/two/photo.jpg");
+    expect(invokeCalls.find((call) => call.command === "reveal_native_path")?.args).toEqual({ path: "/two/photo.jpg" });
   });
+});
+
+
+it("shows distinct escaped native names and reveals their unchanged identity", async () => {
+  const paths = ["/one/photo\u0000bfe.jpg", "/one/photo\u0000bff.jpg", "/one/photo\ufffd.jpg"];
+  mockCommands({ get_item_detail: () => ({ copyPaths: paths }) });
+  const view = render(<RevealCopiesModal hash="hash-native" fileName={"photo\u0000bff.jpg"} onClose={() => undefined} />);
+  await act(async () => {});
+  expect(view.getByRole("dialog", { name: "Show a copy of photo\\xFF.jpg" })).toBeTruthy();
+  expect(view.getByRole("button", { name: "/one/photo\\xFE.jpg" })).toBeTruthy();
+  expect(view.getByRole("button", { name: "/one/photo\ufffd.jpg" })).toBeTruthy();
+  fireEvent.click(view.getByRole("button", { name: "/one/photo\\xFF.jpg" }));
+  expect(invokeCalls.find((call) => call.command === "reveal_native_path")?.args).toEqual({ path: paths[1] });
 });

@@ -1,3 +1,4 @@
+import { displayNativePath } from "../utils/nativePath";
 import { useEffect, useState } from "react";
 import {
   useDestinationsStore,
@@ -92,7 +93,7 @@ function DirNode({
       // get the same identifying information a mouse hover already gives
       // sighted users — and the ActionBar below mirrors it visibly the
       // moment this row becomes active.
-      aria-label={entry.path}
+      aria-label={displayNativePath(entry.path)}
     >
       <div
         ref={receiver.ref}
@@ -131,9 +132,9 @@ function DirNode({
           className={`min-w-0 flex-1 truncate ${
             isEmpty ? "italic text-ink-muted" : "text-ink"
           }`}
-          title={entry.path}
+          title={displayNativePath(entry.path)}
         >
-          {entry.name}
+          {displayNativePath(entry.name)}
         </span>
       </div>
       {isOpen ? (
@@ -217,9 +218,9 @@ function RootRow({ root, isOpen }: { root: string; isOpen: boolean }) {
             actually hurt (the path IS its identity), while hundreds of
             subfolder rows doubling in height would halve the visible tree.
             The action bar names the active row's path again. */}
-        <span className="min-w-0 flex-1" title={root}>
+        <span className="min-w-0 flex-1" title={displayNativePath(root)}>
           <span className="block truncate font-medium text-ink-strong">
-            {leafName(root)}
+            {displayNativePath(leafName(root))}
           </span>
           <IdentifyingText value={root} path className="text-[11px] text-ink-muted" />
         </span>
@@ -303,10 +304,10 @@ function ActionBar() {
           and a Move's confirmation names the destination in full. */}
       <p
         className="mb-0.5 truncate text-sm font-medium text-ink-strong"
-        aria-label={activePath}
-        title={activePath}
+        aria-label={displayNativePath(activePath)}
+        title={displayNativePath(activePath)}
       >
-        {leafName(activePath)}
+        {displayNativePath(leafName(activePath))}
       </p>
       <IdentifyingText value={activePath} path className="mb-2 text-[11px] text-ink-muted" />
       <div className="flex flex-wrap items-center gap-2">
@@ -561,7 +562,7 @@ export default function DestinationsTab() {
           className="mt-2 flex shrink-0 items-start gap-2 rounded-md border border-border bg-surface-muted px-2.5 py-2 text-xs text-ink"
         >
           <span className="min-w-0 flex-1 break-words">
-            {text(confirmation)}
+            {displayNativePath(text(confirmation))}
           </span>
           <IconButton
             size="sm"
@@ -607,7 +608,7 @@ export default function DestinationsTab() {
       ) : null}
       {message !== null ? (
         <p className="mt-2 shrink-0 break-words text-xs text-ink-muted">
-          {text(message)}
+          {displayNativePath(text(message))}
         </p>
       ) : null}
     </div>
@@ -623,7 +624,7 @@ export const NAMED_FILES = 3;
 export function factText(fact: DestinationFact, { text, t, list }: Translator): string {
   if (fact.paths === undefined) return text(fact);
   const rest = fact.paths.length - NAMED_FILES;
-  const named = fact.paths.slice(0, NAMED_FILES).map((path) => leafName(path));
+  const named = fact.paths.slice(0, NAMED_FILES).map((path) => displayNativePath(leafName(path)));
   const names = list(rest > 0 ? [...named, t("common.countMore", { count: rest })] : named);
   return text({ key: fact.key, values: { ...fact.values, names } });
 }
@@ -644,7 +645,7 @@ function DropChoiceModal({
   const { t } = useI18n();
   return (
     <ModalShell
-      title={t("destinations.dropTitle", { folder: leafName(path) })}
+      title={t("destinations.dropTitle", { folder: displayNativePath(leafName(path)) })}
       onClose={onClose}
       widthClass="w-[min(720px,calc(100vw-3rem))]"
       closeLabel={t("common.cancel")}
@@ -670,8 +671,8 @@ function DropChoiceModal({
         </>
       }
     >
-      <p className="select-text break-all text-sm text-ink" title={path}>
-        {path}
+      <p className="select-text break-all text-sm text-ink" title={displayNativePath(path)}>
+        {displayNativePath(path)}
       </p>
       <p className="mt-1 text-xs text-ink-muted">
         {t("destinations.dropSummary", { count })}

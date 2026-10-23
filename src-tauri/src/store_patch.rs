@@ -42,7 +42,7 @@ pub fn save_config(app: &AppHandle, mut changes: Value, report_failure: bool) ->
                 if let Some(dir) = dirs
                     .iter()
                     .filter_map(Value::as_str)
-                    .find(|dir| crate::packages::within_package(std::path::Path::new(dir), true))
+                    .find(|dir| crate::packages::within_package(&crate::native_path::from_text(dir), true))
                 {
                     return Err(format!(
                         "{dir} is inside a library or app package, which OneCopy leaves alone"

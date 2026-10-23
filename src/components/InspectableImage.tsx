@@ -1,3 +1,4 @@
+import { displayNativePath } from "../utils/nativePath";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -140,7 +141,7 @@ export default function InspectableImage({
     >
       <img
         src={previewUrl(hash)}
-        alt={fileName}
+        alt={displayNativePath(fileName)}
         className={`${
           enlargeSmall || (knownWidth !== null && knownHeight !== null)
             ? "h-full w-full"
@@ -183,7 +184,7 @@ export default function InspectableImage({
           ) : (
             <img
               src={source}
-              alt={t("inspect.originalSizeAlt", { name: fileName })}
+              alt={t("inspect.originalSizeAlt", { name: displayNativePath(fileName) })}
               draggable={false}
               className="pointer-events-none absolute max-h-none max-w-none"
               onLoad={(event) => {
@@ -214,7 +215,7 @@ export default function InspectableImage({
           level="error"
           className="absolute bottom-2 left-2 right-2 z-10 shadow-sm"
         >
-          {text(inspectionError)}
+          {displayNativePath(text(inspectionError))}
         </OperationResult>
       ) : null}
     </div>

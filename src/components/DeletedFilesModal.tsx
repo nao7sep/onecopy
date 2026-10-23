@@ -1,3 +1,4 @@
+import { displayNativePath } from "../utils/nativePath";
 // Browse: one configured root's deleted files, as a working surface. The list
 // is one multi-select listbox (composite-control conventions) driven by the
 // active-descendant technique, because it is virtualized: focus stays on the
@@ -319,7 +320,7 @@ function DeletedFilesBrowser({
     if (group.kind === "move-cleanup") {
       return group.movedTo === null
         ? t("deletedFiles.kindMovedSomewhere")
-        : t("deletedFiles.kindMoved", { destination: group.movedTo });
+        : t("deletedFiles.kindMoved", { destination: displayNativePath(group.movedTo) });
     }
     return null;
   };
@@ -409,7 +410,7 @@ function DeletedFilesBrowser({
           <Check size={16} aria-hidden="true" className="shrink-0 text-ink-muted" />
           <span className="min-w-0 flex-1">
             <span className="flex items-baseline gap-2">
-              <span className="truncate text-sm text-ink-strong">{name}</span>
+              <span className="truncate text-sm text-ink-strong">{displayNativePath(name)}</span>
               <IdentifyingText value={folderLabel} path className="text-xs text-ink-muted" />
             </span>
             <span className="block truncate text-xs text-ink-muted">{facts}</span>
@@ -438,7 +439,7 @@ function DeletedFilesBrowser({
       >
         <Check size={16} aria-hidden="true" className="shrink-0 text-ink-muted" />
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm text-ink">{name}</span>
+          <span className="block truncate text-sm text-ink">{displayNativePath(name)}</span>
           {/* The folder keeps its final segment; the facts after it are cut
               at their end only once the folder is gone. */}
           <span className="flex min-w-0 text-xs text-ink-muted">
@@ -599,8 +600,8 @@ function DeletedFilesBrowser({
 function ActiveRowDetail({ name, folderLabel, facts }: { name: string; folderLabel: string; facts: string }) {
   return (
     <div data-active-row-detail className="mt-2 select-text break-all text-xs text-ink-muted">
-      <p className="text-sm text-ink">{name}</p>
-      <p>{folderLabel}</p>
+      <p className="text-sm text-ink">{displayNativePath(name)}</p>
+      <p>{displayNativePath(folderLabel)}</p>
       {facts === "" ? null : <p>{facts}</p>}
     </div>
   );

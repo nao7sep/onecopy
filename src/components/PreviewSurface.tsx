@@ -1,3 +1,4 @@
+import { displayNativePath } from "../utils/nativePath";
 // ONE preview surface, two placements: the second-monitor preview window and
 // the main window's split pane both render this. Images show the cached
 // preview at fit (press and hold for original pixels); video, audio, text, and
@@ -179,7 +180,7 @@ function VideoSurface({
           // already showing correctly.
           <img
             src={previewUrl(hash)}
-            alt={detail.fileName}
+            alt={displayNativePath(detail.fileName)}
             className="h-full w-full object-contain"
           />
         ) : (

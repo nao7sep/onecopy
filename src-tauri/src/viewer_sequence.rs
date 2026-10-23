@@ -258,8 +258,8 @@ pub fn reconcile(
     sequence
         .conn
         .execute(
-            "ATTACH DATABASE ?1 AS library",
-            [index_db.to_string_lossy().as_ref()],
+            "ATTACH DATABASE CAST(?1 AS TEXT) AS library",
+            [crate::sqlite::filename_bytes(index_db)?],
         )
         .map_err(|error| error.to_string())?;
     // A provisional key names its member's own path, so that path carries

@@ -18,7 +18,12 @@ fn one_listing_projects_children_and_emptiness_together() {
     let data_root = root.path().join("app-data");
     let unused_data_root = root.path().join("never-used-app-data");
 
-    let rows = list_subdirs_at(root.path(), &visibility::Policy::from_config(&json!({})).unwrap(), &unused_data_root).unwrap();
+    let rows = list_subdirs_at(
+        root.path(),
+        &visibility::Policy::from_config(&json!({})).unwrap(),
+        &unused_data_root,
+    )
+    .unwrap();
     assert!(!rows.is_empty);
     let facts = |name: &str| {
         let row = rows.entries.iter().find(|row| row.name == name).unwrap();
@@ -42,10 +47,22 @@ fn one_listing_projects_children_and_emptiness_together() {
     // The app's own data root is never a browsable destination child,
     // and listing straight into it (a source containing the data root, or a
     // destination path resolving inside it) answers empty like trash.
-    let rows_excluding_data_root =
-        list_subdirs_at(root.path(), &visibility::Policy::from_config(&json!({})).unwrap(), &data_root).unwrap();
-    assert!(rows_excluding_data_root.entries.iter().all(|row| row.name != "app-data"));
-    let data_listing = list_subdirs_at(&data_root, &visibility::Policy::from_config(&json!({})).unwrap(), &data_root).unwrap();
+    let rows_excluding_data_root = list_subdirs_at(
+        root.path(),
+        &visibility::Policy::from_config(&json!({})).unwrap(),
+        &data_root,
+    )
+    .unwrap();
+    assert!(rows_excluding_data_root
+        .entries
+        .iter()
+        .all(|row| row.name != "app-data"));
+    let data_listing = list_subdirs_at(
+        &data_root,
+        &visibility::Policy::from_config(&json!({})).unwrap(),
+        &data_root,
+    )
+    .unwrap();
     assert!(data_listing.entries.is_empty());
     assert!(!data_listing.is_empty);
 }
@@ -93,11 +110,19 @@ fn a_drive_that_does_not_answer_fails_the_listing_within_its_bound() {
     let policy = visibility::Policy::from_config(&json!({})).unwrap();
     let data_root = root.path().join("never-used-app-data");
 
-    let away = FakeStallingVolume::mount(&root.path().join("away"), std::time::Duration::from_millis(200));
+    let away = FakeStallingVolume::mount(
+        &root.path().join("away"),
+        std::time::Duration::from_millis(200),
+    );
     away.stall(&[Op::List], None);
     let started = std::time::Instant::now();
     let rows = list_subdirs_at(root.path(), &policy, &data_root).unwrap();
-    let row = |name: &str| rows.entries.iter().find(|row| row.name == name).map(|row| (row.has_children, row.is_empty));
+    let row = |name: &str| {
+        rows.entries
+            .iter()
+            .find(|row| row.name == name)
+            .map(|row| (row.has_children, row.is_empty))
+    };
     assert_eq!(row("away"), Some((true, false)));
     assert_eq!(row("here"), Some((false, true)));
     assert!(list_subdirs_at(&root.path().join("away"), &policy, &data_root).is_err());

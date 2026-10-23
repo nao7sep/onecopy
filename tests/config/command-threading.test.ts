@@ -80,8 +80,10 @@ const FORBIDDEN_BOUNDARY = [
 
 // Async commands that await their own non-blocking work instead of running a
 // blocking body; everything else async goes through dispatch(). The standalone
-// quit question awaits a dialog that rfd runs on a thread of its own.
-const ASYNC_WITHOUT_DISPATCH = new Set(["quit_question"]);
+// quit question awaits a dialog that rfd runs on a thread of its own. The
+// folder picker awaits its native completion callback; AppKit sheet setup is
+// queued onto the main thread and never blocks a runtime worker.
+const ASYNC_WITHOUT_DISPATCH = new Set(["quit_question", "pick_directories"]);
 
 const DISPATCH_MARKERS = [/\bdispatch\(/, /spawn_blocking\(/];
 

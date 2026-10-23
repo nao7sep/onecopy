@@ -36,3 +36,14 @@ fn an_item_with_a_copy_in_a_synced_folder_is_found() {
     assert!(items_in_synced_folders(&conn, std::slice::from_ref(&item), &synced).unwrap());
     assert!(!items_in_synced_folders(&conn, &[item], &[PathBuf::from("/Elsewhere")]).unwrap());
 }
+
+#[cfg(unix)]
+#[test]
+fn synced_folder_comparison_does_not_merge_invalid_native_names() {
+    use std::os::unix::ffi::OsStrExt;
+    let synced = PathBuf::from(std::ffi::OsStr::from_bytes(b"/Cloud/\xff"));
+    let member = Path::new(std::ffi::OsStr::from_bytes(b"/Cloud/\xff/photo.jpg"));
+    let other = Path::new(std::ffi::OsStr::from_bytes(b"/Cloud/\xfe/photo.jpg"));
+    assert!(is_synced(member, std::slice::from_ref(&synced)));
+    assert!(!is_synced(other, &[synced]));
+}

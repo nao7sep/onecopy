@@ -111,3 +111,77 @@ fn a_movie_finds_its_still_with_one_keyed_lookup() {
         }
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn native_names_remain_distinct_in_inventory_pairing_and_readers() {
+    use std::os::unix::ffi::OsStringExt;
+    let dir = tempfile::tempdir().unwrap();
+    let conn = crate::index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    let fixture = dir.path().join("metadata.txt");
+    std::fs::write(&fixture, b"contents").unwrap();
+    let metadata = std::fs::metadata(&fixture).unwrap();
+    let lists = super::settings_from_config(None, dir.path(), 0).lists;
+    let invalid = dir.path().join(std::ffi::OsString::from_vec(b"shot-\xff.JPG".to_vec()));
+    let other_invalid = dir.path().join(std::ffi::OsString::from_vec(b"shot-\xfe.JPG".to_vec()));
+    let replacement = dir.path().join("shot-\u{fffd}.JPG");
+    let literal = dir.path().join("shot-\\bff.JPG");
+    for path in [&invalid, &other_invalid, &replacement, &literal] {
+        assert_eq!(super::upsert_file(&conn, path, &metadata, &lists, 0).unwrap(), super::Upsert::Added);
+        let encoded = crate::native_path::encode(path);
+        let (id, name, stem, ext): (i64, String, String, String) = conn.query_row(
+            "SELECT id, file_name, stem, ext FROM paths WHERE abs_path = ?1", [&encoded],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        ).unwrap();
+        assert_eq!(name, crate::native_path::encode(path.file_name().unwrap()));
+        assert_eq!(stem, crate::native_path::encode(path.file_stem().unwrap()).to_lowercase());
+        assert_eq!(ext, "jpg");
+        let reopened = crate::indexed_file::live_path_with(&conn, None, Some(id), &|candidate| candidate == path).unwrap();
+        assert_eq!(&reopened, path);
+    }
+    assert_eq!(conn.query_row("SELECT COUNT(DISTINCT stem) FROM paths", [], |row| row.get::<_, i64>(0)).unwrap(), 4);
+}
+
+#[cfg(unix)]
+#[test]
+fn descendant_scopes_compare_encoded_bytes_past_nul() {
+    use std::os::unix::ffi::OsStringExt;
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("CREATE TABLE candidates(path TEXT);").unwrap();
+    let root = std::path::PathBuf::from(std::ffi::OsString::from_vec(b"/photos/\xff".to_vec()));
+    let peer = std::path::PathBuf::from(std::ffi::OsString::from_vec(b"/photos/\xfe".to_vec()));
+    let candidates = [root.join("inside.jpg"), root.with_extension("sibling").join("outside.jpg"), peer.join("outside.jpg"), std::path::PathBuf::from("/photos/\u{fffd}/outside.jpg")];
+    for path in &candidates {
+        conn.execute("INSERT INTO candidates VALUES (?1)", [crate::native_path::encode(path)]).unwrap();
+    }
+    let prefix = super::ensure_trailing_separator(&crate::native_path::encode(&root));
+    let sql = format!("SELECT path FROM candidates WHERE {}", super::descendant_path_predicate("path", 1));
+    let mut statement = conn.prepare(&sql).unwrap();
+    let matches: Vec<String> = statement.query_map([prefix], |row| row.get(0)).unwrap().map(Result::unwrap).collect();
+    assert_eq!(matches, vec![crate::native_path::encode(&candidates[0]).into_owned()]);
+    assert!(super::directory_belongs_to_root(&crate::native_path::encode(&candidates[0]), &crate::native_path::encode(&root)));
+    assert!(!super::directory_belongs_to_root(&crate::native_path::encode(&candidates[2]), &crate::native_path::encode(&root)));
+}
+
+#[cfg(unix)]
+#[test]
+fn native_filesystem_inventory_reopens_an_invalid_byte_name_when_supported() {
+    use std::os::unix::ffi::OsStringExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(std::ffi::OsString::from_vec(b"native-\xff.txt".to_vec()));
+    if let Err(error) = std::fs::write(&path, b"native contents") {
+        // APFS rejects non-Unicode names; all other filesystem failures must fail.
+        if error.kind() == std::io::ErrorKind::InvalidInput || (cfg!(target_os = "macos") && error.raw_os_error() == Some(92)) {
+            eprintln!("SKIP native filesystem inventory: {error}");
+            return;
+        }
+        panic!("create native fixture: {error}");
+    }
+    let conn = crate::index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    let lists = super::settings_from_config(None, dir.path(), 0).lists;
+    super::upsert_file(&conn, &path, &std::fs::metadata(&path).unwrap(), &lists, 0).unwrap();
+    let id = conn.query_row("SELECT id FROM paths", [], |row| row.get::<_, i64>(0)).unwrap();
+    let reopened = crate::indexed_file::live_path(&conn, None, Some(id)).unwrap();
+    assert_eq!(reopened, path);
+    assert_eq!(std::fs::read(reopened).unwrap(), b"native contents");
+}

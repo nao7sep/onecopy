@@ -203,3 +203,17 @@ windows_test! {
         assert_eq!(live(&conn), 1);
     }
 }
+
+windows_test! {
+    "Windows only: native UTF-16 paths",
+    fn long_path_adaptation_preserves_unpaired_utf16_units() {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    let native = std::ffi::OsString::from_wide(&[67, 58, 92, 0xd800, 46, 106, 112, 103]);
+    let path = std::path::Path::new(&native);
+    let adapted = onecopy_lib::winpath::for_fs(path);
+    let mut expected: Vec<u16> = r"\\?\".encode_utf16().collect();
+    expected.extend(native.encode_wide());
+    assert_eq!(adapted.as_os_str().encode_wide().collect::<Vec<_>>(), expected);
+    assert_eq!(onecopy_lib::winpath::for_fs(&adapted).as_ref(), adapted.as_ref());
+}
+}

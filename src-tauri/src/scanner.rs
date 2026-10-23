@@ -343,8 +343,9 @@ pub struct ScanSummary {
 /// separator-terminated literal prefix: LIKE folds ASCII case and treats real
 /// filename characters as wildcards. Column and parameter are fixed SQL syntax
 /// supplied by scanner callers; only the path value crosses the SQL boundary.
+/// Compare bytes because SQLite text length/substr stop at encoded NUL units.
 fn descendant_path_predicate(column: &str, parameter: usize) -> String {
-    format!("substr({column}, 1, length(?{parameter})) = ?{parameter} COLLATE BINARY")
+    format!("substr(CAST({column} AS BLOB), 1, length(CAST(?{parameter} AS BLOB))) = CAST(?{parameter} AS BLOB)")
 }
 
 pub(crate) fn directory_belongs_to_root(directory: &str, root: &str) -> bool {
@@ -353,7 +354,7 @@ pub(crate) fn directory_belongs_to_root(directory: &str, root: &str) -> bool {
     // its existing drive/case and ordinary/verbatim equivalence.
     crate::visibility_index::root_for(
         &[root.to_string()],
-        crate::winpath::for_fs(Path::new(directory)).as_ref(),
+        crate::winpath::for_fs(crate::native_path::from_text(directory).as_ref()).as_ref(),
     ).is_some()
 }
 
@@ -492,16 +493,15 @@ pub fn forget_unconfigured_roots(
     let mut unresolved: Vec<&str> = Vec::new();
     let mut unresolved_spellings: Vec<String> = Vec::new();
     for dir in configured {
-        match settled_root(conn, Path::new(dir)) {
-            Ok(settled) => keep.push(settled.to_string_lossy().to_string()),
+        match settled_root(conn, crate::native_path::from_text(dir).as_ref()) {
+            Ok(settled) => keep.push(crate::native_path::encode(&settled).to_string()),
             Err(_) => {
                 unresolved.push(dir);
                 unresolved_spellings.push(dir.clone());
                 // An absent Windows root still has a deterministic verbatim
                 // spelling. Offline receipts retain conservative alias matching.
                 unresolved_spellings.push(
-                    crate::winpath::for_fs(Path::new(dir))
-                        .to_string_lossy()
+                    crate::native_path::encode(crate::winpath::for_fs(crate::native_path::from_text(dir).as_ref()).as_ref())
                         .to_string(),
                 );
             }
@@ -512,13 +512,13 @@ pub fn forget_unconfigured_roots(
     // directory, while distinct case-only siblings have different identities.
     let keep_identities: Vec<_> = keep
         .iter()
-        .filter_map(|root| crate::file_identity::FileIdentity::from_path(Path::new(root)).ok())
+        .filter_map(|root| crate::file_identity::FileIdentity::from_path(crate::native_path::from_text(root).as_ref()).ok())
         .collect();
     let same = |left: &str, right: &str| left == right || left.to_lowercase() == right.to_lowercase();
     let still_configured = |root: &str, configured_root: &str| {
         keep.iter().any(|spelling| spelling == root)
             || (!keep_identities.is_empty()
-                && crate::file_identity::FileIdentity::from_path(Path::new(root))
+                && crate::file_identity::FileIdentity::from_path(crate::native_path::from_text(root).as_ref())
                     .is_ok_and(|identity| keep_identities.contains(&identity)))
             || unresolved_spellings.iter().any(|spelling| same(spelling, root))
             || unresolved.iter().any(|dir| same(dir, configured_root))
@@ -543,7 +543,7 @@ pub fn forget_unconfigured_roots(
         }
         let nested_kept_roots: Vec<&String> = kept_roots
             .iter()
-            .filter(|kept| Path::new(kept).starts_with(Path::new(&root)) && kept.as_str() != root)
+            .filter(|kept| crate::native_path::from_text(kept).as_ref().starts_with(crate::native_path::from_text(&root).as_ref()) && kept.as_str() != root)
             .collect();
         // `?1` is always the forgotten root's own prefix; `?2`, `?3`, ... are
         // any nested still-configured roots, bound (never interpolated) like
@@ -700,8 +700,8 @@ pub fn forget_unconfigured_roots(
 ///    that no longer exists is a different directory.
 pub fn settled_root(conn: &Connection, configured: &Path) -> Result<PathBuf, String> {
     let canonical = crate::volume_io::canonicalize(configured)
-        .map_err(|e| format!("{}: {e}", configured.display()))?;
-    let canonical_str = canonical.to_string_lossy().to_string();
+        .map_err(|e| format!("{}: {e}", crate::native_path::label(&configured)))?;
+    let canonical_str = crate::native_path::encode(&canonical).to_string();
 
     let mut stmt = conn
         .prepare("SELECT root FROM scan_dirs")
@@ -720,13 +720,13 @@ pub fn settled_root(conn: &Connection, configured: &Path) -> Result<PathBuf, Str
                 Some(identity) => identity,
                 None => identity.insert(
                     crate::file_identity::FileIdentity::from_path(&canonical)
-                        .map_err(|e| format!("{}: {e}", canonical.display()))?,
+                        .map_err(|e| format!("{}: {e}", crate::native_path::label(&canonical)))?,
                 ),
             };
-            if crate::file_identity::FileIdentity::from_path(Path::new(&root))
+            if crate::file_identity::FileIdentity::from_path(crate::native_path::from_text(&root).as_ref())
                 .is_ok_and(|known| &known == canonical_identity)
             {
-                return Ok(PathBuf::from(root));
+                return Ok(crate::native_path::from_text(&root).into_owned());
             }
         }
     }
@@ -797,7 +797,7 @@ pub fn run_source_check_scoped(
         // independent configured root. Do not walk the unresolved spelling,
         // because an absent symlink or differently-cased alias could create a
         // second scan_dirs identity beside the previously settled root.
-        let root = match settled_root(conn, Path::new(root)) {
+        let root = match settled_root(conn, crate::native_path::from_text(root).as_ref()) {
             Ok(root) => root,
             Err(error) => {
                 check_cancel()?;
@@ -815,11 +815,11 @@ pub fn run_source_check_scoped(
             }
         };
         let configured_root = checked_roots[root_index].as_str();
-        let root = root.to_string_lossy().to_string();
+        let root = crate::native_path::encode(&root).to_string();
         let root = root.as_str();
         let stats = walk_root_with_progress(
             conn,
-            Path::new(root),
+            crate::native_path::from_text(root).as_ref(),
             configured_root,
             &settings.lists,
             &visibility_roots,
@@ -1026,10 +1026,10 @@ pub fn upsert_file(
     lists: &ScanLists,
     inherited_visibility_flags: i64,
 ) -> Result<Upsert, String> {
-    let abs = path.to_string_lossy().to_string();
+    let abs = crate::native_path::encode(&path).to_string();
     let file_name = path
         .file_name()
-        .map(|n| n.to_string_lossy().to_string())
+        .map(|n| crate::native_path::encode(&n).to_string())
         .unwrap_or_default();
     let own_visibility_flags = crate::visibility::entry_flags(path, meta);
     let visibility_flags = own_visibility_flags | inherited_visibility_flags;
@@ -1045,7 +1045,7 @@ pub fn upsert_file(
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as i64);
 
-    let ext = extensions::lowercase_ext(&file_name);
+    let ext = path.extension().map(|value| crate::native_path::encode(value).to_ascii_lowercase()).unwrap_or_default();
     let kind = extensions::classify(
         &ext,
         &lists.images,
@@ -1054,11 +1054,9 @@ pub fn upsert_file(
         &lists.companions,
     )
     .as_str();
-    let stem = Path::new(&file_name)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(&file_name)
-        .to_lowercase();
+    let stem = path.file_stem()
+        .map(|value| crate::native_path::encode(value).to_lowercase())
+        .unwrap_or_else(|| file_name.to_lowercase());
 
     let file_key = hard_link_key(meta);
     // The per-file statements go through the statement cache
@@ -1133,7 +1131,7 @@ pub fn upsert_file(
         None => {
             let dir_path = path
                 .parent()
-                .map(|p| p.to_string_lossy().to_string())
+                .map(|p| crate::native_path::encode(&p).to_string())
                 .unwrap_or_default();
             execute_cached(
                 conn,
@@ -1152,7 +1150,7 @@ pub fn upsert_file(
 /// resumes cheap), resets content facts when a file changed, and marks rows
 /// under the root that no longer exist as missing.
 pub fn walk_root(conn: &Connection, root: &Path, lists: &ScanLists) -> Result<WalkStats, String> {
-    walk_root_with_progress(conn, root, &root.to_string_lossy(), lists, &[crate::winpath::for_fs(root).to_string_lossy().into_owned()], 0, 1, 0, None, &|_| {})
+    walk_root_with_progress(conn, root, &crate::native_path::encode(&root), lists, &[crate::native_path::encode(crate::winpath::for_fs(root).as_ref()).into_owned()], 0, 1, 0, None, &|_| {})
 }
 
 /// The physical file a path names when the file has more than one hard link,
@@ -1227,7 +1225,7 @@ fn walk_root_with_progress(
     // prefix must use that same spelling; mixing an ordinary root with
     // verbatim child rows makes vanished files remain falsely live forever.
     let fs_root = crate::winpath::for_fs(root);
-    let root_str = fs_root.to_string_lossy().to_string();
+    let root_str = crate::native_path::encode(fs_root.as_ref()).to_string();
     let scanned_at = logging::now_iso_millis();
 
     progress(ScanProgress::walk(
@@ -1324,7 +1322,7 @@ fn walk_root_with_progress(
                 stats.errors += 1;
                 record_issue(
                     conn,
-                    err.path.map(|p| p.to_string_lossy().to_string()),
+                    err.path.map(|p| crate::native_path::encode(&p).to_string()),
                     WALK_ERROR,
                     &err.message,
                 )?;
@@ -1349,7 +1347,7 @@ fn walk_root_with_progress(
             issues_present = crate::index_store::any_issues(conn)?;
         }
         if issues_present {
-            let entry_path = entry.path.to_string_lossy().to_string();
+            let entry_path = crate::native_path::encode(&entry.path).to_string();
             crate::index_store::clear_issues(conn, &entry_path, &[WALK_ERROR])?;
         }
         if !entry.file_type.is_file() {
@@ -1363,7 +1361,7 @@ fn walk_root_with_progress(
             stats.online_only += 1;
             continue;
         }
-        let abs = path.to_string_lossy().to_string();
+        let abs = crate::native_path::encode(&path).to_string();
         stats.seen += 1;
         record_present
             .execute([&abs])
@@ -1812,7 +1810,7 @@ fn hash_pending_with_progress(
             );
         };
         match hashing::full_hash_cancellable_with_progress(
-            Path::new(&row.abs),
+            crate::native_path::from_text(&row.abs).as_ref(),
             &SCAN_CANCEL,
             &byte_progress,
         ) {
@@ -1889,7 +1887,7 @@ fn hash_pending_with_progress(
                     // equal prefixes on different pages still meet.
                     match row.prehash.as_deref() {
                         Some(pre) => cohort.set_prehash(row.id, pre)?,
-                        None => match hashing::prehash(Path::new(&row.abs)) {
+                        None => match hashing::prehash(crate::native_path::from_text(&row.abs).as_ref()) {
                             Ok(pre) => {
                                 stats.prehashed += 1;
                                 if issues_present {
@@ -2011,7 +2009,8 @@ fn extract_pending_with_progress(
             stats.failed,
             ScanPhase::Resolve,
         ));
-        let path = Path::new(&abs);
+        let native_path = crate::native_path::from_text(&abs);
+        let path = native_path.as_ref();
         let meta = match kind.as_str() {
             "image" => metadata::read_image_metadata(path).map(Some),
             "video" => metadata::read_video_metadata(path).map(Some),

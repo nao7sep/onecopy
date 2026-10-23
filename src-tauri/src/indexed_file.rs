@@ -76,5 +76,5 @@ fn available_path_with(conn: &Connection, hash: Option<&str>, path_id: Option<i6
         }
         _ => return Err("item needs exactly one hash or pathId".to_string()),
     };
-    Ok(paths.into_iter().map(PathBuf::from).find(|path| reachable(path)))
+    Ok(paths.into_iter().map(|path| crate::native_path::from_text(&path).into_owned()).find(|path| reachable(path)))
 }

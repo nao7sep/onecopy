@@ -73,7 +73,7 @@ pub fn strip_timestamps_ms(duration_ms: u64, count: u32) -> Vec<u64> {
 fn log_invocation(op: &str, src: &Path) {
     crate::logging::debug(
         "ffmpeg invocation",
-        serde_json::json!({ "op": op, "src": src.to_string_lossy() }),
+        serde_json::json!({ "op": op, "src": crate::native_path::encode(src) }),
     );
 }
 
@@ -156,12 +156,12 @@ fn extract_frame(
     if !run.status_ok {
         return Err(format!(
             "frame extraction failed at {seconds}s for {}: {}",
-            src.display(),
+            crate::native_path::label(&src),
             run.stderr_text()
         ));
     }
     if !std::fs::metadata(staged_jpg.path()).is_ok_and(|meta| meta.len() > 0) { // data root
-        return Err(format!("ffmpeg emitted no frame at {seconds}s for {}", src.display()));
+        return Err(format!("ffmpeg emitted no frame at {seconds}s for {}", crate::native_path::label(&src)));
     }
     Ok(())
 }
@@ -283,14 +283,14 @@ fn derive_videos_pending_limit(
 
     for (hash, _) in rows {
         let Some(available) = crate::indexed_file::available_path(conn, Some(&hash), None)? else { continue; };
-        let path = available.to_string_lossy().into_owned();
+        let path = crate::native_path::encode(&available);
         let _awake = crate::sleep_prevention::begin_work();
         let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::BackgroundWork,
             Some(crate::activity::ActivitySubject::Previews), Some(&hash));
         if let Some(report) = on_item {
             report(&hash);
         }
-        let src = Path::new(&path);
+        let src = available.as_path();
         let result = (|| -> Result<Option<u64>, String> {
             let duration_ms = probe_duration_ms(ffmpeg, src)?;
 
@@ -400,14 +400,14 @@ pub fn derive_strips_pending(
         }
         stats.last_attempted_hash = Some(hash.clone());
         let Some(available) = crate::indexed_file::available_path(conn, Some(&hash), None)? else { continue; };
-        let path = available.to_string_lossy().into_owned();
+        let path = crate::native_path::encode(&available);
         let _awake = crate::sleep_prevention::begin_work();
         on_item(&hash);
         let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::BackgroundWork,
             Some(crate::activity::ActivitySubject::Snapshots), Some(&hash));
         stats.attempted += 1;
         stats.last_attempted_hash = Some(hash.clone());
-        let src = Path::new(&path);
+        let src = available.as_path();
         let duration_ms = duration_ms.max(0) as u64;
         let count = strip_frame_count(duration_ms, strip);
         // ffmpeg runs outside the index share. A strip whose content changed

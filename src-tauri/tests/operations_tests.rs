@@ -3659,3 +3659,140 @@ windows_test! {
         set_read_only(displaced, false);
     }
 }
+
+// Exercise the public scanner and operation boundaries with actual files. All
+// three names have the same lossy label, but each must retain its own identity.
+fn native_name_lifecycle(names: Vec<std::ffi::OsString>) {
+    use onecopy_lib::{native_path, restore, trash};
+    let f = fixture("native-lifecycle");
+    let contents = [b"first-native-content".as_slice(), b"second-native-content", b"literal-replacement-content"];
+    assert_eq!(names.len(), contents.len());
+    for (name, bytes) in names.iter().zip(contents) {
+        match std::fs::write(f.root.join(name), bytes) {
+            Ok(()) => {}
+            #[cfg(unix)]
+            Err(error) if onecopy_lib::file_names::is_name_error(&error) => {
+                eprintln!("SKIP native lifecycle filesystem roundtrip: this filesystem refuses non-UTF-8 names: {error}");
+                return;
+            }
+            Err(error) => panic!("could not create native lifecycle fixture: {error}"),
+        }
+    }
+    scan(&f);
+    let encoded: Vec<String> = names.iter().map(|name| native_path::encode(&f.root.join(name)).into_owned()).collect();
+    assert_eq!(encoded.iter().collect::<std::collections::HashSet<_>>().len(), names.len());
+    let current_identity = |path: &str| -> (i64, String) {
+        f.conn.query_row("SELECT id, content_hash FROM paths WHERE abs_path = ?1 AND missing = 0", [path], |row| Ok((row.get(0)?, row.get(1)?))).unwrap()
+    };
+    let expected_hashes: Vec<String> = contents.iter().map(|bytes| blake3::hash(bytes).to_hex().to_string()).collect();
+    for (name, expected) in names.iter().zip(&expected_hashes) {
+        assert_eq!(&onecopy_lib::hashing::full_hash(&f.root.join(name)).unwrap(), expected);
+    }
+    let identities: Vec<_> = encoded.iter().map(|path| current_identity(path)).collect();
+    assert_eq!(identities.iter().map(|(id, _)| *id).collect::<std::collections::HashSet<_>>().len(), names.len());
+    assert_eq!(identities.iter().map(|(_, hash)| hash).collect::<std::collections::HashSet<_>>().len(), names.len());
+
+    let copied = f._dir.path().join("copied");
+    std::fs::create_dir(&copied).unwrap();
+    for (((name, bytes), path), expected) in names.iter().zip(contents).zip(&encoded).zip(&expected_hashes) {
+        let (_, current_hash) = current_identity(path);
+        let outcome = move_out(&f.conn, &f.app_root, &f.cache, ItemRef::Hash(&current_hash), &copied, MoveOutMode::CopyKeepAll).unwrap();
+        assert_eq!(&current_identity(path).1, expected, "Copy promotes the current path to its actual full content hash");
+        assert_eq!(outcome.exported, 1);
+        assert_eq!(std::fs::read(copied.join(name)).unwrap(), bytes);
+        assert_eq!(std::fs::read(f.root.join(name)).unwrap(), bytes);
+    }
+    assert_eq!(std::fs::read_dir(&copied).unwrap().count(), names.len());
+
+    for (path, expected) in encoded.iter().zip(&expected_hashes) {
+        let (_, current_hash) = current_identity(path);
+        assert_eq!(&current_hash, expected);
+        let outcome = delete_item(&f.conn, &f.app_root, &f.cache, ItemRef::Hash(&current_hash), DeleteMode::Trash).unwrap();
+        assert_eq!(outcome.deleted_files, 1);
+        assert_eq!(outcome.failed_files, 0);
+    }
+    for name in &names { assert!(!f.root.join(name).exists()); }
+    let listing = trash::list_root(&f.root, &f.app_root).unwrap();
+    assert_eq!(listing.entries.len(), names.len());
+    for ((name, bytes), expected) in names.iter().zip(contents).zip(&expected_hashes) {
+        let relative = native_path::encode(name);
+        let entry = listing.entries.iter().find(|entry| entry.original_relative.as_deref() == Some(relative.as_ref())).unwrap();
+        assert_eq!(entry.status, trash::EntryStatus::Restorable);
+        assert_eq!(std::fs::read(native_path::from_text(&entry.stored_path)).unwrap(), bytes);
+        let stored = native_path::from_text(&entry.stored_path);
+        let manifest = trash::read_day(stored.parent().unwrap()).unwrap();
+        let record = manifest.records.iter().find(|(record, _)| record.stored_name == entry.stored_name).unwrap();
+        assert_eq!(record.0.content_hash.as_deref(), Some(expected.as_str()));
+        assert_eq!(trash::target_in_root(&f.root, entry.original_relative.as_ref().unwrap()).unwrap(), f.root.join(name));
+    }
+    let ids: Vec<String> = listing.entries.iter().map(|entry| entry.id.clone()).collect();
+    let candidates = restore::candidates(&f.root, &listing, &ids, &onecopy_lib::file_identity::volume_of, &|| false).unwrap();
+    let plan = restore::plan_restore(&candidates, FolderNames::for_directory(&f.root), RenameStyle::platform_default(), &mut restore::name_available);
+    let config = onecopy_lib::storage::config(&f.app_root).unwrap();
+    let settings = scanner::settings_from_config(Some(&config), &f.app_root, 0);
+    let (restored, _) = restore::execute(&f.conn, &f.root, &plan, &settings, &onecopy_lib::file_identity::volume_of, &|| false, &mut |_| {}).unwrap();
+    assert_eq!(restored.failed, 0);
+    assert_eq!(restored.restored.iter().collect::<std::collections::HashSet<_>>(), encoded.iter().collect());
+    for (name, bytes) in names.iter().zip(contents) { assert_eq!(std::fs::read(f.root.join(name)).unwrap(), bytes); }
+    assert!(trash::list_root(&f.root, &f.app_root).unwrap().entries.is_empty());
+
+    scan(&f);
+    let accepted_move_hashes: Vec<String> = encoded.iter().map(|path| current_identity(path).1).collect();
+    let moved = f._dir.path().join("moved");
+    std::fs::create_dir(&moved).unwrap();
+    for (((name, bytes), path), expected) in names.iter().zip(contents).zip(&encoded).zip(&expected_hashes) {
+        let (_, current_hash) = current_identity(path);
+        assert_eq!(&onecopy_lib::hashing::full_hash(&f.root.join(name)).unwrap(), expected);
+        let outcome = move_out(&f.conn, &f.app_root, &f.cache, ItemRef::Hash(&current_hash), &moved, MoveOutMode::MoveTrashRest).unwrap();
+        assert_eq!(outcome.exported, 1);
+        assert_eq!(outcome.post_action.deleted_files, 1);
+        assert_eq!(outcome.post_action.failed_files, 0);
+        assert!(!f.root.join(name).exists());
+        assert_eq!(std::fs::read(moved.join(name)).unwrap(), bytes);
+        assert_eq!(std::fs::read(copied.join(name)).unwrap(), bytes);
+    }
+    assert_eq!(std::fs::read_dir(&moved).unwrap().count(), names.len());
+    let move_cleanup = trash::list_root(&f.root, &f.app_root).unwrap();
+    assert_eq!(move_cleanup.entries.len(), names.len());
+    for ((name, bytes), expected) in names.iter().zip(contents).zip(&accepted_move_hashes) {
+        let relative = native_path::encode(name);
+        let entry = move_cleanup.entries.iter().find(|entry| entry.original_relative.as_deref() == Some(relative.as_ref())).unwrap();
+        assert_eq!(std::fs::read(native_path::from_text(&entry.stored_path)).unwrap(), bytes);
+        let stored = native_path::from_text(&entry.stored_path);
+        let manifest = trash::read_day(stored.parent().unwrap()).unwrap();
+        let record = manifest.records.iter().find(|(record, _)| record.stored_name == entry.stored_name).unwrap();
+        // Cleanup records the accepted source identity; bytes are checked independently.
+        assert_eq!(record.0.content_hash.as_deref(), Some(expected.as_str()));
+        assert_eq!(entry.moved_to.as_deref(), Some(native_path::encode(&moved.join(name)).as_ref()));
+    }
+}
+
+#[test]
+fn unicode_names_survive_scan_copy_delete_restore_and_move() {
+    native_name_lifecycle(["image-α.jpg", "image-β.jpg", "image�.jpg"].into_iter().map(std::ffi::OsString::from).collect());
+}
+
+#[cfg(unix)]
+#[test]
+fn native_names_survive_scan_copy_delete_restore_and_move() {
+    use std::os::unix::ffi::OsStringExt;
+    native_name_lifecycle(vec![
+        std::ffi::OsString::from_vec(b"image\xff.jpg".to_vec()),
+        std::ffi::OsString::from_vec(b"image\xfe.jpg".to_vec()),
+        std::ffi::OsString::from("image\u{FFFD}.jpg"),
+    ]);
+}
+
+windows_test! {
+    "Windows only: unpaired UTF-16 names require the native Windows filesystem",
+    fn windows_native_names_survive_scan_copy_delete_restore_and_move() {
+        use std::os::windows::ffi::OsStringExt;
+        let name = |unit| {
+            let mut units: Vec<u16> = "image".encode_utf16().collect();
+            units.push(unit);
+            units.extend(".jpg".encode_utf16());
+            std::ffi::OsString::from_wide(&units)
+        };
+        native_name_lifecycle(vec![name(0xd800), name(0xd801), std::ffi::OsString::from("image\u{FFFD}.jpg")]);
+    }
+}

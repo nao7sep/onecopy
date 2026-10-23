@@ -1,3 +1,4 @@
+import { displayNativePath } from "../utils/nativePath";
 import { useAppStore } from "../state/app-store";
 import type { QuarantineRecord } from "../repositories";
 import { useI18n } from "../i18n/I18nContext";
@@ -49,7 +50,7 @@ function Record({ record }: { record: QuarantineRecord }) {
       </p>
       <p className="mt-1 text-sm text-ink">{startedWith(t, record.file)}</p>
       <p className="mt-2 text-xs text-ink-muted">
-        {t("quarantine.originalPreserved", { name: fileName(record.quarantinedTo) })}
+        {t("quarantine.originalPreserved", { name: displayNativePath(fileName(record.quarantinedTo)) })}
       </p>
     </li>
   );

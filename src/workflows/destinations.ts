@@ -3,7 +3,7 @@
 // persistence and item export with the item and section projections.
 
 import { invoke } from "@tauri-apps/api/core";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { pickDirectories } from "../repositories/directory-picker";
 import { message, type MessageValues } from "../i18n/translate";
 import type { MessageKey } from "../i18n/catalogues";
 import { log, toErrorFields } from "../repositories";
@@ -146,8 +146,8 @@ export function cancelDestinationDrag(): void {
 
 export async function addDestinationRoot(): Promise<void> {
   try {
-    const picked = await openDialog({ directory: true, multiple: false });
-    if (typeof picked !== "string") return;
+    const [picked] = await pickDirectories(false);
+    if (picked === undefined) return;
     await changeDestinationRoots((roots) => (roots.includes(picked) ? null : [...roots, picked]));
   } catch (error) {
     log.error("destination root add failed", toErrorFields(error));

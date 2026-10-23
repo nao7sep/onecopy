@@ -106,7 +106,7 @@ pub fn sqlite_marker(connection: &Connection, path: &Path, supported: i64) -> Re
 
 /// The message for a SQLite store whose schema carries no marker.
 pub fn missing_marker(path: &Path) -> String {
-    format!("{} has no format version and cannot be read", path.display())
+    format!("{} has no format version and cannot be read", crate::native_path::label(&path))
 }
 
 /// Whether the SQLite store at `path` was written by a newer OneCopy, read
@@ -115,13 +115,13 @@ pub fn sqlite_newer(path: &Path, supported: i64) -> Result<Option<NewerStore>, S
     match std::fs::symlink_metadata(path) { // data root
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("could not read {}: {error}", path.display())),
+        Err(error) => return Err(format!("could not read {}: {error}", crate::native_path::label(&path))),
     }
     let connection = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
-    .map_err(|error| format!("could not open {}: {error}", path.display()))?;
+    .map_err(|error| format!("could not open {}: {error}", crate::native_path::label(&path)))?;
     Ok(match sqlite_marker(&connection, path, supported)? {
         SqliteMarker::Newer(newer) => Some(newer),
         _ => None,
@@ -151,9 +151,9 @@ impl NewerStore {
         (version > supported).then(|| Self {
             file: path
                 .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.to_string_lossy().into_owned()),
-            path: path.to_string_lossy().into_owned(),
+                .map(|name| crate::native_path::encode(name).into_owned())
+                .unwrap_or_else(|| crate::native_path::encode(path).into_owned()),
+            path: crate::native_path::encode(path).into_owned(),
             version,
             supported,
         })

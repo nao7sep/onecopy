@@ -337,3 +337,29 @@ fn live_contents_also_advance_the_bounded_orphan_cursor() {
     assert_eq!((visited.len(), removed), (5, 1));
     assert_eq!(conn.query_row("SELECT count(*) FROM contents", [], |row| row.get::<_, i64>(0)).unwrap(), 260);
 }
+
+#[cfg(unix)]
+#[test]
+fn preview_reopens_the_exact_native_path_from_encoded_text() {
+    use std::os::unix::ffi::OsStrExt;
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join(std::ffi::OsStr::from_bytes(b"photo-\xff.png"));
+    // Probe the filesystem separately so a decoder failure cannot masquerade
+    // as a filesystem that refuses invalid native names.
+    if let Err(error) = std::fs::write(&source, b"") {
+        if error.kind() == std::io::ErrorKind::InvalidInput
+            || (cfg!(target_os = "macos") && error.raw_os_error() == Some(92)) {
+            eprintln!("native filename fixture unsupported by this filesystem: {error}");
+            return;
+        }
+        panic!("could not create native filename fixture: {error}");
+    }
+    DynamicImage::new_rgb8(8, 6).save_with_format(&source, image::ImageFormat::Png).unwrap();
+    let cache = CachePaths::new(root.path().join("cache"));
+    let encoded = crate::native_path::encode(&source);
+    let (_, facts) = derive_candidate("exact-native", &encoded, &cache, 4, 8, None).unwrap();
+    assert_eq!((facts.width, facts.height), (8, 6));
+    assert!(cache.thumb("exact-native").exists());
+    assert!(cache.preview("exact-native").exists());
+    assert!(!root.path().join("photo-\u{fffd}.png").exists());
+}

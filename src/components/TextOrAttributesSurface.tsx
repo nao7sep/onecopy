@@ -1,3 +1,4 @@
+import { displayNativePath } from "../utils/nativePath";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ExternalLink, FolderOpen } from "lucide-react";
@@ -462,12 +463,12 @@ function AttributesBodyView({
               {detail.copyPaths.map((path) => (
                 <li key={path} className="flex items-start gap-2">
                   <span className="min-w-0 flex-1 select-text break-all text-ink">
-                    {path}
+                    {displayNativePath(path)}
                   </span>
                   <IconButton
                     size="sm"
                     className="oc-first-line-dismiss"
-                    aria-label={t("textPreview.revealPath", { path })}
+                    aria-label={t("textPreview.revealPath", { path: displayNativePath(path) })}
                     title={t("textPreview.revealFile")}
                     onClick={() => {
                       setRevealError(null);

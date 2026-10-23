@@ -1,3 +1,4 @@
+import { displayNativePath } from "../utils/nativePath";
 import { useWizardStore } from "../state/wizard-store";
 import { allCopiesUnavailable } from "../models/sourceAvailability";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -74,13 +75,13 @@ function Thumb({ item }: { item: SectionItem }) {
   const [thumbFailed, setThumbFailed] = useState(false);
   if (item.hash === null || !item.hasThumb || thumbFailed) {
     return (
-      <span className="text-sm font-semibold text-ink-muted">{extLabel(item.fileName, t)}</span>
+      <span className="text-sm font-semibold text-ink-muted">{displayNativePath(extLabel(item.fileName, t))}</span>
     );
   }
   return (
     <img
       src={thumbUrl(item.hash)}
-      alt={item.fileName}
+      alt={displayNativePath(item.fileName)}
       loading="lazy"
       draggable={false}
       // h/w-full rather than max-h/max-w: an image SMALLER than the tile is
@@ -168,8 +169,8 @@ function Tile({
           <TileBadge badge={presentation.analysis} className="bottom-1 right-1" />
         ) : null}
       </div>
-      <figcaption className="mt-1 w-40" title={item.fileName}>
-        <span className="block truncate text-xs text-ink">{item.fileName}</span>
+      <figcaption className="mt-1 w-40" title={displayNativePath(item.fileName)}>
+        <span className="block truncate text-xs text-ink">{displayNativePath(item.fileName)}</span>
         {/* Pixels and bytes, quietly. Without them a section of the same shot
             at three qualities is undecidable: the original and the for-web
             copy are the same picture at tile size. */}
@@ -402,14 +403,14 @@ function ListRow({
         className="shrink-0 truncate text-[11px] font-semibold text-ink-muted"
         style={columnStyle("kind", widths)}
       >
-        {extLabel(item.fileName, t)}
+        {displayNativePath(extLabel(item.fileName, t))}
       </span>
       <span
         className="truncate text-ink"
         style={columnStyle("name", widths)}
-        title={item.fileName}
+        title={displayNativePath(item.fileName)}
       >
-        {item.fileName}
+        {displayNativePath(item.fileName)}
         {item.hasCompanions ? (
           <span
             className="ml-2 rounded-md bg-surface-muted px-1.5 py-0.5 text-[11px] text-ink-muted"

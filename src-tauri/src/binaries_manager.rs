@@ -321,7 +321,7 @@ pub fn reset_temp_dir(root: &Path) {
             logging::warn(
                 "dependency staging reset failed",
                 serde_json::json!({
-                    "directory": temp.to_string_lossy(),
+                    "directory": crate::native_path::encode(&temp),
                     "error": { "message": error.to_string() }
                 }),
             );
@@ -331,7 +331,7 @@ pub fn reset_temp_dir(root: &Path) {
         logging::warn(
             "dependency staging recreation failed",
             serde_json::json!({
-                "directory": temp.to_string_lossy(),
+                "directory": crate::native_path::encode(&temp),
                 "error": { "message": error.to_string() }
             }),
         );
@@ -861,7 +861,7 @@ pub fn install_entry_started(
                 let target = installed_path(root, spec);
                 let parent = target
                     .parent()
-                    .ok_or_else(|| format!("installed path has no parent: {}", target.display()))?;
+                    .ok_or_else(|| format!("installed path has no parent: {}", crate::native_path::label(&target)))?;
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
                 acquisition::check_cancelled(&guard.cancelled)?;
                 on_progress(InstallProgress::fixed(
@@ -892,7 +892,7 @@ pub fn install_entry_started(
                 };
                 logging::info(
                     "pinned dependency installed",
-                    serde_json::json!({ "id": id, "path": target.to_string_lossy() }),
+                    serde_json::json!({ "id": id, "path": crate::native_path::encode(&target) }),
                 );
                 Ok(facts)
             })();
@@ -991,7 +991,7 @@ fn install_ffmpeg_started(
         let target = ffmpeg_path(root);
         let parent = target
             .parent()
-            .ok_or_else(|| format!("installed path has no parent: {}", target.display()))?;
+            .ok_or_else(|| format!("installed path has no parent: {}", crate::native_path::label(&target)))?;
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         guard.deadline.check(&guard.cancelled)?;
         // Replace-in-place: rename over any previous install (same volume).
@@ -1027,7 +1027,7 @@ fn install_ffmpeg_started(
         ));
         logging::info(
             "ffmpeg installed",
-            serde_json::json!({ "version": resolved.version, "path": target.to_string_lossy() }),
+            serde_json::json!({ "version": resolved.version, "path": crate::native_path::encode(&target) }),
         );
         Ok(facts)
     })();
@@ -1148,7 +1148,7 @@ pub fn state_of(root: &Path, spec: &DependencySpec) -> DependencyState {
         label: spec.label.to_string(),
         kind: spec.kind,
         status: binaries::derive_status(present, installed_version.as_deref(), &facts),
-        path: path.to_string_lossy().to_string(),
+        path: crate::native_path::encode(&path).into_owned(),
         installed_version,
         facts,
         required_for_core: spec.required_for_core,

@@ -4,7 +4,7 @@
 
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { pickDirectories } from "../repositories/directory-picker";
 import { log, toErrorFields } from "../repositories";
 import { stringArrayField } from "../utils/configProjection";
 import { requestSeq } from "./request-seq";
@@ -150,10 +150,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
   addDirs: async () => {
     set({ error: null });
     try {
-      const picked = await openDialog({ directory: true, multiple: true });
-      const paths = (Array.isArray(picked) ? picked : picked ? [picked] : []).filter(
-        (p): p is string => typeof p === "string",
-      );
+      const paths = await pickDirectories(true);
       const existing = new Set(get().dirs.map((d) => d.path));
       const refused = await packageSourceDirs(paths);
       if (refused.length > 0) set({ error: message("settings.packageFolderRefused", { path: refused[0] }) });

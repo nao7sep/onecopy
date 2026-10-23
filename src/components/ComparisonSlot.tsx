@@ -1,3 +1,4 @@
+import { displayNativePath } from "../utils/nativePath";
 import { factsLine } from "../models/items";
 import { useI18n } from "../i18n/I18nContext";
 import { faceStarRating } from "../models/itemPresentation";
@@ -43,10 +44,10 @@ export default function ComparisonSlot({
       aria-selected={marked}
       aria-label={
         slotKey === null
-          ? t("comparison.slotLabel", { name: member.fileName })
+          ? t("comparison.slotLabel", { name: displayNativePath(member.fileName) })
           : t("comparison.slotKeyLabel", {
               key: slotKey.toUpperCase(),
-              name: member.fileName,
+              name: displayNativePath(member.fileName),
             })
       }
       className={`group/slot relative flex h-full min-h-0 w-full cursor-pointer flex-col rounded-lg border-2 p-1 ${
@@ -119,7 +120,7 @@ export default function ComparisonSlot({
             : "border-amber-500 bg-surface text-ink hover:bg-amber-100 hover:text-slate-950"
         }`}
         aria-label={t(marked ? "comparison.unkeepLabel" : "comparison.keepLabel", {
-          name: member.fileName,
+          name: displayNativePath(member.fileName),
         })}
         aria-pressed={marked}
         onClick={(event) => {
@@ -133,7 +134,7 @@ export default function ComparisonSlot({
       </button>
       <IconButton
         aria-label={t("comparison.openInDefaultAppLabel", {
-          name: member.fileName,
+          name: displayNativePath(member.fileName),
         })}
         title={t("preview.openInDefaultApp")}
         onClick={(event) => {
@@ -156,7 +157,7 @@ export default function ComparisonSlot({
       <Button
         size="toolbar"
         variant="ghost"
-        aria-label={t("comparison.revealCopyLabel", { name: member.fileName })}
+        aria-label={t("comparison.revealCopyLabel", { name: displayNativePath(member.fileName) })}
         title={t("comparison.revealCopy")}
         onClick={(event) => {
           event.stopPropagation();

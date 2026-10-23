@@ -474,7 +474,7 @@ impl Drop for RemoveFilesOnDrop {
                     crate::logging::warn(
                         "dependency staging cleanup failed",
                         serde_json::json!({
-                            "file": path.to_string_lossy(),
+                            "file": crate::native_path::encode(&path),
                             "error": { "message": error.to_string() }
                         }),
                     );
@@ -631,7 +631,7 @@ pub(crate) fn publish_staged(staged: &Path, target: &Path) -> Result<(), String>
             Err(error) => crate::logging::warn(
                 "managed dependency directory could not be opened for sync",
                 serde_json::json!({
-                    "path": parent,
+                    "path": crate::native_path::encode(parent),
                     "error": { "message": error.to_string() },
                 }),
             ),
@@ -703,7 +703,7 @@ pub(crate) fn make_runnable(
             crate::logging::warn(
                 "managed dependency quarantine cleanup failed",
                 serde_json::json!({
-                    "path": staged,
+                    "path": crate::native_path::encode(staged),
                     "error": { "message": error },
                 }),
             );

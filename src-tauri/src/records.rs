@@ -330,7 +330,7 @@ pub fn attach(connection: &Connection, path: &Path) -> Result<(), String> {
         }
     }
     connection
-        .execute("ATTACH DATABASE ?1 AS records", [path.to_string_lossy()])
+        .execute("ATTACH DATABASE CAST(?1 AS TEXT) AS records", [crate::sqlite::filename_bytes(path)?])
         .map_err(|error| format!("attach records: {error}"))?;
     // This launch's open Issues: each (kind, path) whose latest event is an
     // occurrence, identified by the first occurrence since it last closed.

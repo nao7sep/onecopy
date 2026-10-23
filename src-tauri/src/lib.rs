@@ -60,6 +60,8 @@ pub mod media_use;
 pub mod metadata;
 mod mutation_runtime;
 mod nanoid;
+pub mod native_path;
+mod native_shell;
 pub mod notifications;
 pub mod operations;
 pub mod path_identity;
@@ -633,6 +635,14 @@ async fn move_items_out(
     .await
 }
 
+// Keep native picker results outside PathBuf JSON serialization, which cannot
+// represent invalid native units. The interface receives the same lossless
+// identity used by scans and every later filesystem operation.
+#[tauri::command]
+async fn pick_directories(window: tauri::Window, multiple: bool) -> Result<Vec<String>, String> {
+    native_shell::pick_directories(window, multiple).await
+}
+
 // Destination-tree support: see `destinations`.
 #[tauri::command]
 async fn list_subdirs(path: String) -> Result<destinations::DirListing, String> {
@@ -645,7 +655,7 @@ async fn create_subdir(parent: String, name: String) -> Result<String, String> {
         logging::boundary(
             "create_subdir",
             json!({ "parent": parent, "name": name }),
-            || destinations::create_subdir(std::path::Path::new(&parent), &name),
+            || destinations::create_subdir(&native_path::from_text(&parent), &name),
             |path| json!({ "created": path }),
         )
     })
@@ -658,11 +668,18 @@ async fn delete_empty_dir(path: String) -> Result<(), String> {
         logging::boundary(
             "delete_empty_dir",
             json!({ "path": path }),
-            || destinations::delete_empty_dir(std::path::Path::new(&path)),
+            || destinations::delete_empty_dir(&native_path::from_text(&path)),
             |_| json!({}),
         )
     })
     .await
+}
+
+#[tauri::command]
+async fn reveal_native_path(path: String) -> Result<(), String> {
+    dispatch(move || {
+        native_shell::reveal(&native_path::from_text(&path))
+    }).await
 }
 
 // Opens a subdirectory of the app's data root in the OS file manager (the
@@ -674,13 +691,11 @@ async fn delete_empty_dir(path: String) -> Result<(), String> {
 // route silently rejected every path because the scope allow-list was empty,
 // and a `void openPath(...)` threw the rejection away.
 #[tauri::command]
-async fn reveal_data_subdir(app: AppHandle, name: String) -> Result<(), String> {
+async fn reveal_data_subdir(name: String) -> Result<(), String> {
     dispatch(move || {
-        use tauri_plugin_opener::OpenerExt;
         let root = paths::data_root()?;
         let target = paths::revealable_data_subdir(&root, &name)?;
-        app.opener()
-            .open_path(target.to_string_lossy(), None::<&str>)
+        tauri_plugin_opener::open_path(&target, None::<&str>)
             .map_err(|e| e.to_string())
     })
     .await
@@ -703,14 +718,12 @@ async fn open_item_externally(
             "open_item_externally",
             json!({ "hash": hash, "pathId": path_id }),
             || {
-                use tauri_plugin_opener::OpenerExt;
                 let data_root = paths::data_root()?;
                 let conn = index_store::open(&data_root.join(storage::INDEX_DB_FILE_NAME))?;
                 let path = indexed_file::live_path(&conn, hash.as_deref(), path_id)?;
                 let key = operations::ItemIdentity { hash, path_id }.key()?;
                 let _media = media_use::begin_external(&app, &[key])?;
-                app.opener()
-                    .open_path(path.to_string_lossy(), None::<&str>)
+                tauri_plugin_opener::open_path(&path, None::<&str>)
                     .map_err(|error| error.to_string())
             },
             |_| json!({}),
@@ -1015,7 +1028,7 @@ fn place_preview_window(
 fn package_source_dirs(paths: Vec<String>) -> Vec<String> {
     paths
         .into_iter()
-        .filter(|path| packages::within_package(std::path::Path::new(path), true))
+        .filter(|path| packages::within_package(&native_path::from_text(path), true))
         .collect()
 }
 
@@ -1169,15 +1182,13 @@ async fn trash_overview() -> Result<Vec<trash::TrashRootInfo>, String> {
 }
 
 #[tauri::command]
-async fn trash_reveal(app: AppHandle, root: String) -> Result<(), String> {
+async fn trash_reveal(root: String) -> Result<(), String> {
     dispatch(move || {
-        use tauri_plugin_opener::OpenerExt;
         let data_root = paths::data_root()?;
         let roots = storage::configured_file_roots(&data_root)?;
-        let path = std::path::PathBuf::from(&root);
+        let path = native_path::from_text(&root);
         let path = trash::ensure_root_for_reveal(&roots, &path)?;
-        app.opener()
-            .open_path(path.to_string_lossy(), None::<&str>)
+        tauri_plugin_opener::open_path(&path, None::<&str>)
             .map_err(|error| error.to_string())
     })
     .await
@@ -1194,7 +1205,7 @@ async fn trash_entries(root: String) -> Result<trash::TrashListing, String> {
             || {
                 let data_root = paths::data_root()?;
                 let roots = storage::configured_file_roots(&data_root)?;
-                let owning = trash::owning_root_of(&roots, std::path::Path::new(&root))?;
+                let owning = trash::owning_root_of(&roots, &native_path::from_text(&root))?;
                 trash::list_root(&owning, &data_root)
             },
             |listing| {
@@ -1745,9 +1756,11 @@ pub fn run() {
             delete_items,
             mutation_cancel,
             move_items_out,
+            pick_directories,
             list_subdirs,
             create_subdir,
             delete_empty_dir,
+            reveal_native_path,
             reveal_data_subdir,
             open_item_externally,
             text_preview,

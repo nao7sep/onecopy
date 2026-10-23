@@ -109,3 +109,26 @@ fn unreadable_index_bytes_are_an_error_without_a_rebuild() {
     assert!(open(&file).is_err());
     assert_eq!(std::fs::read(&file).unwrap(), bytes);
 }
+
+#[test]
+fn pre_native_identity_index_rebuilds_under_the_current_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("index.sqlite3");
+    let conn = open(&file).unwrap();
+    conn.execute_batch("INSERT INTO paths (abs_path, dir_path, file_name, kind) VALUES ('/old', '/', 'old', 'other');
+                        CREATE TABLE records.retained_native_test(value TEXT);
+                        INSERT INTO records.retained_native_test VALUES ('retain');
+                        DROP INDEX idx_paths_native_identity;").unwrap();
+    assert!(!current_shape(&conn).unwrap());
+    drop(conn);
+    let conn = open(&file).unwrap();
+    assert!(current_shape(&conn).unwrap());
+    assert_eq!(raw_user_version(&conn).unwrap(), crate::formats::INDEX);
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM paths", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    assert_eq!(conn.query_row("SELECT value FROM records.retained_native_test", [], |row| row.get::<_, String>(0)).unwrap(), "retain");
+    conn.execute("INSERT INTO paths (abs_path, dir_path, file_name, kind) VALUES ('/new', '/', 'new', 'other')", []).unwrap();
+    assert!(conn.execute("INSERT INTO paths (abs_path, dir_path, file_name, kind) VALUES ('/new', '/', 'duplicate', 'other')", []).is_err());
+    drop(conn);
+    let conn = open(&file).unwrap();
+    assert_eq!(conn.query_row("SELECT abs_path FROM paths", [], |row| row.get::<_, String>(0)).unwrap(), "/new");
+}

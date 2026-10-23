@@ -324,10 +324,10 @@ fn volume_key(path: &Path) -> String {
             }
             Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => format!(
                 r"\\{}\{}",
-                server.to_string_lossy().to_lowercase(),
-                share.to_string_lossy().to_lowercase()
+                crate::native_path::encode(server).to_lowercase(),
+                crate::native_path::encode(share).to_lowercase()
             ),
-            _ => prefix.as_os_str().to_string_lossy().into_owned(),
+            _ => crate::native_path::encode(prefix.as_os_str()).into_owned(),
         },
         Some(Component::RootDir) => {
             if cfg!(target_os = "macos") {
@@ -335,7 +335,7 @@ fn volume_key(path: &Path) -> String {
                     (components.next(), components.next())
                 {
                     if first == "Volumes" {
-                        return format!("/Volumes/{}", name.to_string_lossy());
+                        return format!("/Volumes/{}", crate::native_path::encode(name));
                     }
                 }
             }
@@ -671,7 +671,7 @@ fn call_with<D: Send + 'static, T: Send + 'static>(
             serde_json::json!({
                 "volume": wait.volume,
                 "op": op.name(),
-                "path": path,
+                "path": crate::native_path::encode(path),
                 "reason": match failure {
                     WaitFailure::Cancelled => "cancelled",
                     _ => "notResponding",

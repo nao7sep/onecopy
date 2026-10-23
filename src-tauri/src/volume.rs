@@ -158,17 +158,17 @@ fn store_lock() -> MutexGuard<'static, ()> {
 fn load_unlocked(root: &Path) -> Result<BTreeMap<String, SourceVolume>, String> {
     let file = root.join(paths::SOURCE_VOLUMES_FILE_NAME);
     let document = match storage::read_json_file(&file, formats::SOURCE_VOLUMES) // data root
-        .map_err(|error| format!("could not read {}: {error}", file.display()))?
+        .map_err(|error| format!("could not read {}: {error}", crate::native_path::label(&file)))?
     {
         storage::JsonFile::Absent => return Ok(BTreeMap::new()),
         storage::JsonFile::Document(document) => document,
         storage::JsonFile::Unreadable(reason) => {
-            return Err(format!("could not read {}: {reason}", file.display()))
+            return Err(format!("could not read {}: {reason}", crate::native_path::label(&file)))
         }
         storage::JsonFile::Newer(newer) => return Err(newer.to_string()),
     };
     let store: SourceVolumeStore = serde_json::from_value(document)
-        .map_err(|error| format!("could not read {}: {error}", file.display()))?;
+        .map_err(|error| format!("could not read {}: {error}", crate::native_path::label(&file)))?;
     Ok(store
         .sources
         .into_iter()
@@ -244,7 +244,8 @@ pub fn enforce_no_substitution_with(
     };
     let mut affected = Vec::new();
     for dir in dirs {
-        let path = Path::new(dir);
+        let native_path = crate::native_path::from_text(dir);
+        let path = native_path.as_ref();
         let Some(known) = recorded.get(dir) else {
             continue;
         };
@@ -329,7 +330,8 @@ pub struct SourceDirsStatus {
 pub fn unavailable_message_with(
     data_root: &Path, dir: &str, identity_of_path: &dyn Fn(&Path) -> Option<String>,
 ) -> &'static str {
-    let path = Path::new(dir);
+    let native_path = crate::native_path::from_text(dir);
+    let path = native_path.as_ref();
     if !matches!(crate::volume_io::symlink_metadata(path), Err(error) if error.kind() == std::io::ErrorKind::NotFound) {
         return "source.unavailable";
     }
@@ -389,7 +391,8 @@ fn probe_source_dirs_with(
     };
     let mut status = SourceDirsStatus::default();
     for dir in &settings.source_dirs {
-        let path = std::path::Path::new(dir);
+        let native_path = crate::native_path::from_text(dir);
+        let path = native_path.as_ref();
         // A folder whose drive does not answer is as unavailable as a
         // missing one.
         if !crate::volume_io::is_dir(path).unwrap_or(false) {

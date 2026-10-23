@@ -290,7 +290,7 @@ fn prepare(app: &tauri::AppHandle, debug_enabled: bool) -> Result<StartupState, 
         if let Some(record) = record {
             crate::logging::warn(
                 "unreadable store set aside; starting a fresh one",
-                json!({ "file": store.to_string_lossy(), "quarantinedTo": record.quarantined_to }),
+                json!({ "file": crate::native_path::encode(&store), "quarantinedTo": record.quarantined_to }),
             );
             crate::storage::report_at_launch(record);
         }
@@ -552,7 +552,7 @@ fn start_runtime(app: &tauri::AppHandle, state: StartupState, debug_enabled: boo
             "version": env!("CARGO_PKG_VERSION"),
             "build": if cfg!(debug_assertions) { "debug" } else { "release" },
             "debugLogging": debug_enabled,
-            "recordsPath": records_path.to_string_lossy(),
+            "recordsPath": crate::native_path::encode(&records_path),
             "os": std::env::consts::OS,
             "arch": std::env::consts::ARCH,
             "setupMs": started.elapsed().as_millis() as u64,
@@ -656,10 +656,10 @@ pub(crate) fn halt_before_runtime(diagnostic: &str, language: &str) -> ! {
     // language. Appended only when it resolves — a path, shown as recorded,
     // never translated (Finding D).
     if let Some(log_dir) = crate::paths::data_root_before_launch()
-        .map(|root| root.join(crate::paths::LOGS_DIR_NAME).to_string_lossy().into_owned())
+        .map(|root| crate::native_path::encode(&root.join(crate::paths::LOGS_DIR_NAME)).into_owned())
     {
         body.push(' ');
-        body.push_str(&text.text_with("launch.failedLogDir", name, "logDir", &log_dir));
+        body.push_str(&text.text_with("launch.failedLogDir", name, "logDir", &crate::native_path::display(&log_dir)));
     }
     let quit = text.text("launch.quit", name);
     if std::panic::catch_unwind(move || {

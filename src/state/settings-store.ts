@@ -7,7 +7,7 @@ import {
   normalizeLanguagePreference,
   type LanguagePreference,
 } from "../i18n/languages";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { pickDirectories } from "../repositories/directory-picker";
 import { log, toErrorFields } from "../repositories";
 import { clampPlaybackVolume } from "../models/playback";
 import { stringArrayField } from "../utils/configProjection";
@@ -201,10 +201,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   addSourceDir: async () => {
     try {
-      const picked = await openDialog({ directory: true, multiple: true });
-      const paths = (
-        Array.isArray(picked) ? picked : picked ? [picked] : []
-      ).filter((p): p is string => typeof p === "string");
+      const paths = await pickDirectories(true);
       const refused = await packageSourceDirs(paths);
       if (refused.length > 0) {
         set({ message: message("settings.packageFolderRefused", { path: refused[0] }), messageLevel: "error" });

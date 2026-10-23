@@ -52,20 +52,24 @@ pub(crate) fn set_aside_if_unreadable(
     }
     let set_aside = crate::storage::quarantine_name(path);
     for suffix in ["", "-wal", "-shm"] {
-        let from = std::path::PathBuf::from(format!("{}{suffix}", path.display()));
+        let mut from = path.as_os_str().to_os_string();
+        from.push(suffix);
+        let from = std::path::PathBuf::from(from);
         if suffix.is_empty() || from.exists() { // data root
-            let to = std::path::PathBuf::from(format!("{}{suffix}", set_aside.display()));
+            let mut to = set_aside.as_os_str().to_os_string();
+            to.push(suffix);
+            let to = std::path::PathBuf::from(to);
             crate::fs_publish::rename_no_replace(&from, &to).map_err(|error| {
-                format!("could not set aside the unreadable {}: {error}", from.display())
+                format!("could not set aside the unreadable {}: {error}", crate::native_path::label(&from))
             })?;
         }
     }
     Ok(Some(crate::storage::QuarantineRecord {
         file: path
             .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.to_string_lossy().into_owned()),
-        quarantined_to: set_aside.to_string_lossy().into_owned(),
+            .map(|name| crate::native_path::encode(name).into_owned())
+            .unwrap_or_else(|| crate::native_path::encode(path).into_owned()),
+        quarantined_to: crate::native_path::encode(&set_aside).into_owned(),
     }))
 }
 
@@ -114,3 +118,14 @@ impl JournalSetup {
 // module that is private to the crate.
 #[path = "../tests/unit/sqlite.rs"]
 mod tests;
+
+/// SQLite's Unix filename API accepts native bytes. Binding them as a blob
+/// and casting inside SQL avoids Rust's UTF-8 text conversion. Windows uses
+/// SQLite's UTF-8 API, so reject unpaired UTF-16 rather than opening a substitute.
+pub(crate) fn filename_bytes(path: &Path) -> Result<&[u8], String> {
+    #[cfg(windows)]
+    if path.to_str().is_none() {
+        return Err("SQLite cannot open a path containing unpaired UTF-16 units.".to_string());
+    }
+    Ok(path.as_os_str().as_encoded_bytes())
+}

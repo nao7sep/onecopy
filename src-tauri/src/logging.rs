@@ -176,7 +176,7 @@ impl Writer {
             match opened {
                 Ok(file) => self.fallback = Some(file),
                 Err(error) => {
-                    eprintln!("[onecopy:logging] {reason}; {}: {error}", self.fallback_path.display());
+                    eprintln!("[onecopy:logging] {reason}; {}: {error}", crate::native_path::label(&self.fallback_path));
                     eprintln!("{}", line.text);
                     return;
                 }
@@ -188,7 +188,7 @@ impl Writer {
             .map(|file| file.write_all(format!("{}\n", line.text).as_bytes()));
         if let Some(Err(error)) = written {
             self.fallback = None;
-            eprintln!("[onecopy:logging] {reason}; {}: {error}", self.fallback_path.display());
+            eprintln!("[onecopy:logging] {reason}; {}: {error}", crate::native_path::label(&self.fallback_path));
             eprintln!("{}", line.text);
         }
     }

@@ -52,3 +52,14 @@ describe("the startup failure screen", () => {
     expect(text).not.toContain(t("startup.newerBody"));
   });
 });
+
+
+it("renders native store names and paths with visible invalid-unit escapes", () => {
+  const file = "config\u0000bff.json";
+  const path = `/app/\u0000wd800/${file}`;
+  useAppStore.setState({ startupFailure: { ...failure, newerStores: [{ file, path, version: 2, supported: 1 }] } });
+  const view = render(<StartupFailureScreen />);
+  expect(view.getByText("config\\xFF.json")).toBeTruthy();
+  expect(view.getByText("/app/\\uD800/config\\xFF.json")).toBeTruthy();
+  expect(useAppStore.getState().startupFailure?.newerStores[0]).toMatchObject({ file, path });
+});

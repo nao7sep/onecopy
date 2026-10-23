@@ -221,15 +221,23 @@ fn canonical_accepted_paths_keep_their_configured_alias_volume_gate() {
 #[test]
 fn obsolete_null_source_receipts_and_read_failures_close_admission() {
     let (_dir, data, roots) = volume_fixture();
-    let sources: Vec<_> = roots.iter().map(|root| root.to_string_lossy().into_owned()).collect();
+    let sources: Vec<_> = roots
+        .iter()
+        .map(|root| root.to_string_lossy().into_owned())
+        .collect();
     let accepted = crate::operations::AcceptedFiles::for_test_paths([roots[0]
-        .join("photo.jpg").to_string_lossy()]);
+        .join("photo.jpg")
+        .to_string_lossy()]);
     let index = data.join(crate::storage::INDEX_DB_FILE_NAME);
     let conn = crate::index_store::open(&index).unwrap();
     // Simulate an obsolete receipt shape without passing through the owning
     // startup opener, which rebuilds this disposable index before normal use.
-    conn.execute_batch("DROP TABLE scan_dirs; CREATE TABLE scan_dirs(root TEXT, configured_root TEXT);").unwrap();
-    conn.execute("INSERT INTO scan_dirs(root) VALUES (?1)", [&sources[0]]).unwrap();
+    conn.execute_batch(
+        "DROP TABLE scan_dirs; CREATE TABLE scan_dirs(root TEXT, configured_root TEXT);",
+    )
+    .unwrap();
+    conn.execute("INSERT INTO scan_dirs(root) VALUES (?1)", [&sources[0]])
+        .unwrap();
     assert!(touched_source_dirs_at(&data, &sources, &Touches::Files(&accepted)).is_err());
     drop(conn);
     std::fs::write(&index, b"unreadable source receipts").unwrap();
@@ -590,10 +598,15 @@ impl RestoreHost for TestRestoreHost {
     ) -> Result<Option<Self::Admitted>, String> {
         self.media.push(media.map(<[String]>::to_vec));
         let (phases, shown) = (&mut self.phases, &self.waiting_shown);
-        match crate::scan_runtime::admit_foreground(None, None, &|| mutation.cancelled(), &mut || {
-            phases.push(waiting.phase);
-            shown.store(true, Ordering::SeqCst);
-        }) {
+        match crate::scan_runtime::admit_foreground(
+            None,
+            None,
+            &|| mutation.cancelled(),
+            &mut || {
+                phases.push(waiting.phase);
+                shown.store(true, Ordering::SeqCst);
+            },
+        ) {
             Ok(guard) => Ok(Some(guard)),
             Err(crate::scan_runtime::Refusal::Cancelled) => Ok(None),
             Err(refusal) => Err(format!("{refusal:?}")),
@@ -615,7 +628,12 @@ impl RestoreHost for TestRestoreHost {
         self.sections.push(sections);
     }
 
-    fn error(&mut self, _progress: &Progress, error: &str, _sections: Option<Vec<crate::queries::SectionLocation>>) {
+    fn error(
+        &mut self,
+        _progress: &Progress,
+        error: &str,
+        _sections: Option<Vec<crate::queries::SectionLocation>>,
+    ) {
         panic!("the restore failed: {error}");
     }
 
@@ -624,7 +642,13 @@ impl RestoreHost for TestRestoreHost {
 
 /// One source root with one deleted file whose folder is gone, and the
 /// restore's data folder. Returns (dir, root, data root, stored path, id).
-fn restore_fixture() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf, String, String) {
+fn restore_fixture() -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    String,
+    String,
+) {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("photos");
     let data_root = dir.path().join("apphome");
@@ -648,7 +672,12 @@ fn restore_fixture() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathB
     let stored = std::path::Path::new(&record.stored_path);
     let id = format!(
         "{}/{}",
-        stored.parent().unwrap().file_name().unwrap().to_string_lossy(),
+        stored
+            .parent()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy(),
         record.stored_name
     );
     (dir, root, data_root, record.stored_path, id)
@@ -673,20 +702,31 @@ fn restore_behind_background_work(
         // Background work holds the index and has not reached a safe point.
         let (held, holding) = std::sync::mpsc::channel::<()>();
         let background = scope.spawn(move || {
-            crate::scan_runtime::with_owner(crate::scan_runtime::Owner::Watcher, || false, || {
-                held.send(()).unwrap();
-                // Released by the test, or by the test failing.
-                let _ = released.recv();
-                Ok(())
-            })
+            crate::scan_runtime::with_owner(
+                crate::scan_runtime::Owner::Watcher,
+                || false,
+                || {
+                    held.send(()).unwrap();
+                    // Released by the test, or by the test failing.
+                    let _ = released.recv();
+                    Ok(())
+                },
+            )
         });
         holding.recv().unwrap();
-        let location = root.join(crate::trash::TRASH_DIR_NAME).to_string_lossy().into_owned();
+        let location = root
+            .join(crate::trash::TRASH_DIR_NAME)
+            .to_string_lossy()
+            .into_owned();
         let mutation = &mutation;
-        let restore = scope.spawn(move || restore_claimed(mutation, host, location, vec![id], None));
+        let restore =
+            scope.spawn(move || restore_claimed(mutation, host, location, vec![id], None));
         let deadline = Instant::now() + Duration::from_secs(5);
         while !shown.load(Ordering::SeqCst) {
-            assert!(Instant::now() < deadline, "the restore never showed that it waits");
+            assert!(
+                Instant::now() < deadline,
+                "the restore never showed that it waits"
+            );
             std::thread::sleep(Duration::from_millis(2));
         }
         while_waiting();
@@ -728,18 +768,35 @@ fn cancelling_a_restore_while_it_waits_for_background_work_changes_nothing() {
     });
 
     assert!(outcome.cancelled);
-    assert_eq!((outcome.restored.len(), outcome.unstarted, outcome.failed), (0, 1, 0));
-    assert_eq!(host.phases, [Phase::Waiting], "never planned, never restored");
+    assert_eq!(
+        (outcome.restored.len(), outcome.unstarted, outcome.failed),
+        (0, 1, 0)
+    );
+    assert_eq!(
+        host.phases,
+        [Phase::Waiting],
+        "never planned, never restored"
+    );
     assert_eq!(host.finished.len(), 1);
     let (cancelled, summary) = host.finished[0].clone();
     assert!(cancelled);
     assert_eq!(summary.map(|summary| summary.files_unstarted), Some(1));
     assert_eq!(host.sections, [Some(Vec::new())], "no section changed");
-    assert!(std::path::Path::new(&stored).exists(), "still in Deleted files");
+    assert!(
+        std::path::Path::new(&stored).exists(),
+        "still in Deleted files"
+    );
     assert!(!root.join("trip").exists(), "no folder recreated");
-    assert_eq!(std::fs::read(&manifest).unwrap(), manifest_before, "no restored line");
-    let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME)).unwrap();
-    let issues: i64 = conn.query_row("SELECT COUNT(*) FROM active_issues", [], |row| row.get(0)).unwrap();
+    assert_eq!(
+        std::fs::read(&manifest).unwrap(),
+        manifest_before,
+        "no restored line"
+    );
+    let conn =
+        crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME)).unwrap();
+    let issues: i64 = conn
+        .query_row("SELECT COUNT(*) FROM active_issues", [], |row| row.get(0))
+        .unwrap();
     assert_eq!(issues, 0, "no Issue recorded");
 }
 
@@ -754,9 +811,15 @@ fn a_restore_that_waited_for_background_work_runs_once_it_is_admitted() {
     let outcome = restore_behind_background_work(&root, &mut host, id, || {});
 
     assert!(!outcome.cancelled);
-    assert!(outcome.requires_review, "the recreated folder is reviewed first");
+    assert!(
+        outcome.requires_review,
+        "the recreated folder is reviewed first"
+    );
     let token = outcome.plan_token.clone();
-    let location = root.join(crate::trash::TRASH_DIR_NAME).to_string_lossy().into_owned();
+    let location = root
+        .join(crate::trash::TRASH_DIR_NAME)
+        .to_string_lossy()
+        .into_owned();
     let mutation = begin().unwrap();
     let ids = vec![outcome.review.unwrap().files[0].id.clone()];
     let confirmed = restore_claimed(&mutation, &mut host, location, ids, token).unwrap();
@@ -767,5 +830,8 @@ fn a_restore_that_waited_for_background_work_runs_once_it_is_admitted() {
     // job, a requested one included, is stopped for it (an empty key list
     // would stop every item's).
     assert_eq!(host.media, [None, None]);
-    assert_eq!(std::fs::read(root.join("trip").join("a.jpg")).unwrap(), b"bytes");
+    assert_eq!(
+        std::fs::read(root.join("trip").join("a.jpg")).unwrap(),
+        b"bytes"
+    );
 }

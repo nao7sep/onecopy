@@ -116,7 +116,7 @@ fn run_writer(store_file: &Path, session_id: &str, jobs: Receiver<Job>) {
         Err(err) => {
             logging::warn(
                 "backup store: could not open; recording disabled for this session",
-                json!({ "file": store_file.to_string_lossy(), "error": { "message": err } }),
+                json!({ "file": crate::native_path::encode(store_file), "error": { "message": err } }),
             );
             None
         }
@@ -142,7 +142,7 @@ fn run_writer(store_file: &Path, session_id: &str, jobs: Receiver<Job>) {
                 if let Err(err) = try_record(conn, session_id, &path, &bytes) {
                     logging::warn(
                         "backup store: failed to record a managed write",
-                        json!({ "file": path, "error": { "message": err.to_string() } }),
+                        json!({ "file": crate::native_path::encode(&path), "error": { "message": err.to_string() } }),
                     );
                 }
             }
@@ -303,7 +303,7 @@ pub fn record(absolute_path: &Path, bytes: &[u8]) {
     let writer = lock();
     if let Some(sender) = writer.sender.as_ref() {
         let _ = sender.send(Job::Record(
-            absolute_path.to_string_lossy().into_owned(),
+            crate::native_path::encode(absolute_path).into_owned(),
             bytes.to_vec(),
         ));
     }

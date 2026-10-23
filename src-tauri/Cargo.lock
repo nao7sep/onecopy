@@ -3234,6 +3234,7 @@ name = "onecopy"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "block2",
  "chardetng",
  "chrono",
  "chrono-tz",

@@ -145,7 +145,7 @@ fn decode_via_ffmpeg_bounded(
 ) -> Result<DynamicImage, String> {
     logging::debug(
         "ffmpeg invocation",
-        serde_json::json!({ "op": "decode-still", "src": src.to_string_lossy() }),
+        serde_json::json!({ "op": "decode-still", "src": crate::native_path::encode(src) }),
     );
     let mut cmd = std::process::Command::new(ffmpeg);
     cmd.args(["-hide_banner", "-loglevel", "error", "-threads"])
@@ -458,7 +458,7 @@ pub fn ensure_fullres(
     // output is already upright (one decode route). Its PNG bytes stream to
     // the staged file without decoding a full-resolution frame in this process;
     // the decode ceiling protects the native image worker, not this route.
-    let src = Path::new(&path);
+    let src = path.as_path();
     let parent = target.parent().ok_or("cache path has no parent")?;
     std::fs::create_dir_all(parent) // data root
         .map_err(|e| crate::resource_limits::cache_write_error("full-resolution cache", e))?;
@@ -493,7 +493,7 @@ fn convert_full_resolution(
 ) -> Result<(), String> {
     logging::debug(
         "ffmpeg invocation",
-        serde_json::json!({ "op": "convert-full-resolution", "src": src.to_string_lossy() }),
+        serde_json::json!({ "op": "convert-full-resolution", "src": crate::native_path::encode(src) }),
     );
     let mut cmd = std::process::Command::new(ffmpeg);
     cmd.args(["-hide_banner", "-loglevel", "error", "-threads"])
@@ -552,10 +552,9 @@ pub fn derive_one(
     if crate::derived_state::preview_failed(conn, hash)? {
         return Err("Preview generation failed. Recheck this section to try again.".to_string());
     }
-    let path = crate::indexed_file::live_path(conn, Some(hash), None)?
-        .to_string_lossy()
-        .into_owned();
-    let src = Path::new(&path);
+    let native_path = crate::indexed_file::live_path(conn, Some(hash), None)?;
+    let path = crate::native_path::encode(&native_path).into_owned();
+    let src = native_path.as_path();
     if ffmpeg.is_none() && needs_ffmpeg_decode(src) {
         return Err(
             "this format needs the video & HEIC support — install it from Background work & tools"
@@ -769,11 +768,11 @@ fn derive_candidate(
     preview_long_edge: u32,
     ffmpeg: Option<&Path>,
 ) -> DeriveOutcome {
-    if ffmpeg.is_none() && needs_ffmpeg_decode(Path::new(path)) {
+    if ffmpeg.is_none() && needs_ffmpeg_decode(crate::native_path::from_text(path).as_ref()) {
         Err(NEEDS_FFMPEG.to_string())
     } else if crate::scanner::is_provisional(hash) {
         generate_for_image_teeing(
-            Path::new(path),
+            crate::native_path::from_text(path).as_ref(),
             cache,
             thumb_edge,
             preview_long_edge,
@@ -782,7 +781,7 @@ fn derive_candidate(
         .map(|(real, facts)| (Some(real), facts))
     } else {
         generate_for_image(
-            Path::new(path),
+            crate::native_path::from_text(path).as_ref(),
             hash,
             cache,
             thumb_edge,
@@ -861,7 +860,7 @@ fn derive_candidate_rows_with(
         let mut available = Vec::with_capacity(chunk.len());
         for (hash, _) in chunk {
             if let Some(path) = crate::indexed_file::available_path(conn, Some(hash), None)? {
-                available.push((hash.clone(), path.to_string_lossy().into_owned()));
+                available.push((hash.clone(), crate::native_path::encode(&path).into_owned()));
             }
         }
         let chunk = available;
@@ -875,7 +874,7 @@ fn derive_candidate_rows_with(
                 .iter()
                 .enumerate()
                 .filter(|(_, (hash, path))| {
-                    !crate::scanner::is_provisional(hash) && !needs_ffmpeg_decode(Path::new(path))
+                    !crate::scanner::is_provisional(hash) && !needs_ffmpeg_decode(crate::native_path::from_text(path).as_ref())
                 })
                 .map(|(index, (hash, path))| (index, hash.clone(), path.clone()))
                 .collect::<Vec<_>>()
@@ -1200,7 +1199,7 @@ fn sweep_cohort(
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
             Err(error) => crate::logging::warn(
                 "stale cache entry removal failed",
-                serde_json::json!({ "path": path, "error": { "message": error.to_string() } }),
+                serde_json::json!({ "path": crate::native_path::encode(path), "error": { "message": error.to_string() } }),
             ),
         }
     }
@@ -1226,7 +1225,7 @@ pub fn startup_sweep(
             Ok(false) => continue,
             Err(error) => {
                 crate::logging::warn("cache tree inspection failed", serde_json::json!({
-                    "path": tree, "error": { "message": error.to_string() }
+                    "path": crate::native_path::encode(&tree), "error": { "message": error.to_string() }
                 }));
                 continue;
             }
@@ -1237,7 +1236,7 @@ pub fn startup_sweep(
                 Ok(entry) => entry,
                 Err(error) => {
                     crate::logging::warn("cache tree traversal failed", serde_json::json!({
-                        "path": tree, "error": { "message": error.to_string() }
+                        "path": crate::native_path::encode(&tree), "error": { "message": error.to_string() }
                     }));
                     continue;
                 }
@@ -1270,7 +1269,7 @@ pub fn purge_for_rebuild(cache: &CachePaths, discard_previews: bool) -> Result<(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(format!(
             "could not clear {} from the cache: {error}",
-            path.display()
+            crate::native_path::label(&path)
         )),
     };
     crate::fullres_cache::clear_where(&cache.root.join("fullres"), !discard_previews)?;
@@ -1284,7 +1283,7 @@ pub fn purge_for_rebuild(cache: &CachePaths, discard_previews: bool) -> Result<(
             Ok(shards) => shards,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(error) => {
-                return Err(format!("could not read {} in the cache: {error}", tree.display()))
+                return Err(format!("could not read {} in the cache: {error}", crate::native_path::label(&tree)))
             }
         };
         for shard in shards {

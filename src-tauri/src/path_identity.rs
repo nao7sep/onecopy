@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 fn canonical(path: &Path) -> Result<PathBuf, String> {
     crate::volume_io::canonicalize(path)
-        .map_err(|e| format!("could not resolve directory {}: {e}", path.display()))
+        .map_err(|e| format!("could not resolve directory {}: {e}", crate::native_path::label(&path)))
 }
 
 /// Whether `candidate` is `root` or lies beneath it physically. Only a
@@ -21,7 +21,7 @@ pub fn directory_is_within(candidate: &Path, root: &Path) -> Result<bool, String
         return Ok(false);
     };
     let root_identity = crate::file_identity::FileIdentity::from_path(&root)
-        .map_err(|e| format!("could not identify source directory {}: {e}", root.display()))?;
+        .map_err(|e| format!("could not identify source directory {}: {e}", crate::native_path::label(&root)))?;
     for ancestor in candidate.ancestors() {
         if crate::file_identity::FileIdentity::from_path(ancestor)
             .is_ok_and(|identity| identity == root_identity)

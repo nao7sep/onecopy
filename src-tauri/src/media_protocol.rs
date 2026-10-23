@@ -150,7 +150,7 @@ fn serve_path(
         );
         not_found()
     };
-    let shown = path.to_string_lossy();
+    let shown = crate::native_path::encode(path);
     let mut file = match crate::volume_io::open_read(path) {
         Ok(file) => file,
         Err(error) => {
@@ -275,7 +275,7 @@ pub(crate) fn serve_cache(
 }
 
 fn serve_cache_path(path: &std::path::Path, key: &str) -> tauri::http::Response<Vec<u8>> {
-    let shown = path.to_string_lossy();
+    let shown = crate::native_path::encode(path);
     let mut file = match crate::volume_io::open_read(path) {
         Ok(file) => file,
         Err(error) => return unavailable("cache unreadable", &shown, &error).unwrap_or_else(not_found),

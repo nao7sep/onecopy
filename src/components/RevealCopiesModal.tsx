@@ -1,3 +1,4 @@
+import { displayNativePath } from "../utils/nativePath";
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { revealInFileManager } from "../workflows/external-open";
@@ -51,7 +52,7 @@ export default function RevealCopiesModal({
 
   return (
     <ModalShell
-      title={t("reveal.title", { name: fileName })}
+      title={t("reveal.title", { name: displayNativePath(fileName) })}
       onClose={onClose}
       footerResult={
         error === null ? undefined : (
@@ -81,7 +82,7 @@ export default function RevealCopiesModal({
                   });
                 }}
               >
-                <span className="break-all">{path}</span>
+                <span className="break-all">{displayNativePath(path)}</span>
               </button>
             </li>
           ))}

@@ -652,3 +652,24 @@ fn section_window_order_token_changes_exactly_when_the_order_does() {
         .unwrap();
     assert_ne!(read(0).order, inserted.order, "an item leaving must change the token");
 }
+
+#[cfg(unix)]
+#[test]
+fn diagnostic_library_lookup_uses_exact_native_source_components() {
+    use std::os::unix::ffi::OsStringExt;
+    let (_dir, conn) = seeded();
+    let root = std::path::PathBuf::from(std::ffi::OsString::from_vec(b"/native/\xff".to_vec()));
+    let path = root.join(std::ffi::OsString::from_vec(b"photo-\xfe.txt".to_vec()));
+    let abs = crate::native_path::encode(&path);
+    let name = crate::native_path::encode(path.file_name().unwrap());
+    let root_text = crate::native_path::encode(&root).into_owned();
+    conn.execute("INSERT INTO paths (abs_path, dir_path, file_name, kind) VALUES (?1, ?2, ?3, 'other')", rusqlite::params![abs, root_text, name]).unwrap();
+    let result = resolve_library_path(&conn, &abs, &[root_text], chrono_tz::UTC).unwrap();
+    assert!(result.is_some());
+    for other_root in ["/native/\u{fffd}", "/native/\\bff"] {
+        assert!(resolve_library_path(&conn, &abs, &[other_root.to_string()], chrono_tz::UTC).unwrap().is_none());
+    }
+    let detail = item_detail(&conn, None, Some(result.unwrap().identity.path_id)).unwrap();
+    assert_eq!(detail.file_name, name);
+    assert_eq!(detail.copy_paths, vec![abs.into_owned()]);
+}

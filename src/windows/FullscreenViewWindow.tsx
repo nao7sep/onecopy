@@ -1,3 +1,4 @@
+import { displayNativePath } from "../utils/nativePath";
 import { itemKey } from "../models/items";
 import { useSecondaryPreviewFeatures } from "../hooks/useSecondaryPreviewFeatures";
 import { useEffect, useRef, useState } from "react";
@@ -176,9 +177,9 @@ export default function FullscreenViewWindow() {
           message={
             state.pendingDelete.kind === "permanent"
               ? permanentSynced
-                ? `${t("fullscreenView.deletePermanentlyBody", { name: state.pendingDelete.fileName })} ${t("common.syncedDeleteWarning")}`
-                : t("fullscreenView.deletePermanentlyBody", { name: state.pendingDelete.fileName })
-              : t("fullscreenView.deleteBody", { name: state.pendingDelete.fileName })
+                ? `${t("fullscreenView.deletePermanentlyBody", { name: displayNativePath(state.pendingDelete.fileName) })} ${t("common.syncedDeleteWarning")}`
+                : t("fullscreenView.deletePermanentlyBody", { name: displayNativePath(state.pendingDelete.fileName) })
+              : t("fullscreenView.deleteBody", { name: displayNativePath(state.pendingDelete.fileName) })
           }
           confirmLabel={
             state.pendingDelete.kind === "permanent"

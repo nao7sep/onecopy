@@ -256,14 +256,14 @@ fn open_regular_nofollow_raw(path: &Path, for_sync: bool) -> io::Result<(File, F
     if !metadata.is_file() || metadata.file_type().is_symlink() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("not a no-follow regular file: {}", path.display()),
+            format!("not a no-follow regular file: {}", crate::native_path::label(&path)),
         ));
     }
     let identity = FileIdentity::from_file(&file)?;
     if !path_names(path, identity) {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
-            format!("file was replaced while opening: {}", path.display()),
+            format!("file was replaced while opening: {}", crate::native_path::label(&path)),
         ));
     }
     Ok((file, identity))
@@ -631,7 +631,7 @@ impl PrivateFile {
             if settle_published.load(Ordering::SeqCst) {
                 crate::logging::info(
                     "a publication given up on completed later",
-                    serde_json::json!({ "path": path }),
+                    serde_json::json!({ "path": crate::native_path::encode(&path) }),
                 );
             } else {
                 remove_private(&path, &file);
@@ -670,7 +670,7 @@ impl PrivateFile {
                 // else's, which is a failure, not an occupied target to review.
                 return Err(io::Error::other(format!(
                     "published output was replaced before completion: {}",
-                    target.display()
+                    crate::native_path::label(&target)
                 )));
             }
             Ok(())

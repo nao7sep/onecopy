@@ -1,3 +1,4 @@
+import { displayNativePath } from "../utils/nativePath";
 import { useEffect, useRef } from "react";
 import { X } from "lucide-react";
 import { useI18n } from "../i18n/I18nContext";
@@ -106,10 +107,10 @@ function Toast({
               a few lines, the path on one — and Issues and Records, where
               every notice is recorded, show them whole. */}
           <p className="line-clamp-3 select-text break-words text-sm">
-            {noticeSentence(record, text)}
+            {displayNativePath(noticeSentence(record, text))}
           </p>
           {record.messageKey != null && record.message.trim() !== "" ? (
-            <p className="mt-1 line-clamp-2 select-text break-words text-xs opacity-70">{record.message}</p>
+            <p className="mt-1 line-clamp-2 select-text break-words text-xs opacity-70">{displayNativePath(record.message)}</p>
           ) : null}
           {record.path ? (
             <IdentifyingText value={record.path} path className="mt-1 select-text text-xs opacity-70" />

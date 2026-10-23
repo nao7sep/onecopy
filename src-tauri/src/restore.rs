@@ -216,7 +216,8 @@ pub fn plan_restore(
             .parent()
             .map(|parent| names.key(parent))
             .unwrap_or_default();
-        let key = format!("{}\0{}", family_key(&candidate.entry), folder.to_string_lossy());
+        let key = format!("{}\0{}", family_key(&candidate.entry),
+            crate::native_path::encode(&folder));
         match family_index.get(&key) {
             Some(&index) => families[index].1.push(candidate),
             None => {
@@ -314,7 +315,7 @@ pub fn plan_restore(
 /// stem ignoring case).
 fn pairing_stem(path: &Path) -> String {
     path.file_stem()
-        .map(|stem| stem.to_string_lossy().to_lowercase())
+        .map(|stem| crate::native_path::encode(&stem).to_lowercase())
         .unwrap_or_default()
 }
 
@@ -325,11 +326,11 @@ pub fn review_of(plan: &RestorePlan, root: &Path, selected_all: &[TrashEntry]) -
             .map(|below| {
                 below
                     .components()
-                    .map(|component| component.as_os_str().to_string_lossy().into_owned())
+                    .map(|component| crate::native_path::encode(component.as_os_str()).into_owned())
                     .collect::<Vec<_>>()
                     .join("/")
             })
-            .unwrap_or_else(|_| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| crate::native_path::encode(&path).into_owned())
     };
     let files = plan
         .steps
@@ -345,7 +346,7 @@ pub fn review_of(plan: &RestorePlan, root: &Path, selected_all: &[TrashEntry]) -
             let main_restored_as = match (target, &step.entry.main_restored_as) {
                 (Some(target), Some(main))
                     if step.entry.role == Some(TrashRole::Companion)
-                        && pairing_stem(target) != pairing_stem(Path::new(main)) =>
+                        && pairing_stem(target) != pairing_stem(crate::native_path::from_text(main).as_ref()) =>
                 {
                     Some(main.clone())
                 }
@@ -489,16 +490,17 @@ pub fn observe(
                 candidate.blocked = Some(Skip::Unrepresentable);
                 return Ok(candidate);
             }
-            Err(error) => return Err(format!("could not inspect {}: {error}", folder.display())),
+            Err(error) => return Err(format!("could not inspect {}: {error}", crate::native_path::label(&folder))),
         }
     }
-    let day_dir = Path::new(&entry.stored_path)
+    let stored_path = crate::native_path::from_text(&entry.stored_path);
+    let day_dir = stored_path
         .parent()
         .ok_or("a stored file has no day folder")?;
     let home = volume(&deepest_existing)
-        .map_err(|error| format!("could not inspect {}: {error}", deepest_existing.display()))?;
+        .map_err(|error| format!("could not inspect {}: {error}", crate::native_path::label(&deepest_existing)))?;
     let stored = volume(day_dir)
-        .map_err(|error| format!("could not inspect {}: {error}", day_dir.display()))?;
+        .map_err(|error| format!("could not inspect {}: {error}", crate::native_path::label(&day_dir)))?;
     if home != stored {
         candidate.blocked = Some(Skip::OtherDrive);
         return Ok(candidate);
@@ -510,9 +512,11 @@ pub fn observe(
         Err(error) if error.kind() == io::ErrorKind::NotFound || file_names::is_name_error(&error) => {
             TargetState::Absent
         }
-        Err(error) => return Err(format!("could not inspect {}: {error}", target.display())),
+        Err(error) => return Err(format!("could not inspect {}: {error}", crate::native_path::label(&target))),
         Ok(metadata) if metadata.file_type().is_file() && metadata.len() == entry.size => {
-            if same_bytes(Path::new(&entry.stored_path), &target, entry.size, cancelled)? {
+            if same_bytes(
+                crate::native_path::from_text(&entry.stored_path).as_ref(), &target, entry.size, cancelled,
+            )? {
                 TargetState::Identical
             } else {
                 TargetState::Occupied
@@ -526,13 +530,13 @@ pub fn observe(
 fn same_bytes(stored: &Path, target: &Path, size: u64, cancelled: &dyn Fn() -> bool) -> Result<bool, String> {
     let hash = |path: &Path| -> Result<String, String> {
         let (mut file, _) = crate::file_identity::open_regular_nofollow(path)
-            .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+            .map_err(|error| format!("could not read {}: {error}", crate::native_path::label(&path)))?;
         crate::hashing::full_hash_file_cancellable(&mut file, size, cancelled, &mut |_, _| {})
             .map_err(|error| {
                 if error.kind() == io::ErrorKind::Interrupted && cancelled() {
                     crate::scanner::CANCELLED.to_string()
                 } else {
-                    format!("could not read {}: {error}", path.display())
+                    format!("could not read {}: {error}", crate::native_path::label(&path))
                 }
             })
     };
@@ -609,7 +613,7 @@ fn ensure_folder(folder: &Path, root: &Path) -> Result<(), StepFailure> {
             return Err(StepFailure::File(NOTICE_MISSING, error.to_string()));
         }
         Err(error) => {
-            let message = format!("could not create {}: {error}", folder.display());
+            let message = format!("could not create {}: {error}", crate::native_path::label(&folder));
             return Err(if stops_remainder(&error, root) {
                 StepFailure::Stop(message)
             } else {
@@ -620,21 +624,21 @@ fn ensure_folder(folder: &Path, root: &Path) -> Result<(), StepFailure> {
     match volume_io::symlink_metadata(folder) {
         Ok(metadata) if metadata.file_type().is_symlink() => Err(StepFailure::File(
             NOTICE_FOLDER_BLOCKED,
-            format!("{} is a link", folder.display()),
+            format!("{} is a link", crate::native_path::label(&folder)),
         )),
         Ok(metadata) if metadata.is_dir() => {
             match crate::path_identity::directory_is_within(folder, root) {
                 Ok(true) => Ok(()),
                 Ok(false) => Err(StepFailure::File(
                     NOTICE_FOLDER_BLOCKED,
-                    format!("{} leads outside its root", folder.display()),
+                    format!("{} leads outside its root", crate::native_path::label(&folder)),
                 )),
                 Err(error) => Err(StepFailure::File(NOTICE_FOLDER_BLOCKED, error)),
             }
         }
         Ok(_) => Err(StepFailure::File(
             NOTICE_FOLDER_BLOCKED,
-            format!("{} is not a folder", folder.display()),
+            format!("{} is not a folder", crate::native_path::label(&folder)),
         )),
         Err(error) => Err(StepFailure::File(NOTICE_FOLDER_BLOCKED, error.to_string())),
     }
@@ -646,7 +650,8 @@ fn restore_one(
     target: &Path,
     volume: &dyn Fn(&Path) -> io::Result<u64>,
 ) -> Result<(), StepFailure> {
-    let stored = Path::new(&entry.stored_path);
+    let stored_path = crate::native_path::from_text(&entry.stored_path);
+    let stored = stored_path.as_ref();
     let day_dir = stored.parent().unwrap_or(root);
     trash::refuse_newer_day(day_dir).map_err(|error| StepFailure::File(NOTICE_FAILED, error))?;
     // The stored file must still be the one the record describes.
@@ -684,14 +689,14 @@ fn restore_one(
             Ok(metadata) if metadata.file_type().is_symlink() => {
                 return Err(StepFailure::File(
                     NOTICE_FOLDER_BLOCKED,
-                    format!("{} is a link", folder.display()),
+                    format!("{} is a link", crate::native_path::label(&folder)),
                 ))
             }
             Ok(metadata) if metadata.is_dir() => {}
             Ok(_) => {
                 return Err(StepFailure::File(
                     NOTICE_FOLDER_BLOCKED,
-                    format!("{} is not a folder", folder.display()),
+                    format!("{} is not a folder", crate::native_path::label(&folder)),
                 ))
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => ensure_folder(folder, root)?,
@@ -714,7 +719,7 @@ fn restore_one(
     if !same_drive {
         return Err(StepFailure::File(
             NOTICE_OTHER_DRIVE,
-            format!("a different drive is at {}", parent.display()),
+            format!("a different drive is at {}", crate::native_path::label(&parent)),
         ));
     }
     trash::refuse_newer_day(day_dir).map_err(|error| StepFailure::File(NOTICE_FAILED, error))?;
@@ -726,7 +731,7 @@ fn restore_one(
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
             return Err(StepFailure::File(
                 NOTICE_OCCUPIED,
-                format!("{} was occupied after the review", target.display()),
+                format!("{} was occupied after the review", crate::native_path::label(&target)),
             ))
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -738,7 +743,7 @@ fn restore_one(
         Err(error) => {
             return Err(StepFailure::File(
                 NOTICE_FAILED,
-                format!("could not restore to {}: {error}", target.display()),
+                format!("could not restore to {}: {error}", crate::native_path::label(&target)),
             ))
         }
     }
@@ -746,7 +751,7 @@ fn restore_one(
         if let Err(error) = crate::fs_publish::sync_directory(folder) {
             logging::warn(
                 "restore directory sync failed after the move completed",
-                json!({ "path": folder, "error": { "message": error.to_string() } }),
+                json!({ "path": crate::native_path::encode(&folder), "error": { "message": error.to_string() } }),
             );
         }
     }
@@ -755,7 +760,7 @@ fn restore_one(
         .map(|below| {
             below
                 .components()
-                .map(|component| component.as_os_str().to_string_lossy().into_owned())
+                .map(|component| crate::native_path::encode(component.as_os_str()).into_owned())
                 .collect::<Vec<_>>()
                 .join("/")
         })
@@ -810,7 +815,7 @@ pub fn execute(
             Action::Skip(skip) => Some(StepFailure::File(skip.descriptor(), String::new())),
             Action::Restore { target, .. } => match restore_one(root, &step.entry, target, volume) {
                 Ok(()) => {
-                    outcome.restored.push(target.to_string_lossy().into_owned());
+                    outcome.restored.push(crate::native_path::encode(&target).into_owned());
                     if let Some(parent) = target.parent() {
                         if known_dirs.insert(parent.to_path_buf()) {
                             restored_dirs.push(parent.to_path_buf());
@@ -862,7 +867,7 @@ pub fn execute(
         if let Some(message) = stop {
             logging::warn(
                 "restore stopped: the drive cannot take more",
-                json!({ "root": root, "error": { "message": &message } }),
+                json!({ "root": crate::native_path::encode(&root), "error": { "message": &message } }),
             );
             outcome.error = Some(message);
             outcome.unstarted = files_total - progress.files_done;
@@ -908,7 +913,7 @@ fn reindex(
     if crate::app_lifecycle::shutting_down() {
         return 0;
     }
-    let root_text = root.to_string_lossy();
+    let root_text = crate::native_path::encode(&root);
     let in_source = settings
         .source_dirs
         .iter()
@@ -966,7 +971,9 @@ fn missing_entry(id: &str, location: &Path) -> TrashEntry {
         id: id.to_string(),
         day: day.to_string(),
         stored_name: name.to_string(),
-        stored_path: location.join(day).join(name).to_string_lossy().into_owned(),
+        stored_path: crate::native_path::encode(
+            &location.join(crate::native_path::from_text(day)).join(crate::native_path::from_text(name)),
+        ).into_owned(),
         original_relative: None,
         deleted_at_utc: String::new(),
         size: 0,

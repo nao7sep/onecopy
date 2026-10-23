@@ -83,7 +83,7 @@ fn claim(root: &Path) -> Result<Claim, String> {
         .map_err(|e| {
             format!(
                 "could not open process ownership file {}: {e}",
-                path.display()
+                crate::native_path::label(&path)
             )
         })?;
 
@@ -121,7 +121,7 @@ fn claim(root: &Path) -> Result<Claim, String> {
         Err(TryLockError::WouldBlock) => Ok(Claim::Secondary { endpoint_path }),
         Err(TryLockError::Error(err)) => Err(format!(
             "could not acquire process ownership file {}: {err}",
-            path.display()
+            crate::native_path::label(&path)
         )),
     }
 }

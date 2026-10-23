@@ -1,3 +1,4 @@
+import { displayNativePath } from "../utils/nativePath";
 // One configured directory in a list, with its removal control.
 //
 // The path and the control share ONE line: Remove is an alternative rendering
@@ -30,7 +31,7 @@ export default function DirectoryRow({
       <IconButton
         size="sm"
         tone="danger"
-        aria-label={t("destinations.removeDirectory", { path })}
+        aria-label={t("destinations.removeDirectory", { path: displayNativePath(path) })}
         title={t("common.remove")}
         className="oc-first-line-dismiss"
         onClick={onRemove}

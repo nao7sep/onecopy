@@ -1,3 +1,4 @@
+import { displayNativePath } from "../utils/nativePath";
 import { useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
@@ -52,8 +53,8 @@ export default function StartupFailureScreen() {
             <ul className="space-y-2">
               {newerStores.map((store) => (
                 <li key={store.path} className="rounded-lg border border-border p-3">
-                  <p className="text-sm font-semibold text-ink-strong">{store.file}</p>
-                  <p className="mt-1 break-all text-xs text-ink-muted">{store.path}</p>
+                  <p className="text-sm font-semibold text-ink-strong">{displayNativePath(store.file)}</p>
+                  <p className="mt-1 break-all text-xs text-ink-muted">{displayNativePath(store.path)}</p>
                 </li>
               ))}
             </ul>

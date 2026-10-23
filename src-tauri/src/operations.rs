@@ -200,7 +200,9 @@ impl AcceptedFiles {
         paths.sort_unstable();
         for path in paths {
             if cancelled() { return Ok(false); }
-            crate::file_identity::open_regular_nofollow(Path::new(path))
+            crate::file_identity::open_regular_nofollow(
+                crate::native_path::from_text(path).as_ref(),
+            )
                 .map_err(|error| format!("Required source is unavailable: {path}: {error}"))?;
         }
         Ok(true)
@@ -334,7 +336,8 @@ fn delete_targets(
     let mut cache_retirement = preview::CacheRetirementBatch::new(cache);
 
     for target in targets {
-        let file = Path::new(&target.abs_path);
+        let native_file = crate::native_path::from_text(&target.abs_path);
+        let file = native_file.as_ref();
         let result = match mode {
             DeleteMode::Trash => match &target.owning_root {
                 Ok(owning_root) => {
@@ -546,7 +549,8 @@ fn collect_delete_targets(
         .into_iter()
         .zip(roles)
         .map(|((path_id, abs_path, content_hash, indexed_bytes), role)| {
-            let owning_root = trash::root_for_file(Path::new(&abs_path), roots);
+            let owning_root =
+                trash::root_for_file(crate::native_path::from_text(&abs_path).as_ref(), roots);
             let bytes = current_or_indexed_bytes(&abs_path, indexed_bytes);
             DeleteTarget {
                 path_id,
@@ -750,7 +754,7 @@ fn permanently_delete_file(
     let metadata = volume_io::symlink_metadata(file)
         .map_err(|error| format!("file to delete is unavailable: {error}"))?;
     if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
-        return Err(format!("not a regular file: {}", file.display()).into());
+        return Err(format!("not a regular file: {}", crate::native_path::label(&file)).into());
     }
     let removed = if let Some(version) = source_version {
         let path = file.to_path_buf();
@@ -1131,8 +1135,12 @@ pub fn move_batch_reviewed(
             for delivery in &mut unit.deliveries {
                 // Preserve the reviewed output name while choosing the first
                 // reachable copy, without reporting an expected offline duplicate.
-                if let Some(index) = delivery.sources.iter().position(|source|
-                    crate::file_identity::open_regular_nofollow(Path::new(&source.abs_path)).is_ok()) {
+                if let Some(index) = delivery.sources.iter().position(|source| {
+                    crate::file_identity::open_regular_nofollow(
+                        crate::native_path::from_text(&source.abs_path).as_ref(),
+                    )
+                    .is_ok()
+                }) {
                     delivery.sources.swap(0, index);
                     delivery.bytes = delivery.sources[0].bytes;
                 }
@@ -1412,11 +1420,11 @@ pub fn admit_destination(
     configured: &crate::storage::ConfiguredRoots,
 ) -> Result<std::path::PathBuf, String> {
     if !volume_io::is_dir(dest_dir).map_err(|error| {
-        format!("could not inspect destination {}: {error}", dest_dir.display())
+        format!("could not inspect destination {}: {error}", crate::native_path::label(&dest_dir))
     })? {
         return Err(format!(
             "destination is not a directory: {}",
-            dest_dir.display()
+            crate::native_path::label(&dest_dir)
         ));
     }
     let mut owner: Option<(usize, &std::path::PathBuf)> = None;
@@ -1433,15 +1441,15 @@ pub fn admit_destination(
     let Some((_, destination_root)) = owner else {
         return Err(format!(
             "destination {} is not a configured destination root or one of its folders",
-            dest_dir.display()
+            crate::native_path::label(&dest_dir)
         ));
     };
     for source in &configured.sources {
         if crate::path_identity::directory_is_within(dest_dir, source)? {
             return Err(format!(
                 "destination {} lies inside the scanned directory {}; move-out targets must be outside every source directory",
-                dest_dir.display(),
-                source.display()
+                crate::native_path::label(&dest_dir),
+                crate::native_path::label(&source)
             ));
         }
     }
@@ -1508,7 +1516,7 @@ fn review_destination_conflicts(
         if !claimed.insert(names.key(&delivery.target)) {
             delivery.rename_required = true;
             review.conflicts.push(DestinationConflict {
-                path: delivery.target.to_string_lossy().into_owned(),
+                path: crate::native_path::encode(&delivery.target).into_owned(),
                 incoming_bytes: delivery.bytes,
                 existing_bytes: None,
                 within_selection: true,
@@ -1528,11 +1536,11 @@ fn review_destination_conflicts(
                 delivery.rename_required = true;
                 review.overwrite_allowed = false;
                 review.conflicts.push(DestinationConflict {
-                    path: delivery.target.to_string_lossy().into_owned(),
+                    path: crate::native_path::encode(&delivery.target).into_owned(),
                     incoming_bytes: delivery.bytes,
                     existing_bytes: Some(bytes),
                     within_selection: false,
-                    preserved_paths: vec![delivery.target.to_string_lossy().into_owned()],
+                    preserved_paths: vec![crate::native_path::encode(&delivery.target).into_owned()],
                 });
             }
             DestinationObservation::Regular { bytes, hash } => {
@@ -1551,7 +1559,7 @@ fn review_destination_conflicts(
                 delivery.replacement_family = family;
                 review.overwrite_allowed &= replaceable;
                 review.conflicts.push(DestinationConflict {
-                    path: delivery.target.to_string_lossy().into_owned(),
+                    path: crate::native_path::encode(&delivery.target).into_owned(),
                     incoming_bytes: delivery.bytes,
                     existing_bytes: Some(bytes),
                     within_selection: false,
@@ -1579,7 +1587,7 @@ fn observe_destination(
         Err(error) => {
             return Err(format!(
                 "could not inspect destination {}: {error}",
-                path.display()
+                crate::native_path::label(&path)
             ))
         }
     };
@@ -1589,7 +1597,7 @@ fn observe_destination(
         });
     }
     let (mut file, _) = crate::file_identity::open_regular_nofollow(path)
-        .map_err(|error| format!("could not inspect destination {}: {error}", path.display()))?;
+        .map_err(|error| format!("could not inspect destination {}: {error}", crate::native_path::label(&path)))?;
     let bytes = file.metadata().map_err(|error| error.to_string())?.len();
     let hash =
         crate::hashing::full_hash_file_cancellable(&mut file, bytes, cancelled, &mut |_, _| {})
@@ -1604,11 +1612,12 @@ fn delivery_matches_hash(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<bool, String> {
     for source in &delivery.sources {
-        let (mut source_file, _) =
-            match crate::file_identity::open_regular_nofollow(Path::new(&source.abs_path)) {
-                Ok(file) => file,
-                Err(_) => continue,
-            };
+        let (mut source_file, _) = match crate::file_identity::open_regular_nofollow(
+            crate::native_path::from_text(&source.abs_path).as_ref(),
+        ) {
+            Ok(file) => file,
+            Err(_) => continue,
+        };
         let source_bytes = source_file
             .metadata()
             .map_err(|error| error.to_string())?
@@ -1640,10 +1649,10 @@ fn reviewed_replacement_family(
     if include_companions {
         let parent = target
             .parent()
-            .ok_or_else(|| format!("destination has no parent: {}", target.display()))?;
+            .ok_or_else(|| format!("destination has no parent: {}", crate::native_path::label(&target)))?;
         let stem = target
             .file_stem()
-            .ok_or_else(|| format!("destination has no file name: {}", target.display()))?;
+            .ok_or_else(|| format!("destination has no file name: {}", crate::native_path::label(&target)))?;
         for entry in volume_io::read_dir(parent, false)
             .map_err(|error| format!("could not inspect destination companions: {error}"))?
         {
@@ -1673,7 +1682,7 @@ fn reviewed_replacement_family(
     let mut presented = Vec::new();
     let mut replaceable = true;
     for path in paths {
-        presented.push(path.to_string_lossy().into_owned());
+        presented.push(crate::native_path::encode(&path).into_owned());
         if path == target {
             reviewed.push(ReviewedDestinationFile {
                 path,
@@ -1809,7 +1818,7 @@ fn collect_move_unit(
     if let Some(first) = primary_sources.first() {
         let name = file_name(&first.abs_path)?;
         deliveries.push(DeliveryPlan {
-            target: dest_dir.join(name),
+            target: dest_dir.join(crate::native_path::from_text(&name)),
             bytes: first.bytes,
             sources: primary_sources,
             primary: true,
@@ -1834,10 +1843,12 @@ fn collect_move_unit(
         });
     for source in companion_sources {
         let name = file_name(&source.abs_path)?;
-        if let Some((_, sources)) = companions
-            .iter_mut()
-            .find(|(existing, _)| names.same(Path::new(existing), Path::new(&name)))
-        {
+        if let Some((_, sources)) = companions.iter_mut().find(|(existing, _)| {
+            names.same(
+                crate::native_path::from_text(existing).as_ref(),
+                crate::native_path::from_text(&name).as_ref(),
+            )
+        }) {
             sources.push(source);
         } else {
             companions.push((name, vec![source]));
@@ -1846,7 +1857,7 @@ fn collect_move_unit(
     for (name, sources) in companions {
         let first = &sources[0];
         deliveries.push(DeliveryPlan {
-            target: dest_dir.join(name),
+            target: dest_dir.join(crate::native_path::from_text(&name)),
             bytes: first.bytes,
             sources,
             primary: false,
@@ -1864,7 +1875,8 @@ fn collect_move_unit(
 fn delivery_sources(rows: Vec<PhysicalRow>, roots: &[std::path::PathBuf]) -> Vec<DeliverySource> {
     rows.into_iter()
         .map(|(path_id, abs_path, content_hash, indexed_bytes)| {
-            let owning_root = trash::root_for_file(Path::new(&abs_path), roots);
+            let owning_root =
+                trash::root_for_file(crate::native_path::from_text(&abs_path).as_ref(), roots);
             let bytes = current_or_indexed_bytes(&abs_path, indexed_bytes);
             DeliverySource {
                 path_id,
@@ -1881,7 +1893,7 @@ fn delivery_sources(rows: Vec<PhysicalRow>, roots: &[std::path::PathBuf]) -> Vec
 /// A planned file's size for progress: its current size when it is a regular
 /// file now, otherwise the indexed size (an unavailable copy still counts).
 fn current_or_indexed_bytes(abs_path: &str, indexed_bytes: Option<i64>) -> u64 {
-    volume_io::symlink_metadata(Path::new(abs_path))
+    volume_io::symlink_metadata(crate::native_path::from_text(abs_path).as_ref())
         .ok()
         .filter(|metadata| metadata.file_type().is_file())
         .map(|metadata| metadata.len())
@@ -1889,10 +1901,10 @@ fn current_or_indexed_bytes(abs_path: &str, indexed_bytes: Option<i64>) -> u64 {
 }
 
 fn file_name(path: &str) -> Result<String, String> {
-    Path::new(path)
+    crate::native_path::from_text(path)
+        .as_ref()
         .file_name()
-        .and_then(|name| name.to_str())
-        .map(ToOwned::to_owned)
+        .map(|name| crate::native_path::encode(name).into_owned())
         .ok_or_else(|| format!("copy has no file name: {path}"))
 }
 
@@ -2018,7 +2030,7 @@ fn execute_move_unit(
                 replacement_prepared = false;
                 outcome
                     .undelivered
-                    .push(delivery.target.to_string_lossy().into_owned());
+                    .push(crate::native_path::encode(&delivery.target).into_owned());
                 on_progress(MoveUnitProgress::Attempt {
                     bytes: delivery.bytes,
                     failed: true,
@@ -2060,7 +2072,7 @@ fn execute_move_unit(
                 } else {
                     outcome
                         .undelivered
-                        .push(output.target.to_string_lossy().into_owned());
+                        .push(crate::native_path::encode(&output.target).into_owned());
                 }
                 durable
             }
@@ -2102,8 +2114,12 @@ fn execute_move_unit(
                             Ok(()) => sync_published(conn, &output.target)?,
                             Err(error) => {
                                 crate::index_store::upsert_issue_with_descriptor(
-                                    conn, Some(output.target.to_string_lossy().as_ref()),
-                                    COPY_ERROR, None, None, &error.to_string(),
+                                    conn,
+                                    Some(crate::native_path::encode(&output.target).as_ref()),
+                                    COPY_ERROR,
+                                    None,
+                                    None,
+                                    &error.to_string(),
                                 )?;
                                 false
                             }
@@ -2111,7 +2127,9 @@ fn execute_move_unit(
                         if durable {
                             outcome.skipped_identical = outcome.skipped_identical.saturating_add(1);
                         } else {
-                            outcome.undelivered.push(output.target.to_string_lossy().into_owned());
+                            outcome
+                                .undelivered
+                                .push(crate::native_path::encode(&output.target).into_owned());
                         }
                         durable
                     }
@@ -2122,7 +2140,7 @@ fn execute_move_unit(
                     {
                         crate::index_store::upsert_issue_with_descriptor(
                             conn,
-                            Some(output.target.to_string_lossy().as_ref()),
+                            Some(crate::native_path::encode(&output.target).as_ref()),
                             COPY_ERROR,
                             Some("notice.copyReplacementUnavailable"),
                             None,
@@ -2130,7 +2148,7 @@ fn execute_move_unit(
                         )?;
                         outcome
                             .undelivered
-                            .push(output.target.to_string_lossy().into_owned());
+                            .push(crate::native_path::encode(&output.target).into_owned());
                         false
                     }
                     Some(_) if conflict_policy == Some(DestinationConflictPolicy::Overwrite) => {
@@ -2152,7 +2170,7 @@ fn execute_move_unit(
                             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                                 return Err(format!(
                                     "a new destination conflict appeared at {}",
-                                    output.target.display()
+                                    crate::native_path::label(&output.target)
                                 ))
                             }
                             Err(error) => return Err(error.to_string()),
@@ -2163,14 +2181,14 @@ fn execute_move_unit(
                         } else {
                             outcome
                                 .undelivered
-                                .push(output.target.to_string_lossy().into_owned());
+                                .push(crate::native_path::encode(&output.target).into_owned());
                         }
                         durable
                     }
                     _ => {
                         outcome
                             .conflicts
-                            .push(output.target.to_string_lossy().into_owned());
+                            .push(crate::native_path::encode(&output.target).into_owned());
                         false
                     }
                 }
@@ -2180,11 +2198,11 @@ fn execute_move_unit(
             Err(error) => {
                 logging::warn(
                     "copy-out publication failed",
-                    json!({ "target": output.target.to_string_lossy(), "error": { "message": error.to_string() } }),
+                    json!({ "target": crate::native_path::encode(&output.target), "error": { "message": error.to_string() } }),
                 );
                 crate::index_store::upsert_issue_with_descriptor(
                     conn,
-                    Some(output.target.to_string_lossy().as_ref()),
+                    Some(crate::native_path::encode(&output.target).as_ref()),
                     COPY_ERROR,
                     Some("notice.copyPublishFailed"),
                     None,
@@ -2192,7 +2210,7 @@ fn execute_move_unit(
                 )?;
                 outcome
                     .undelivered
-                    .push(output.target.to_string_lossy().into_owned());
+                    .push(crate::native_path::encode(&output.target).into_owned());
                 false
             }
         };
@@ -2210,8 +2228,10 @@ fn execute_move_unit(
                 .iter()
                 .filter(|source| !changed_sources.contains(&source.path_id))
                 .collect::<Vec<_>>();
-            let cleanup_context = trash::TrashContext::new(trash::TrashKind::MoveCleanup, operation)
-                .moved_to(Some(output.target.to_string_lossy().into_owned()));
+            let cleanup_context =
+                trash::TrashContext::new(trash::TrashKind::MoveCleanup, operation).moved_to(Some(
+                    crate::native_path::encode(&output.target).into_owned(),
+                ));
             let delete_mode = if mode == MoveOutMode::MoveTrashRest {
                 DeleteMode::Trash
             } else {
@@ -2322,7 +2342,10 @@ fn source_family_unchanged(
         .filter(|proof| proof.source.path_id != current)
         .chain(family().filter(|proof| proof.source.path_id == current))
     {
-        let detail = match proof.version.matches_path(Path::new(&proof.source.abs_path)) {
+        let detail = match proof
+            .version
+            .matches_path(crate::native_path::from_text(&proof.source.abs_path).as_ref())
+        {
             Ok(true) => continue,
             Ok(false) => String::new(),
             Err(error) => error.to_string(),
@@ -2365,7 +2388,7 @@ fn publication_given_up(
         bytes: output.bytes,
         failed: true,
     });
-    let target = output.target.to_string_lossy().into_owned();
+    let target = crate::native_path::encode(&output.target).into_owned();
     if volume_io::outcome_unknown(error) {
         logging::warn(
             "copy-out publication outcome unknown",
@@ -2405,7 +2428,7 @@ fn sync_published(conn: &Connection, target: &Path) -> Result<bool, String> {
         Err(error) => {
             crate::index_store::upsert_issue_with_descriptor(
                 conn,
-                Some(target.to_string_lossy().as_ref()),
+                Some(crate::native_path::encode(&target).as_ref()),
                 COPY_ERROR,
                 Some("notice.copyDirectorySyncFailed"),
                 None,
@@ -2433,7 +2456,7 @@ fn preserve_reviewed_destination_family(
             _ => {
                 return Err(format!(
                     "the reviewed destination changed before replacement: {}",
-                    member.path.display()
+                    crate::native_path::label(&member.path)
                 ))
             }
         }
@@ -2457,11 +2480,11 @@ fn preserve_reviewed_destination_family(
         .map_err(|error| {
             let message = format!(
                 "could not preserve the existing destination {} in Deleted files: {error}",
-                member.path.display()
+                crate::native_path::label(&member.path)
             );
             let _ = crate::index_store::upsert_issue_with_descriptor(
                 conn,
-                Some(member.path.to_string_lossy().as_ref()),
+                Some(crate::native_path::encode(&member.path).as_ref()),
                 COPY_ERROR,
                 Some("notice.copyPreserveDestinationFailed"),
                 None,
@@ -2495,7 +2518,7 @@ fn stage_delivery(
         }
         let staged = output_stage_path(&delivery.target)?;
         let copied = crate::hashing::hash_while_copying_cancellable_detailed(
-            Path::new(&source.abs_path),
+            crate::native_path::from_text(&source.abs_path).as_ref(),
             &staged,
             cancelled,
             &mut |done, total| on_progress(MoveUnitProgress::Stream { done, total }),
@@ -2506,7 +2529,7 @@ fn stage_delivery(
                 drop(private);
                 logging::warn(
                     "move skipped a changed source copy",
-                    json!({ "path": source.abs_path, "target": delivery.target.to_string_lossy() }),
+                    json!({ "path": source.abs_path, "target": crate::native_path::encode(&delivery.target) }),
                 );
                 crate::index_store::upsert_issue_with_descriptor(
                     conn,
@@ -2541,7 +2564,7 @@ fn stage_delivery(
                             continue;
                         }
                         let verified = crate::file_identity::open_regular_nofollow(
-                            Path::new(&remaining.abs_path),
+                            crate::native_path::from_text(&remaining.abs_path).as_ref(),
                         )
                         .and_then(|(mut file, _)| {
                             let version = (mode != MoveOutMode::CopyKeepAll)
@@ -2572,7 +2595,7 @@ fn stage_delivery(
                             Ok(_) if !delivery.primary => {
                                 logging::info(
                                     "a companion differs from the one delivered under its name",
-                                    json!({ "path": remaining.abs_path, "target": delivery.target.to_string_lossy() }),
+                                    json!({ "path": remaining.abs_path, "target": crate::native_path::encode(&delivery.target) }),
                                 );
                                 different.push(remaining.abs_path.clone());
                                 changed_sources.push(remaining.path_id);
@@ -2587,7 +2610,7 @@ fn stage_delivery(
                         };
                         logging::warn(
                             "move left an uncovered source copy in place",
-                            json!({ "path": remaining.abs_path, "target": delivery.target.to_string_lossy(), "error": { "message": detail } }),
+                            json!({ "path": remaining.abs_path, "target": crate::native_path::encode(&delivery.target), "error": { "message": detail } }),
                         );
                         crate::index_store::upsert_issue_with_descriptor(
                             conn,
@@ -2620,7 +2643,7 @@ fn stage_delivery(
                 changed_families.extend(source.beside);
                 logging::warn(
                     "move skipped a source changed during staging",
-                    json!({ "path": source.abs_path, "target": delivery.target.to_string_lossy() }),
+                    json!({ "path": source.abs_path, "target": crate::native_path::encode(&delivery.target) }),
                 );
                 crate::index_store::upsert_issue_with_descriptor(
                     conn,
@@ -2635,7 +2658,7 @@ fn stage_delivery(
                 changed_sources.push(source.path_id);
                 logging::warn(
                     "copy-out staging failed for one source",
-                    json!({ "path": source.abs_path, "target": delivery.target.to_string_lossy(), "error": { "message": error.to_string() } }),
+                    json!({ "path": source.abs_path, "target": crate::native_path::encode(&delivery.target), "error": { "message": error.to_string() } }),
                 );
                 crate::index_store::upsert_issue_with_descriptor(
                     conn,
@@ -2652,15 +2675,15 @@ fn stage_delivery(
             Err(crate::hashing::CopyFailure::Destination(error)) => {
                 let message = format!(
                     "destination could not accept {}: {error}",
-                    delivery.target.display()
+                    crate::native_path::label(&delivery.target)
                 );
                 logging::warn(
                     "copy-out destination failed",
-                    json!({ "target": delivery.target.to_string_lossy(), "error": { "message": error.to_string() } }),
+                    json!({ "target": crate::native_path::encode(&delivery.target), "error": { "message": error.to_string() } }),
                 );
                 crate::index_store::upsert_issue_with_descriptor(
                     conn,
-                    Some(delivery.target.to_string_lossy().as_ref()),
+                    Some(crate::native_path::encode(&delivery.target).as_ref()),
                     COPY_ERROR,
                     Some("notice.copyDestinationRefused"),
                     None,

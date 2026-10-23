@@ -1,3 +1,4 @@
+import { displayNativePath } from "../utils/nativePath";
 import { useWizardStore } from "../state/wizard-store";
 import { pathUnavailable } from "../models/sourceAvailability";
 import { useEffect, useState } from "react";
@@ -58,8 +59,8 @@ function PathRow({ path }: { path: string }) {
           marker the wrapped lines read as separate entries — the developer
           could not see where one copy ended and the next began. */}
       <span aria-hidden className="mt-1 h-1 w-1 shrink-0 rounded-full bg-ink-muted" />
-      <span className="min-w-0 flex-1 select-text break-all text-ink" title={path}>
-        {path}
+      <span className="min-w-0 flex-1 select-text break-all text-ink" title={displayNativePath(path)}>
+        {displayNativePath(path)}
         {unavailable ? <span className="ml-2 text-warning">{t("item.workUnavailable")}</span> : null}
       </span>
       <IconButton
@@ -137,7 +138,7 @@ function SimilarSection({ hash }: { hash: string }) {
         {members.map((member) => (
           <span key={member.hash} className="group/similar relative shrink-0">
             <button
-              title={member.fileName}
+              title={displayNativePath(member.fileName)}
               // A thumbnail takes the list-row states, as Main's tiles do.
               className={`h-20 w-20 shrink-0 overflow-hidden rounded-md border transition-colors motion-reduce:transition-none ${
                 member.hash === hash
@@ -152,7 +153,7 @@ function SimilarSection({ hash }: { hash: string }) {
             >
               <img
                 src={thumbUrl(member.hash)}
-                alt={member.fileName}
+                alt={displayNativePath(member.fileName)}
                 loading="lazy"
                 className="h-full w-full object-contain"
               />
@@ -244,7 +245,7 @@ export default function MetadataPane({
   return (
     <div className="p-3">
       <dl>
-        <Row label={t("metadata.name")} value={detail.fileName} />
+        <Row label={t("metadata.name")} value={displayNativePath(detail.fileName)} />
         <Row label={t("metadata.date")} value={takenPresentation(detail, t, dateTime)} />
         <Row
           label={t("metadata.size")}

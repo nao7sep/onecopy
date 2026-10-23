@@ -8,8 +8,9 @@
 //! accumulate, so this is a READING requirement first and a deleting one
 //! second.
 //!
-//! The grammar is a pure string transform (`extended_form`) that is compiled
-//! and tested on EVERY host, not just Windows — the rules are fiddly enough
+//! The grammar is a pure native-unit transform. Its Unicode wrapper
+//! (`extended_form`) is compiled and tested on EVERY host, not just Windows
+//! — the rules are fiddly enough
 //! that leaving them provable only on the machine we visit least would be the
 //! worst possible arrangement. `for_fs` is the platform-gated wrapper the
 //! filesystem call sites use; on unix it is a no-op that costs nothing.
@@ -35,39 +36,12 @@ const VERBATIM_UNC: &str = r"\\?\UNC\";
 ///   would silently address something else. Refusing is the honest answer; the
 ///   caller keeps the classic path and the classic limit.
 pub fn extended_form(path: &str) -> Option<String> {
-    if path.starts_with(VERBATIM) || path.starts_with(r"\\.\") {
-        return None;
-    }
-    // Verbatim paths accept only backslashes; a forward slash stays a literal
-    // character in the file name rather than a separator.
-    let normalized = path.replace('/', "\\");
-
-    if normalized
-        .split('\\')
-        .any(|component| component == "..")
-    {
-        return None;
-    }
-
-    if let Some(rest) = normalized.strip_prefix(r"\\") {
-        // UNC share: \\server\share\… → \\?\UNC\server\share\…
-        // A bare \\server with no share is not a usable root.
-        if rest.is_empty() || !rest.contains('\\') {
-            return None;
-        }
-        return Some(format!("{VERBATIM_UNC}{rest}"));
-    }
-
-    // Drive absolute: C:\… (a single ASCII letter, a colon, then a separator).
-    let bytes = normalized.as_bytes();
-    let drive_absolute = bytes.len() >= 3
-        && bytes[0].is_ascii_alphabetic()
-        && bytes[1] == b':'
-        && bytes[2] == b'\\';
-    if !drive_absolute {
-        return None;
-    }
-    Some(format!("{VERBATIM}{normalized}"))
+    let units: Vec<u16> = path.encode_utf16().collect();
+    extended_wide_form(&units).map(|extended| {
+        // The core only changes ASCII separators and prefixes, preserving
+        // the validity of UTF-16 supplied by a Unicode string.
+        String::from_utf16(&extended).expect("path adaptation preserves valid UTF-16")
+    })
 }
 
 /// Strips a verbatim prefix back off for DISPLAY. Paths reach the user in the
@@ -87,8 +61,12 @@ pub fn for_display(path: &str) -> Cow<'_, str> {
 /// sites need no `cfg` of their own.
 #[cfg(windows)]
 pub fn for_fs(path: &Path) -> Cow<'_, Path> {
-    match path.to_str().and_then(extended_form) {
-        Some(extended) => Cow::Owned(std::path::PathBuf::from(extended)),
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    let native: Vec<u16> = path.as_os_str().encode_wide().collect();
+    match extended_wide_form(&native) {
+        Some(extended) => Cow::Owned(std::path::PathBuf::from(
+            std::ffi::OsString::from_wide(&extended),
+        )),
         None => Cow::Borrowed(path),
     }
 }
@@ -98,4 +76,33 @@ pub fn for_fs(path: &Path) -> Cow<'_, Path> {
 #[cfg(not(windows))]
 pub fn for_fs(path: &Path) -> Cow<'_, Path> {
     Cow::Borrowed(path)
+}
+
+/// Operates on native Windows units so long-path adaptation cannot discard
+/// an unpaired surrogate in an otherwise usable filename. The Unicode wrapper
+/// exercises the same algorithm on every host.
+fn extended_wide_form(path: &[u16]) -> Option<Vec<u16>> {
+    let slash = u16::from(b'\\');
+    let verbatim: Vec<u16> = VERBATIM.encode_utf16().collect();
+    let device: Vec<u16> = r"\\.\".encode_utf16().collect();
+    if path.starts_with(&verbatim) || path.starts_with(&device) { return None; }
+    let normalized: Vec<u16> = path.iter().map(|&unit|
+        if unit == u16::from(b'/') { slash } else { unit }).collect();
+    if normalized.split(|&unit| unit == slash).any(|part| part == [46, 46]) {
+        return None;
+    }
+    let mut result;
+    if normalized.starts_with(&[slash, slash]) {
+        let rest = &normalized[2..];
+        if rest.is_empty() || !rest.contains(&slash) { return None; }
+        result = VERBATIM_UNC.encode_utf16().collect::<Vec<_>>();
+        result.extend_from_slice(rest);
+    } else {
+        if normalized.len() < 3
+            || !((65..=90).contains(&normalized[0]) || (97..=122).contains(&normalized[0]))
+            || normalized[1] != 58 || normalized[2] != slash { return None; }
+        result = verbatim;
+        result.extend_from_slice(&normalized);
+    }
+    Some(result)
 }

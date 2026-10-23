@@ -209,7 +209,7 @@ fn trash_file_checked(
     if !file.is_absolute() {
         return Err(format!(
             "trash requires an absolute path: {}",
-            file.display()
+            crate::native_path::label(&file)
         )
         .into());
     }
@@ -218,7 +218,7 @@ fn trash_file_checked(
     if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
         return Err(format!(
             "trash source is not a regular file: {}",
-            file.display()
+            crate::native_path::label(&file)
         )
         .into());
     }
@@ -242,14 +242,14 @@ fn prepare_trash(
     if !owning_root.is_absolute() || !volume_io::is_dir(owning_root).unwrap_or(false) {
         return Err(format!(
             "deleted-file root is unavailable: {}",
-            owning_root.display()
+            crate::native_path::label(&owning_root)
         ));
     }
     if !crate::path_identity::directory_is_within(original, owning_root)? {
         return Err(format!(
             "{} is outside its frozen configured root {}",
-            original.display(),
-            owning_root.display()
+            crate::native_path::label(&original),
+            crate::native_path::label(&owning_root)
         ));
     }
     // Compare physical volumes, not spellings: a root configured through a
@@ -284,7 +284,7 @@ fn prepare_trash(
     //
     let name = original
         .file_name()
-        .ok_or_else(|| format!("{} has no file name", original.display()))?;
+        .ok_or_else(|| format!("{} has no file name", crate::native_path::label(&original)))?;
     let target = day_dir.join(name);
     // Deleted files stay inside the root's own permission boundary: an
     // existing `.onecopy-trash` or day folder must be a real directory there,
@@ -309,13 +309,13 @@ fn prepare_trash(
 
     let record = TrashedRecord {
         format_version: formats::DELETED_FILES_MANIFEST,
-        original_path: original.to_string_lossy().to_string(),
-        stored_path: stored.to_string_lossy().to_string(),
+        original_path: crate::native_path::encode(&original).to_string(),
+        stored_path: crate::native_path::encode(&stored).to_string(),
         content_hash: content_hash.map(|h| h.to_string()),
         deleted_at_utc: logging::now_iso_millis(),
         stored_name: stored
             .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
+            .map(|name| crate::native_path::encode(&name).into_owned())
             .unwrap_or_default(),
         original_relative,
         kind: context.kind,
@@ -359,7 +359,7 @@ fn commit_trash(
                 None => crate::fs_publish::rename_no_replace(source, &plan.stored),
             };
             moved.map_err(|error| TrashError {
-                message: format!("trash move failed for {}: {error}", source.display()),
+                message: format!("trash move failed for {}: {error}", crate::native_path::label(&source)),
                 outcome_unknown: volume_io::outcome_unknown(&error),
                 source_changed: crate::file_identity::source_version_changed(&error),
             })
@@ -370,7 +370,7 @@ fn commit_trash(
         crate::logging::warn(
             "trash directory sync failed after the move completed",
             json!({
-                "path": plan.day_dir,
+                "path": crate::native_path::encode(&plan.day_dir),
                 "error": { "message": error.to_string() },
             }),
         );
@@ -419,10 +419,10 @@ pub(crate) fn mtime_ms(metadata: &std::fs::Metadata) -> i64 {
 fn relative_to_root(file: &Path, root: &Path) -> Result<String, String> {
     let name = file
         .file_name()
-        .ok_or_else(|| format!("{} has no file name", file.display()))?;
+        .ok_or_else(|| format!("{} has no file name", crate::native_path::label(&file)))?;
     let parent = file
         .parent()
-        .ok_or_else(|| format!("{} has no parent folder", file.display()))?;
+        .ok_or_else(|| format!("{} has no parent folder", crate::native_path::label(&file)))?;
     let resolved_parent = volume_io::canonicalize(parent)
         .map_err(|error| format!("trash source is unavailable: {error}"))?;
     let root_identity = volume_io::canonicalize(root)
@@ -437,12 +437,12 @@ fn relative_to_root(file: &Path, root: &Path) -> Result<String, String> {
                 .is_ok_and(|identity| identity == root_identity)
         })
         .and_then(|ancestor| resolved_parent.strip_prefix(ancestor).ok())
-        .ok_or_else(|| format!("{} is outside its frozen configured root {}", file.display(), root.display()))?;
+        .ok_or_else(|| format!("{} is outside its frozen configured root {}", crate::native_path::label(&file), crate::native_path::label(&root)))?;
     let mut components: Vec<String> = below
         .components()
-        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .map(|component| crate::native_path::encode(component.as_os_str()).into_owned())
         .collect();
-    components.push(name.to_string_lossy().into_owned());
+    components.push(crate::native_path::encode(&name).into_owned());
     Ok(components.join("/"))
 }
 
@@ -451,7 +451,7 @@ fn ensure_real_directory_if_present(path: &Path) -> Result<(), String> {
         Ok(metadata) if metadata.file_type().is_dir() => Ok(()),
         Ok(_) => Err(format!(
             "deleted-file storage is not a real directory: {}",
-            path.display()
+            crate::native_path::label(&path)
         )),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(format!("deleted-file storage is unavailable: {error}")),
@@ -475,7 +475,7 @@ fn available_stored_path(target: &Path) -> Result<PathBuf, String> {
         if counter > 1_000_000 {
             return Err(format!(
                 "could not find a free trash name for {}",
-                target.display()
+                crate::native_path::label(&target)
             ));
         }
         candidate = suffixed_name(target, counter);
@@ -485,16 +485,15 @@ fn available_stored_path(target: &Path) -> Result<PathBuf, String> {
 
 /// `image1.jpg` + 2 → `image1-2.jpg`; extensionless names get `name-2`.
 fn suffixed_name(target: &Path, counter: u32) -> PathBuf {
-    let stem = target
+    let mut name = target
         .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("file");
-    // Hyphen, never a period: a period reads as a second extension, and a
-    // repeated separator would grow the name without bound.
-    let name = match target.extension().and_then(|e| e.to_str()) {
-        Some(ext) => format!("{stem}-{counter}.{ext}"),
-        None => format!("{stem}-{counter}"),
-    };
+        .unwrap_or_else(|| std::ffi::OsStr::new("file"))
+        .to_os_string();
+    name.push(format!("-{counter}"));
+    if let Some(extension) = target.extension() {
+        name.push(".");
+        name.push(extension);
+    }
     target.with_file_name(name)
 }
 
@@ -582,11 +581,15 @@ enum ParsedLine {
 
 /// A bare stored name: one component, never the manifest itself.
 fn valid_stored_name(name: &str) -> bool {
+    let Some(native) = crate::native_path::try_from_text(name) else {
+        return false;
+    };
+    let mut components = native.components();
     !name.is_empty()
-        && name != "."
-        && name != ".."
-        && name != MANIFEST_FILE_NAME
-        && !name.contains(['/', '\\', '\0'])
+        && matches!(components.next(), Some(std::path::Component::Normal(_)))
+        && components.next().is_none()
+        && native.file_name() == Some(native.as_os_str())
+        && native.as_ref() != Path::new(MANIFEST_FILE_NAME)
 }
 
 /// One manifest line. A line without its format marker is unreadable, and a
@@ -622,7 +625,7 @@ pub(crate) fn refuse_newer_day(day_dir: &Path) -> Result<(), String> {
     if String::from_utf8_lossy(&manifest).lines().any(|line| matches!(parse_line(line), Some(ParsedLine::Newer))) {
         return Err(format!(
             "{} contains deleted-file records written by a newer OneCopy and was left in place",
-            day_dir.display(),
+            crate::native_path::label(&day_dir),
         ));
     }
     Ok(())
@@ -668,7 +671,7 @@ pub fn read_day(day_dir: &Path) -> Result<DayListing, String> {
     let mut stored: std::collections::HashMap<String, StoredState> =
         std::collections::HashMap::new();
     for entry in entries {
-        let name = entry.file_name.to_string_lossy().into_owned();
+        let name = crate::native_path::encode(&entry.file_name).into_owned();
         if name == MANIFEST_FILE_NAME {
             continue;
         }
@@ -724,14 +727,16 @@ pub fn append_restored(day_dir: &Path, stored_name: &str, restored_to: &str) {
         operation_id: None,
         content_hash: None,
         original_path: None,
-        stored_path: &day_dir.join(stored_name).to_string_lossy(),
+        stored_path: &crate::native_path::encode(
+            &day_dir.join(crate::native_path::from_text(stored_name)),
+        ),
         detail: line.clone(),
     });
     if let Err(error) = append_manifest_line(day_dir, line.to_string())
     {
         crate::logging::warn(
             "restored record could not be written",
-            json!({ "path": day_dir, "storedName": stored_name, "error": { "message": error.to_string() } }),
+            json!({ "path": crate::native_path::encode(&day_dir), "storedName": stored_name, "error": { "message": error.to_string() } }),
         );
     }
 }
@@ -815,8 +820,8 @@ pub enum UnfitPath {
 }
 
 /// The components of a recorded root-relative path, when they can be placed
-/// inside a root on this system: never empty, never `.` or `..`, never a
-/// lossy replacement character, never through deleted-file storage, and on
+/// inside a root on this system: never empty, never `.` or `..`, never an
+/// undecodable native unit, never through deleted-file storage, and on
 /// Windows never a component Windows would read as a separator or a drive.
 pub fn relative_components(relative: &str) -> Result<Vec<&str>, UnfitPath> {
     components_under(relative, cfg!(windows))
@@ -825,12 +830,10 @@ pub fn relative_components(relative: &str) -> Result<Vec<&str>, UnfitPath> {
 /// `relative_components` with Windows' name rules chosen by the caller, so
 /// either system's rules can be proven on the other.
 fn components_under(relative: &str, windows_names: bool) -> Result<Vec<&str>, UnfitPath> {
-    if relative.contains('\u{FFFD}') || relative.contains('\0') {
-        return Err(UnfitPath::Unrepresentable);
-    }
     let components: Vec<&str> = relative.split('/').collect();
     for component in &components {
-        if component.is_empty() || *component == "." || *component == ".." {
+        if crate::native_path::try_from_text(component).is_none()
+            || component.is_empty() || *component == "." || *component == ".." {
             return Err(UnfitPath::Unrepresentable);
         }
         if windows_names && component.contains(['\\', ':']) {
@@ -850,7 +853,9 @@ fn components_under(relative: &str, windows_names: bool) -> Result<Vec<&str>, Un
 pub fn target_in_root(root: &Path, relative: &str) -> Result<PathBuf, UnfitPath> {
     Ok(relative_components(relative)?
         .into_iter()
-        .fold(root.to_path_buf(), |path, component| path.join(component)))
+        .fold(root.to_path_buf(), |path, component| {
+            path.join(crate::native_path::from_text(component))
+        }))
 }
 
 /// Decides one record's status from the record and what is stored under its
@@ -885,9 +890,12 @@ fn group_key(record: &DayRecord) -> String {
     }
     let relative = record.original_relative.as_str();
     let (folder, name) = relative.rsplit_once('/').unwrap_or(("", relative));
-    let stem = Path::new(name)
+    let native_name = crate::native_path::from_text(name);
+    let stem = native_name
         .file_stem()
-        .map(|stem| stem.to_string_lossy().nfc().collect::<String>().to_lowercase())
+        .map(|stem| {
+            crate::native_path::encode(&stem).nfc().collect::<String>().to_lowercase()
+        })
         .unwrap_or_default();
     format!("stem:{operation}:{folder}/{stem}")
 }
@@ -912,7 +920,7 @@ pub fn list_root(root: &Path, data_root: &Path) -> Result<TrashListing, String> 
         Ok(_) => {
             return Err(format!(
                 "deleted-file storage is not a real directory: {}",
-                location.display()
+                crate::native_path::label(&location)
             ))
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -934,12 +942,12 @@ pub fn list_root(root: &Path, data_root: &Path) -> Result<TrashListing, String> 
             Some(kind) if kind.is_symlink() => {
                 return Err(format!(
                     "deleted-file storage is not a real directory: {}",
-                    day.path.display()
+                    crate::native_path::label(&day.path)
                 ))
             }
             _ => continue,
         }
-        let day_name = day.file_name.to_string_lossy().into_owned();
+        let day_name = crate::native_path::encode(&day.file_name).into_owned();
         let read = read_day(&day.path)?;
         listing.unrecorded_files += read.unrecorded_files;
         listing.malformed_lines += read.malformed_lines;
@@ -963,7 +971,9 @@ pub fn list_root(root: &Path, data_root: &Path) -> Result<TrashListing, String> 
             listing.entries.push(TrashEntry {
                 id: format!("{day_name}/{}", record.stored_name),
                 day: day_name.clone(),
-                stored_path: day.path.join(&record.stored_name).to_string_lossy().into_owned(),
+                stored_path: crate::native_path::encode(
+                    &day.path.join(crate::native_path::from_text(&record.stored_name)),
+                ).into_owned(),
                 stored_name: record.stored_name,
                 original_relative: Some(record.original_relative),
                 deleted_at_utc: record.deleted_at_utc,
@@ -1015,7 +1025,7 @@ mod boundary_tests;
 /// so this only lets execution report such a file as one unavailable target.
 pub fn root_for_file(file: &Path, configured_roots: &[PathBuf]) -> Result<PathBuf, String> {
     if !file.is_absolute() {
-        return Err(format!("{} is not an absolute path", file.display()));
+        return Err(format!("{} is not an absolute path", crate::native_path::label(&file)));
     }
     configured_roots
         .iter()
@@ -1032,7 +1042,7 @@ pub fn root_for_file(file: &Path, configured_roots: &[PathBuf]) -> Result<PathBu
         })
         .max_by_key(|root| root.components().count())
         .cloned()
-        .ok_or_else(|| format!("{} is outside every configured root", file.display()))
+        .ok_or_else(|| format!("{} is outside every configured root", crate::native_path::label(&file)))
 }
 
 pub fn root_spellings(root: &Path) -> Vec<PathBuf> {
@@ -1088,13 +1098,13 @@ pub fn overview(configured_roots: &[PathBuf]) -> Vec<TrashRootInfo> {
                 Ok(measure) => (measure.bytes, measure.files, measure.token, None),
                 Err(error) => {
                     crate::logging::warn("trash totals could not be measured",
-                        json!({ "path": root, "error": { "message": error } }));
+                        json!({ "path": crate::native_path::encode(&root), "error": { "message": error } }));
                     (0, 0, String::new(), Some(error))
                 }
             };
             TrashRootInfo {
                 synced: crate::cloud_files::is_synced(&root, &synced),
-                root: root.to_string_lossy().to_string(),
+                root: crate::native_path::encode(&root).to_string(),
                 available: volume_io::is_dir(configured).unwrap_or(false),
                 bytes,
                 files,
@@ -1236,9 +1246,9 @@ pub fn empty_root_with_progress(
                 operation_id: None,
                 content_hash: None,
                 original_path: None,
-                stored_path: &path.to_string_lossy(),
+                stored_path: &crate::native_path::encode(&path),
                 detail: json!({
-                    "root": root,
+                    "root": crate::native_path::encode(&root),
                     "bytes": bytes,
                     "error": removed.as_ref().err().map(|error| json!({ "message": error.to_string() })),
                 }),
@@ -1250,7 +1260,7 @@ pub fn empty_root_with_progress(
             crate::logging::warn(
                 "trash entry removal failed",
                 serde_json::json!({
-                    "path": path,
+                    "path": crate::native_path::encode(&path),
                     "error": { "message": error.to_string() },
                 }),
             );
@@ -1277,7 +1287,7 @@ pub fn empty_root_with_progress(
                 crate::logging::warn(
                     "trash directory cleanup failed",
                     serde_json::json!({
-                        "path": directory,
+                        "path": crate::native_path::encode(&directory),
                         "error": { "message": error.to_string() },
                     }),
                 );
@@ -1465,14 +1475,15 @@ pub fn volume_root_of(path: &Path) -> Result<PathBuf, String> {
     // made the home-volume comparison fail, routing deletes into C:\.onecopy-trash.
     // Strip only the namespace marker before deriving the ordinary drive/share
     // root. Filesystem calls still receive the verbatim spelling through for_fs.
-    let raw = path.to_string_lossy();
+    let raw = crate::native_path::encode(&path);
     let conventional = crate::winpath::for_display(&raw);
-    let mut components = Path::new(conventional.as_ref()).components();
+    let native = crate::native_path::from_text(&conventional);
+    let mut components = native.components();
     match (components.next(), components.next()) {
         (Some(std::path::Component::Prefix(prefix)), Some(std::path::Component::RootDir)) => {
             Ok(PathBuf::from(prefix.as_os_str()).join(std::path::MAIN_SEPARATOR.to_string()))
         }
-        _ => Err(format!("no volume prefix in {}", path.display())),
+        _ => Err(format!("no volume prefix in {}", crate::native_path::label(&path))),
     }
 }
 
@@ -1528,7 +1539,7 @@ fn hide_windows(trash_root: &Path) {
         crate::logging::warn(
             "trash directory could not be hidden",
             serde_json::json!({
-                "path": trash_root,
+                "path": crate::native_path::encode(&trash_root),
                 "error": { "message": error.to_string() },
             }),
         );

@@ -1,3 +1,4 @@
+import { displayNativePath } from "../utils/nativePath";
 // The Records window: every record in records.sqlite3, newest first, with
 // the selected record's full content beside the list. The list is one
 // single-select listbox (composite-control conventions) driven by the
@@ -580,9 +581,9 @@ export function RecordsWindow({ initialListWidth }: { initialListWidth: number }
                       <LevelPill level={record.level} />
                       {record.kind === "log" ? null : <KindPill kind={record.kind} />}
                     </div>
-                    <div data-record-title className="truncate text-sm text-ink-strong">{record.title}</div>
+                    <div data-record-title className="truncate text-sm text-ink-strong">{displayNativePath(record.title)}</div>
                     {summaryText(record, text) ? (
-                      <div className="truncate text-xs text-ink-muted">{summaryText(record, text)}</div>
+                      <div className="truncate text-xs text-ink-muted">{displayNativePath(summaryText(record, text)!)}</div>
                     ) : null}
                   </div>
                 );
@@ -722,7 +723,8 @@ function RecordDetailView({
   const blocks: { label: string; key: string; text: string }[] = [];
   for (const field of record.fields) {
     if (field.value === null || field.value === "") continue;
-    const value = String(field.value);
+    const value = field.name === "path" || field.name.endsWith("_path")
+      ? displayNativePath(String(field.value)) : String(field.value);
     const presentation = fieldPresentation(record.kind, field.name);
     if (presentation === null) {
       fields.push({ key: field.name, label: <code className="font-mono">{field.name}</code>, value: <code className="break-all font-mono">{value}</code> });
@@ -747,7 +749,7 @@ function RecordDetailView({
         break;
       case "sentence": {
         const sentence = recordSentence(record);
-        fields.push({ key: field.name, label, value: <span className="break-words">{sentence === null ? value : text(sentence)}</span> });
+        fields.push({ key: field.name, label, value: <span className="break-words">{displayNativePath(sentence === null ? value : text(sentence))}</span> });
         break;
       }
       case "value":
@@ -762,7 +764,7 @@ function RecordDetailView({
         {/* The opened record's title in full — a log line's title is its
             whole message — wrapping inside a height limit that scrolls. */}
         <BoundedText className="max-h-24 min-w-0 select-text">
-          <h2 className="break-words text-sm font-semibold text-ink-strong">{record.title}</h2>
+          <h2 className="break-words text-sm font-semibold text-ink-strong">{displayNativePath(record.title)}</h2>
         </BoundedText>
         <div className="flex shrink-0 items-center gap-2 pt-px">
           <LevelPill level={record.level} />

@@ -1,6 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { message } from "../i18n/translate";
 import { recordActionFailure } from "../state/notifications-store";
 import { keyOf } from "../models/items";
@@ -30,7 +29,7 @@ export async function openInDefaultApp(
 
 export async function revealInFileManager(path: string): Promise<void> {
   try {
-    await revealItemInDir(path);
+    await invoke("reveal_native_path", { path });
   } catch (error) {
     recordActionFailure(
       "reveal-file-failed",

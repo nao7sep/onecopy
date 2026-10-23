@@ -1,3 +1,4 @@
+import { displayNativePath } from "../utils/nativePath";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { accelerationModeLabel, featureLabel } from "../models/coreLabels";
 import { invoke } from "@tauri-apps/api/core";
@@ -477,7 +478,7 @@ export default function SettingsModal({
       footerResult={
         storeMessage === null ? undefined : (
           <OperationResult level={messageLevel ?? "info"}>
-            {text(storeMessage)}
+            {displayNativePath(text(storeMessage))}
           </OperationResult>
         )
       }

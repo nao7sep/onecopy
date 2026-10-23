@@ -494,7 +494,9 @@ fn touched_source_dirs_at(
     // source spellings only where no remembered association established it.
     // An unrelated source that cannot resolve is not thereby touched.
     let owner_spellings = match touches {
-        Touches::Root(root) => crate::trash::root_spellings(std::path::Path::new(root)),
+        Touches::Root(root) => {
+            crate::trash::root_spellings(crate::native_path::from_text(root).as_ref())
+        }
         Touches::Files(_) => Vec::new(),
     };
     let current_root_sources = |touched: &mut Vec<String>| {
@@ -505,12 +507,12 @@ fn touched_source_dirs_at(
             if touched.contains(source) {
                 continue;
             }
-            let spellings = crate::trash::root_spellings(std::path::Path::new(source));
+            let spellings = crate::trash::root_spellings(crate::native_path::from_text(source).as_ref());
             if spellings.iter().any(|source| {
                 owner_spellings.iter().any(|owner| {
                     crate::scanner::directory_belongs_to_root(
-                        &owner.to_string_lossy(),
-                        &source.to_string_lossy(),
+                        &crate::native_path::encode(&owner),
+                        &crate::native_path::encode(&source),
                     )
                 })
             }) {
@@ -550,7 +552,7 @@ fn touched_source_dirs_at(
     let touches_root = |root: &str| {
         touches.source(root)
             || owner_spellings.iter().any(|owner| {
-                crate::scanner::directory_belongs_to_root(&owner.to_string_lossy(), root)
+                crate::scanner::directory_belongs_to_root(&crate::native_path::encode(&owner), root)
             })
     };
     for source in source_dirs {
@@ -644,7 +646,7 @@ fn empty_trash_gate_with(
     let roots = crate::storage::configured_file_roots(data_root)?;
     let owner = crate::trash::owning_root_of(&roots, location)?;
     let sources = crate::storage::configured_source_dirs(data_root)?;
-    let owner = owner.to_string_lossy();
+    let owner = crate::native_path::encode(&owner);
     check(
         data_root,
         &touched_source_dirs_at(data_root, &sources, &Touches::Root(&owner))?,
@@ -913,7 +915,8 @@ pub(crate) fn move_items_out(
             publisher.progress(&last_progress);
             let rename_style = crate::file_names::RenameStyle::platform_default();
             // Destination admission belongs to the operation itself.
-            let destination = std::path::Path::new(&dest_dir);
+            let native_destination = crate::native_path::from_text(&dest_dir);
+            let destination = native_destination.as_ref();
             let cache =
                 crate::preview::CachePaths::new(data_root.join(crate::storage::CACHE_DIR_NAME));
             sections.track(&conn);
@@ -1082,11 +1085,11 @@ pub(crate) fn empty_trash(
             // emptying deleted files under an unaffected root.
             empty_trash_gate_with(
                 &data_root,
-                std::path::Path::new(&root),
+                crate::native_path::from_text(&root).as_ref(),
                 &crate::volume::enforce_no_substitution,
             )?;
             crate::trash::empty_root_with_progress(
-                std::path::Path::new(&root),
+                crate::native_path::from_text(&root).as_ref(),
                 &plan_token,
                 &mutation.cancelled,
                 &|trash_progress| {
@@ -1117,7 +1120,7 @@ pub(crate) fn empty_trash(
                     crate::failure_runtime::record_active(
                         app,
                         "trash-empty-entry-failed",
-                        Some(&path.to_string_lossy()),
+                        Some(&crate::native_path::encode(&path)),
                         &format!(
                             "OneCopy couldn’t permanently remove this item from Deleted files: {error}"
                         ),
@@ -1326,13 +1329,15 @@ fn restore_claimed<H: RestoreHost>(
         || {
             let data_root = host.data_root()?;
             let roots = crate::storage::configured_file_roots(&data_root)?;
-            let root = crate::trash::owning_root_of(&roots, std::path::Path::new(&location))?;
+            let root = crate::trash::owning_root_of(&roots,
+                crate::native_path::from_text(&location).as_ref(),
+            )?;
             if !crate::volume_io::is_dir(&root).unwrap_or(false) {
-                return Err(format!("{} is not available", root.display()));
+                return Err(format!("{} is not available", crate::native_path::label(&root)));
             }
             let conn =
                 crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
-            let root_text = root.to_string_lossy().into_owned();
+            let root_text = crate::native_path::encode(&root).into_owned();
             let waiting = Progress {
                 phase: Phase::Waiting,
                 next_phase: Some(Phase::Planning),

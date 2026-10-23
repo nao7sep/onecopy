@@ -45,7 +45,7 @@ pub fn failed(
     stage: Stage,
     error: &str,
 ) -> Result<(), String> {
-    let folder_reachable = std::path::Path::new(path)
+    let folder_reachable = crate::native_path::from_text(path)
         .parent()
         .is_some_and(|folder| crate::volume_io::is_dir(folder).unwrap_or(false));
     if !folder_reachable {

@@ -1,3 +1,4 @@
+import { displayNativePath } from "../utils/nativePath";
 import type { PendingDestinationConflicts } from "../models/destinationTransfer";
 import { formatBytes } from "../models/items";
 import { useDestinationsStore } from "../state/destinations-store";
@@ -59,9 +60,9 @@ export default function DestinationConflictModal({
             className="border-b border-border px-3 py-2 last:border-b-0"
           >
             <p className="break-all text-sm font-medium text-ink-strong">
-              {fileName(conflict.path)}
+              {displayNativePath(fileName(conflict.path))}
             </p>
-            <p className="break-all text-xs text-ink-muted">{conflict.path}</p>
+            <p className="break-all text-xs text-ink-muted">{displayNativePath(conflict.path)}</p>
             <p className="mt-1 text-xs text-ink-muted">
               {conflict.withinSelection
                 ? t("conflict.incomingWithinSelection", {
@@ -82,7 +83,7 @@ export default function DestinationConflictModal({
                 <ul className="mt-1 list-inside list-disc">
                   {conflict.preservedPaths.map((path) => (
                     <li key={path} className="break-all">
-                      {path}
+                      {displayNativePath(path)}
                     </li>
                   ))}
                 </ul>

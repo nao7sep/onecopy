@@ -55,11 +55,12 @@ pub fn resolve_library_path(
     display_tz: Tz,
 ) -> Result<Option<LibraryTarget>, String> {
     let in_sources = |value: &str| {
-        let path = Path::new(value);
+        let native_path = crate::native_path::from_text(value);
+        let path = native_path.as_ref();
         path.is_absolute()
             && !crate::trash::is_trash_path(path)
             && !path.components().any(|part| matches!(part, std::path::Component::ParentDir))
-            && source_dirs.iter().any(|root| path.starts_with(root))
+            && source_dirs.iter().any(|root| path.starts_with(crate::native_path::from_text(root).as_ref()))
     };
     if !in_sources(path) { return Ok(None); }
     let row: Option<(i64, Option<String>, String)> = conn.query_row(
@@ -627,7 +628,7 @@ fn observed_index_revision(db_file: &str) -> Result<i64, String> {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if !observers.contains_key(db_file) {
-        let conn = crate::index_store::open(Path::new(db_file))?;
+        let conn = crate::index_store::open(crate::native_path::from_text(db_file).as_ref())?;
         observers.insert(db_file.to_string(), conn);
     }
     observers[db_file]

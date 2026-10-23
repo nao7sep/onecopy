@@ -25,7 +25,9 @@ pub struct DirListing {
 
 pub fn list_subdirs(data_root: &Path, path: &str) -> Result<DirListing, String> {
     let policy = visibility::Policy::from_config(&*storage::config(data_root)?)?;
-    list_subdirs_at(Path::new(path), &policy, data_root)
+    list_subdirs_at(
+        crate::native_path::from_text(path).as_ref(), &policy, data_root,
+    )
 }
 
 fn list_subdirs_at(
@@ -49,11 +51,11 @@ fn list_subdirs_at(
         if !is_browsable_destination_child(&entry, policy, data_root)? {
             continue;
         }
-        let name = entry.file_name.to_string_lossy().to_string();
+        let name = crate::native_path::encode(&entry.file_name).to_string();
         let (has_children, is_empty) = child_directory_facts(&entry.path, policy, data_root)?;
         entries.push(DirEntry {
             name,
-            path: entry.path.to_string_lossy().to_string(),
+            path: crate::native_path::encode(&entry.path).to_string(),
             has_children,
             is_empty,
         });
@@ -69,7 +71,7 @@ fn is_browsable_destination_child(
 ) -> Result<bool, String> {
     let file_type = entry
         .file_type
-        .ok_or_else(|| format!("could not read {}", entry.path.display()))?;
+        .ok_or_else(|| format!("could not read {}", crate::native_path::label(&entry.path)))?;
     if trash::is_trash_path(&entry.path)
         || paths::is_within_data_root(&entry.path, data_root)
         || !file_type.is_dir()
@@ -79,10 +81,10 @@ fn is_browsable_destination_child(
     let metadata = match &entry.metadata {
         Some(Ok(metadata)) => metadata,
         Some(Err(error)) => return Err(error.to_string()),
-        None => return Err(format!("could not read {}", entry.path.display())),
+        None => return Err(format!("could not read {}", crate::native_path::label(&entry.path))),
     };
     Ok(policy.visible(
-        &entry.file_name.to_string_lossy(),
+        &crate::native_path::encode(&entry.file_name),
         true,
         visibility::entry_flags(&entry.path, metadata),
     ))
@@ -132,7 +134,7 @@ pub fn create_subdir(parent: &Path, name: &str) -> Result<String, String> {
     let name = folder_name(name)?;
     let lower = name.to_lowercase();
     for entry in crate::volume_io::read_dir(parent, false).map_err(|error| error.to_string())? {
-        if entry.file_name.to_string_lossy().to_lowercase() == lower {
+        if crate::native_path::encode(&entry.file_name).to_lowercase() == lower {
             return Err(format!(
                 "\"{name}\" already exists here (names are case-insensitively unique)"
             ));
@@ -140,7 +142,7 @@ pub fn create_subdir(parent: &Path, name: &str) -> Result<String, String> {
     }
     let target = parent.join(name);
     crate::volume_io::create_dir(&target).map_err(|e| e.to_string())?;
-    Ok(target.to_string_lossy().to_string())
+    Ok(crate::native_path::encode(&target).to_string())
 }
 
 /// Deletes a tree folder ONLY when empty — `remove_dir` refuses otherwise,

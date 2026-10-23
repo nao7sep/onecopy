@@ -47,3 +47,20 @@ fn lowercase_ext_normalizes_and_handles_missing() {
     assert_eq!(lowercase_ext("noext"), "");
     assert_eq!(lowercase_ext(".hidden"), "");
 }
+
+#[cfg(unix)]
+#[test]
+fn extension_survives_an_invalid_native_stem() {
+    use std::os::unix::ffi::OsStrExt;
+    let name = std::ffi::OsStr::from_bytes(b"photo-\xff.JPEG");
+    assert_eq!(lowercase_ext(&onecopy_lib::native_path::encode(name)), "jpeg");
+}
+
+windows_test! {
+    "Windows only: native UTF-16 paths",
+    fn extension_survives_an_unpaired_native_stem() {
+    use std::os::windows::ffi::OsStringExt;
+    let name = std::ffi::OsString::from_wide(&[0xd800, 46, 74, 80, 69, 71]);
+    assert_eq!(lowercase_ext(&onecopy_lib::native_path::encode(&name)), "jpeg");
+}
+}

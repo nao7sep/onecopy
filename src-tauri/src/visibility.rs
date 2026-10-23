@@ -130,7 +130,7 @@ pub fn entry_flags(path: &Path, metadata: &Metadata) -> i64 {
     native_flags(metadata)
         | if path
             .file_name()
-            .is_some_and(|name| name.to_string_lossy().starts_with('.'))
+            .is_some_and(|name| crate::native_path::encode(&name).starts_with('.'))
         {
             DOT
         } else {

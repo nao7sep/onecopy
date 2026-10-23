@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { useSettingsStore } from "../../src/state/settings-store";
-import { resetTauriMocks } from "../mocks/tauri";
+import { invokeCalls, mockCommands, resetTauriMocks } from "../mocks/tauri";
 import { effectiveConfig } from "../helpers/config";
 
 const config = effectiveConfig({
@@ -92,4 +92,18 @@ describe("UI font preference", () => {
       "  Iosevka, monospace  ",
     );
   });
+});
+
+
+it("retains exact native picker identities in the settings draft and source-check IPC", async () => {
+  const paths = ["/photos/\u0000bfe", "/photos/\u0000bff", "/photos/\ufffd"];
+  mockCommands({ pick_directories: () => paths, package_source_dirs: () => [] });
+  await useSettingsStore.getState().addSourceDir();
+  await useSettingsStore.getState().addSourceDir();
+  expect(useSettingsStore.getState().draft?.sourceDirs).toEqual(["/photos", ...paths]);
+  expect(invokeCalls.find((call) => call.command === "pick_directories")?.args).toEqual({ multiple: true });
+  expect(invokeCalls.find((call) => call.command === "package_source_dirs")?.args.paths).toEqual(paths);
+  mockCommands({ pick_directories: () => [] });
+  await useSettingsStore.getState().addSourceDir();
+  expect(useSettingsStore.getState().draft?.sourceDirs).toEqual(["/photos", ...paths]);
 });

@@ -101,7 +101,7 @@ CREATE TABLE IF NOT EXISTS contents (
 
 CREATE TABLE IF NOT EXISTS paths (
   id               INTEGER PRIMARY KEY,
-  abs_path         TEXT NOT NULL UNIQUE,
+  abs_path         TEXT NOT NULL,
   dir_path         TEXT NOT NULL,
   file_name        TEXT NOT NULL,
   stem             TEXT NOT NULL DEFAULT '',
@@ -129,6 +129,7 @@ CREATE TABLE IF NOT EXISTS paths (
   -- link, which counts as itself.
   file_key         TEXT
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_paths_native_identity ON paths (abs_path);
 CREATE INDEX IF NOT EXISTS idx_paths_content_hash ON paths (content_hash);
 CREATE INDEX IF NOT EXISTS idx_paths_dir ON paths (dir_path);
 CREATE INDEX IF NOT EXISTS idx_paths_pairing ON paths (dir_path, stem);
@@ -518,7 +519,7 @@ fn open_before_setup(db_file: &Path, before_setup: impl FnOnce()) -> Result<Conn
             if !objects.is_empty() {
                 crate::logging::warn(
                     "index has a missing format version or obsolete shape; rebuilding it from the files",
-                    serde_json::json!({ "file": db_file }),
+                    serde_json::json!({ "file": crate::native_path::encode(db_file) }),
                 );
             }
             for (kind, name) in objects {
@@ -590,7 +591,8 @@ mod setup_tests;
 /// experimental data. Query errors remain errors, not evidence for a reset.
 fn current_shape(conn: &Connection) -> Result<bool, String> {
     conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('paths') WHERE name = 'file_key')
+        "SELECT EXISTS (SELECT 1 FROM pragma_index_list('paths') WHERE name = 'idx_paths_native_identity' AND \"unique\" = 1 AND partial = 0)
+            AND EXISTS (SELECT 1 FROM pragma_table_info('paths') WHERE name = 'file_key')
             AND EXISTS (SELECT 1 FROM pragma_table_info('scan_dirs')
                         WHERE name = 'configured_root' AND \"notnull\" = 1)
             AND NOT EXISTS (SELECT 1 FROM sqlite_master

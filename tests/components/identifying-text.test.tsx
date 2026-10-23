@@ -8,6 +8,7 @@
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
+import { displayNativePath } from "../../src/utils/nativePath";
 import IdentifyingText, { finalSegmentStart } from "../../src/components/ui/IdentifyingText";
 import OperationResult from "../../src/components/ui/OperationResult";
 import { Menu, MenuItem } from "../../src/components/Menu";
@@ -87,4 +88,30 @@ describe("the shared menu", () => {
     expect(label.textContent).toBe("Volver a ejecutar el asistente de configuración");
     expect(label.className.split(" ")).toEqual(expect.arrayContaining(["min-w-0", "truncate"]));
   });
+});
+
+
+describe("native path labels", () => {
+  it("renders invalid bytes and UTF-16 units visibly, preserving the path split", () => {
+    const { container } = render(<IdentifyingText value={"C:\\folder\u0000wd800\\photo\u0000bff.jpg"} path />);
+    const line = container.firstElementChild as HTMLElement;
+    expect(line.textContent).toBe("C:\\folder\\uD800\\photo\\xFF.jpg");
+    expect(line.title).toBe(line.textContent);
+    expect(line.children[0].textContent).toBe("C:\\folder\\uD800");
+    expect(line.children[1].textContent).toBe("\\photo\\xFF.jpg");
+  });
+
+  it("keeps distinct native names and the genuine replacement character distinct", () => {
+    const names = ["photo\u0000bfe.jpg", "photo\u0000bff.jpg", "photo\ufffd.jpg"];
+    const { container } = render(<>{names.map((name) => <IdentifyingText key={name} value={name} />)}</>);
+    expect(Array.from(container.children, (line) => line.textContent)).toEqual([
+      "photo\\xFE.jpg", "photo\\xFF.jpg", "photo\ufffd.jpg",
+    ]);
+  });
+});
+
+
+it("preserves valid Unicode and literal escape-looking filenames", () => {
+  const path = "C:\\Photos\\日本語-\ud83d\udcf7-\ufffd-\\xFF-\\uD800.jpg";
+  expect(displayNativePath(path)).toBe(path);
 });

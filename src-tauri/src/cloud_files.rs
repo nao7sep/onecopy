@@ -96,7 +96,7 @@ pub fn items_in_synced_folders(
             (None, None) => continue,
         }
         .map_err(|error| error.to_string())?;
-        if paths.iter().any(|path| is_synced(Path::new(path), synced)) {
+        if paths.iter().any(|path| is_synced(crate::native_path::from_text(path).as_ref(), synced)) {
             return Ok(true);
         }
     }
@@ -104,7 +104,9 @@ pub fn items_in_synced_folders(
 }
 
 fn lowercase(path: &Path) -> PathBuf {
-    PathBuf::from(path.to_string_lossy().to_lowercase())
+    // The codec leaves native invalid units distinct while Unicode case folding
+    // preserves the existing case-insensitive sync-folder comparison.
+    crate::native_path::from_text(&crate::native_path::encode(path).to_lowercase()).into_owned()
 }
 
 #[cfg(test)]

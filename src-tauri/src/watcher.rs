@@ -82,7 +82,7 @@ fn restat_dir_with(
     // Availability has its own source Issue. Restatting an independent folder
     // must not reopen walk failures for every disconnected configured root.
     let reachable_roots: Vec<String> = source_roots.iter()
-        .filter(|root| crate::volume_io::is_dir(Path::new(root)).unwrap_or(false))
+        .filter(|root| crate::volume_io::is_dir(crate::native_path::from_text(root).as_ref()).unwrap_or(false))
         .cloned().collect();
     let roots = crate::visibility_index::source_root_spellings(conn, &reachable_roots)?;
     let root = match crate::visibility_index::root_for(&roots, dir) {
@@ -103,7 +103,7 @@ fn restat_dir_with(
     if matches!(crate::volume_io::symlink_metadata(dir), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
     {
         if !crate::volume_io::is_dir(&root).unwrap_or(false) { return Ok(0); }
-        let dir_str = dir.to_string_lossy().to_string();
+        let dir_str = crate::native_path::encode(&dir).to_string();
         return scanner::mark_missing_under(conn, &dir_str);
     }
     let mut visibility_directories = crate::visibility_index::DirectoryFacts::default();
@@ -118,14 +118,14 @@ fn restat_dir_with(
             // A race after the check above (deleted between the two calls):
             // same treatment.
             if !crate::volume_io::is_dir(&root).unwrap_or(false) { return Ok(changed); }
-            let dir_str = dir.to_string_lossy().to_string();
+            let dir_str = crate::native_path::encode(&dir).to_string();
             let changed = scanner::mark_missing_under(conn, &dir_str)?;
             return Ok(changed);
         }
         Err(error) => {
             crate::index_store::upsert_issue_with_descriptor(
                 conn,
-                Some(dir.to_string_lossy().as_ref()),
+                Some(crate::native_path::encode(&dir).as_ref()),
                 scanner::WALK_ERROR,
                 Some(scanner::scan_issue_message_key(scanner::WALK_ERROR)),
                 None,
@@ -140,19 +140,19 @@ fn restat_dir_with(
             let error = "could not read the entry's type".to_string();
             crate::index_store::upsert_issue_with_descriptor(
                 conn,
-                Some(path.to_string_lossy().as_ref()),
+                Some(crate::native_path::encode(&path).as_ref()),
                 scanner::STAT_ERROR,
                 Some(scanner::scan_issue_message_key(scanner::STAT_ERROR)),
                 None,
                 &error,
             )?;
-            present.insert(path.to_string_lossy().into_owned());
+            present.insert(crate::native_path::encode(&path).into_owned());
             continue;
         };
         if !file_type.is_file() {
             continue;
         }
-        let abs = path.to_string_lossy().to_string();
+        let abs = crate::native_path::encode(&path).to_string();
         if crate::packages::within_package(&path, false)
             || crate::trash::is_trash_path(&path)
             || crate::paths::is_within_data_root(&path, data_root)
@@ -199,14 +199,14 @@ fn restat_dir_with(
     }
     crate::index_store::clear_issues(
         conn,
-        &dir.to_string_lossy(),
+        &crate::native_path::encode(&dir),
         &[scanner::WALK_ERROR],
     )?;
 
     // A disconnection during the listing cannot prove any file absent.
     if !crate::volume_io::is_dir(&root).unwrap_or(false) { return Ok(changed); }
     // Rows directly in this dir whose files are gone → missing.
-    let dir_str = dir.to_string_lossy().to_string();
+    let dir_str = crate::native_path::encode(&dir).to_string();
     let mut stmt = conn
         .prepare("SELECT abs_path FROM paths WHERE dir_path = ?1 AND missing = 0")
         .map_err(|e| e.to_string())?;
@@ -329,7 +329,7 @@ fn run(app: tauri::AppHandle, source_dirs: Vec<String>, generation: u64) -> Resu
             let registrations = reconcile_watches(&source_dirs, &mut watchers, &missing, &substituted, &uncertain, all_unknown, &mut |index, root| {
                 let sender = tx.clone();
                 let overflow = recovery_flags[index].1.clone();
-                watch_root(Path::new(root), move |event| forward_or_flag_overflow(&sender, &overflow, event))
+                watch_root(crate::native_path::from_text(root).as_ref(), move |event| forward_or_flag_overflow(&sender, &overflow, event))
                     .map_err(|error| error.to_string())
             });
             if !owns_generation(generation) { return Ok(()); }
@@ -506,7 +506,7 @@ fn join_finished(workers: &mut Vec<JoinHandle<()>>) {
 
 fn affected_roots(configured: &[String], dirs: &[PathBuf]) -> Vec<String> {
     let matched: Vec<String> = configured.iter().filter(|root| dirs.iter().any(|dir|
-        crate::winpath::for_fs(dir).starts_with(crate::winpath::for_fs(Path::new(root)).as_ref())
+        crate::winpath::for_fs(dir).starts_with(crate::winpath::for_fs(crate::native_path::from_text(root).as_ref()).as_ref())
     )).cloned().collect();
     // A path alias which cannot be attributed safely must not drop recovery.
     if matched.is_empty() { configured.to_vec() } else { matched }
@@ -517,7 +517,7 @@ fn recover_roots(app: &tauri::AppHandle, roots: &[String], generation: u64) {
     crate::failure_runtime::emit_or_record(app, "watch://rescan-needed", json!({ "roots": roots }));
     let sections = crate::section_changes::SectionLog::default();
     for root in roots {
-        if !crate::volume_io::is_dir(Path::new(root)).unwrap_or(false) { continue; }
+        if !crate::volume_io::is_dir(crate::native_path::from_text(root).as_ref()).unwrap_or(false) { continue; }
         let result = crate::scan_runtime::with_watcher_claim(
             move || !owns_generation(generation),
             || {
@@ -779,7 +779,7 @@ impl WatchPass {
         Some(format!(
             "{} changed folder(s) could not be updated; recheck the source folders. {}: {error}",
             self.failed.len(),
-            dir.to_string_lossy(),
+            crate::native_path::display(&crate::native_path::encode(dir)),
         ))
     }
 }
@@ -803,7 +803,7 @@ pub(crate) fn restat_batch(
             Err(error) => {
                 logging::warn(
                     "watcher directory failed; continuing with the rest of the batch",
-                    json!({ "dir": dir.to_string_lossy(), "error": { "message": &error } }),
+                    json!({ "dir": crate::native_path::encode(&dir), "error": { "message": &error } }),
                 );
                 pass.failed.push((dir.clone(), error));
             }
@@ -842,7 +842,7 @@ fn process_dirty_claimed(
     let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
     let affected_dirs: Vec<String> = dirs
         .iter()
-        .map(|dir| crate::winpath::for_fs(dir).to_string_lossy().to_string())
+        .map(|dir| crate::native_path::encode(crate::winpath::for_fs(dir).as_ref()).to_string())
         .collect();
     crate::volume::enforce_no_substitution(&data_root, &affected_roots(&settings.source_dirs, dirs))?;
     let repair_roots = scanner::begin_scoped_index_repair(&conn, &affected_dirs)?;

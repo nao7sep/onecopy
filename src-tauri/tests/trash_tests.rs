@@ -1134,7 +1134,7 @@ fn each_entry_says_whether_it_can_be_restored() {
         [
             ("edited.jpg".to_string(), EntryStatus::Changed),
             ("into-trash.jpg".to_string(), EntryStatus::Excluded),
-            ("lossy.jpg".to_string(), EntryStatus::Unrepresentable),
+            ("lossy.jpg".to_string(), EntryStatus::Restorable),
             ("now-a-folder.jpg".to_string(), EntryStatus::Changed),
             ("ok.jpg".to_string(), EntryStatus::Restorable),
         ]

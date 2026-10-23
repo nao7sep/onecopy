@@ -62,7 +62,7 @@ impl FolderNames {
         if !self.fold_case && !self.normalize_unicode {
             return path.as_os_str().to_owned();
         }
-        let mut text = path.to_string_lossy().into_owned();
+        let mut text = crate::native_path::encode(&path).into_owned();
         if self.normalize_unicode {
             text = text.nfc().collect();
         }
@@ -118,18 +118,18 @@ pub fn is_name_error(error: &std::io::Error) -> bool {
     }
 }
 
-/// `target` with the Rename suffix `number` in `style`; `None` for a name
-/// that is not valid Unicode.
+/// `target` with the Rename suffix `number` in `style`, preserving native units.
 pub fn renamed(target: &Path, number: u32, style: RenameStyle) -> Option<PathBuf> {
-    let stem = target.file_stem()?.to_str()?;
+    let stem = target.file_stem()?;
     let suffix = match style {
         RenameStyle::SpaceNumber => format!(" {number}"),
         RenameStyle::ParenthesizedNumber => format!(" ({number})"),
     };
-    let mut name = format!("{stem}{suffix}");
-    if let Some(extension) = target.extension().and_then(|value| value.to_str()) {
-        name.push('.');
-        name.push_str(extension);
+    let mut name = stem.to_os_string();
+    name.push(suffix);
+    if let Some(extension) = target.extension() {
+        name.push(".");
+        name.push(extension);
     }
     Some(target.with_file_name(name))
 }

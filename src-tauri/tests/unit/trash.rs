@@ -531,3 +531,91 @@ fn separators_and_drives_are_unrepresentable_only_under_windows_name_rules() {
     }
     assert_eq!(components_under("trips/a.jpg", true).unwrap(), ["trips", "a.jpg"]);
 }
+
+#[test]
+fn native_manifest_names_refuse_aliases_and_foreign_units() {
+    for name in [
+        "",
+        ".",
+        "..",
+        MANIFEST_FILE_NAME,
+        "a/b",
+        "a/../b",
+        "a\0b2e",
+        "a\0bff\0b",
+        "a\0w0061",
+    ] {
+        assert!(!valid_stored_name(name), "{name:?}");
+    }
+    for relative in [
+        "../a.jpg",
+        "a/../b.jpg",
+        "a//b.jpg",
+        "a/./b.jpg",
+        "a\0b2f../b.jpg",
+        "\0w0061.jpg",
+    ] {
+        assert_eq!(
+            relative_components(relative),
+            Err(UnfitPath::Unrepresentable),
+            "{relative:?}"
+        );
+    }
+    assert!(valid_stored_name("literal-\u{FFFD}.jpg"));
+    assert!(relative_components("literal-\u{FFFD}.jpg").is_ok());
+}
+
+#[cfg(unix)]
+#[test]
+fn native_manifest_roundtrip_keeps_bytes_and_literal_backslashes() {
+    use std::os::unix::ffi::OsStrExt;
+    for raw in [b"a\xff.jpg".as_slice(), b"a\xfe.jpg", b"literal\\name.jpg"] {
+        let name = std::ffi::OsStr::from_bytes(raw);
+        let encoded = crate::native_path::encode(name);
+        assert!(valid_stored_name(&encoded), "{encoded:?}");
+        let root = Path::new("/photos");
+        assert_eq!(target_in_root(root, &encoded).unwrap(), root.join(name));
+        let record = DayRecord {
+            content_hash: None,
+            stored_name: encoded.to_string(),
+            original_relative: encoded.to_string(),
+            size: 1,
+            mtime_ms: 0,
+            deleted_at_utc: "2026-10-24T00:00:00Z".to_string(),
+            kind: TrashKind::Delete,
+            operation: "op".to_string(),
+            item: None,
+            role: TrashRole::Main,
+            moved_to: None,
+        };
+        let mut value = serde_json::to_value(&record).unwrap();
+        value["formatVersion"] = serde_json::json!(formats::DELETED_FILES_MANIFEST);
+        let line = value.to_string();
+        let Some(ParsedLine::Record(parsed)) = parse_line(&line) else {
+            panic!("native name must parse")
+        };
+        assert_eq!(parsed.stored_name, encoded);
+        assert_eq!(
+            target_in_root(root, &parsed.original_relative).unwrap(),
+            root.join(name)
+        );
+    }
+    assert_ne!(
+        crate::native_path::encode(std::ffi::OsStr::from_bytes(b"a\xff.jpg")),
+        crate::native_path::encode(std::ffi::OsStr::from_bytes(b"a\xfe.jpg"))
+    );
+}
+
+windows_test! {
+    "Windows only: unpaired UTF-16 native manifest names",
+    fn native_manifest_windows_names_keep_unpaired_units() {
+        use std::os::windows::ffi::OsStringExt;
+        let name = std::ffi::OsString::from_wide(&[b'a' as u16, 0xd800, b'.' as u16, b'j' as u16, b'p' as u16, b'g' as u16]);
+        let encoded = crate::native_path::encode(&name);
+        assert!(valid_stored_name(&encoded));
+        let root = Path::new(r"C:\photos");
+        assert_eq!(target_in_root(root, &encoded).unwrap(), root.join(&name));
+        assert!(!valid_stored_name("a\0bff.jpg"), "Unix bytes are not guessed on Windows");
+        assert!(!valid_stored_name(r"a\b.jpg"));
+    }
+}
