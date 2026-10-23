@@ -191,7 +191,7 @@ fn hash_while_copying_detailed(
     (String, u64, crate::file_identity::PrivateFile, Option<crate::file_identity::FileVersion>),
     CopyFailure,
 > {
-    copy_to_created(src, dst, cancelled, progress, prove_source, after_sync, || volume_io::create_new(dst))
+    copy_to_created(src, dst, cancelled, progress, prove_source, after_sync, || crate::file_identity::PrivateFile::create(dst))
 }
 
 /// Recoverable Windows deletion supplies a creator with an explicit private
@@ -200,7 +200,7 @@ fn hash_while_copying_detailed(
 pub(crate) fn copy_to_private(
     src: &Path,
     dst: &Path,
-    create: impl FnOnce() -> std::io::Result<VolumeFile>,
+    create: impl FnOnce() -> std::io::Result<crate::file_identity::PrivateFile>,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<(crate::file_identity::PrivateFile, crate::file_identity::FileVersion), CopyFailure> {
     let (_, _, file, version) = copy_to_created(src, dst, cancelled, &mut |_, _| {}, true, |_| {}, create)?;
@@ -214,7 +214,7 @@ fn copy_to_created(
     progress: &mut dyn FnMut(u64, u64),
     prove_source: bool,
     after_sync: impl FnOnce(&Path),
-    create: impl FnOnce() -> std::io::Result<VolumeFile>,
+    create: impl FnOnce() -> std::io::Result<crate::file_identity::PrivateFile>,
 ) -> Result<(String, u64, crate::file_identity::PrivateFile, Option<crate::file_identity::FileVersion>), CopyFailure> {
     // A read or write given up on because Cancel was pressed is a
     // cancellation, not a failure of either side.
@@ -240,11 +240,8 @@ fn copy_to_created(
         .then(|| crate::file_identity::FileVersion::of(&mut reader))
         .transpose()
         .map_err(|error| classify(error, CopyFailure::Source))?;
-    let writer =
-        create().map_err(|error| classify(error, CopyFailure::Destination))?;
-    // From here every failure or cancellation drops the private output, which
-    // removes it while `dst` still names this descriptor's file.
-    let mut private = crate::file_identity::PrivateFile::new(dst.to_path_buf(), writer);
+    // Creation already owns cleanup before its result leaves the worker.
+    let mut private = create().map_err(|error| classify(error, CopyFailure::Destination))?;
     let mut hasher = blake3::Hasher::new();
     let mut buf = vec![0u8; BUF_SIZE];
     let mut total: u64 = 0;

@@ -806,23 +806,6 @@ pub fn open_read(path: &Path) -> io::Result<VolumeFile> {
     Ok(VolumeFile::new(file, path.to_path_buf()))
 }
 
-/// Creates `path` exclusively for reading and writing; an existing entry
-/// answers `AlreadyExists`.
-pub fn create_new(path: &Path) -> io::Result<VolumeFile> {
-    let target = fs_path(path);
-    let file = call(path, Op::Create, None, move || {
-        let mut options = File::options();
-        options.read(true).write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        options.open(&target)
-    })?;
-    Ok(VolumeFile::new(file, path.to_path_buf()))
-}
-
 /// Renames `from` to `to`, replacing an existing `to` where the platform
 /// does.
 pub fn rename(from: &Path, to: &Path) -> io::Result<()> {

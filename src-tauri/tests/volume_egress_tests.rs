@@ -88,7 +88,14 @@ fn raw_primitive(code: &str, prev: &str) -> Option<&'static str> {
         "SetFileAttributesW(",
         "GetVolumeInformationW(",
     ];
-    if let Some(needle) = NEEDLES.iter().find(|needle| code.contains(**needle)) {
+    if let Some(needle) = NEEDLES.iter().find(|needle| {
+        code.match_indices(**needle).any(|(index, _)| {
+            // Match the named type/function, not a suffix of an app-owned
+            // wrapper such as PrivateFile::create or VolumeFile::open.
+            !needle.starts_with(|ch: char| ch.is_alphanumeric())
+                || !code[..index].chars().next_back().is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
+        })
+    }) {
         return Some(needle);
     }
     // `std::fs::read(…)`, `fs::metadata(…)`: a free function of `std::fs`.
@@ -300,6 +307,8 @@ fn the_lint_recognizes_raw_calls_and_ignores_accessors() {
         "if path.is_dir() {",
         "for entry in walkdir::WalkDir::new(root) {",
         "let file = File::open(path)?;",
+        "let file = std::fs::File::create(path)?;",
+        "PrivateFile::create(path)?; File::create(other)?;",
         "if !target.exists() {",
         "let exif = nom_exif::read_exif(path)?;",
         "let source = nom_exif::MediaSource::open(path)?;",
@@ -322,6 +331,8 @@ fn the_lint_recognizes_raw_calls_and_ignores_accessors() {
         "fn check(meta: &std::fs::Metadata) {",
         "use std::os::unix::fs::MetadataExt;",
         "crate::volume_io::metadata(path)?",
+        "crate::file_identity::PrivateFile::create(path)?",
+        "let file = VolumeFile::open(path)?;",
         "let len = file.metadata()?.len();",
         "let len = reader.metadata()?.len();",
         "fn acl_get_fd(fd: i32) -> *mut c_void;",

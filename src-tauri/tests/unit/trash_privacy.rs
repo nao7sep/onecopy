@@ -87,3 +87,21 @@ fn existing_extended_grants_are_refused_and_new_inherited_grants_are_removed() {
         .success());
     assert!(Directory::open(&existing, false).is_err());
 }
+
+#[test]
+fn late_account_private_creation_cleans_up_before_settling() {
+    use crate::volume_io::{FakeStallingVolume, WaitFailure};
+    use std::time::Duration;
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("private");
+    let guard = Directory::open(&directory, true).unwrap();
+    let path = directory.join("stage.tmp");
+    let volume = FakeStallingVolume::mount(&directory, Duration::from_millis(200));
+    volume.stall(&[Op::Create], None);
+    let error = guard.create_file(&path).unwrap_err();
+    assert_eq!(volume_io::wait_failure(&error).unwrap().failure, WaitFailure::NotResponding);
+    assert!(!path.exists());
+    volume.release();
+    assert!(volume.wait_until_settled(Duration::from_secs(5)));
+    assert!(!path.exists());
+}

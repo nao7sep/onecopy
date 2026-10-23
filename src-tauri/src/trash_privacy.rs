@@ -93,21 +93,21 @@ impl Directory {
     }
 
     #[cfg(any(windows, test))]
-    pub(crate) fn create_file(&self, path: &Path) -> io::Result<VolumeFile> {
+    pub(crate) fn create_file(&self, path: &Path) -> io::Result<crate::file_identity::PrivateFile> {
         let handle = self.handle.clone();
         let owned = crate::winpath::for_fs(path).into_owned();
-        let file = volume_io::call(path, Op::Create, None, move || {
+        let private_path = path.to_path_buf();
+        volume_io::call(path, Op::Create, None, move || {
             #[cfg(unix)]
-            {
-                unix::create_file(&handle, &owned)
-            }
+            let file = unix::create_file(&handle, &owned)?;
             #[cfg(windows)]
-            {
+            let file = {
                 let _guard = handle;
-                platform::create_file(&owned)
-            }
-        })?;
-        Ok(VolumeFile::new(file, path.to_path_buf()))
+                platform::create_file(&owned)?
+            };
+            let file = VolumeFile::new(file, private_path.clone());
+            Ok(crate::file_identity::PrivateFile::new(private_path, file))
+        })
     }
 }
 

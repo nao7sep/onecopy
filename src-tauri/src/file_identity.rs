@@ -639,6 +639,25 @@ fn lock_path(path: &Mutex<PathBuf>) -> std::sync::MutexGuard<'_, PathBuf> {
 }
 
 impl PrivateFile {
+    /// Attach cleanup on the physical worker before delivery. A successful
+    /// creation that outlives its caller's wait then removes only its own file.
+    pub fn create(path: &Path) -> io::Result<Self> {
+        let target = crate::winpath::for_fs(path).into_owned();
+        let owned = path.to_path_buf();
+        volume_io::call(path, Op::Create, None, move || {
+            let mut options = File::options(); // volume_io worker
+            options.read(true).write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let file = options.open(&target)?;
+            let file = VolumeFile::new(file, owned.clone());
+            Ok(Self::new(owned, file))
+        })
+    }
+
     pub fn new(path: PathBuf, mut file: VolumeFile) -> Self {
         let path = Arc::new(Mutex::new(path));
         let published = Arc::new(AtomicBool::new(false));

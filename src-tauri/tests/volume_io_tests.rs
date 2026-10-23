@@ -487,3 +487,34 @@ fn cancel_ends_a_stalled_flush_of_a_private_output() {
     assert!(volume.wait_until_settled(Duration::from_secs(5)));
     assert!(!dest.exists(), "the unpublished output removes itself once the flush returns");
 }
+
+#[test]
+fn a_late_private_creation_cleans_its_output_before_settling() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("stage.tmp");
+    let volume = FakeStallingVolume::mount(dir.path(), BOUND);
+    volume.stall(&[Op::Create], None);
+    let error = onecopy_lib::file_identity::PrivateFile::create(&path).unwrap_err();
+    assert_eq!(failure(&error), Some(WaitFailure::NotResponding));
+    assert!(volume.is_stalled());
+    assert!(!path.exists());
+    volume.release();
+    assert!(volume.wait_until_settled(Duration::from_secs(5)));
+    assert!(!path.exists(), "a late-created stage must not be orphaned");
+    let private = onecopy_lib::file_identity::PrivateFile::create(&path).unwrap();
+    drop(private);
+    assert!(!path.exists());
+}
+
+#[test]
+fn a_late_private_creation_never_removes_an_occupied_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("stage.tmp");
+    let volume = FakeStallingVolume::mount(dir.path(), BOUND);
+    volume.stall(&[Op::Create], None);
+    assert!(onecopy_lib::file_identity::PrivateFile::create(&path).is_err());
+    std::fs::write(&path, b"another owner").unwrap();
+    volume.release();
+    assert!(volume.wait_until_settled(Duration::from_secs(5)));
+    assert_eq!(std::fs::read(&path).unwrap(), b"another owner");
+}

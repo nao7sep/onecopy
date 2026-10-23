@@ -4,8 +4,7 @@ use onecopy_lib::file_identity::*;
 fn unpublished_private_output_is_cleaned_without_a_hold_rename() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(private_stage_file_name().unwrap());
-    let file = onecopy_lib::volume_io::create_new(&path).unwrap();
-    let private = PrivateFile::new(path.clone(), file);
+    let private = onecopy_lib::file_identity::PrivateFile::create(&path).unwrap();
     drop(private);
     assert!(!path.exists());
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
@@ -17,8 +16,7 @@ fn occupied_public_target_survives_and_the_private_output_is_cleaned() {
     let path = dir.path().join(private_stage_file_name().unwrap());
     let target = dir.path().join("photo.jpg");
     std::fs::write(&target, b"winner").unwrap();
-    let file = onecopy_lib::volume_io::create_new(&path).unwrap();
-    let mut private = PrivateFile::new(path.clone(), file);
+    let mut private = onecopy_lib::file_identity::PrivateFile::create(&path).unwrap();
     assert_eq!(private.publish(&target).unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
     drop(private);
     assert!(!path.exists());
