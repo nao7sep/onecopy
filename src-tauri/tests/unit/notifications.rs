@@ -18,8 +18,13 @@ fn a_repeated_live_notice_coalesces_and_every_occurrence_is_a_record() {
         message_key: None,
         message_values: None,
     };
-    let first = remember_active(record_notice(&conn, &request).unwrap());
-    let second = remember_active(record_notice(&conn, &request).unwrap());
+    let mut active = ActiveState::default();
+    let (first, first_snapshot) = active.remember(record_notice(&conn, &request).unwrap());
+    let (second, second_snapshot) = active.remember(record_notice(&conn, &request).unwrap());
+    assert_eq!(first_snapshot.revision, 1);
+    assert_eq!(second_snapshot.revision, 2);
+    assert_eq!(first_snapshot.active, vec![first.clone()]);
+    assert_eq!(second_snapshot.active, vec![second.clone()]);
     assert_eq!(first.id, second.id);
     assert_eq!(second.occurrence_count, 2);
     assert_eq!(second.first_seen_utc, first.first_seen_utc);
@@ -27,10 +32,6 @@ fn a_repeated_live_notice_coalesces_and_every_occurrence_is_a_record() {
     let issues = crate::queries::issues(&conn, 10, None).unwrap();
     assert_eq!(issues.0, 1);
     assert_eq!(issues.1[0].occurrence_count, 2, "one occurrence per publication, not one per presentation channel");
-    ACTIVE
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .retain(|record| record.kind != request.kind);
 }
 
 #[test]
@@ -70,4 +71,38 @@ fn notification_and_issue_recording_fail_as_one_transaction() {
         assert_eq!(crate::queries::issues(&conn, 10, None).unwrap().0, 0);
         assert_eq!(notices(&conn), 0);
     }
+}
+
+#[test]
+fn live_snapshots_capture_coherent_transitions_without_retaining_dismissed_records() {
+    let directory = tempfile::tempdir().unwrap();
+    let conn = crate::index_store::open(&directory.path().join("index.sqlite3")).unwrap();
+    let request = NotificationRequest {
+        kind: "first".into(), path: None, level: NotificationLevel::Info,
+        presentation: NotificationPresentation::Timed, message: "Done.".into(),
+        message_key: None, message_values: None,
+    };
+    let mut active = ActiveState::default();
+    assert_eq!(active.snapshot().revision, 0);
+    let (first, published) = active.remember(record_notice(&conn, &request).unwrap());
+    let mut different = request.clone();
+    different.kind = "second".into();
+    let (second, both) = active.remember(record_notice(&conn, &different).unwrap());
+    assert_eq!(published.revision, 1);
+    assert_eq!(both.revision, 2);
+    assert_eq!(both.active, vec![first.clone(), second.clone()]);
+    let dismissed = active.dismiss(first.id);
+    assert_eq!(dismissed.revision, 3);
+    assert_eq!(dismissed.active, vec![second]);
+    assert_eq!(active.dismiss(first.id), dismissed, "missing dismissal returns current snapshot");
+    let cleared = active.clear();
+    assert_eq!(cleared.revision, 4);
+    assert!(cleared.active.is_empty());
+    assert!(active.records.is_empty());
+    assert_eq!(published.active, vec![first], "captured snapshots remain independent");
+    let (republished, snapshot) = active.remember(record_notice(&conn, &request).unwrap());
+    assert_eq!(snapshot.revision, 5);
+    assert_eq!(snapshot.active, vec![republished.clone()]);
+    assert_eq!(republished.occurrence_count, 1);
+    assert_eq!(notices(&conn), 3, "live dismissal and clear preserve history");
 }

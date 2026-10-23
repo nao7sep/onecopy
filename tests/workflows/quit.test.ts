@@ -23,6 +23,7 @@ import { fireEvent, invokeCalls, mockCommands, resetTauriMocks, setCurrentWindow
 beforeAll(installQuitWorkflow);
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
+  useDerivedWorkStore.setState({ runtime: null, snapshot: null, activeItem: null });
   resetConfigWritesForTests();
   cancelSessionEnd();
   useSettingsStore.setState({ draft: null, opened: null, saving: false });
@@ -389,7 +390,7 @@ it("does not ask about work the user is already cancelling", async () => {
 });
 
 it("automatic derived work and source checks alone never ask", async () => {
-  useDerivedWorkStore.setState({ snapshot: { workerRunning: true, pausedClasses: [], classes: [],
+  useDerivedWorkStore.setState({ snapshot: { revision: 1, workerRunning: true, pausedClasses: [], classes: [],
     activeItem: { id: "video-transcripts", hash: "h", done: 1, total: 9, stopping: false } } });
   useSectionsStore.setState((state) => ({ sourceCheck: { ...state.sourceCheck, running: true } }));
   try {
@@ -397,7 +398,7 @@ it("automatic derived work and source checks alone never ask", async () => {
     expect(exits()).toHaveLength(1);
     expect(useQuitRunningWorkStore.getState().choose).toBeNull();
   } finally {
-    useDerivedWorkStore.setState({ snapshot: null });
+    useDerivedWorkStore.setState({ runtime: null, snapshot: null, activeItem: null });
     useSectionsStore.setState((state) => ({ sourceCheck: { ...state.sourceCheck, running: false } }));
   }
 });

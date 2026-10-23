@@ -356,11 +356,8 @@ pub(crate) fn available() -> bool {
 
 /// The runtime conditions Background Work reports: busy exactly when the
 /// worker would not be admitted to an ordinary turn.
-pub fn runtime_conditions() -> crate::derived_runtime::RuntimeConditions {
-    crate::derived_runtime::RuntimeConditions {
-        busy: !available() || !crate::scan_runtime::ordinary_share_free(),
-        worker_running: started(),
-    }
+pub fn runtime_busy() -> bool {
+    !available() || !crate::scan_runtime::ordinary_share_free()
 }
 
 /// Opens the automatic media queue only after the launch source decision has

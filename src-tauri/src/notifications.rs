@@ -61,8 +61,83 @@ pub struct NotificationRecord {
     pub occurrence_count: u64,
 }
 
-static ACTIVE: LazyLock<Mutex<Vec<NotificationRecord>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveNotificationSnapshot {
+    pub revision: u64,
+    pub active: Vec<NotificationRecord>,
+}
+
+impl ActiveNotificationSnapshot {
+    fn sorted(mut self) -> Self {
+        self.active.sort_by(|left, right| {
+            right
+                .last_seen_utc
+                .cmp(&left.last_seen_utc)
+                .then_with(|| right.id.cmp(&left.id))
+        });
+        self
+    }
+}
+
+#[derive(Default)]
+struct ActiveState {
+    revision: u64,
+    records: Vec<NotificationRecord>,
+}
+
+impl ActiveState {
+    fn snapshot(&self) -> ActiveNotificationSnapshot {
+        ActiveNotificationSnapshot {
+            revision: self.revision,
+            active: self.records.clone(),
+        }
+    }
+
+    fn remember(
+        &mut self,
+        record: NotificationRecord,
+    ) -> (NotificationRecord, ActiveNotificationSnapshot) {
+        let current = if let Some(existing) = self.records.iter_mut().find(|item| {
+            item.kind == record.kind
+                && item.path == record.path
+                && item.level == record.level
+                && item.presentation == record.presentation
+                && item.message == record.message
+        }) {
+            existing.last_seen_utc = record.last_seen_utc;
+            existing.message_key = record.message_key;
+            existing.message_values = record.message_values;
+            existing.occurrence_count += 1;
+            existing.clone()
+        } else {
+            self.records.push(record.clone());
+            record
+        };
+        self.revision += 1;
+        (current, self.snapshot())
+    }
+
+    fn dismiss(&mut self, id: i64) -> ActiveNotificationSnapshot {
+        let previous_len = self.records.len();
+        self.records.retain(|record| record.id != id);
+        if self.records.len() != previous_len {
+            self.revision += 1;
+        }
+        self.snapshot()
+    }
+
+    fn clear(&mut self) -> ActiveNotificationSnapshot {
+        self.records.clear();
+        self.revision += 1;
+        self.snapshot()
+    }
+}
+
+// Capture revision and complete contents under the same lock. Delivery can
+// reorder across callers; a newer snapshot always subsumes every older one.
+static ACTIVE: LazyLock<Mutex<ActiveState>> =
+    LazyLock::new(|| Mutex::new(ActiveState::default()));
 
 fn level_name(level: NotificationLevel) -> &'static str {
     match level {
@@ -154,24 +229,12 @@ fn record_notice(
 
 /// Adds a published notice to the live list. An equal notice still showing
 /// takes the new occurrence instead of stacking a second one.
-fn remember_active(record: NotificationRecord) -> NotificationRecord {
-    let mut active = ACTIVE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(existing) = active.iter_mut().find(|item| {
-        item.kind == record.kind
-            && item.path == record.path
-            && item.level == record.level
-            && item.presentation == record.presentation
-            && item.message == record.message
-    }) {
-        existing.last_seen_utc = record.last_seen_utc;
-        existing.message_key = record.message_key;
-        existing.message_values = record.message_values;
-        existing.occurrence_count += 1;
-        existing.clone()
-    } else {
-        active.push(record.clone());
-        record
-    }
+fn remember_active(record: NotificationRecord) -> (NotificationRecord, ActiveNotificationSnapshot) {
+    let (record, snapshot) = ACTIVE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remember(record);
+    (record, snapshot.sorted())
 }
 
 fn record_delivery_failure(event: &str, error: &str) -> Result<(), String> {
@@ -197,9 +260,9 @@ fn record_delivery_failure(event: &str, error: &str) -> Result<(), String> {
 pub fn publish(app: &AppHandle, request: NotificationRequest) -> Result<NotificationRecord, String> {
     let root = crate::paths::data_root()?;
     let conn = crate::index_store::open(&root.join(crate::storage::INDEX_DB_FILE_NAME))?;
-    let record = remember_active(record_notice(&conn, &request)?);
+    let (record, snapshot) = remember_active(record_notice(&conn, &request)?);
     if let Err(message) =
-        crate::failure_runtime::emit_checked(app, "notification://published", &record)
+        crate::failure_runtime::emit_checked(app, "notification://published", &snapshot)
     {
         record_delivery_failure("notification://published", &message)?;
     }
@@ -214,41 +277,30 @@ pub fn record_history(
     record_notice(&conn, &request)
 }
 
-pub fn active() -> Vec<NotificationRecord> {
-    let mut records = ACTIVE
+pub fn active() -> ActiveNotificationSnapshot {
+    let snapshot = ACTIVE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clone();
-    records.sort_by(|left, right| {
-        right
-            .last_seen_utc
-            .cmp(&left.last_seen_utc)
-            .then_with(|| right.id.cmp(&left.id))
-    });
-    records
+        .snapshot();
+    snapshot.sorted()
 }
 
-pub fn dismiss(app: &AppHandle, id: i64) -> Result<bool, String> {
-    let exists = ACTIVE
+pub fn dismiss(app: &AppHandle, id: i64) -> Result<ActiveNotificationSnapshot, String> {
+    let snapshot = ACTIVE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .iter()
-        .any(|record| record.id == id);
-    if !exists {
-        return Ok(false);
-    }
-    crate::failure_runtime::emit_checked(app, "notification://dismissed", json!({ "id": id }))?;
-    let mut active = ACTIVE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    active.retain(|record| record.id != id);
-    Ok(true)
+        .dismiss(id);
+    let snapshot = snapshot.sorted();
+    crate::failure_runtime::emit_checked(app, "notification://dismissed", &snapshot)?;
+    Ok(snapshot)
 }
 
 pub fn clear_active(app: &AppHandle) -> Result<(), String> {
-    crate::failure_runtime::emit_checked(app, "notification://cleared", ())?;
-    ACTIVE
+    let snapshot = ACTIVE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clear();
+    crate::failure_runtime::emit_checked(app, "notification://cleared", snapshot.sorted())?;
     Ok(())
 }
 

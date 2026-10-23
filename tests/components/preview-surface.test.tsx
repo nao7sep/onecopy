@@ -9,6 +9,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useDerivedWorkStore } from "../../src/state/derived-work-store";
 import PreviewSurface from "../../src/components/PreviewSurface";
 import { useAppStore } from "../../src/state/app-store";
 import { useBinariesStore } from "../../src/state/binaries-store";
@@ -72,6 +73,7 @@ const OTHER_DETAIL = {
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
+  useDerivedWorkStore.setState({ runtime: null, snapshot: null, activeItem: null });
   mockCommands({
     transcript_get: () => ({
       status: "ready",
@@ -88,7 +90,7 @@ beforeEach(() => {
       byteSize: 22,
     }),
     background_work_snapshot: () => ({
-      workerRunning: true, pausedClasses: [],
+      revision: 1, workerRunning: true, pausedClasses: [],
       classes: [],
       activeItem: null,
     }),

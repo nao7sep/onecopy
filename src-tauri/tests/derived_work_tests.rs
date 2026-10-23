@@ -506,12 +506,7 @@ fn snapshot_projects_output_debt_without_inventing_jobs() {
     let value = serde_json::to_value(
         snapshot(
             dir.path(),
-            onecopy_lib::derived_runtime::snapshot(
-                onecopy_lib::derived_runtime::RuntimeConditions {
-                    busy: false,
-                    worker_running: true,
-                },
-            )
+            onecopy_lib::derived_runtime::snapshot(false)
             .unwrap(),
             onecopy_lib::derived_work::work_capabilities(dir.path()).unwrap(),
         )
@@ -546,29 +541,22 @@ fn snapshot_keeps_video_preview_debt_visible_without_ffmpeg() {
     let value = serde_json::to_value(
         snapshot(
             dir.path(),
-            onecopy_lib::derived_runtime::snapshot(
-                onecopy_lib::derived_runtime::RuntimeConditions {
-                    busy: false,
-                    worker_running: true,
-                },
-            )
+            onecopy_lib::derived_runtime::snapshot(false)
             .unwrap(),
             onecopy_lib::derived_work::work_capabilities(dir.path()).unwrap(),
         )
         .unwrap(),
     )
     .unwrap();
-    assert_eq!(value["workerRunning"], true);
-    let stopped = serde_json::to_value(snapshot(
+    assert_eq!(value["workerRunning"], onecopy_lib::derived_work::started());
+    let later = serde_json::to_value(snapshot(
         dir.path(),
-        onecopy_lib::derived_runtime::snapshot(onecopy_lib::derived_runtime::RuntimeConditions {
-            busy: false,
-            worker_running: false,
-        }).unwrap(),
+        onecopy_lib::derived_runtime::snapshot(false).unwrap(),
         onecopy_lib::derived_work::work_capabilities(dir.path()).unwrap(),
     ).unwrap()).unwrap();
-    assert_eq!(stopped["workerRunning"], false);
-    assert_eq!(stopped["classes"], value["classes"], "stopping the coordinator must preserve prerequisite and output facts");
+    assert_eq!(later["workerRunning"], onecopy_lib::derived_work::started());
+    assert!(later["revision"].as_u64().unwrap() > value["revision"].as_u64().unwrap());
+    assert_eq!(later["classes"], value["classes"], "a later lifecycle snapshot must preserve prerequisite and output facts");
     let previews = value["classes"]
         .as_array()
         .unwrap()
@@ -617,12 +605,7 @@ fn one_snapshot_preserves_every_fixed_class_debt_semantic() {
     let value = serde_json::to_value(
         snapshot(
             dir.path(),
-            onecopy_lib::derived_runtime::snapshot(
-                onecopy_lib::derived_runtime::RuntimeConditions {
-                    busy: false,
-                    worker_running: true,
-                },
-            )
+            onecopy_lib::derived_runtime::snapshot(false)
             .unwrap(),
             derived_state::WorkCapabilities {
                 ffmpeg: true,
@@ -767,10 +750,7 @@ fn an_unsupported_saved_acceleration_fails_only_its_own_engine() {
     let value = serde_json::to_value(
         snapshot(
             dir.path(),
-            onecopy_lib::derived_runtime::snapshot(onecopy_lib::derived_runtime::RuntimeConditions {
-                busy: false,
-                worker_running: true,
-            })
+            onecopy_lib::derived_runtime::snapshot(false)
             .unwrap(),
             capabilities,
         )

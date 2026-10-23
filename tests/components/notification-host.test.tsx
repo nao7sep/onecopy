@@ -37,10 +37,10 @@ beforeEach(() => {
   seedAppConfig();
   resetTauriMocks({ keepListeners: true });
   mockCommands({
-    get_active_notifications: () => [],
-    dismiss_notification: () => true,
+    get_active_notifications: () => ({ revision: 0, active: [] }),
+    dismiss_notification: () => ({ revision: useNotificationsStore.getState().revision + 1, active: [] }),
   });
-  useNotificationsStore.setState({ active: [], dismissing: new Set() });
+  useNotificationsStore.setState({ revision: -1, active: [], dismissing: new Set() });
 });
 
 afterEach(() => {
@@ -209,7 +209,7 @@ describe("the app-frame notification host", () => {
     act(() => useNotificationsStore.setState({ active: [notice()] }));
     expect(document.body.textContent).toContain("Couldn’t open the selected file.");
 
-    await act(async () => fireBackendEvent("notification://cleared"));
+    await act(async () => fireBackendEvent("notification://cleared", { revision: useNotificationsStore.getState().revision + 1, active: [] }));
     expect(document.body.textContent).not.toContain("Couldn’t open the selected file.");
   });
 });

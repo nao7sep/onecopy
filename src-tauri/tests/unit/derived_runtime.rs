@@ -932,3 +932,19 @@ fn heavy_work_publishes_only_for_the_content_the_index_still_names() {
     .unwrap();
     assert!(unchanged.is_some());
 }
+
+#[test]
+fn runtime_and_detailed_snapshots_share_capture_order_across_completion() {
+    let _serial = crate::scan_runtime::serial_test();
+    let job = ActiveGuard::begin(None, WorkClass::VideoTranscripts).unwrap().unwrap();
+    set_hash(job.id, "ordering-test");
+    let running = state_payload().unwrap();
+    assert_eq!(running["active"]["hash"], "ordering-test");
+    drop(job);
+    let completed = snapshot(false).unwrap();
+    assert!(completed.active.is_none());
+    assert!(completed.revision > running["revision"].as_u64().unwrap());
+    let later = state_payload().unwrap();
+    assert!(later["revision"].as_u64().unwrap() > completed.revision);
+    assert!(later["active"].is_null());
+}

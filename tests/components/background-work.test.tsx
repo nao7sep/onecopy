@@ -36,7 +36,7 @@ function snapshot(
   rows: Partial<Record<BackgroundClassSnapshot["id"], Partial<BackgroundClassSnapshot>>> = {},
 ): BackgroundWorkSnapshot {
   return {
-    workerRunning: true, pausedClasses: [],
+    revision: 1, workerRunning: true, pausedClasses: [],
     activeItem: null,
     classes: ids.map((id) => ({
       id,
@@ -60,13 +60,13 @@ beforeEach(async () => {
   useBinariesStore.setState({ entries: [], loading: false, installing: {}, errors: {}, loadError: null });
   current = snapshot({}, { previews: { state: "queued", queued: 12 } });
   mockCommands({
-    background_work_runtime: () => ({ workerRunning: true, pausedClasses: [], active: null }),
+    background_work_runtime: () => ({ revision: 1, workerRunning: true, pausedClasses: [], active: null }),
     background_work_snapshot: () => ({ ...current, activeItem: null }),
     background_work_set_paused: ({ classId, paused }) => {
       const targets = classId === null ? ids : [classId as typeof ids[number]];
       const pausedSet = new Set(current.pausedClasses);
       for (const id of targets) { if (paused) pausedSet.add(id); else pausedSet.delete(id); }
-      current = { ...current, workerRunning: current.workerRunning || !paused, pausedClasses: [...pausedSet] };
+      current = { ...current, revision: current.revision + 1, workerRunning: current.workerRunning || !paused, pausedClasses: [...pausedSet] };
       if (classId === null) useSectionsStore.setState((state) => ({
         fileInformation: { ...state.fileInformation, paused: Boolean(paused) },
       }));
@@ -81,6 +81,7 @@ beforeEach(async () => {
   }
   useDerivedWorkStore.setState({
     snapshot: current,
+    runtime: null,
     loading: false,
     changing: null,
     error: null,
@@ -112,13 +113,13 @@ afterEach(cleanup);
 
 describe("Background work", () => {
   it("directly resumes stopped processing without unpausing other classes or enabling Settings-disabled work", async () => {
-    current = snapshot({ workerRunning: false, pausedClasses: ["video-transcripts"] }, {
+    current = snapshot({ revision: 1, workerRunning: false, pausedClasses: ["video-transcripts"] }, {
       previews: { state: "queued", queued: 12, failed: 2 },
       "audio-transcripts": { state: "disabled", reason: "enable-audio-transcription" },
     });
     useDerivedWorkStore.setState({ snapshot: current });
     const view = render(<BackgroundWorkModal open onClose={() => {}} />);
-    expect(backgroundRuntimeLine({ workerRunning: current.workerRunning, pausedClasses: current.pausedClasses, active: current.activeItem }, t)).toBe("Preparation and enrichment stopped");
+    expect(backgroundRuntimeLine({ revision: 1, workerRunning: current.workerRunning, pausedClasses: current.pausedClasses, active: current.activeItem }, t)).toBe("Preparation and enrichment stopped");
     const previews = [...view.container.querySelectorAll("li")].find((row) => row.textContent?.includes("Thumbnails, previews, and posters"))!;
     expect(previews.textContent).toContain("Stopped");
     expect(previews.querySelector("button")!.textContent).toBe("Resume");
@@ -180,23 +181,23 @@ describe("Background work", () => {
   });
 
   it("keeps active manual work pausable when its automatic coordinator is stopped", () => {
-    const state = snapshot({ workerRunning: false, activeItem: { id: "video-transcripts", hash: "manual", done: 2, total: 10, stopping: false } });
+    const state = snapshot({ revision: 1, workerRunning: false, activeItem: { id: "video-transcripts", hash: "manual", done: 2, total: 10, stopping: false } });
     const rows = backgroundRows(state);
     const transcription = rows.find((row) => row.id === "video-transcripts")!;
     expect(backgroundRowCanResume(state, transcription)).toBe(false);
     expect(backgroundRowCanResume(state, rows[0])).toBe(true);
-    expect(backgroundRuntimeLine({ workerRunning: state.workerRunning, pausedClasses: state.pausedClasses, active: state.activeItem }, t)).toBe("Video transcription 2/10");
+    expect(backgroundRuntimeLine({ revision: 1, workerRunning: state.workerRunning, pausedClasses: state.pausedClasses, active: state.activeItem }, t)).toBe("Video transcription 2/10");
   });
 
 
   it("keeps the status segment meaningful without querying queue totals", () => {
-    expect(backgroundRuntimeLine({ workerRunning: true, pausedClasses: [], active: null }, t)).toBe("Background work: no work running");
-    expect(backgroundRuntimeLine({ workerRunning: true, pausedClasses: [], active: { id: "video-transcripts", hash: "x", done: 42, total: 100, stopping: false } }, t)).toBe("Video transcription 42/100");
+    expect(backgroundRuntimeLine({ revision: 1, workerRunning: true, pausedClasses: [], active: null }, t)).toBe("Background work: no work running");
+    expect(backgroundRuntimeLine({ revision: 1, workerRunning: true, pausedClasses: [], active: { id: "video-transcripts", hash: "x", done: 42, total: 100, stopping: false } }, t)).toBe("Video transcription 42/100");
   });
 
   it("patches runtime progress without re-reading output debt", () => {
     const merged = mergeBackgroundRuntime(current, {
-      workerRunning: true, pausedClasses: [],
+      revision: 1, workerRunning: true, pausedClasses: [],
       active: {
         id: "previews",
         hash: "photo-hash",
@@ -243,7 +244,7 @@ describe("Background work", () => {
 
   it("handles live runtime events without another database snapshot command", () => {
     fireEvent("derived://state-changed", {
-      workerRunning: true, pausedClasses: [],
+      revision: 1, workerRunning: true, pausedClasses: [],
       active: {
         id: "previews",
         hash: "photo-hash",
@@ -319,10 +320,10 @@ describe("Background work", () => {
   it("retains failed and unavailable debt across running, stopping, pause, and resume overlays", () => {
     for (const state of ["failed", "unavailable", "disabled"] as const) {
       const base = snapshot({}, { previews: { state, failed: 2, reason: "Inspect Issues" } });
-      const running = mergeBackgroundRuntime(base, { workerRunning: true, pausedClasses: [], active: { id: "previews", hash: "x", done: 1, total: 2, stopping: false } })!;
+      const running = mergeBackgroundRuntime(base, { revision: 1, workerRunning: true, pausedClasses: [], active: { id: "previews", hash: "x", done: 1, total: 2, stopping: false } })!;
       expect(backgroundRows(running)[0].state).toBe("running");
-      const paused = mergeBackgroundRuntime(running, { workerRunning: true, pausedClasses: ["previews"], active: null })!;
-      const resumed = mergeBackgroundRuntime(paused, { workerRunning: true, pausedClasses: [], active: null })!;
+      const paused = mergeBackgroundRuntime(running, { revision: 2, workerRunning: true, pausedClasses: ["previews"], active: null })!;
+      const resumed = mergeBackgroundRuntime(paused, { revision: 3, workerRunning: true, pausedClasses: [], active: null })!;
       expect(backgroundRows(resumed)[0]).toEqual(base.classes[0]);
     }
   });
@@ -362,7 +363,7 @@ describe("Background work", () => {
 
   it("does not allow resume to race a class that is still stopping", () => {
     useDerivedWorkStore.setState({
-      snapshot: snapshot({ workerRunning: true, pausedClasses: ids, activeItem: { id: "video-transcripts", hash: "video", done: null, total: null, stopping: true } }, { "video-transcripts": { state: "queued", queued: 3 } }),
+      snapshot: snapshot({ revision: 1, workerRunning: true, pausedClasses: ids, activeItem: { id: "video-transcripts", hash: "video", done: null, total: null, stopping: true } }, { "video-transcripts": { state: "queued", queued: 3 } }),
     });
     render(<BackgroundWorkModal open onClose={() => {}} />);
 

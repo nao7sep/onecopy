@@ -94,6 +94,7 @@ impl Claim {
 
 #[derive(Default)]
 struct RuntimeState {
+    snapshot_revision: u64,
     paused_classes: u8,
     heavy: Option<Job>,
     previews: Vec<Job>,
@@ -236,12 +237,6 @@ fn preview_admits(runtime: &RuntimeState, ticket: u64, hash: &str, capacity: usi
             .all(|job| job.manual && job.hash.as_deref() != Some(hash))
 }
 
-#[derive(Clone, Copy)]
-pub struct RuntimeConditions {
-    pub busy: bool,
-    pub worker_running: bool,
-}
-
 #[derive(Clone)]
 pub struct ActiveWorkSnapshot {
     pub(crate) class: WorkClass,
@@ -253,6 +248,7 @@ pub struct ActiveWorkSnapshot {
 
 #[derive(Clone)]
 pub struct RuntimeSnapshot {
+    pub(crate) revision: u64,
     pub(crate) worker_running: bool,
     pub(crate) paused_classes: u8,
     pub(crate) active: Option<ActiveWorkSnapshot>,
@@ -859,42 +855,36 @@ pub(crate) fn emit_state_changed(app: &AppHandle) {
 }
 
 pub fn state_payload() -> Result<serde_json::Value, String> {
-    let preemption = Preemption::current();
-    let payload = match RUNTIME.0.lock() {
-        Ok(runtime) => {
-            let paused_classes = WorkClass::ALL
-                .into_iter()
-                .filter(|class| runtime.paused(*class))
-                .map(WorkClass::id)
-                .collect::<Vec<_>>();
-            json!({
-                "workerRunning": crate::derived_work::started(),
-                "pausedClasses": paused_classes,
-                "active": active_snapshot(&runtime, preemption).map(|active| json!({
-                    "id": active.class.id(),
-                    "hash": active.hash,
-                    "done": active.done,
-                    "total": active.total,
-                    "stopping": active.stopping,
-                })),
-            })
-        }
-        Err(_) => {
-            report_poison_once(None);
-            return Err(STATE_UNAVAILABLE.to_string());
-        }
-    };
-    Ok(payload)
+    let runtime = snapshot(false)?;
+    let paused_classes = WorkClass::ALL.into_iter()
+        .filter(|class| runtime.paused_classes & class.bit() != 0)
+        .map(WorkClass::id).collect::<Vec<_>>();
+    Ok(json!({
+        "revision": runtime.revision,
+        "workerRunning": runtime.worker_running,
+        "pausedClasses": paused_classes,
+        "active": runtime.active.map(|active| json!({
+            "id": active.class.id(),
+            "hash": active.hash,
+            "done": active.done,
+            "total": active.total,
+            "stopping": active.stopping,
+        })),
+    }))
 }
 
-pub fn snapshot(conditions: RuntimeConditions) -> Result<RuntimeSnapshot, String> {
-    let preemption = Preemption::current();
-    let runtime = lock(None)?;
+// Sequence snapshots while holding the same authority that captures their
+// lifecycle fields. Delivery and detailed database projection happen later
+// and may finish in any order. No emitter holds this lock through IPC.
+pub fn snapshot(busy: bool) -> Result<RuntimeSnapshot, String> {
+    let mut runtime = lock(None)?;
+    runtime.snapshot_revision += 1;
     Ok(RuntimeSnapshot {
-        worker_running: conditions.worker_running,
+        revision: runtime.snapshot_revision,
+        worker_running: crate::derived_work::started(),
         paused_classes: runtime.paused_classes,
-        active: active_snapshot(&runtime, preemption),
-        busy: conditions.busy,
+        active: active_snapshot(&runtime, Preemption::current()),
+        busy,
     })
 }
 

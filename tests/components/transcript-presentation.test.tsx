@@ -142,7 +142,7 @@ describe("transcript presentation owners", () => {
 
   it("shows runtime pause state even when the background window has never opened", async () => {
     mockCommands({ transcript_get: () => ({ status: "pending", text: null, message: null }) });
-    useDerivedWorkStore.setState({ snapshot: null, runtime: { workerRunning: true, pausedClasses: ["video-transcripts"], active: null } });
+    useDerivedWorkStore.setState({ snapshot: null, runtime: { revision: 1, workerRunning: true, pausedClasses: ["video-transcripts"], active: null } });
     useContentSessionStore.setState({ transcriptOpen: { video: true, audio: false } });
     render(<TranscriptBlock hash="paused" medium="video" work={{ state: "pending", hasValue: false, reason: null, done: null, total: null }} />);
     expect(await screen.findByText("Queued — transcription is paused.")).toBeTruthy();

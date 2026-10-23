@@ -17,7 +17,7 @@ import { message } from "../../src/i18n/translate";
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
-  useNotificationsStore.setState({ active: [], dismissing: new Set() });
+  useNotificationsStore.setState({ revision: -1, active: [], dismissing: new Set() });
   document.getElementById("onecopy-escaped-failure")?.remove();
 });
 
@@ -30,7 +30,7 @@ describe("notification failure containment", () => {
     expect(listenerCount("notification://published")).toBe(0);
     expect(listenerCount("notification://dismissed")).toBe(0);
 
-    mockCommands({ get_active_notifications: () => [] });
+    mockCommands({ get_active_notifications: () => ({ revision: 0, active: [] }) });
     await installNotificationWiring();
     expect(listenerCount("notification://published")).toBe(1);
     expect(listenerCount("notification://dismissed")).toBe(1);

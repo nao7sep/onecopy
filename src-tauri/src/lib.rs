@@ -861,7 +861,7 @@ async fn get_issues(
 // Control-like read: the ACTIVE notification list is an in-memory Mutex, no
 // index or filesystem access.
 #[tauri::command]
-fn get_active_notifications() -> Vec<notifications::NotificationRecord> {
+fn get_active_notifications() -> notifications::ActiveNotificationSnapshot {
     notifications::active()
 }
 
@@ -889,7 +889,7 @@ async fn record_recent_notification(
 // Dismissal updates the in-memory ACTIVE list, but failed event delivery
 // records activity in SQLite, so the entire delegate runs off the IPC thread.
 #[tauri::command]
-async fn dismiss_notification(app: AppHandle, id: i64) -> Result<bool, String> {
+async fn dismiss_notification(app: AppHandle, id: i64) -> Result<notifications::ActiveNotificationSnapshot, String> {
     dispatch(move || notifications::dismiss(&app, id)).await
 }
 
@@ -1075,7 +1075,7 @@ async fn background_work_snapshot() -> Result<background_work::BackgroundWorkSna
         let data_root = paths::data_root()?;
         background_work::snapshot(
             &data_root,
-            derived_runtime::snapshot(derived_work::runtime_conditions())?,
+            derived_runtime::snapshot(derived_work::runtime_busy())?,
             derived_work::work_capabilities(&data_root)?,
         )
     })

@@ -46,6 +46,7 @@ export interface BackgroundClassSnapshot {
 }
 
 export interface BackgroundWorkSnapshot {
+  revision: number;
   workerRunning: boolean;
   pausedClasses: BackgroundClassSnapshot["id"][];
   activeItem: ActiveItemWork | null;
@@ -61,6 +62,7 @@ export interface ActiveItemWork {
 }
 
 export interface BackgroundRuntimeSnapshot {
+  revision: number;
   workerRunning: boolean;
   pausedClasses: BackgroundClassSnapshot["id"][];
   active: ActiveItemWork | null;
@@ -80,8 +82,6 @@ interface DerivedWorkState {
 }
 
 const loadSequence = requestSeq();
-let runtimeVersion = 0;
-let latestRuntime: BackgroundRuntimeSnapshot | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** Coalesce output invalidations; a large library must never accumulate snapshot reads. */
@@ -119,15 +119,22 @@ export const useDerivedWorkStore = create<DerivedWorkState>((set, get) => ({
     // Detailed queue totals are read only while Background work is open.
     if (!get().detailsOpen) return;
     const fresh = loadSequence.begin();
-    const version = runtimeVersion;
     set({ loading: true });
     try {
       const response = await invoke<BackgroundWorkSnapshot>("background_work_snapshot");
       if (fresh()) {
-        const runtime = version !== runtimeVersion ? latestRuntime : null;
+        const captured = {
+          revision: response.revision,
+          workerRunning: response.workerRunning,
+          pausedClasses: response.pausedClasses,
+          active: response.activeItem,
+        };
+        const current = get().runtime;
+        const runtime = current !== null && current.revision >= captured.revision ? current : captured;
         set({
-          snapshot: runtime === null ? response : mergeBackgroundRuntime(response, runtime),
-          activeItem: runtime === null ? response.activeItem : runtime.active,
+          runtime,
+          snapshot: mergeBackgroundRuntime(response, runtime),
+          activeItem: runtime.active,
           loading: false, error: null,
         });
       }
@@ -271,6 +278,7 @@ export function mergeBackgroundRuntime(
   if (snapshot === null) return null;
   return {
     ...snapshot,
+    revision: runtime.revision,
     workerRunning: runtime.workerRunning,
     pausedClasses: runtime.pausedClasses,
     activeItem: runtime.active,
@@ -321,16 +329,23 @@ export function installActivityPings(target: Window): () => void {
   };
 }
 
+// Backend capture order is authoritative; delivery order is not. Runtime
+// events and both IPC projections share this revision domain.
+function applyRuntimeSnapshot(runtime: BackgroundRuntimeSnapshot): void {
+  useDerivedWorkStore.setState((state) => {
+    if (state.runtime !== null && runtime.revision <= state.runtime.revision) return state;
+    return {
+      runtime,
+      snapshot: mergeBackgroundRuntime(state.snapshot, runtime),
+      activeItem: runtime.active,
+    };
+  });
+}
+
 const installEvents = createEventInstaller(
   async (listeners) => {
     await listeners.listen<BackgroundRuntimeSnapshot>("derived://state-changed", (event) => {
-      runtimeVersion += 1;
-      latestRuntime = event.payload;
-      useDerivedWorkStore.setState((state) => ({
-        runtime: event.payload,
-        snapshot: mergeBackgroundRuntime(state.snapshot, event.payload),
-        activeItem: event.payload.active,
-      }));
+      applyRuntimeSnapshot(event.payload);
     });
     await listeners.listen("derived://quiet", () => {
       refreshBackgroundWorkSoon();
@@ -340,12 +355,7 @@ const installEvents = createEventInstaller(
       "file-information://done", "watch://updated", "derived://issues",
       "derived://similarity-updated", "binaries://changed",
     ]) await listeners.listen(event, refreshBackgroundWorkSoon);
-    const version = runtimeVersion;
-    const runtime = await invoke<BackgroundRuntimeSnapshot>("background_work_runtime");
-    if (version === runtimeVersion) {
-      latestRuntime = runtime;
-      useDerivedWorkStore.setState({ runtime, activeItem: runtime.active });
-    }
+    applyRuntimeSnapshot(await invoke<BackgroundRuntimeSnapshot>("background_work_runtime"));
   },
   (error) => {
     log.warn("derived-work event wiring failed", toErrorFields(error));

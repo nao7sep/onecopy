@@ -11,6 +11,7 @@ import { StrictMode } from "react";
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import { render, cleanup, act } from "@testing-library/react";
 import App from "../../src/App";
+import { useDerivedWorkStore } from "../../src/state/derived-work-store";
 import { useWizardStore } from "../../src/state/wizard-store";
 import { useAppStore } from "../../src/state/app-store";
 import { useSectionsStore } from "../../src/state/sections-store";
@@ -92,6 +93,7 @@ const settle = () =>
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
+  useDerivedWorkStore.setState({ runtime: null, snapshot: null, activeItem: null });
   mockFullscreenDisplay();
   let sourceCheckSnapshot = {
     running: false,
@@ -121,9 +123,9 @@ beforeEach(() => {
     save_config: (args) => effectiveConfig((args.changes ?? {}) as Record<string, unknown>),
     log_event: () => null,
     logging_debug_enabled: () => false,
-    background_work_runtime: () => ({ workerRunning: true, pausedClasses: [], active: null }),
+    background_work_runtime: () => ({ revision: 1, workerRunning: true, pausedClasses: [], active: null }),
     background_work_snapshot: () => ({
-      workerRunning: true, pausedClasses: [],
+      revision: 1, workerRunning: true, pausedClasses: [],
       classes: [],
       activeItem: null,
     }),

@@ -31,6 +31,7 @@ impl ClassState {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackgroundWorkSnapshot {
+    revision: u64,
     worker_running: bool,
     paused_classes: Vec<&'static str>,
     classes: Vec<BackgroundClassSnapshot>,
@@ -95,6 +96,7 @@ pub fn snapshot(
         });
     }
     Ok(BackgroundWorkSnapshot {
+        revision: runtime.revision,
         worker_running: runtime.worker_running,
         paused_classes: WorkClass::ALL.into_iter().filter(|class| runtime.paused_classes & class.bit() != 0).map(WorkClass::id).collect(),
         classes,

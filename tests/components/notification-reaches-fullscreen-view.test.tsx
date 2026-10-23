@@ -18,7 +18,7 @@ beforeEach(() => resetTauriMocks());
 
 it("hands a freshly opened fullscreen window the same persistent notice Main already recorded", async () => {
   mockCommands({
-    get_active_notifications: () => [
+    get_active_notifications: () => ({ revision: 1, active: [
       {
         id: 7,
         kind: "open-failed",
@@ -32,8 +32,8 @@ it("hands a freshly opened fullscreen window the same persistent notice Main alr
         lastSeenUtc: "2026-08-31T00:00:00.000Z",
         occurrenceCount: 1,
       },
-    ],
-    dismiss_notification: () => true,
+    ] }),
+    dismiss_notification: () => ({ revision: 2, active: [] }),
   });
 
   // Mirrors FullscreenViewWindow.tsx mounting its own `<NotificationHost ownsTimedDismissal={false} />`.
