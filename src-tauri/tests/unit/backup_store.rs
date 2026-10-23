@@ -172,7 +172,7 @@ fn record_never_panics_when_the_store_cannot_open() {
 
 #[test]
 #[serial(backup_store)]
-fn a_history_from_before_sessions_gains_them_and_keeps_its_rows() {
+fn a_history_without_session_columns_is_refused_and_kept_unchanged() {
     let (_dir, file) = unique_store_file("before-sessions");
     {
         let conn = Connection::open(&file).unwrap();
@@ -189,11 +189,26 @@ fn a_history_from_before_sessions_gains_them_and_keeps_its_rows() {
         )
         .unwrap();
     }
+    let before = std::fs::read(&file).unwrap();
+    assert!(open(&file).is_err());
     session(&file, "s1", || record(Path::new("/abs/e.json"), b"newer"));
-    let rows = rows_for(&file, "/abs/e.json");
-    assert_eq!(rows.len(), 2);
-    assert_eq!((rows[0].0.as_slice(), rows[0].4.as_deref()), (&[1u8][..], None));
-    assert_eq!(rows[1].4.as_deref(), Some("s1"));
+    assert_eq!(std::fs::read(&file).unwrap(), before);
+    assert!(!PathBuf::from(format!("{}-wal", file.display())).exists());
+    let conn = Connection::open(&file).unwrap();
+    let rows: Vec<Vec<u8>> = conn
+        .prepare("SELECT content FROM backups ORDER BY id")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(rows, vec![vec![1u8]]);
+    let has_sessions = conn
+        .prepare("SELECT 1 FROM pragma_table_info('backups') WHERE name = 'session_id'")
+        .unwrap()
+        .exists([])
+        .unwrap();
+    assert!(!has_sessions);
 }
 
 #[test]
@@ -262,13 +277,86 @@ fn existing_empty_and_negative_histories_are_left_uninitialized() {
 fn a_newer_marker_committed_before_history_setup_is_not_downgraded() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("backups.sqlite3");
-    let result = open_before_setup(&file, || {
-        let conn = Connection::open(&file).unwrap();
-        conn.execute_batch("CREATE TABLE future(value); PRAGMA user_version = 2;").unwrap();
+    drop(open(&file).unwrap());
+    let result = open_before_setup(&file, |setup_path| {
+        let conn = Connection::open(setup_path).unwrap();
+        conn.execute_batch("DROP TABLE backups; CREATE TABLE future(value); PRAGMA user_version = 2;").unwrap();
     });
     let expected = crate::formats::NewerStore::check(&file, 2, crate::formats::BACKUPS).unwrap();
     assert_eq!(result.unwrap_err(), expected.to_string());
     let conn = Connection::open(&file).unwrap();
     assert_eq!(conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0)).unwrap(), 2);
     assert_eq!(conn.query_row("SELECT count(*) FROM sqlite_master WHERE name = 'backups'", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+}
+
+#[test]
+fn failed_first_setup_keeps_the_canonical_path_absent_and_restart_succeeds() {
+    let (directory, file) = unique_store_file("failed-setup");
+    let result = open_before_setup(&file, |setup_path| {
+        assert!(!file.exists(), "a first setup must remain private");
+        assert_ne!(setup_path, file);
+        let conn = Connection::open(setup_path).unwrap();
+        let journal: String = conn.pragma_query_value(None, "journal_mode", |row| row.get(0)).unwrap();
+        assert_eq!(journal, "delete", "publication cannot depend on WAL sidecars");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(setup_path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        // Refuse an incompatible schema inside the setup transaction.
+        conn.execute_batch("CREATE TABLE backups(value); PRAGMA user_version = 1;").unwrap();
+    });
+    assert!(result.is_err());
+    assert!(!file.exists());
+    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+    let conn = open(&file).unwrap();
+    assert_eq!(conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0)).unwrap(), crate::formats::BACKUPS);
+    assert_eq!(conn.query_row("SELECT count(*) FROM backups", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+}
+
+#[test]
+fn interrupted_first_setup_never_publishes_an_empty_canonical_file() {
+    let (directory, file) = unique_store_file("interrupted-setup");
+    let interrupted = std::panic::catch_unwind(|| {
+        let _ = open_before_setup(&file, |_| {
+            assert!(!file.exists());
+            panic!("simulated interruption before schema setup");
+        });
+    });
+    assert!(interrupted.is_err());
+    assert!(!file.exists());
+    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+    drop(open(&file).unwrap());
+}
+
+#[test]
+fn a_competing_canonical_creation_is_never_overwritten() {
+    for contents in [b"".as_slice(), b"unknown competing contents".as_slice()] {
+        let (directory, file) = unique_store_file("competing-creation");
+        let result = open_before_setup(&file, |_| {
+            std::fs::write(&file, contents).unwrap();
+        });
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&file).unwrap(), contents);
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+        assert!(open(&file).is_err(), "existing empty files have no ownership evidence");
+        assert_eq!(std::fs::read(&file).unwrap(), contents);
+    }
+}
+
+
+#[test]
+fn an_obsolete_schema_committed_before_setup_is_not_repaired() {
+    let (_directory, file) = unique_store_file("obsolete-before-setup");
+    drop(open(&file).unwrap());
+    let result = open_before_setup(&file, |setup_path| {
+        let conn = Connection::open(setup_path).unwrap();
+        conn.execute_batch(
+            "DROP TABLE backups; CREATE TABLE backups(value); INSERT INTO backups VALUES ('kept');",
+        ).unwrap();
+    });
+    assert!(result.is_err());
+    let conn = Connection::open(&file).unwrap();
+    assert_eq!(conn.query_row("SELECT value FROM backups", [], |row| row.get::<_, String>(0)).unwrap(), "kept");
+    assert_eq!(conn.query_row("SELECT count(*) FROM pragma_table_info('backups')", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
 }

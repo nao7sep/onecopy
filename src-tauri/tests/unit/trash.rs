@@ -414,7 +414,7 @@ fn size_of(root: &Path) -> (u64, u64) {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn recoverable_deletion_works_on_a_volume_without_exclusive_rename() {
+fn recoverable_deletion_preserves_sources_without_exclusive_rename() {
     use crate::fs_publish::seam::without_exclusive_rename;
 
     let dir = tempfile::tempdir().unwrap();
@@ -423,19 +423,34 @@ fn recoverable_deletion_works_on_a_volume_without_exclusive_rename() {
     let source = source_dir.join("photo.jpg");
     std::fs::write(&source, b"source").unwrap();
 
-    let record = without_exclusive_rename(|| trash_file(&source, &source_dir, None, &ctx())).unwrap();
-    assert!(!source.exists());
-    assert_eq!(std::fs::read(&record.stored_path).unwrap(), b"source");
+    let mut reserved = std::path::PathBuf::new();
+    let result = without_exclusive_rename(|| {
+        trash_file_with_before_move(&source, &source_dir, None, &ctx(), |target| {
+            reserved = target.to_path_buf();
+        })
+    });
+    assert!(result.is_err());
+    assert_eq!(std::fs::read(&source).unwrap(), b"source");
+    assert!(
+        !reserved.exists(),
+        "refusal must not expose an empty placeholder"
+    );
+    assert!(list_root(&source_dir, dir.path())
+        .unwrap()
+        .entries
+        .is_empty());
 
     // An exact-boundary winner at the stored name still survives.
     std::fs::write(&source, b"second").unwrap();
     let result = without_exclusive_rename(|| {
         trash_file_with_before_move(&source, &source_dir, None, &ctx(), |target| {
-            std::fs::write(target, b"winner").unwrap()
+            reserved = target.to_path_buf();
+            std::fs::write(target, b"winner").unwrap();
         })
     });
     assert!(result.is_err());
     assert_eq!(std::fs::read(&source).unwrap(), b"second");
+    assert_eq!(std::fs::read(&reserved).unwrap(), b"winner");
 }
 
 fn ctx() -> TrashContext {

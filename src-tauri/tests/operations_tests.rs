@@ -3256,6 +3256,57 @@ fn copy_uses_an_available_duplicate_while_move_requires_every_copy() {
     assert!(second.exists());
 }
 
+#[test]
+fn an_identical_destination_whose_file_flush_fails_keeps_every_original() {
+    for mode in [MoveOutMode::MoveTrashRest, MoveOutMode::MoveDeleteRest] {
+        let f = fixture("identical-file-flush-fails");
+        let duplicate = f.root.join("duplicate");
+        std::fs::create_dir(&duplicate).unwrap();
+        let sources = [f.root.join("photo.jpg"), duplicate.join("photo.jpg")];
+        for source in &sources {
+            std::fs::write(source, b"image-bytes").unwrap();
+        }
+        scan(&f);
+        let dest = f._dir.path().join("destination");
+        std::fs::create_dir(&dest).unwrap();
+        let target = dest.join("photo.jpg");
+        std::fs::write(&target, b"image-bytes").unwrap();
+        let volume = FakeStallingVolume::mount(&dest, SETTLE);
+        // Only the existing target's descriptor flush fails. The private
+        // stage's flush still succeeds and cannot prove target durability.
+        volume.stall(&[Op::Sync], Some(&target));
+        let outcome = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let held = volume.wait_until_held(1, SETTLE);
+                volume.fail();
+                assert!(held, "the existing target was never flushed");
+            });
+            move_batch(
+                &f.conn, &f.app_root, &f.cache, &[item_named(&f, "photo.jpg")],
+                &dest, mode, &|| false, |_| {},
+            ).unwrap()
+        });
+        assert!(volume.wait_until_settled(SETTLE));
+        volume.release();
+
+        assert_eq!(outcome.exported, 0);
+        assert_eq!(outcome.skipped_identical, 0);
+        assert_eq!(outcome.undelivered, vec![target.to_string_lossy().into_owned()]);
+        assert_eq!(outcome.post_action.deleted_files, 0);
+        assert_eq!(outcome.post_action.unknown_files, 0);
+        for source in &sources {
+            assert_eq!(std::fs::read(source).unwrap(), b"image-bytes");
+        }
+        assert_eq!(f.conn.query_row(
+            "SELECT COUNT(*) FROM paths WHERE file_name = 'photo.jpg' AND missing = 0",
+            [], |row| row.get::<_, i64>(0),
+        ).unwrap(), 2);
+        assert_eq!(std::fs::read(&target).unwrap(), b"image-bytes");
+        assert_eq!(open_issue_kinds(&f, &target), vec![COPY_ERROR.to_string()]);
+        assert!(private_leftovers(&dest).is_empty(), "{:?}", private_leftovers(&dest));
+    }
+}
+
 // The destination folder's flush after publish fails: the output may not be
 // durable, so the Move keeps its source, reports the file and records why.
 #[test]
@@ -3292,6 +3343,44 @@ fn a_move_whose_destination_flush_fails_keeps_its_source() {
     assert_eq!(open_issue_kinds(&f, &target), vec![COPY_ERROR.to_string()]);
     volume.fail();
     assert!(volume.wait_until_settled(SETTLE));
+    assert!(private_leftovers(&dest).is_empty(), "{:?}", private_leftovers(&dest));
+
+    // Retry finds equal bytes, but flushing the actual target must succeed
+    // before the source can be removed, even though its stage is durable.
+    drop(volume);
+    let volume = FakeStallingVolume::mount(&dest, SETTLE);
+    volume.stall(&[Op::Sync], Some(&target));
+    let failed_retry = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let held = volume.wait_until_held(1, SETTLE);
+            volume.fail();
+            assert!(held, "the identical retry never flushed its target");
+        });
+        move_batch(
+            &f.conn, &f.app_root, &f.cache, &[item_named(&f, "photo.jpg")],
+            &dest, MoveOutMode::MoveDeleteRest, &|| false, |_| {},
+        ).unwrap()
+    });
+    assert!(volume.wait_until_settled(SETTLE));
+    volume.release();
+    assert_eq!(failed_retry.exported, 0);
+    assert_eq!(failed_retry.skipped_identical, 0);
+    assert_eq!(failed_retry.undelivered, vec![target.to_string_lossy().into_owned()]);
+    assert_eq!(failed_retry.post_action.deleted_files, 0);
+    assert_eq!(std::fs::read(f.root.join("photo.jpg")).unwrap(), b"image-bytes");
+    assert_eq!(row_state(&f, "photo.jpg"), Some(0));
+    assert_eq!(open_issue_kinds(&f, &target), vec![COPY_ERROR.to_string()]);
+
+    let durable_retry = move_batch(
+        &f.conn, &f.app_root, &f.cache, &[item_named(&f, "photo.jpg")],
+        &dest, MoveOutMode::MoveDeleteRest, &|| false, |_| {},
+    ).unwrap();
+    assert_eq!(durable_retry.exported, 0);
+    assert_eq!(durable_retry.skipped_identical, 1);
+    assert!(durable_retry.undelivered.is_empty());
+    assert_eq!(durable_retry.post_action.deleted_files, 1);
+    assert!(!f.root.join("photo.jpg").exists());
+    assert_eq!(std::fs::read(&target).unwrap(), b"image-bytes");
     assert!(private_leftovers(&dest).is_empty(), "{:?}", private_leftovers(&dest));
 }
 

@@ -220,14 +220,25 @@ fn from_windows_file(file: &File) -> io::Result<FileIdentity> {
 pub fn open_regular_nofollow(path: &Path) -> io::Result<(VolumeFile, FileIdentity)> {
     let owned = path.to_path_buf();
     let (file, identity) =
-        volume_io::call(path, Op::Open, None, move || open_regular_nofollow_raw(&owned))?;
+        volume_io::call(path, Op::Open, None, move || open_regular_nofollow_raw(&owned, false))?;
     Ok((VolumeFile::new(file, path.to_path_buf()), identity))
 }
 
-fn open_regular_nofollow_raw(path: &Path) -> io::Result<(File, FileIdentity)> {
+/// Opens the actual matching destination with the access required to flush it.
+pub(crate) fn open_regular_for_sync(path: &Path) -> io::Result<(VolumeFile, FileIdentity)> {
+    let owned = path.to_path_buf();
+    let (file, identity) = volume_io::call(path, Op::Open, None, move || {
+        open_regular_nofollow_raw(&owned, true)
+    })?;
+    Ok((VolumeFile::new(file, path.to_path_buf()), identity))
+}
+
+fn open_regular_nofollow_raw(path: &Path, for_sync: bool) -> io::Result<(File, FileIdentity)> {
     let fs_path = crate::winpath::for_fs(path);
     let mut options = std::fs::OpenOptions::new(); // volume_io worker
     options.read(true);
+    // Windows FlushFileBuffers requires write access; Unix fsync does not.
+    options.write(cfg!(windows) && for_sync);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;

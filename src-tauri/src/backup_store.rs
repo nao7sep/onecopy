@@ -24,7 +24,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use rusqlite::{Connection, TransactionBehavior};
+use rusqlite::{Connection, OpenFlags, TransactionBehavior};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
@@ -38,8 +38,8 @@ pub const BACKUPS_DB_FILE_NAME: &str = "backups.sqlite3";
 /// bytes written. `written_at_utc` is the serialized ISO-8601-ms form
 /// (`2026-07-06T04:05:12.345Z`), a data value — NEVER the
 /// `yyyymmdd-hhmmss-utc` filename stamp. `session_id` is the launch's log
-/// session (its start time); rows from before sessions existed have none and
-/// stay as earlier history. The `(path, id)` index serves the latest-row
+/// session (its start time). Histories with obsolete schemas are refused
+/// without rewriting them. The `(path, id)` index serves the latest-row
 /// lookup; the unique `(path, session_id)` index owns the session's rows.
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS backups (
@@ -154,73 +154,139 @@ fn run_writer(store_file: &Path, session_id: &str, jobs: Receiver<Job>) {
 }
 
 fn open(store_file: &Path) -> Result<Connection, String> {
-    open_before_setup(store_file, || {})
+    open_before_setup(store_file, |_| {})
 }
 
-fn open_before_setup(store_file: &Path, before_setup: impl FnOnce()) -> Result<Connection, String> {
-    // not recorded: backups.sqlite3 is the store itself — binary, and written by
-    // this backup layer, not through the managed-text atomic-write path — so it
-    // never records itself.
-    // The first writer under the root does the `mkdir -p`; the store may be the
-    // first thing written on a fresh root.
-    if let Some(parent) = store_file.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+/// A private first-creation file is never recovery authority. Remove only the
+/// names this attempt owns, including a rollback journal left by failed setup.
+struct UnpublishedHistory {
+    path: PathBuf,
+    cleanup: bool,
+}
+
+impl Drop for UnpublishedHistory {
+    fn drop(&mut self) {
+        if !self.cleanup {
+            return;
+        }
+        let _ = std::fs::remove_file(&self.path); // data root
+        let mut journal = self.path.as_os_str().to_os_string();
+        journal.push("-journal");
+        let _ = std::fs::remove_file(PathBuf::from(journal)); // data root
     }
-    // Only the opener that exclusively created the file may initialize an
-    // empty history. An existing unmarked file is unreadable provenance.
-    let fresh = match std::fs::OpenOptions::new().write(true).create_new(true).open(store_file) { // data root
-        Ok(file) => { drop(file); true }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+}
+
+fn open_before_setup(
+    store_file: &Path,
+    before_setup: impl FnOnce(&Path),
+) -> Result<Connection, String> {
+    // The store itself is binary and is never written through managed-text
+    // storage, so it cannot record itself.
+    let parent = store_file.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; // data root
+    let fresh = match std::fs::symlink_metadata(store_file) { // data root
+        Ok(_) => false,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
         Err(error) => return Err(error.to_string()),
     };
-    let mut conn = Connection::open(store_file).map_err(|e| e.to_string())?;
-    // Short, as the convention asks: the instance lock leaves this writer
-    // alone with the file, so contention means something is wrong.
-    conn.busy_timeout(Duration::from_millis(100))
-        .map_err(|e| e.to_string())?;
-    // A history a newer OneCopy wrote, or one without its marker, is left
-    // exactly as it is: recording stays disabled for the session
-    // (store-recovery conventions).
-    match crate::formats::sqlite_marker(&conn, store_file, crate::formats::BACKUPS)? {
-        crate::formats::SqliteMarker::Newer(newer) => return Err(newer.to_string()),
-        crate::formats::SqliteMarker::Missing => return Err(crate::formats::missing_marker(store_file)),
-        crate::formats::SqliteMarker::New if !fresh => return Err(crate::formats::missing_marker(store_file)),
-        crate::formats::SqliteMarker::New | crate::formats::SqliteMarker::Current => {}
+    let mut before_setup = Some(before_setup);
+    if fresh {
+        // Publish a complete standalone database. WAL would leave schema or
+        // marker bytes in a sidecar that does not travel with the renamed file.
+        let temporary = parent.join(format!("backups-{}.tmp", crate::nanoid::generate()?));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(&temporary).map_err(|e| e.to_string())?; // data root
+        let mut temporary_owner = UnpublishedHistory { path: temporary.clone(), cleanup: true };
+        drop(file);
+        let mut conn = open_existing(&temporary)?;
+        conn.pragma_update(None, "journal_mode", "DELETE")
+            .map_err(|e| e.to_string())?;
+        before_setup.take().unwrap()(&temporary);
+        setup_schema(&mut conn, &temporary, true)?;
+        conn.close().map_err(|(_, error)| error.to_string())?;
+        std::fs::OpenOptions::new().write(true).open(&temporary) // data root
+            .and_then(|file| file.sync_all())
+            .map_err(|e| e.to_string())?;
+        if let Err(error) = crate::fs_publish::rename_no_replace(&temporary, store_file) {
+            // A timed-out rename may still own this source on its worker.
+            // Leave it alone until that operation actually settles.
+            if crate::volume_io::outcome_unknown(&error) {
+                temporary_owner.cleanup = false;
+            }
+            return Err(error.to_string());
+        }
+        temporary_owner.cleanup = false;
+        crate::fs_publish::sync_directory(parent).map_err(|e| e.to_string())?;
     }
+
+    let mut conn = open_existing(store_file)?;
+    require_marker(&conn, store_file, false)?;
+    require_schema(&conn)?;
     static JOURNAL: crate::sqlite::JournalSetup = crate::sqlite::JournalSetup::new();
     JOURNAL.configure(&conn, Duration::from_millis(100))?;
-    before_setup();
-    // The schema and its marker commit together.
+    if let Some(before_setup) = before_setup {
+        before_setup(store_file);
+        setup_schema(&mut conn, store_file, false)?;
+    }
+    Ok(conn)
+}
+
+fn open_existing(path: &Path) -> Result<Connection, String> {
+    // Never let SQLite create a canonical placeholder after an absence race.
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| e.to_string())?;
+    conn.busy_timeout(Duration::from_millis(100))
+        .map_err(|e| e.to_string())?;
+    Ok(conn)
+}
+
+fn require_marker(
+    conn: &Connection,
+    path: &Path,
+    fresh: bool,
+) -> Result<crate::formats::SqliteMarker, String> {
+    let marker = crate::formats::sqlite_marker(conn, path, crate::formats::BACKUPS)?;
+    match marker {
+        crate::formats::SqliteMarker::Newer(newer) => Err(newer.to_string()),
+        crate::formats::SqliteMarker::Missing => Err(crate::formats::missing_marker(path)),
+        crate::formats::SqliteMarker::New if !fresh => Err(crate::formats::missing_marker(path)),
+        marker => Ok(marker),
+    }
+}
+
+fn require_schema(conn: &Connection) -> Result<(), String> {
+    conn.prepare(
+        "SELECT id, path, content, content_sha256, byte_size, written_at_utc, session_id \
+         FROM backups LIMIT 0",
+    )
+    .map(|_| ())
+    .map_err(|error| format!("read the backup schema: {error}"))
+}
+
+fn setup_schema(conn: &mut Connection, path: &Path, fresh: bool) -> Result<(), String> {
+    // The schema and marker commit together; recheck after acquiring the lock.
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
-    match crate::formats::sqlite_marker(&tx, store_file, crate::formats::BACKUPS)? {
-        crate::formats::SqliteMarker::Newer(newer) => return Err(newer.to_string()),
-        crate::formats::SqliteMarker::Missing => return Err(crate::formats::missing_marker(store_file)),
-        crate::formats::SqliteMarker::New if fresh => {}
-        crate::formats::SqliteMarker::New => return Err(crate::formats::missing_marker(store_file)),
-        crate::formats::SqliteMarker::Current => {
-            // Format 1 is edited in place while OneCopy's data is not durable
-            // yet (`formats`). A history from before sessions gains the
-            // column, and its rows stay as earlier history.
-            let has_sessions = tx
-                .prepare("SELECT 1 FROM pragma_table_info('backups') WHERE name = 'session_id'")
-                .and_then(|mut statement| statement.exists([]))
-                .map_err(|e| e.to_string())?;
-            if !has_sessions {
-                tx.execute_batch("ALTER TABLE backups ADD COLUMN session_id TEXT;")
-                    .map_err(|e| e.to_string())?;
-            }
-            tx.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
-            tx.commit().map_err(|e| e.to_string())?;
-            return Ok(conn);
-        }
+    let marker = require_marker(&tx, path, fresh)?;
+    if marker == crate::formats::SqliteMarker::Current {
+        require_schema(&tx)?;
     }
     tx.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
-    tx.pragma_update(None, "user_version", crate::formats::BACKUPS)
-        .map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(conn)
+    if marker == crate::formats::SqliteMarker::New {
+        tx.pragma_update(None, "user_version", crate::formats::BACKUPS)
+            .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())
 }
 
 /// SHA-256 of the exact bytes, lowercase hex.

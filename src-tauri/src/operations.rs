@@ -2064,9 +2064,10 @@ fn execute_move_unit(
                 durable
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                let existing_hash = match crate::file_identity::open_regular_nofollow(&output.target)
+                let existing_hash = match crate::file_identity::open_regular_for_sync(&output.target)
                 {
                     Ok((mut file, _)) => {
+                        let version = crate::file_identity::FileVersion::of(&mut file);
                         let total = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
                         let hash = crate::hashing::full_hash_file_cancellable(
                             &mut file,
@@ -2081,14 +2082,37 @@ fn execute_move_unit(
                         }) {
                             return Ok(MoveUnitResult::Cancelled(outcome));
                         }
-                        Some(hash.ok())
+                        Some((hash.ok(), file, version, total))
                     }
                     Err(_) => None,
                 };
                 match existing_hash {
-                    Some(Some(hash)) if hash == output.hash => {
-                        outcome.skipped_identical = outcome.skipped_identical.saturating_add(1);
-                        true
+                    Some((Some(hash), mut file, version, total)) if hash == output.hash => {
+                        // Readable matching bytes are not durable delivery. Flush this
+                        // descriptor, not the unused stage, before any source cleanup.
+                        let synced = version.and_then(|version| {
+                            if crate::file_identity::FileVersion::of(&mut file)? != version {
+                                return Err(std::io::Error::other("destination changed while hashing"));
+                            }
+                            file.sync_all(total, None)?;
+                            version.require_path(&output.target)
+                        });
+                        let durable = match synced {
+                            Ok(()) => sync_published(conn, &output.target)?,
+                            Err(error) => {
+                                crate::index_store::upsert_issue_with_descriptor(
+                                    conn, Some(output.target.to_string_lossy().as_ref()),
+                                    COPY_ERROR, None, None, &error.to_string(),
+                                )?;
+                                false
+                            }
+                        };
+                        if durable {
+                            outcome.skipped_identical = outcome.skipped_identical.saturating_add(1);
+                        } else {
+                            outcome.undelivered.push(output.target.to_string_lossy().into_owned());
+                        }
+                        durable
                     }
                     Some(_)
                         if conflict_policy == Some(DestinationConflictPolicy::Overwrite)

@@ -1,5 +1,5 @@
 // Copy, Move and recoverable deletion on the removable-drive filesystems
-// people actually use: exFAT (no exclusive rename on macOS) and FAT32 (file
+// people actually use: exFAT and FAT32 (file
 // numbers that follow the data, so an empty file's number changes when it is
 // written or renamed). Each test builds a throwaway disk image, mounts it
 // privately, and detaches it afterwards.
@@ -118,8 +118,46 @@ fn private_leftovers(dir: &Path) -> Vec<String> {
         .collect()
 }
 
+fn supports_exclusive_publication(volume: &Path) -> bool {
+    let source = volume.join("publication-probe-source");
+    let target = volume.join("publication-probe-target");
+    std::fs::write(&source, b"probe").unwrap();
+    let supported = match onecopy_lib::fs_publish::rename_no_replace(&source, &target) {
+        Ok(()) => {
+            assert!(!source.exists());
+            assert_eq!(std::fs::read(&target).unwrap(), b"probe");
+            std::fs::remove_file(&target).unwrap();
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {
+            assert_eq!(std::fs::read(&source).unwrap(), b"probe");
+            assert!(
+                !target.exists(),
+                "unsupported publication leaves no placeholder"
+            );
+            false
+        }
+        Err(error) => panic!("publication capability probe failed: {error}"),
+    };
+    std::fs::write(&source, b"probe").unwrap();
+    std::fs::write(&target, b"winner").unwrap();
+    let error = onecopy_lib::fs_publish::rename_no_replace(&source, &target).unwrap_err();
+    if supported {
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    } else {
+        // Some filesystems report the occupied name before checking flags.
+        assert!(matches!(error.kind(), std::io::ErrorKind::Unsupported | std::io::ErrorKind::AlreadyExists));
+    }
+    assert_eq!(std::fs::read(&source).unwrap(), b"probe");
+    assert_eq!(std::fs::read(&target).unwrap(), b"winner");
+    std::fs::remove_file(&source).unwrap();
+    std::fs::remove_file(&target).unwrap();
+    supported
+}
+
 fn copy_move_and_delete_on(filesystem: &str) {
     let image = MountedImage::create(filesystem);
+    let publication_supported = supports_exclusive_publication(&image.volume);
     let home = tempfile::tempdir().unwrap();
     let local = home.path().join("local");
     let on_volume = image.volume.join("source");
@@ -136,7 +174,11 @@ fn copy_move_and_delete_on(filesystem: &str) {
         .unwrap()
         .set_times(std::fs::FileTimes::new().set_modified(dated))
         .unwrap();
-    xattr_call(&local.join("photo.jpg"), "com.example.onecopy-test", Some(b"local only"));
+    xattr_call(
+        &local.join("photo.jpg"),
+        "com.example.onecopy-test",
+        Some(b"local only"),
+    );
     // Dated 1969, which no FAT-family volume holds; FAT32 on macOS would
     // store it as 2105.
     std::fs::write(local.join("old.jpg"), vec![9u8; 1000]).unwrap();
@@ -144,9 +186,10 @@ fn copy_move_and_delete_on(filesystem: &str) {
         .write(true)
         .open(local.join("old.jpg"))
         .unwrap()
-        .set_times(std::fs::FileTimes::new().set_modified(
-            std::time::UNIX_EPOCH - std::time::Duration::from_secs(365 * 86_400),
-        ))
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_modified(std::time::UNIX_EPOCH - std::time::Duration::from_secs(365 * 86_400)),
+        )
         .unwrap();
     std::fs::write(local.join("empty.bin"), b"").unwrap();
     std::fs::write(on_volume.join("moved.jpg"), vec![3u8; 150_000]).unwrap();
@@ -156,7 +199,12 @@ fn copy_move_and_delete_on(filesystem: &str) {
     // each file. They are not this test's subject.
     for entry in std::fs::read_dir(&on_volume).unwrap() {
         let path = entry.unwrap().path();
-        if path.file_name().unwrap().to_string_lossy().starts_with("._") {
+        if path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("._")
+        {
             std::fs::remove_file(path).unwrap();
         }
     }
@@ -184,36 +232,78 @@ fn copy_move_and_delete_on(filesystem: &str) {
 
     // Copy onto the volume: a written file and an empty one.
     let copied = move_batch(
-        &conn, &app_root, &cache, &items(&conn, &local), &dest,
-        MoveOutMode::CopyKeepAll, &|| false, |_| {},
+        &conn,
+        &app_root,
+        &cache,
+        &items(&conn, &local),
+        &dest,
+        MoveOutMode::CopyKeepAll,
+        &|| false,
+        |_| {},
     )
     .unwrap();
     assert_eq!(copied.error, None, "{filesystem}");
-    assert_eq!(copied.exported, 3, "{filesystem}: {copied:?}");
-    assert_eq!(std::fs::read(dest.join("photo.jpg")).unwrap(), vec![7u8; 200_000]);
-    // The volume keeps the modified time; the attribute it cannot hold itself
-    // is dropped rather than written to a `._` file.
-    let output = dest.join("photo.jpg");
-    assert_eq!(std::fs::metadata(&output).unwrap().modified().unwrap(), dated, "{filesystem}");
-    // A time the volume cannot hold becomes the earliest it can, not the
-    // unrelated one FAT32 would wrap it to.
-    // FAT's earliest time is 1980-01-01 in local time, which lies within a
-    // day of 1980-01-01T00:00:00Z in every time zone.
-    const FAT_EPOCH_UTC_SECS: u64 = 315_532_800;
-    let old_secs = std::fs::metadata(dest.join("old.jpg"))
-        .unwrap()
-        .modified()
-        .unwrap()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    assert!(
-        (FAT_EPOCH_UTC_SECS - 86_400..=FAT_EPOCH_UTC_SECS + 2 * 86_400).contains(&old_secs),
-        "{filesystem}: {old_secs}"
+    if publication_supported {
+        assert_eq!(copied.exported, 3, "{filesystem}: {copied:?}");
+        assert_eq!(
+            std::fs::read(dest.join("photo.jpg")).unwrap(),
+            vec![7u8; 200_000]
+        );
+        // The volume keeps the modified time; the attribute it cannot hold itself
+        // is dropped rather than written to a `._` file.
+        let output = dest.join("photo.jpg");
+        assert_eq!(
+            std::fs::metadata(&output).unwrap().modified().unwrap(),
+            dated,
+            "{filesystem}"
+        );
+        // A time the volume cannot hold becomes the earliest it can, not the
+        // unrelated one FAT32 would wrap it to.
+        // FAT's earliest time is 1980-01-01 in local time, which lies within a
+        // day of 1980-01-01T00:00:00Z in every time zone.
+        const FAT_EPOCH_UTC_SECS: u64 = 315_532_800;
+        let old_secs = std::fs::metadata(dest.join("old.jpg"))
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(
+            (FAT_EPOCH_UTC_SECS - 86_400..=FAT_EPOCH_UTC_SECS + 2 * 86_400).contains(&old_secs),
+            "{filesystem}: {old_secs}"
+        );
+        assert_eq!(
+            xattr_call(&output, "com.example.onecopy-test", None),
+            None,
+            "{filesystem}"
+        );
+        assert_eq!(std::fs::read(dest.join("empty.bin")).unwrap(), b"");
+    } else {
+        assert_eq!(copied.exported, 0, "{filesystem}: {copied:?}");
+        assert_eq!(copied.undelivered.len(), 3, "{filesystem}: {copied:?}");
+        assert!(copied.unknown.is_empty(), "{filesystem}: {copied:?}");
+        for name in ["photo.jpg", "old.jpg", "empty.bin"] {
+            assert!(
+                !dest.join(name).exists(),
+                "{filesystem}: no placeholder for {name}"
+            );
+        }
+    }
+    assert_eq!(
+        std::fs::read(local.join("photo.jpg")).unwrap(),
+        vec![7u8; 200_000]
     );
-    assert_eq!(xattr_call(&output, "com.example.onecopy-test", None), None, "{filesystem}");
-    assert_eq!(std::fs::read(dest.join("empty.bin")).unwrap(), b"");
-    assert!(private_leftovers(&dest).is_empty(), "{filesystem}: {:?}", private_leftovers(&dest));
+    assert_eq!(
+        std::fs::read(local.join("old.jpg")).unwrap(),
+        vec![9u8; 1000]
+    );
+    assert_eq!(std::fs::read(local.join("empty.bin")).unwrap(), b"");
+    assert!(
+        private_leftovers(&dest).is_empty(),
+        "{filesystem}: {:?}",
+        private_leftovers(&dest)
+    );
 
     // Move within the volume: publish there and keep the source recoverable.
     let moved_hash: String = conn
@@ -223,44 +313,109 @@ fn copy_move_and_delete_on(filesystem: &str) {
             |row| row.get(0),
         )
         .unwrap();
-    let moved = vec![ItemIdentity { hash: Some(moved_hash), path_id: None }];
+    let moved = vec![ItemIdentity {
+        hash: Some(moved_hash),
+        path_id: None,
+    }];
     let outcome = move_batch(
-        &conn, &app_root, &cache, &moved, &dest,
-        MoveOutMode::MoveTrashRest, &|| false, |_| {},
+        &conn,
+        &app_root,
+        &cache,
+        &moved,
+        &dest,
+        MoveOutMode::MoveTrashRest,
+        &|| false,
+        |_| {},
     )
     .unwrap();
     assert_eq!(outcome.error, None, "{filesystem}");
-    assert_eq!(outcome.exported, 1, "{filesystem}: {outcome:?}");
-    assert_eq!(outcome.post_action.deleted_files, 1, "{filesystem}: {outcome:?}");
-    assert!(!on_volume.join("moved.jpg").exists());
-    assert!(dest.join("moved.jpg").exists());
+    if publication_supported {
+        assert_eq!(outcome.exported, 1, "{filesystem}: {outcome:?}");
+        assert_eq!(
+            outcome.post_action.deleted_files, 1,
+            "{filesystem}: {outcome:?}"
+        );
+        assert!(!on_volume.join("moved.jpg").exists());
+        assert!(dest.join("moved.jpg").exists());
+    } else {
+        assert_eq!(outcome.exported, 0, "{filesystem}: {outcome:?}");
+        assert_eq!(outcome.undelivered.len(), 1, "{filesystem}: {outcome:?}");
+        assert!(outcome.unknown.is_empty(), "{filesystem}: {outcome:?}");
+        assert_eq!(
+            outcome.post_action.deleted_files, 0,
+            "{filesystem}: {outcome:?}"
+        );
+        assert_eq!(
+            std::fs::read(on_volume.join("moved.jpg")).unwrap(),
+            vec![3u8; 150_000]
+        );
+        assert!(
+            !dest.join("moved.jpg").exists(),
+            "{filesystem}: no public placeholder"
+        );
+        assert!(
+            private_leftovers(&dest).is_empty(),
+            "{filesystem}: {:?}",
+            private_leftovers(&dest)
+        );
+    }
 
     // Recoverable deletion from a source on the volume.
     let deleted = delete_batch(
-        &conn, &app_root, &cache, &items(&conn, &on_volume), DeleteMode::Trash,
-        &|| false, |_| {},
+        &conn,
+        &app_root,
+        &cache,
+        &items(&conn, &on_volume),
+        DeleteMode::Trash,
+        &|| false,
+        |_| {},
     )
     .unwrap();
     assert_eq!(deleted.error, None, "{filesystem}");
-    assert_eq!((deleted.deleted_files, deleted.failed_files), (1, 0), "{filesystem}");
+    if publication_supported {
+        assert_eq!(
+            (deleted.deleted_files, deleted.failed_files),
+            (1, 0),
+            "{filesystem}"
+        );
+    } else {
+        assert_eq!(
+            (deleted.deleted_files, deleted.failed_files),
+            (0, 2),
+            "{filesystem}"
+        );
+        assert_eq!(deleted.unknown_files, 0, "{filesystem}");
+        assert_eq!(
+            std::fs::read(on_volume.join("moved.jpg")).unwrap(),
+            vec![3u8; 150_000]
+        );
+        assert_eq!(
+            std::fs::read(on_volume.join("deleted.jpg")).unwrap(),
+            vec![5u8; 120_000]
+        );
+    }
     let trash = on_volume.join(onecopy_lib::trash::TRASH_DIR_NAME);
     let stored = walkdir::WalkDir::new(&trash)
         .into_iter()
         .filter_map(Result::ok)
         .filter(|entry| entry.file_name() == "deleted.jpg" || entry.file_name() == "moved.jpg")
         .count();
-    assert_eq!(stored, 2, "{filesystem}: both sources are in Deleted files");
+    assert_eq!(
+        stored,
+        if publication_supported { 2 } else { 0 },
+        "{filesystem}: {stored}"
+    );
 }
 
 #[test]
 #[ignore = "heavy: creates and mounts disk images with hdiutil; run by npm run test:full"]
-fn copy_move_and_recoverable_deletion_work_on_exfat() {
+fn copy_move_and_recoverable_deletion_respect_exfat_publication_capability() {
     copy_move_and_delete_on("ExFAT");
 }
 
 #[test]
 #[ignore = "heavy: creates and mounts disk images with hdiutil; run by npm run test:full"]
-fn copy_move_and_recoverable_deletion_work_on_fat32() {
+fn copy_move_and_recoverable_deletion_respect_fat32_publication_capability() {
     copy_move_and_delete_on("MS-DOS FAT32");
 }
 

@@ -5,9 +5,9 @@
 //! `MOVEFILE_REPLACE_EXISTING`. Both move the exact staged file into the final
 //! directory entry in one atomic commit, so a crash cannot expose partial bytes
 //! and an existing public-destination winner is untouched. macOS volumes that
-//! refuse `RENAME_EXCL` (exFAT) reserve the final name with an exclusive empty
-//! placeholder and replace only that placeholder. Private rebuildable
-//! cache entries also use an explicit atomic replacement path.
+//! refuse `RENAME_EXCL` reject publication without changing either path.
+//! Private rebuildable cache entries also use an explicit atomic replacement
+//! path.
 //!
 //! Publication and directory flushes on user volumes are bounded calls
 //! (`volume_io`); the `*_raw` functions run on its worker.
@@ -26,7 +26,8 @@ pub fn sync_directory(path: &Path) -> io::Result<()> {
 
 /// Moves `source` to `target` in one atomic step that never replaces an
 /// existing `target`, as one bounded call. A call given up on has an unknown
-/// outcome (`volume_io::outcome_unknown`).
+/// outcome (`volume_io::outcome_unknown`). Volumes without an atomic
+/// no-replace rename return `Unsupported` without publishing the file.
 pub fn rename_no_replace(source: &Path, target: &Path) -> io::Result<()> {
     rename_no_replace_checked(source, target, None)
 }
@@ -64,15 +65,14 @@ fn rename_no_replace_raw(
     source_version: Option<crate::file_identity::FileVersion>,
 ) -> io::Result<()> {
     if exclusive_unsupported {
-        return publish_without_exclusive_rename_raw(source, target, source_version);
+        return Err(exclusive_rename_unsupported());
     }
     require_source_version(source, source_version)?;
     match rename_exclusive(source, target) {
-        // exFAT (and other volumes macOS mounts without RENAME_EXCL) refuse
-        // the exclusive rename outright rather than failing on an occupied
-        // target, so they publish through an exclusive placeholder instead.
+        // A replacing rename cannot safely emulate this operation: reserving
+        // the name first would expose a placeholder and race another writer.
         Err(error) if error.raw_os_error() == Some(libc::ENOTSUP) => {
-            publish_without_exclusive_rename_raw(source, target, source_version)
+            Err(exclusive_rename_unsupported())
         }
         result => result,
     }
@@ -98,43 +98,12 @@ fn rename_exclusive(source: &Path, target: &Path) -> io::Result<()> {
     }
 }
 
-/// No-clobber publication for a volume without an exclusive rename. The final
-/// name is reserved by creating it exclusively, so an occupied target answers
-/// `AlreadyExists` exactly as the exclusive rename would, and the ordinary
-/// rename then replaces only that app-created empty placeholder. The rename
-/// itself is still atomic: the name holds either the empty placeholder or the
-/// complete file, never partial bytes. A placeholder that is no longer ours at
-/// the moment of replacement is left alone.
 #[cfg(target_os = "macos")]
-fn publish_without_exclusive_rename_raw(
-    source: &Path,
-    target: &Path,
-    source_version: Option<crate::file_identity::FileVersion>,
-) -> io::Result<()> {
-    std::fs::symlink_metadata(source)?; // volume_io worker
-    let placeholder = std::fs::OpenOptions::new() // volume_io worker
-        .write(true)
-        .create_new(true)
-        .open(target)?;
-    if !crate::file_identity::path_names_file(target, &placeholder) {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("the reserved name was replaced: {}", target.display()),
-        ));
-    }
-    // The fallback's reservation may itself wait on the filesystem. Check
-    // after it, immediately before replacing our placeholder.
-    let moved = require_source_version(source, source_version)
-        .and_then(|()| std::fs::rename(source, target)); // volume_io worker
-    match moved {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            if crate::file_identity::path_names_file(target, &placeholder) {
-                crate::fs_recovery::remove_file(target, "publication placeholder cleanup");
-            }
-            Err(error)
-        }
-    }
+fn exclusive_rename_unsupported() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        "the filesystem does not support atomic no-replace publication",
+    )
 }
 
 #[cfg(all(test, target_os = "macos"))]

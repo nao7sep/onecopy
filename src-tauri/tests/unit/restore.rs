@@ -1,12 +1,10 @@
 use super::*;
 
-// exFAT on macOS has no exclusive rename: the restore reserves the original
-// name with an empty placeholder and replaces only that, so an interruption
-// can leave an empty file there, never partial bytes, and an occupied name
-// is still never replaced.
+// A volume without exclusive rename refuses restore while keeping the
+// recoverable file and any competing destination intact.
 #[cfg(target_os = "macos")]
 #[test]
-fn restore_works_on_a_volume_without_exclusive_rename() {
+fn restore_preserves_recoverable_files_without_exclusive_rename() {
     use crate::fs_publish::seam::without_exclusive_rename;
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("root");
@@ -22,21 +20,34 @@ fn restore_works_on_a_volume_without_exclusive_rename() {
     .unwrap();
     let listing = trash::list_root(&root, dir.path()).unwrap();
     let entry = listing.entries[0].clone();
+    let stored = std::fs::File::open(&record.stored_path).unwrap();
 
     std::fs::write(&file, b"occupied").unwrap();
     let occupied = without_exclusive_rename(|| {
         restore_one(&root, &entry, &file, &crate::file_identity::volume_of)
     });
-    assert!(matches!(occupied, Err(StepFailure::File(NOTICE_OCCUPIED, _))));
+    assert!(matches!(occupied, Err(StepFailure::File(NOTICE_FAILED, _))));
     assert_eq!(std::fs::read(&file).unwrap(), b"occupied");
+    assert_eq!(std::fs::read(&record.stored_path).unwrap(), b"bytes");
 
     std::fs::remove_file(&file).unwrap();
-    let restored = without_exclusive_rename(|| {
+    let refused = without_exclusive_rename(|| {
         restore_one(&root, &entry, &file, &crate::file_identity::volume_of)
     });
-    assert!(restored.is_ok());
-    assert_eq!(std::fs::read(&file).unwrap(), b"bytes");
-    assert!(!Path::new(&record.stored_path).exists());
+    assert!(matches!(refused, Err(StepFailure::File(NOTICE_FAILED, _))));
+    assert!(
+        !file.exists(),
+        "refusal must not expose an empty placeholder"
+    );
+    assert_eq!(std::fs::read(&record.stored_path).unwrap(), b"bytes");
+    assert!(crate::file_identity::path_names_file(
+        Path::new(&record.stored_path),
+        &stored
+    ));
+    assert_eq!(
+        trash::list_root(&root, dir.path()).unwrap().entries.len(),
+        1
+    );
 }
 
 // A read-only or full drive, or a root that went away, stops the
