@@ -288,6 +288,7 @@ body.row-resizing * {
 /* Active-descendant composites keep DOM focus on the item area. Paint the
    anchor's keyboard focus inside its own bounds so virtualization, adjacent
    rows, and overflow clipping cannot hide it. */
+#main-item-area:focus-visible [data-item-anchor="true"].item-selection-surface,
 #main-item-area:focus-visible [data-item-anchor="true"] .item-selection-surface {
   outline: 2px solid var(--focus-ring);
   outline-offset: -3px;

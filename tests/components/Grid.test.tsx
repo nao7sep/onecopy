@@ -5,6 +5,7 @@
 // a navigation annoyance — it is the wrong photo selected for a destructive
 // action.
 
+import { readFileSync } from "node:fs";
 import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import { render, cleanup, act, fireEvent } from "@testing-library/react";
@@ -501,4 +502,29 @@ describe("focus ownership", () => {
     outside.remove();
   });
 
+});
+
+it.each(["tiles", "list"] as const)("paints the anchored %s selection surface while the item area owns keyboard focus", async (layout) => {
+  const css = readFileSync("src/App.css", "utf8");
+  const rule = css.match(/#main-item-area:focus-visible[^{}]+\{[^}]+\}/)![0];
+  const style = document.createElement("style");
+  style.textContent = `:root { --focus-ring: rgb(0, 0, 0); } ${rule}`;
+  document.head.appendChild(style);
+  try {
+    const { view, container } = renderGrid(ITEMS, false, layout);
+    await anchor("h2");
+    const anchorElement = view.container.querySelector<HTMLElement>('[data-item-anchor="true"]')!;
+    const surface = anchorElement.matches(".item-selection-surface")
+      ? anchorElement : anchorElement.querySelector<HTMLElement>(".item-selection-surface")!;
+    act(() => container.focus());
+    expect(container.matches(":focus-visible")).toBe(true);
+    expect(surface.matches(rule.slice(0, rule.indexOf("{")))).toBe(true);
+    expect(getComputedStyle(surface).outlineWidth).toBe("2px");
+    expect(getComputedStyle(surface).outlineOffset).toBe("-3px");
+    act(() => container.blur());
+    expect(surface.matches(rule.slice(0, rule.indexOf("{")))).toBe(false);
+    expect(useItemsStore.getState().selectedKeys.has("h2")).toBe(true);
+  } finally {
+    style.remove();
+  }
 });
