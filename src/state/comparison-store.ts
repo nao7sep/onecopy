@@ -25,6 +25,7 @@ import {
 import { focusWhileActive, log, reportWindowCall, toErrorFields } from "../repositories";
 import { monitorKey, orderMonitors, priorityFromConfig } from "../utils/screens";
 import { requestSeq } from "./request-seq";
+import { viewModeAdmission, type ViewAdmission } from "./view-mode-admission";
 import { message, type Message } from "../i18n/translate";
 import { documentTranslator } from "../i18n/I18nContext";
 import { recordInterfaceFailure } from "../utils/failureSurface";
@@ -32,7 +33,7 @@ import { recordInterfaceFailure } from "../utils/failureSurface";
 import type { SectionItem } from "../models/items";
 
 export type GroupMember = ComparisonMember;
-export type ComparisonOpenResult = "opened" | "unavailable" | "failed";
+export type ComparisonOpenResult = "opened" | "unavailable" | "failed" | "blocked";
 
 export function slotIndexForKey(
   event: Parameters<typeof directKeyIndex>[0],
@@ -97,6 +98,7 @@ interface ComparisonState extends ComparisonDecisionDraft {
     maximumImages?: number,
     config?: Record<string, unknown>,
     onOpened?: (sessionId: number) => void,
+    admission?: ViewAdmission,
   ) => Promise<ComparisonOpenResult>;
   selectSlot: (slotIndex: number, mode: ComparisonCardInteraction) => void;
   setDisplayAspect: (slice: number, aspect: number) => void;
@@ -360,20 +362,28 @@ function setSpreadFullscreen(label: string, enable: boolean): Promise<void> {
  * raised over the Dock and menu bar while OneCopy is active. Comparison must
  * be fair: an image must not look smaller on one display because the Dock or
  * menu bar takes space there. */
-async function showSpread(monitors: MonitorList): Promise<void> {
+async function showSpread(monitors: MonitorList, ownsAdmission: () => boolean = () => true): Promise<void> {
+  const sessionId = useComparisonStore.getState().sessionId;
+  const current = () => ownsAdmission() && useComparisonStore.getState().open &&
+    useComparisonStore.getState().sessionId === sessionId;
   for (let index = 0; index < monitors.length; index += 1) {
+    if (!current()) return;
     const label = `comparison-${index + 1}`;
     const monitor = monitors[index];
     try {
       const existing = await WebviewWindow.getByLabel(label);
+      if (!current()) return;
       if (existing !== null) {
         await existing.setPosition(
           new PhysicalPosition(monitor.position.x, monitor.position.y),
         );
+        if (!current()) return;
         await existing.setSize(
           new PhysicalSize(monitor.size.width, monitor.size.height),
         );
+        if (!current()) return;
         await existing.show();
+        if (!current()) return;
         await setSpreadFullscreen(label, true).catch(
           reportWindowCall("comparison display fullscreen"),
         );
@@ -406,12 +416,15 @@ async function showSpread(monitors: MonitorList): Promise<void> {
               .catch(reportWindowCall("unused comparison destroy"));
             return;
           }
+          if (!current()) return;
           try {
             await created.show();
+            if (!current()) return;
             await setSpreadFullscreen(label, true).catch(
               reportWindowCall("comparison display fullscreen"),
             );
           } catch (error) {
+            if (!current()) return;
             log.warn("comparison display became unavailable", {
               label,
               ...toErrorFields(error),
@@ -420,10 +433,12 @@ async function showSpread(monitors: MonitorList): Promise<void> {
             void recoverDisplays(index + 1);
             return;
           }
+          if (!current()) return;
           await focusWhileActive("main").catch(reportWindowCall("main focus"));
         });
       });
       void created.once("tauri://error", (event) => {
+        if (!current()) return;
         log.warn("comparison window creation failed", {
           label,
           error: { message: String(event.payload) },
@@ -432,6 +447,7 @@ async function showSpread(monitors: MonitorList): Promise<void> {
         recoverDisplays(index + 1);
       });
     } catch (error) {
+      if (!current()) return;
       log.warn("comparison display became unavailable", {
         label,
         ...toErrorFields(error),
@@ -483,12 +499,12 @@ function queueComparisonLifecycle(action: () => Promise<void>): Promise<void> {
 /** Comparison covers every display it uses, so a preview window following
  * the same anchor could only sit behind it; it is hidden for the session and
  * shown again afterwards (`restorePreviewAfterComparison`). */
-async function hidePreviewWindowForComparison(): Promise<void> {
+async function hidePreviewWindowForComparison(current: () => boolean): Promise<void> {
   const preview = await WebviewWindow.getByLabel("preview").catch((error) => {
     reportWindowCall("preview lookup")(error);
     return null;
   });
-  if (preview !== null) {
+  if (preview !== null && current()) {
     await preview.hide().catch(reportWindowCall("preview hide"));
   }
 }
@@ -497,11 +513,16 @@ function synchronizeSpread(previousSpreadCount: number): void {
   const state = useComparisonStore.getState();
   if (!state.open) return;
   const needed = state.spreadCount;
+  const current = () => useComparisonStore.getState().open &&
+    useComparisonStore.getState().sessionId === state.sessionId;
   void queueComparisonLifecycle(async () => {
-    await showSpread(sessionOtherMonitors.slice(0, needed));
+    if (!current()) return;
+    await showSpread(sessionOtherMonitors.slice(0, needed), current);
+    if (!current()) return;
     if (previousSpreadCount > needed) {
       await hideSpread(needed + 1, previousSpreadCount);
     }
+    if (!current()) return;
     await focusWhileActive("main").catch(reportWindowCall("main focus"));
   });
 }
@@ -528,9 +549,14 @@ function recoverDisplays(failedSpreadIndex: number): Promise<void> {
     message: message("comparison.displayLostRearranged"),
   });
   const needed = useComparisonStore.getState().spreadCount;
+  const current = () => useComparisonStore.getState().open &&
+    useComparisonStore.getState().sessionId === state.sessionId;
   return queueComparisonLifecycle(async () => {
+    if (!current()) return;
     await closeSpread(1, previousSpreadCount);
-    await showSpread(sessionOtherMonitors.slice(0, needed));
+    if (!current()) return;
+    await showSpread(sessionOtherMonitors.slice(0, needed), current);
+    if (!current()) return;
     await focusWhileActive("main").catch(reportWindowCall("main focus"));
   });
 }
@@ -542,11 +568,22 @@ export function recoverComparisonDisplay(
 }
 
 export function closeComparisonAfterMainRendererFailure(): void {
+  void retireComparison();
+}
+
+function retireComparison(preservePreparation = false): Promise<void> {
   const state = useComparisonStore.getState();
-  if (!state.open) return;
-  const spreadCount = state.spreadCount;
+  if (!preservePreparation) groupLoad.begin();
+  if (!state.open && !viewModeAdmission.owns("comparison")) return Promise.resolve();
+  const retired = viewModeAdmission.retire("comparison", preservePreparation);
   useComparisonStore.setState(closedComparisonState());
-  void queueComparisonLifecycle(() => teardownComparison(spreadCount));
+  return queueComparisonLifecycle(async () => {
+    try {
+      if (useComparisonStore.getState().sessionId === state.sessionId) {
+        await teardownComparison(state.spreadCount);
+      }
+    } finally { retired(); }
+  });
 }
 
 async function teardownComparison(spreadCount: number): Promise<void> {
@@ -589,8 +626,12 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
     maximumImages = 16,
     config = {},
     onOpened,
+    reserved,
   ) => {
-    const fresh = groupLoad.begin();
+    const admission = reserved ?? viewModeAdmission.begin("comparison");
+    if (admission === null || !admission.current()) return "blocked";
+    const freshRead = groupLoad.begin();
+    const fresh = () => freshRead() && admission.current();
     let openedSessionId: number | null = null;
     try {
       const [members, displays] = await Promise.all([
@@ -637,7 +678,7 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
         initialPage,
       );
       await queueComparisonLifecycle(async () => {
-        if (!fresh()) return;
+        if (!fresh() || !admission.commit()) return;
         const sessionId = get().sessionId + 1;
         sessionOtherMonitors = displays.others;
         set({
@@ -657,9 +698,12 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
         // Tell the caller which session it admitted before window effects
         // wait; a later unavailable attempt must not revoke this live owner.
         onOpened?.(sessionId);
-        await hidePreviewWindowForComparison();
+        await hidePreviewWindowForComparison(admission.current);
+        if (!admission.current()) return;
         await setComparisonFullscreen(true);
-        await showSpread(sessionOtherMonitors.slice(0, get().spreadCount));
+        if (!admission.current()) return;
+        await showSpread(sessionOtherMonitors.slice(0, get().spreadCount), admission.current);
+        if (!admission.current()) return;
         await focusWhileActive("main").catch(reportWindowCall("main focus"));
       });
       return "opened";
@@ -669,16 +713,13 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
       // attempt cannot suppress this still-current session's window failure.
       if (openedSessionId === null ? !fresh() :
         state.sessionId !== openedSessionId || !state.open) return "opened";
-      if (state.open) {
-        const spreadCount = state.spreadCount;
-        set(closedComparisonState());
-        await queueComparisonLifecycle(() => get().sessionId === state.sessionId
-          ? teardownComparison(spreadCount) : Promise.resolve());
-      }
+      if (state.open) await retireComparison(true);
       if (openedSessionId !== null && get().sessionId !== openedSessionId) return "failed";
       log.error("comparison open failed", toErrorFields(error));
       recordInterfaceFailure(message("comparison.openFailed"), error);
       return "failed";
+    } finally {
+      admission.abandon();
     }
   },
 
@@ -885,9 +926,7 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
     if (members.length < 2) {
       // Fewer than two images left to compare: close without applying any
       // decision; the marks were a draft, never a request.
-      const spreadCount = state.spreadCount;
-      set(closedComparisonState());
-      await queueComparisonLifecycle(() => teardownComparison(spreadCount));
+      await retireComparison();
       return false;
     }
     set({ ...viewPatch(state, members), message: null });
@@ -897,10 +936,8 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
 
   close: async () => {
     const state = get();
-    if (!state.open || state.busy) return;
-    const spreadCount = state.spreadCount;
-    set(closedComparisonState());
-    await queueComparisonLifecycle(() => teardownComparison(spreadCount));
+    if (state.busy) return;
+    await retireComparison();
   },
 }));
 
@@ -1051,9 +1088,7 @@ async function finishAction(
   members: GroupMember[],
 ): Promise<ComparisonCommitResult> {
   if (members.length < 2) {
-    const spreadCount = get().spreadCount;
-    set(closedComparisonState());
-    await queueComparisonLifecycle(() => teardownComparison(spreadCount));
+    await retireComparison();
     return { kind: "completed" };
   }
   const current = get();

@@ -18,7 +18,8 @@ interface Display {
   scaleFactor: number;
 }
 
-let desired = false;
+let desired: number | null = null;
+let revision = 0;
 let lifecycle: Promise<void> = Promise.resolve();
 
 function queue(action: () => Promise<void>): Promise<void> {
@@ -38,11 +39,15 @@ async function resolveMonitor(): Promise<Display | null> {
 }
 
 /** Placed on the display first, so fullscreen takes that display's frame. */
-async function activate(window: WebviewWindow, monitor: Display): Promise<void> {
+async function activate(window: WebviewWindow, monitor: Display, current: () => boolean): Promise<void> {
   await window.setPosition(new PhysicalPosition(monitor.position.x, monitor.position.y));
+  if (!current()) return;
   await window.setSize(new PhysicalSize(monitor.size.width, monitor.size.height));
+  if (!current()) return;
   await window.show();
+  if (!current()) return;
   await setFullscreen(true);
+  if (!current()) return;
   await focusWhileActive(WINDOW_LABEL);
 }
 
@@ -67,23 +72,29 @@ async function createWindow(monitor: Display): Promise<WebviewWindow> {
   return window;
 }
 
-async function enter(): Promise<void> {
+async function enter(request: number): Promise<void> {
+  const current = () => desired === request;
+  if (!current()) return;
   const monitor = await resolveMonitor();
+  if (!current()) return;
   if (monitor === null) throw new Error("No display is available for fullscreen view.");
-  const window = (await WebviewWindow.getByLabel(WINDOW_LABEL)) ?? (await createWindow(monitor));
-  if (!desired) return;
-  await activate(window, monitor);
+  const existing = await WebviewWindow.getByLabel(WINDOW_LABEL);
+  if (!current()) return;
+  const window = existing ?? (await createWindow(monitor));
+  if (!current()) return;
+  await activate(window, monitor, current);
 }
 
 /** Shows the one reusable fullscreen window on Main's display. */
 export function showFullscreenViewWindow(): Promise<void> {
-  desired = true;
-  return queue(enter);
+  const request = ++revision;
+  desired = request;
+  return queue(() => enter(request));
 }
 
 /** Leaves fullscreen before hiding, so the hidden window is never raised. */
 export function hideFullscreenViewWindow(): Promise<void> {
-  desired = false;
+  desired = null;
   return queue(async () => {
     const window = await WebviewWindow.getByLabel(WINDOW_LABEL).catch((error) => {
       reportWindowCall("fullscreen view window lookup")(error);

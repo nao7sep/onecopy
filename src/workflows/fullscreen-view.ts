@@ -28,6 +28,7 @@ import { createEventInstaller } from "../utils/eventInstallation";
 import { useComparisonStore } from "../state/comparison-store";
 import { message, type Message } from "../i18n/translate";
 import { confirmsTrashDelete } from "../models/config";
+import { viewModeAdmission } from "../state/view-mode-admission";
 
 export interface FullscreenViewBroadcast {
   token: string | null;
@@ -334,7 +335,10 @@ export function openFullscreenView(): boolean {
     feedback.finish({ tone: "normal", text: message("fullscreenView.selectionGone") });
     return false;
   }
+  const admission = viewModeAdmission.begin("fullscreen");
+  if (admission === null) { feedback.finish(); return false; }
   const request = ++viewerOpenRequest;
+  const current = () => request === viewerOpenRequest && admission.current();
   const owner = "fullscreen";
   const operationId = newActivityOperationId(owner);
   recordActivity({
@@ -364,8 +368,9 @@ export function openFullscreenView(): boolean {
   // Keep starts and token cleanup ordered through settlement: an older build
   // must never replace a newer sequence before its stale response is dropped.
   enqueueViewerSequence(async () => {
-    if (request !== viewerOpenRequest) {
+    if (!current()) {
       recordStale();
+      admission.abandon();
       return;
     }
     try {
@@ -376,13 +381,14 @@ export function openFullscreenView(): boolean {
         selected,
         anchor,
       });
-      if (request !== viewerOpenRequest) {
+      if (!current()) {
         recordStale();
         await invoke("viewer_sequence_close", { token: snapshot.token }).catch((error) =>
           log.warn("stale viewer sequence cleanup failed", toErrorFields(error)),
         );
         return;
       }
+      if (!admission.commit()) return;
       useFullscreenViewStore.getState().start(snapshot, {
         projection: { section, sort: entrySort, revision: items.reconciliationId },
         selectedKeys: [...items.selectedKeys], frozenPositionsValid: true,
@@ -397,7 +403,7 @@ export function openFullscreenView(): boolean {
       });
       showWindow(snapshot.token, feedback);
     } catch (error) {
-      if (request !== viewerOpenRequest) return;
+      if (!current()) return;
       log.error("viewer sequence start failed", toErrorFields(error));
       const failure = message("fullscreenView.openFailed");
       feedback.finish({ tone: "danger", text: failure });
@@ -410,6 +416,8 @@ export function openFullscreenView(): boolean {
         current: "failed",
         reason: "error",
       });
+    } finally {
+      admission.abandon();
     }
   });
   return true;
@@ -490,6 +498,8 @@ export function moveFullscreenView(move: ViewerMove): void {
 }
 
 export async function closeFullscreenView({ restoreFocus = true } = {}): Promise<void> {
+  const owned = viewModeAdmission.owns("fullscreen");
+  const retired = viewModeAdmission.retire("fullscreen");
   const request = ++viewerOpenRequest;
   const session = useFullscreenViewStore.getState().session;
   if (session !== null) {
@@ -505,7 +515,7 @@ export async function closeFullscreenView({ restoreFocus = true } = {}): Promise
   // Admit physical retirement now, before a later open can enqueue its show.
   // Native cleanup has its own queue owner and cannot delay window ordering
   // or Main's independently admitted reconciliation.
-  const retirement = session === null ? Promise.resolve() : hideFullscreenViewWindow();
+  const retirement = session === null && !owned ? Promise.resolve() : hideFullscreenViewWindow();
   if (session !== null) {
     enqueueViewerSequence(async () => {
       await invoke("viewer_sequence_close", { token: session.token }).catch((error) =>
@@ -513,8 +523,8 @@ export async function closeFullscreenView({ restoreFocus = true } = {}): Promise
       );
     });
   }
-  await retirement;
-  if (request !== viewerOpenRequest) return;
+  try { await retirement; } finally { retired(); }
+  if (request !== viewerOpenRequest || viewModeAdmission.owns("comparison")) return;
   // Library updates and mutations own Main reconciliation. Closing the view
   // must not replace an already-admitted Main navigation with a second load.
   if (restoreFocus) await restoreMainFocus(request);

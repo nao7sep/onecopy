@@ -21,6 +21,7 @@ import {
 } from "../state/comparison-store";
 import { useIssuesStore } from "../state/issues-store";
 import { useItemsStore } from "../state/items-store";
+import { viewModeAdmission, type ViewAdmission } from "../state/view-mode-admission";
 import { beginMainFeedback } from "../state/main-feedback-store";
 import { message } from "../i18n/translate";
 import { recordActionFailure } from "../state/notifications-store";
@@ -83,7 +84,8 @@ async function applyResult(
   sessionId: number,
 ): Promise<void> {
   if (result === null) return;
-  const current = () => useComparisonStore.getState().sessionId === sessionId;
+  const current = () => useComparisonStore.getState().sessionId === sessionId &&
+    !viewModeAdmission.owns("fullscreen");
   // The durable result refreshes the library even if its session was replaced.
   await Promise.all([refreshLibrary(), useIssuesStore.getState().load()]);
   if (!current()) return;
@@ -108,6 +110,7 @@ async function applyResult(
 export async function openComparison(
   hash: string,
   entryAnchor: string | null = hash,
+  admission?: ViewAdmission,
 ): Promise<ComparisonOpenResult> {
   const fresh = comparisonOpening.begin();
   let openedSessionId: number | null = null;
@@ -119,12 +122,14 @@ export async function openComparison(
       maximumImages(),
       appConfig(),
       (sessionId) => { openedSessionId = sessionId; },
+      admission,
     );
   if (openedSessionId === null && (!fresh() || result === "opened")) return result;
   const sessionId = openedSessionId ?? useComparisonStore.getState().sessionId;
   // A rejected later open attempt does not retire this admitted session.
   // Only an actual replacement (or closing, for preparation) does.
-  const current = () => useComparisonStore.getState().sessionId === sessionId;
+  const current = () => useComparisonStore.getState().sessionId === sessionId &&
+    !viewModeAdmission.owns("fullscreen");
   if (result === "opened") {
     const ownsOpenSession = () => current() && useComparisonStore.getState().open;
     if (!ownsOpenSession()) return result;
@@ -180,26 +185,61 @@ export async function requestComparisonFromMain(): Promise<void> {
     feedback.finish({ tone: "normal", text: message("comparison.needsOneGroup") });
     return;
   }
-  const operationId = newActivityOperationId("comparison");
-  recordActivity({
-    kind: "started",
-    owner: "comparison",
-    operationId,
-    causeId: latestActivityOperationId("selection"),
-    current: "running",
-    reason: "user",
-    lane: "image",
-    itemCount: selectedKeys.size,
-  });
+  const admission = viewModeAdmission.begin("comparison");
+  if (admission === null) { feedback.finish(); return; }
   try {
-    const valid = await invoke<boolean>("comparison_selection_valid", { hashes: [...selectedKeys] });
-    if (!feedback.current()) {
-      recordActivity({ kind: "stale", owner: "comparison", operationId,
-        previous: "running", current: "stale", reason: "superseded" });
+    const operationId = newActivityOperationId("comparison");
+    recordActivity({
+      kind: "started",
+      owner: "comparison",
+      operationId,
+      causeId: latestActivityOperationId("selection"),
+      current: "running",
+      reason: "user",
+      lane: "image",
+      itemCount: selectedKeys.size,
+    });
+    try {
+      const valid = await invoke<boolean>("comparison_selection_valid", { hashes: [...selectedKeys] });
+      if (!feedback.current() || !admission.current()) {
+        recordActivity({ kind: "stale", owner: "comparison", operationId,
+          previous: "running", current: "stale", reason: "superseded" });
+        return;
+      }
+      if (!valid) {
+        feedback.finish({ tone: "normal", text: message("comparison.needsOneGroup") });
+        recordActivity({
+          kind: "completed",
+          owner: "comparison",
+          operationId,
+          previous: "running",
+          current: "idle",
+          reason: "dependency",
+        });
+        return;
+      }
+    } catch (error) {
+      log.error("comparison admission failed", toErrorFields(error));
+      const failure = message("comparison.admissionFailed");
+      feedback.finish({ tone: "danger", text: failure });
+      recordActionFailure("comparison-admission-failed", failure, error);
+      recordActivity({
+        kind: "failed",
+        owner: "comparison",
+        operationId,
+        previous: "running",
+        current: "failed",
+        reason: "error",
+      });
       return;
     }
-    if (!valid) {
-      feedback.finish({ tone: "normal", text: message("comparison.needsOneGroup") });
+    const result = await openComparison(hash, selectedItem, admission);
+    if (result === "blocked") {
+      feedback.finish();
+      recordActivity({ kind: "stale", owner: "comparison", operationId,
+        previous: "running", current: "stale", reason: "superseded" });
+    } else if (result === "unavailable") {
+      feedback.finish({ tone: "normal", text: message("comparison.nothingLeft") });
       recordActivity({
         kind: "completed",
         owner: "comparison",
@@ -208,55 +248,28 @@ export async function requestComparisonFromMain(): Promise<void> {
         current: "idle",
         reason: "dependency",
       });
-      return;
+    } else if (result === "failed") {
+      feedback.finish({ tone: "danger", text: message("comparison.openFailedSeeIssues") });
+      recordActivity({
+        kind: "failed",
+        owner: "comparison",
+        operationId,
+        previous: "running",
+        current: "failed",
+        reason: "error",
+      });
+    } else {
+      feedback.finish();
+      recordActivity({
+        kind: "opened",
+        owner: "comparison",
+        operationId,
+        previous: "running",
+        current: "open",
+        reason: "completion",
+      });
     }
-  } catch (error) {
-    log.error("comparison admission failed", toErrorFields(error));
-    const failure = message("comparison.admissionFailed");
-    feedback.finish({ tone: "danger", text: failure });
-    recordActionFailure("comparison-admission-failed", failure, error);
-    recordActivity({
-      kind: "failed",
-      owner: "comparison",
-      operationId,
-      previous: "running",
-      current: "failed",
-      reason: "error",
-    });
-    return;
-  }
-  const result = await openComparison(hash, selectedItem);
-  if (result === "unavailable") {
-    feedback.finish({ tone: "normal", text: message("comparison.nothingLeft") });
-    recordActivity({
-      kind: "completed",
-      owner: "comparison",
-      operationId,
-      previous: "running",
-      current: "idle",
-      reason: "dependency",
-    });
-  } else if (result === "failed") {
-    feedback.finish({ tone: "danger", text: message("comparison.openFailedSeeIssues") });
-    recordActivity({
-      kind: "failed",
-      owner: "comparison",
-      operationId,
-      previous: "running",
-      current: "failed",
-      reason: "error",
-    });
-  } else {
-    feedback.finish();
-    recordActivity({
-      kind: "opened",
-      owner: "comparison",
-      operationId,
-      previous: "running",
-      current: "open",
-      reason: "completion",
-    });
-  }
+  } finally { admission.abandon(); }
 }
 
 export async function closeComparison(): Promise<void> {
@@ -266,7 +279,8 @@ export async function closeComparison(): Promise<void> {
   }
   comparisonOpening.begin();
   const sessionId = useComparisonStore.getState().sessionId;
-  const current = () => useComparisonStore.getState().sessionId === sessionId;
+  const current = () => useComparisonStore.getState().sessionId === sessionId &&
+    !viewModeAdmission.owns("fullscreen");
   await useComparisonStore.getState().close();
   await refreshLibrary();
   if (!current()) return;

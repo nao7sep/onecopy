@@ -5,7 +5,7 @@
 // specs need a document even though the subject is pure workflow logic.
 
 import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SectionItem } from "../../src/models/items";
 import { useItemsStore } from "../../src/state/items-store";
 import { useFullscreenViewStore } from "../../src/state/fullscreen-view-store";
@@ -35,6 +35,9 @@ import {
 } from "../mocks/tauri";
 import { inEnglish } from "../helpers/i18n";
 import { currentMainFeedback, useMainFeedbackStore } from "../../src/state/main-feedback-store";
+
+import { requestComparisonFromMain } from "../../src/workflows/comparison";
+import { useComparisonStore } from "../../src/state/comparison-store";
 
 let sequence: Array<SectionItem> = [];
 let sequenceIndex = 0;
@@ -853,4 +856,104 @@ it("refuses stale fullscreen deletion keys and accepts the displayed session mem
   await handleFullscreenViewKey({ key: "Delete", token: shown.token, itemKey: "c" });
   expect(invokeCalls.filter((call) => call.command === "delete_items").at(-1)?.args)
     .toEqual({ items: [{ hash: "c", pathId: null }], permanent: false });
+});
+
+
+describe("view mode admission across workflows", () => {
+  beforeEach(async () => {
+    mockCommand("set_window_fullscreen", () => null);
+    await closeFullscreenView({ restoreFocus: false });
+    await useComparisonStore.getState().close();
+    mockCommand("comparison_selection_valid", () => true);
+    mockCommand("get_similar_group", () => [1, 2].map((index) => ({
+      hash: `member-${index}`, fileName: `image-${index}.jpg`,
+      width: 4000, height: 3000, byteSize: 1000, sharpness: 1,
+      faceScore: null, copyCount: 1, hasThumb: true,
+    })));
+    mockCommand("get_section_family_context", () => null);
+    invokeCalls.length = 0;
+  });
+
+  afterEach(async () => {
+    await closeFullscreenView({ restoreFocus: false });
+    await useComparisonStore.getState().close();
+  });
+
+  it("reserves Comparison before its selection validation settles", async () => {
+    let validate!: (valid: boolean) => void;
+    mockCommand("comparison_selection_valid", () => new Promise<boolean>((resolve) => { validate = resolve; }));
+    const opening = requestComparisonFromMain();
+    await vi.waitFor(() => expect(validate).toBeDefined());
+    expect(openFullscreenView()).toBe(false);
+    validate(true);
+    await opening;
+    expect(useComparisonStore.getState().open).toBe(true);
+    expect(useFullscreenViewStore.getState().session).toBeNull();
+    expect(invokeCalls.some((call) => call.command === "viewer_sequence_start")).toBe(false);
+  });
+
+  it("reserves fullscreen before its native sequence arrives", async () => {
+    sequence = [item("a", 1), item("b", 2)];
+    let finish!: () => void;
+    mockCommand("viewer_sequence_start", () => new Promise((resolve) => {
+      finish = () => resolve(sequenceSnapshot("held", 0));
+    }));
+    expect(openFullscreenView()).toBe(true);
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    await requestComparisonFromMain();
+    finish();
+    await vi.waitFor(() => expect(useFullscreenViewStore.getState().session?.token).toBe("held"));
+    expect(useComparisonStore.getState().open).toBe(false);
+    expect(invokeCalls.some((call) => call.command === "comparison_selection_valid")).toBe(false);
+  });
+
+  it.each(["validation", "members"] as const)("cancels pending Comparison %s without late admission", async (stage) => {
+    let finish!: () => void;
+    mockCommand(stage === "validation" ? "comparison_selection_valid" : "get_similar_group", () => new Promise((resolve) => {
+      finish = () => resolve(stage === "validation" ? true : []);
+    }));
+    const opening = requestComparisonFromMain();
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    await useComparisonStore.getState().close();
+    expect(openFullscreenView()).toBe(true);
+    finish();
+    await opening;
+    await vi.waitFor(() => expect(useFullscreenViewStore.getState().session).not.toBeNull());
+    expect(useComparisonStore.getState().open).toBe(false);
+    expect(invokeCalls.some((call) => call.command === "set_window_fullscreen" &&
+      call.args.label === "main" && call.args.enable === true)).toBe(false);
+  });
+
+  it("keeps fullscreen admission until a pending show and hide settle", async () => {
+    const window = (await WebviewWindow.getByLabel("fullscreen-view"))!;
+    let finish!: () => void;
+    window.show.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+    openFullscreenView();
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    const closing = closeFullscreenView({ restoreFocus: false });
+    await requestComparisonFromMain();
+    expect(invokeCalls.some((call) => call.command === "comparison_selection_valid")).toBe(false);
+    finish();
+    await closing;
+    expect(invokeCalls.some((call) => call.command === "set_window_fullscreen" &&
+      call.args.label === "fullscreen-view" && call.args.enable === true)).toBe(false);
+    await requestComparisonFromMain();
+    expect(useComparisonStore.getState().open).toBe(true);
+    expect(useFullscreenViewStore.getState().session).toBeNull();
+  });
+
+  it("keeps Comparison admission until an in-flight native entry and retirement settle", async () => {
+    let finish!: () => void;
+    mockCommand("set_window_fullscreen", ({ label, enable }) => label === "main" && enable
+      ? new Promise<void>((resolve) => { finish = resolve; }) : null);
+    const opening = requestComparisonFromMain();
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    const closing = useComparisonStore.getState().close();
+    expect(openFullscreenView()).toBe(false);
+    finish();
+    await Promise.all([opening, closing]);
+    expect(useComparisonStore.getState().open).toBe(false);
+    expect(openFullscreenView()).toBe(true);
+    await vi.waitFor(() => expect(useFullscreenViewStore.getState().session).not.toBeNull());
+  });
 });
