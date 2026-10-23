@@ -111,3 +111,14 @@ describe("comparison pointer decisions", () => {
     ).toBeTruthy();
   });
 });
+
+it("applies the shared enlargement preference to small comparison images", () => {
+  useWindowPreferencesStore.setState({ enlargeSmallImages: false });
+  const view = renderSlot({ ...MEMBER, width: 120, height: 80 });
+  const image = view.getByRole("img", { name: "photo.jpg" }) as HTMLImageElement;
+  expect(image.style.maxWidth).toBe("120px");
+  expect(image.style.maxHeight).toBe("80px");
+  act(() => useWindowPreferencesStore.setState({ enlargeSmallImages: true }));
+  expect(image.style.maxWidth).toBe("");
+  expect(image.style.maxHeight).toBe("");
+});

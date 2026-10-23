@@ -178,22 +178,6 @@ export function comparisonPages(
   return pages;
 }
 
-export function activePage(
-  members: ComparisonMember[],
-  page: number,
-  configuredMaximum: number,
-  displayAspects: number[],
-): ComparisonPage {
-  const pages = comparisonPages(members, configuredMaximum, displayAspects);
-  return (
-    pages[Math.min(Math.max(0, page), Math.max(0, pages.length - 1))] ?? {
-      members: [],
-      portraitDominant: false,
-      capacities: [4],
-    }
-  );
-}
-
 export function visibleKeepMarks(
   selected: Set<string>,
   members: ComparisonMember[],
@@ -360,34 +344,10 @@ export function gridFor(
   count: number,
   portraitDominant: boolean,
   containerAspect = 16 / 9,
-  reservedCapacity: number | null = null,
 ): ComparisonGrid {
-  if (reservedCapacity !== null) {
-    const layout = comparisonDisplayLayout(
-      portraitDominant,
-      containerAspect,
-    );
-    return {
-      count,
-      columns: layout.columns,
-      rows: layout.rows,
-    };
-  }
-  if (count <= 1) return { count, columns: 1, rows: 1 };
-  const safeAspect =
-    Number.isFinite(containerAspect) && containerAspect > 0
-      ? containerAspect
-      : 16 / 9;
-  const imageAspect = portraitDominant ? 2 / 3 : 3 / 2;
-  let best = { columns: 1, rows: count, score: Number.POSITIVE_INFINITY };
-  for (let columns = 1; columns <= count; columns += 1) {
-    const rows = Math.ceil(count / columns);
-    const cellAspect = (safeAspect * rows) / columns;
-    const emptyCells = columns * rows - count;
-    const score = Math.abs(Math.log(cellAspect / imageAspect)) + emptyCells * 0.15;
-    if (score < best.score) best = { columns, rows, score };
-  }
-  return { count, columns: best.columns, rows: best.rows };
+  if (count === 0) return { count, columns: 1, rows: 1 };
+  const layout = comparisonDisplayLayout(portraitDominant, containerAspect);
+  return { count, columns: layout.columns, rows: layout.rows };
 }
 
 export function spatialTarget(
@@ -396,7 +356,6 @@ export function spatialTarget(
   chunkSizes: number[],
   portraitDominant: boolean,
   containerAspects: number[] = [],
-  displaySlotCapacities: number[] = chunkSizes,
 ): number {
   if (currentIndex < 0) return -1;
   let offset = 0;
@@ -405,7 +364,6 @@ export function spatialTarget(
       count,
       portraitDominant,
       containerAspects[index],
-      displaySlotCapacities[index] ?? count,
     );
     const start = offset;
     offset += count;
@@ -445,6 +403,6 @@ export function spatialTarget(
     return candidate < grid.count ? grid.start + candidate : currentIndex;
   }
   const next = grids[displayIndex + 1];
-  if (next === undefined) return currentIndex;
-  return next.start + Math.min(row, next.rows - 1) * next.columns;
+  if (next === undefined || next.count === 0) return currentIndex;
+  return next.start + Math.min(next.count - 1, Math.min(row, next.rows - 1) * next.columns);
 }

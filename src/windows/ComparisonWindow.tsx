@@ -109,7 +109,6 @@ export default function ComparisonWindow({ slice }: { slice: number }) {
     chunk.length,
     state?.portraitDominant ?? false,
     state?.displayAspects[slice],
-    state?.capacities[slice] ?? null,
   );
 
   if (state !== null && chunk.length === 0) {

@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n/I18nContext";
 import { isComposingEvent } from "../hooks/useComposing";
 import { useComparisonLayout } from "../hooks/useComparisonLayout";
-import { comparisonPages, gridFor } from "../models/comparisonSession";
+import { gridFor } from "../models/comparisonSession";
 import { mutationProgressLine, mutationResultLine } from "../models/mutation";
 import {
   comparisonChunks,
+  comparisonPagePlan,
   useComparisonStore,
 } from "../state/comparison-store";
 import { useMutationStore } from "../state/mutation-store";
@@ -95,14 +96,13 @@ function OpenComparisonView({ onRevealTrash }: { onRevealTrash: () => void }) {
 
   if (!open) return null;
 
-  const pages = comparisonPages(members, maximumImages, state.displayAspects);
+  const pages = comparisonPagePlan(members, maximumImages, state.displayAspects);
   const chunks = comparisonChunks(state);
   const localChunk = chunks[0] ?? [];
   const grid = gridFor(
     localChunk.length,
     portraitDominant,
     state.displayAspects[0],
-    state.capacities[0],
   );
   const markedCount = chunks
     .flat()

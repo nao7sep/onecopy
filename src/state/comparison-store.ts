@@ -11,10 +11,9 @@ import { create } from "zustand";
 import {
   COMPARISON_DIRECT_KEYS,
   activatePage,
-  activePage,
   visibleKeepMarks,
   chunkMembers,
-  comparisonPages,
+  comparisonPages as buildComparisonPages,
   directKeyIndex,
   displayCapacities,
   spatialTarget,
@@ -137,6 +136,24 @@ type MonitorList = Awaited<ReturnType<typeof availableMonitors>>;
 let sessionOtherMonitors: MonitorList = [];
 let projectionRevision = 0;
 
+// Membership is published immutably. Keep one plan per live membership array;
+// marks and active-card changes reuse it, and retired arrays remain collectable.
+const pagePlans = new WeakMap<GroupMember[], {
+  maximum: number;
+  aspects: number[];
+  pages: ReturnType<typeof buildComparisonPages>;
+}>();
+
+export function comparisonPagePlan(members: GroupMember[], maximum: number, aspects: number[]) {
+  const cached = pagePlans.get(members);
+  if (cached !== undefined && cached.maximum === maximum
+    && cached.aspects.length === aspects.length
+    && cached.aspects.every((aspect, index) => aspect === aspects[index])) return cached.pages;
+  const pages = buildComparisonPages(members, maximum, aspects);
+  pagePlans.set(members, { maximum, aspects: [...aspects], pages });
+  return pages;
+}
+
 export function comparisonProjectionIsCurrent(projection: ComparisonProjection): boolean {
   const state = useComparisonStore.getState();
   return state.open && projection.sessionId === state.sessionId && projection.revision === projectionRevision;
@@ -158,12 +175,8 @@ export function visibleMembers(
     "members" | "page" | "maximumImages" | "displayAspects"
   >,
 ): GroupMember[] {
-  return activePage(
-    state.members,
-    state.page,
-    state.maximumImages,
-    state.displayAspects,
-  ).members;
+  const pages = comparisonPagePlan(state.members, state.maximumImages, state.displayAspects);
+  return pages[Math.min(Math.max(0, state.page), Math.max(0, pages.length - 1))]?.members ?? [];
 }
 
 function viewPatch(
@@ -184,7 +197,7 @@ function viewPatch(
         : null,
     rangeBase: new Set([...state.rangeBase].filter((hash) => live.has(hash))),
   };
-  const pages = comparisonPages(
+  const pages = comparisonPagePlan(
     members,
     state.maximumImages,
     state.displayAspects,
@@ -263,7 +276,7 @@ export function comparisonChunks(
 export function broadcastComparison(): void {
   const state = useComparisonStore.getState();
   if (!state.open) return;
-  const pages = comparisonPages(
+  const pages = comparisonPagePlan(
     state.members,
     state.maximumImages,
     state.displayAspects,
@@ -288,7 +301,7 @@ function pageForAnchor(
   maximumImages: number,
   displayAspects: number[],
 ): number {
-  const pages = comparisonPages(members, maximumImages, displayAspects);
+  const pages = comparisonPagePlan(members, maximumImages, displayAspects);
   const found = pages.findIndex((page) =>
     page.members.some((member) => member.hash === hash),
   );
@@ -705,7 +718,6 @@ export const useComparisonStore = create<ComparisonState>((set, get) => ({
       comparisonChunks(state).map((chunk) => chunk.length),
       state.portraitDominant,
       state.displayAspects,
-      state.capacities,
     );
     if (target === current) return;
     set({
@@ -914,7 +926,7 @@ function movePage(
 ): void {
   const state = get();
   if (state.busy || state.pendingAction !== null) return;
-  const pages = comparisonPages(
+  const pages = comparisonPagePlan(
     state.members,
     state.maximumImages,
     state.displayAspects,

@@ -120,12 +120,12 @@ describe("comparison card order and navigation", () => {
   });
 
   it("adapts the grid to a portrait display", () => {
-    expect(gridFor(3, false, 9 / 16, 3)).toEqual({
+    expect(gridFor(3, false, 9 / 16)).toEqual({
       count: 3,
       columns: 1,
       rows: 3,
     });
-    expect(gridFor(4, true, 9 / 16, 4)).toEqual({
+    expect(gridFor(4, true, 9 / 16)).toEqual({
       count: 4,
       columns: 2,
       rows: 2,
@@ -133,12 +133,12 @@ describe("comparison card order and navigation", () => {
   });
 
   it("keeps a partial final display on the full capacity grid", () => {
-    expect(gridFor(1, false, 16 / 9, 4)).toEqual({
+    expect(gridFor(1, false, 16 / 9)).toEqual({
       count: 1,
       columns: 2,
       rows: 2,
     });
-    expect(gridFor(1, true, 16 / 9, 3)).toEqual({
+    expect(gridFor(1, true, 16 / 9)).toEqual({
       count: 1,
       columns: 3,
       rows: 1,
@@ -154,12 +154,12 @@ describe("comparison card order and navigation", () => {
 
   it("matches partial rows and differently shaped neighboring displays", () => {
     expect(
-      spatialTarget(3, "right", [4, 3], false, [16 / 9, 9 / 16], [4, 3]),
+      spatialTarget(3, "right", [4, 3], false, [16 / 9, 9 / 16]),
     ).toBe(5);
     expect(
-      spatialTarget(6, "left", [4, 3], false, [16 / 9, 9 / 16], [4, 3]),
+      spatialTarget(6, "left", [4, 3], false, [16 / 9, 9 / 16]),
     ).toBe(3);
-    expect(spatialTarget(2, "down", [3], false, [9 / 16], [3])).toBe(2);
+    expect(spatialTarget(2, "down", [3], false, [9 / 16])).toBe(2);
   });
 });
 
@@ -210,4 +210,24 @@ describe("comparison range selection with no origin", () => {
     expect(result.rangeOrigin).toBe("h2");
     expect(result.rangeBase).toEqual(new Set(["h1"]));
   });
+});
+
+it("never navigates into an unoccupied cell on the final display", () => {
+  for (const portrait of [false, true]) {
+    for (const aspects of [[16 / 9, 16 / 9], [16 / 9, 9 / 16], [9 / 16, 16 / 9]]) {
+      const capacities = aspects.map((aspect) => comparisonDisplayLayout(portrait, aspect).capacity);
+      for (let tail = 1; tail <= capacities[1]; tail += 1) {
+        const sizes = [capacities[0], tail];
+        const total = sizes[0] + sizes[1];
+        for (let index = 0; index < total; index += 1) {
+          for (const direction of ["left", "right", "up", "down"] as const) {
+            const target = spatialTarget(index, direction, sizes, portrait, aspects);
+            expect(target).toBeGreaterThanOrEqual(0);
+            expect(target).toBeLessThan(total);
+          }
+        }
+      }
+    }
+  }
+  expect(gridFor(0, false)).toEqual({ count: 0, columns: 1, rows: 1 });
 });

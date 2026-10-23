@@ -36,6 +36,7 @@ export default function ComparisonSlot({
   const [previewFailed, setPreviewFailed] = useState(false);
   // Pixel, byte and duration facts are still assembled in models/items.
   const facts = factsLine(member, number);
+  const enlargeSmall = useWindowPreferencesStore((state) => state.enlargeSmallImages);
   const showFaceStars = useWindowPreferencesStore((state) => state.scoreFaces);
   const faceStars = showFaceStars ? faceStarRating(member.faceScore) : 0;
   return (
@@ -76,7 +77,9 @@ export default function ComparisonSlot({
         <InspectableImage
           hash={member.hash}
           fileName={member.fileName}
-          enlargeSmall
+          enlargeSmall={enlargeSmall}
+          sourceWidth={member.width}
+          sourceHeight={member.height}
           onError={() => setPreviewFailed(true)}
         />
         {previewFailed ? (

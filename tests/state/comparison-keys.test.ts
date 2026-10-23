@@ -234,3 +234,33 @@ describe("comparison display close requests", () => {
     close.mockRestore();
   });
 });
+
+it("keeps right-arrow navigation on an occupied card of a partial next display", () => {
+  openSession(5);
+  useComparisonStore.setState({
+    displayCount: 2, displayAspects: [16 / 9, 16 / 9], capacities: [4, 4],
+    anchor: "h3", anchors: new Set(["h3"]),
+  });
+  expect(handleComparisonKey({ key: "ArrowRight" })).toBe(true);
+  expect(useComparisonStore.getState().anchor).toBe("h4");
+});
+
+it("reuses layout work while marks and the active card change", () => {
+  openSession(10000);
+  let dimensionReads = 0;
+  const members = useComparisonStore.getState().members.map((item) => ({
+    ...item,
+    get width() { dimensionReads += 1; return 4000; },
+  }));
+  useComparisonStore.setState({ members });
+  expect(dimensionReads).toBeGreaterThan(0);
+  const preparedReads = dimensionReads;
+  handleComparisonKey({ key: "1" });
+  handleComparisonKey({ key: "ArrowRight" });
+  handleComparisonKey({ key: "ArrowDown" });
+  expect(dimensionReads).toBe(preparedReads);
+  useComparisonStore.getState().nextPage();
+  expect(dimensionReads).toBe(preparedReads);
+  useComparisonStore.setState({ displayAspects: [9 / 16] });
+  expect(dimensionReads).toBeGreaterThan(preparedReads);
+});
