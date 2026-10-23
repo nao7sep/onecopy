@@ -21,6 +21,7 @@ function row(id: number, over: Partial<IssueRow> = {}): IssueRow {
   return {
     id,
     path: `/vol/photos/IMG_${id}.jpg`,
+    displayPath: over.path === undefined ? `/vol/photos/IMG_${id}.jpg` : over.path,
     kind: "decode-error",
     message: "could not decode",
     messageKey: null,
@@ -116,6 +117,21 @@ describe("the issues modal", () => {
     expect(useItemsStore.getState().scrollRequest).toMatchObject({ key: "target", align: "center" });
     expect(useIssuesStore.getState().total).toBe(1);
     expect(invokeCalls.some((call) => /dismiss|recheck|retry/.test(call.command))).toBe(false);
+  });
+
+  it.each([
+    [String.raw`\\?\C:\photos\one.jpg`, String.raw`C:\photos\one.jpg`],
+    [String.raw`\\?\UNC\server\share\one.jpg`, String.raw`\\server\share\one.jpg`],
+  ])("displays a friendly Windows path but navigates with %s", async (path, displayPath) => {
+    mockCommands({
+      get_issues: () => ({ total: 1, rows: [row(1, { path, displayPath })] }),
+      resolve_library_path: () => null,
+    });
+    render(<IssuesModal open onClose={() => {}} />);
+    fireEvent.click(await screen.findByRole("button", { name: displayPath }));
+    await act(async () => {});
+    expect(invokeCalls.find((call) => call.command === "resolve_library_path")?.args).toMatchObject({ path });
+    expect(document.body.textContent).not.toContain(path);
   });
 
   it("keeps an unavailable target and its explanation in Issues without changing Main", async () => {

@@ -11,7 +11,7 @@ let requests: Array<{ args: unknown; resolve: (page: Page) => void; reject: (err
 let activeReads: number;
 let mostActive: number;
 function row(id: number): IssueRow {
-  return { id, path: `/fixture/${id}`, kind: "decode-error", message: "bad file", messageKey: null,
+  return { id, path: `/fixture/${id}`, displayPath: `/fixture/${id}`, kind: "decode-error", message: "bad file", messageKey: null,
     messageValues: null, firstSeenUtc: `2026-01-01T00:00:0${id}.000Z`,
     lastSeenUtc: "2026-01-01T00:01:00.000Z", occurrenceCount: 1 };
 }

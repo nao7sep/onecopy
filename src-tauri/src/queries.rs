@@ -60,7 +60,9 @@ pub fn resolve_library_path(
         path.is_absolute()
             && !crate::trash::is_trash_path(path)
             && !path.components().any(|part| matches!(part, std::path::Component::ParentDir))
-            && source_dirs.iter().any(|root| path.starts_with(crate::native_path::from_text(root).as_ref()))
+            && source_dirs.iter().any(|root| crate::path_identity::lexical_is_within(
+                path, crate::native_path::from_text(root).as_ref(),
+            ))
     };
     if !in_sources(path) { return Ok(None); }
     let row: Option<(i64, Option<String>, String)> = conn.query_row(
@@ -2009,7 +2011,9 @@ pub fn section_dirs(
 #[serde(rename_all = "camelCase")]
 pub struct IssueRow {
     pub id: i64,
+    /// Exact indexed identity for navigation; never a displayed spelling.
     pub path: Option<String>,
+    pub display_path: Option<String>,
     pub kind: String,
     pub message: Option<String>,
     /// A catalogue key the frontend renders in the current interface
@@ -2062,20 +2066,11 @@ pub fn issues(
         .map_err(|e| e.to_string())?;
     let row_mapper = |r: &rusqlite::Row| -> rusqlite::Result<IssueRow> {
         let path: String = r.get(1)?;
-        // Issue rows are written straight from `abs_path`, and on Windows
-        // EVERY indexed path is stored verbatim (`for_fs` is unconditional
-        // there, not length-gated) — so without this the issues list shows
-        // `\\?\C:\…` for every file, not just deep ones. The stored
-        // spelling stays verbatim: issue identity is (kind, path), and
-        // `clear_issues` matches on what the pipeline wrote.
         let message_values: Option<String> = r.get(5)?;
         Ok(IssueRow {
             id: r.get(0)?,
-            path: if path.is_empty() {
-                None
-            } else {
-                Some(crate::winpath::for_display(&path).into_owned())
-            },
+            display_path: (!path.is_empty()).then(|| crate::winpath::for_display(&path).into_owned()),
+            path: (!path.is_empty()).then_some(path),
             kind: r.get(2)?,
             message: r.get(3)?,
             message_key: r.get(4)?,

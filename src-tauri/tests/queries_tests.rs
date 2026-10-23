@@ -1395,6 +1395,26 @@ fn diagnostic_paths_resolve_only_current_source_members_and_companion_owners() {
     assert!(resolve(&file("photo.xmp")).is_none());
 }
 
+#[test]
+#[cfg_attr(not(windows), ignore = "Windows native path containment")]
+fn issue_navigation_accepts_configured_windows_root_spellings_without_losing_identity() {
+    for (root, path) in [
+        (r"C:\Photos", r"\\?\C:\Photos\one.jpg"),
+        (r"\\server\share\Photos", r"\\?\UNC\server\share\Photos\one.jpg"),
+    ] {
+        let conn = db();
+        seed_image(&conn, "one", None, "one.jpg");
+        conn.execute("UPDATE paths SET abs_path = ?1 WHERE content_hash = 'one'", [path]).unwrap();
+        index_store::upsert_issue(&conn, Some(path), "decode-error", "x").unwrap();
+        let (_, rows) = queries::issues(&conn, 50, None).unwrap();
+        let native = rows[0].path.as_deref().unwrap();
+        let target = queries::resolve_library_path(&conn, native, &[root.into()], Tz::UTC).unwrap().unwrap();
+        assert_eq!(target.identity.hash.as_deref(), Some("one"));
+        assert!(queries::resolve_library_path(&conn, native, &[format!("{root}-sibling")], Tz::UTC).unwrap().is_none());
+        assert!(queries::resolve_library_path(&conn, native, &[], Tz::UTC).unwrap().is_none());
+    }
+}
+
 // Diagnostic navigation refuses a target whose only copy is
 // hidden by review-visibility policy, and resolves it again once the policy
 // lifts. section_for_identity is the shared resolver behind both
@@ -1636,54 +1656,32 @@ fn live_content_hashes_checks_only_the_frozen_membership() {
     );
 }
 
-// The verbatim prefix is a FILESYSTEM detail, and the boundary where it must
-// come back off is the read that serves the UI — not each call site
-// remembering. On Windows `for_fs` is unconditional, so every indexed path is
-// stored `\\?\C:\…`, which makes this every path the user sees rather than
-// only the deep ones this machinery exists for. These run on every platform
-// because `for_display` is a pure string transform; the SPELLING under test is
-// Windows's, and pinning it here is what makes the rule testable from a Mac.
+// Display labels and exact lookup identities travel separately across IPC.
 #[test]
-fn issue_rows_never_carry_the_verbatim_prefix() {
+fn issue_rows_keep_native_identity_beside_the_display_label() {
     let conn = db();
-    index_store::upsert_issue(
-        &conn,
-        Some(r"\\?\C:\photos\broken.heic"),
-        "decode-error",
-        "x",
-    )
-    .unwrap();
-    index_store::upsert_issue(
-        &conn,
-        Some(r"\\?\UNC\nas\media\clip.mov"),
-        "video-poster-error",
-        "y",
-    )
-    .unwrap();
-    // A rootless issue keeps its empty path as None, which the prefix strip
-    // must not disturb.
+    for (path, kind) in [(r"\\?\C:\photos\broken.heic", "decode-error"), (r"\\?\UNC\nas\media\clip.mov", "video-poster-error")] {
+        index_store::upsert_issue(&conn, Some(path), kind, "x").unwrap();
+    }
     index_store::upsert_issue(&conn, None, "walk-error", "z").unwrap();
-
     let (total, rows) = queries::issues(&conn, 50, None).unwrap();
     assert_eq!(total, 3);
-    let paths: Vec<Option<&str>> = rows.iter().map(|r| r.path.as_deref()).collect();
-    assert!(
-        paths.contains(&Some(r"C:\photos\broken.heic")),
-        "drive-absolute must lose the marker: {paths:?}"
-    );
-    assert!(
-        paths.contains(&Some(r"\\nas\media\clip.mov")),
-        "UNC must come back as \\\\server\\share: {paths:?}"
-    );
-    assert!(paths.contains(&None), "a rootless issue stays None: {paths:?}");
-    for path in paths.into_iter().flatten() {
-        assert!(!path.starts_with(r"\\?\"), "{path} still leaks the prefix");
+    for (path, label) in [
+        (Some(r"\\?\C:\photos\broken.heic"), Some(r"C:\photos\broken.heic")),
+        (Some(r"\\?\UNC\nas\media\clip.mov"), Some(r"\\nas\media\clip.mov")),
+        (None, None),
+    ] {
+        let row = rows.iter().find(|row| row.path.as_deref() == path).unwrap();
+        assert_eq!(row.display_path.as_deref(), label);
+        let wire = serde_json::to_value(row).unwrap();
+        assert_eq!(wire["path"], serde_json::to_value(path).unwrap());
+        assert_eq!(wire["displayPath"], serde_json::to_value(label).unwrap());
     }
 }
 
 #[test]
 fn the_stored_issue_path_stays_verbatim_so_clearing_still_matches() {
-    // Display is a READ-time transform. If it were applied on the way IN, the
+    // Display labels never replace native identities. If applied on the way IN, the
     // pipeline's `clear_issues` — which passes the same `abs_path` it wrote —
     // would stop matching and resolved issues would never disappear.
     let conn = db();

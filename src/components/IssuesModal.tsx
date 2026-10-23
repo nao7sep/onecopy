@@ -122,7 +122,7 @@ export default function IssuesModal({ open, onClose }: {
                   Issues is where a notice is read in full, so its path, its
                   sentence and the recorded detail are kept whole. */}
               {row.path ? <LinkButton tone="primary" wrap className="mt-2 block select-text underline decoration-primary/40 enabled:hover:decoration-primary"
-                title={t("issues.revealInMain")} onClick={() => void reveal(row.path!)}>{displayNativePath(row.path)}</LinkButton> : null}
+                title={t("issues.revealInMain")} onClick={() => void reveal(row.path!)}>{displayNativePath(row.displayPath!)}</LinkButton> : null}
               {modelIssueLabel(row.kind) !== null ? (
                 <h3 className="mt-2 font-semibold text-ink-strong">{t(modelIssueLabel(row.kind)!)}</h3>
               ) : null}

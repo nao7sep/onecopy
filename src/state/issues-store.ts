@@ -9,6 +9,7 @@ import { recordActionFailure, type StoredMessageValues } from "./notifications-s
 export interface IssueRow {
   id: number;
   path: string | null;
+  displayPath: string | null;
   kind: string;
   message: string | null;
   /** A catalogue key the frontend renders in the current interface language;
