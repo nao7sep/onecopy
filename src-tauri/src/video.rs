@@ -12,6 +12,7 @@
 //! underived and the scan reports the skip; nothing fails.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use rusqlite::Connection;
 
@@ -92,9 +93,8 @@ fn probe_duration_ms(ffmpeg: &Path, src: &Path) -> Result<Option<u64>, String> {
     Ok(parse_duration_ms(&run.stderr))
 }
 
-/// Extracts one frame at `at_ms` as a staged JPEG (real content extension —
-/// ffmpeg infers the muxer from it; the storage-path conventions' documented
-/// staging exception), its longer side scaled within `long_edge`. The frame
+/// Extracts one frame at `at_ms` as a staged JPEG streamed through the
+/// supervised stdout writer, its longer side scaled within `long_edge`. The frame
 /// is decoded in process afterwards, so a 4K or larger video must never
 /// reach that decode at full size.
 fn extract_frame(
@@ -102,7 +102,7 @@ fn extract_frame(
     src: &Path,
     at_ms: u64,
     long_edge: u32,
-    staged_jpg: &Path,
+    staged_jpg: Arc<crate::subprocess::StagedOutput>,
 ) -> Result<(), String> {
     log_invocation("extract-frame", src);
     let seconds = format!("{}.{:03}", at_ms / 1000, at_ms % 1000);
@@ -141,12 +141,18 @@ fn extract_frame(
             // limited-range YUV unless the conversion is explicit.
             "-pix_fmt",
             "yuvj420p",
-            "-update",
-            "1",
-            "-y",
-        ])
-        .arg(staged_jpg);
-    let run = crate::subprocess::run_bounded(cmd, &crate::derived_runtime::cancelled)?;
+            "-c:v",
+            "mjpeg",
+            "-f",
+            "image2pipe",
+            "pipe:1",
+        ]);
+    let run = crate::subprocess::run_bounded_to_file(
+        cmd,
+        &crate::derived_runtime::cancelled,
+        Arc::clone(&staged_jpg),
+        crate::resource_limits::MAX_FFMPEG_STILL_OUTPUT as u64,
+    )?;
     if !run.status_ok {
         return Err(format!(
             "frame extraction failed at {seconds}s for {}: {}",
@@ -154,7 +160,7 @@ fn extract_frame(
             run.stderr_text()
         ));
     }
-    if !staged_jpg.is_file() { // data root
+    if !std::fs::metadata(staged_jpg.path()).is_ok_and(|meta| meta.len() > 0) { // data root
         return Err(format!("ffmpeg emitted no frame at {seconds}s for {}", src.display()));
     }
     Ok(())
@@ -290,14 +296,16 @@ fn derive_videos_pending_limit(
 
             // Poster at 15% through the shared image pipeline, or the first
             // frame when the container reports no duration.
-            let staged = temp_dir.join(format!("poster-{}.jpg", crate::nanoid::generate()?));
+            let staged = Arc::new(crate::subprocess::StagedOutput::new(
+                temp_dir.join(format!("poster-{}.jpg", crate::nanoid::generate()?)),
+            ).map_err(|error| crate::resource_limits::cache_write_error("video poster staging", error))?);
             let at_ms = duration_ms.map_or(0, |duration| duration * 15 / 100);
-            let poster_result = crate::failure_runtime::contain_item(|| extract_frame(ffmpeg, src, at_ms, preview_long_edge, &staged)
+            let poster_result = crate::failure_runtime::contain_item(|| extract_frame(ffmpeg, src, at_ms, preview_long_edge, Arc::clone(&staged))
                 .and_then(|()| {
                     // The staged poster is a plain JPEG, so the image crate
                     // opens it directly — no ffmpeg needed for this half.
                     preview::generate_for_image(
-                        &staged,
+                        staged.path(),
                         &hash,
                         cache,
                         thumb_edge,
@@ -306,7 +314,6 @@ fn derive_videos_pending_limit(
                     )
                     .map(|_| ())
                 }));
-            crate::fs_recovery::remove_file(&staged, "video poster staging cleanup");
             poster_result?;
             Ok(duration_ms)
         })();
@@ -407,14 +414,14 @@ pub fn derive_strips_pending(
         // meanwhile is cleaned up and discarded like a cancelled one.
         let computed = crate::derived_state::compute_outside_share(conn, &hash, || -> Result<(), String> {
             for (index, at_ms) in strip_timestamps_ms(duration_ms, count).iter().enumerate() {
-                let staged =
-                    temp_dir.join(format!("strip-{}.jpg", crate::nanoid::generate()?));
-                let frame_result = crate::failure_runtime::contain_item(|| extract_frame(ffmpeg, src, *at_ms, frame_edge, &staged).and_then(|()| {
-                    let img = crate::resource_limits::decode_file(&staged)?;
+                let staged = Arc::new(crate::subprocess::StagedOutput::new(
+                    temp_dir.join(format!("strip-{}.jpg", crate::nanoid::generate()?)),
+                ).map_err(|error| crate::resource_limits::cache_write_error("video snapshot staging", error))?);
+                let frame_result = crate::failure_runtime::contain_item(|| extract_frame(ffmpeg, src, *at_ms, frame_edge, Arc::clone(&staged)).and_then(|()| {
+                    let img = crate::resource_limits::decode_file(staged.path())?;
                     let target = strip_path(cache, &hash, index as u32);
                     preview::write_webp(&img, &target, 76.0)
                 }));
-                crate::fs_recovery::remove_file(&staged, "video snapshot staging cleanup");
                 frame_result?;
                 trace.progress(index as u64 + 1, count as u64);
             }

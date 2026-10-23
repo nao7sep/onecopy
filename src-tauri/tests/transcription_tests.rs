@@ -94,7 +94,7 @@ fn pcm_is_staged_then_streamed_once_into_the_float_buffer() {
     let ffmpeg = dir.path().join("ffmpeg");
     std::fs::write(
         &ffmpeg,
-        "#!/bin/sh\nfor last do :; done\nprintf '\\000\\000\\000\\077\\000\\000\\000\\277' > \"$last\"\necho progress=continue\n",
+        "#!/bin/sh\nfor last do :; done\n[ \"$last\" = pipe:1 ] || exit 3\nprintf '\\000\\000\\000\\077\\000\\000\\000\\277'\n",
     )
     .unwrap();
     std::fs::set_permissions(&ffmpeg, std::fs::Permissions::from_mode(0o700)).unwrap();

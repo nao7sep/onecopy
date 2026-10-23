@@ -99,6 +99,7 @@ windows_test! {
 }
 
 #[test]
+#[serial_test::serial(subprocess)]
 fn cancelling_a_tool_ends_what_it_started() {
     let dir = tempfile::tempdir().unwrap();
     let pid_file = dir.path().join("grandchild.pid");
@@ -145,4 +146,108 @@ fn an_error_carries_the_whole_of_stderr() {
     let stderr = format!("first line\n{}\nlast line", "x".repeat(10_000));
     let run = Run { status_ok: false, stdout: Vec::new(), stderr: format!("  {stderr}\n") };
     assert_eq!(run.stderr_text(), stderr);
+}
+
+
+#[cfg(unix)]
+#[test]
+fn shutdown_kill_signals_an_isolated_registered_process() {
+    let mut command = Command::new("sleep");
+    command.arg("30").process_group(0);
+    let child = Arc::new(Mutex::new(OwnedProcess::new(command.spawn().unwrap())));
+    // A populated private registry is the admission handshake. No elapsed
+    // time is used as evidence that a child has registered.
+    let registry = Mutex::new(vec![child.clone()]);
+    kill_running(&registry);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if lock_child(&child).try_wait().unwrap().is_some() { break; }
+        assert!(Instant::now() < deadline, "shutdown signal did not end its child");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    kill_running(&Mutex::new(Vec::new()));
+}
+
+#[test]
+fn caller_cancellation_leaves_staged_output_owned_until_later_settlement() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("pending-output");
+    let staged = Arc::new(StagedOutput::new(path.clone()).unwrap());
+    let retained = Arc::downgrade(&staged);
+    static CAPACITY: AtomicUsize = AtomicUsize::new(0);
+    let capacity = Capacity::reserve_from(&CAPACITY, 1).unwrap();
+    let (release, held) = std::sync::mpsc::channel();
+    let (settled, receiver) = std::sync::mpsc::channel();
+    let owner = std::thread::spawn(move || {
+        let _capacity = capacity;
+        let _output = staged;
+        held.recv().unwrap();
+        let _ = settled.send(OwnerEvent::Settled(Err(crate::scanner::CANCELLED.to_string())));
+    });
+    let cancellation = Arc::new(AtomicBool::new(false));
+    let result = wait_for_owner(receiver, cancellation.clone(), &|| true, Duration::from_millis(5));
+    assert_eq!(result.err().unwrap(), crate::scanner::CANCELLED);
+    assert!(cancellation.load(Ordering::Acquire));
+    assert!(retained.upgrade().is_some());
+    assert!(path.exists());
+    let refusal = Capacity::reserve_from(&CAPACITY, 1).err().unwrap();
+    assert!(crate::resource_limits::is_safety_error(&refusal));
+    assert_eq!(CAPACITY.load(Ordering::Acquire), 1);
+    release.send(()).unwrap();
+    owner.join().unwrap();
+    assert!(retained.upgrade().is_none());
+    assert!(!path.exists());
+    assert_eq!(CAPACITY.load(Ordering::Acquire), 0);
+    drop(Capacity::reserve_from(&CAPACITY, 1).unwrap());
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(subprocess)]
+fn streamed_stdout_is_bounded_and_kept_out_of_the_result_buffer() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let staged = Arc::new(StagedOutput::new(root.path().join("output")).unwrap());
+    assert_eq!(std::fs::metadata(staged.path()).unwrap().permissions().mode() & 0o777, 0o600);
+    let mut command = Command::new("sh");
+    command.args(["-c", "printf 'streamed bytes'"]);
+    let run = run_bounded_to_file(command, &|| false, staged.clone(), 100).unwrap();
+    assert!(run.status_ok);
+    assert!(run.stdout.is_empty());
+    assert_eq!(std::fs::read(staged.path()).unwrap(), b"streamed bytes");
+    assert!(StagedOutput::new(staged.path().to_path_buf()).is_err(), "staging must be exclusive");
+    let oversized = Arc::new(StagedOutput::new(root.path().join("oversized")).unwrap());
+    let mut command = Command::new("sh");
+    command.args(["-c", "printf 'too many bytes'; sleep 30"]);
+    let result = run_bounded_to_file(command, &|| false, oversized.clone(), 4);
+    assert!(result.err().unwrap().contains("safety limit"));
+    assert!(std::fs::metadata(oversized.path()).unwrap().len() <= 4);
+}
+
+#[test]
+fn output_write_failure_is_signalled_to_the_process_owner() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("read-only-writer");
+    std::fs::write(&path, []).unwrap();
+    let output = Arc::new(StagedOutput {
+        path: path.clone(),
+        file: Mutex::new(Some(std::fs::File::open(&path).unwrap())),
+    });
+    let failure = Arc::new(Mutex::new(None));
+    let reader = start_reader("stdout", std::io::Cursor::new(b"bytes"), StdoutTarget::File(output, 100),
+        Arc::new(AtomicU64::new(0)), Instant::now(), failure.clone()).unwrap();
+    assert!(reader.join().unwrap().is_err());
+    assert!(failure.lock().unwrap().as_ref().unwrap().contains("write failed"));
+    assert!(!path.exists(), "reader closes the file before final output cleanup");
+}
+
+
+#[test]
+fn terminal_failure_bounds_caller_wait_without_relabelling_the_reason() {
+    let (events, receiver) = std::sync::mpsc::channel();
+    events.send(OwnerEvent::Stopping("output write failed".to_string())).unwrap();
+    let result = wait_for_owner(receiver, Arc::new(AtomicBool::new(false)), &|| false, Duration::ZERO);
+    assert_eq!(result.err().unwrap(), "output write failed: subprocess settlement pending");
+    // Retaining the sender represents the owner still settling its effect.
+    drop(events);
 }

@@ -129,3 +129,42 @@ fn a_poster_failure_is_returned_as_an_item_transition() {
     assert_eq!((stats.derived, stats.failed), (0, 1));
     assert_eq!(stats.changed_hashes, ["v1"]);
 }
+
+#[cfg(unix)]
+#[test]
+fn poster_frames_stream_through_stdout_and_release_their_staging_file() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let conn = onecopy_lib::index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    let source = dir.path().join("clip.mov");
+    std::fs::write(&source, b"video-source").unwrap();
+    conn.execute(
+        "INSERT INTO contents (hash, byte_size, kind) VALUES ('v1', 12, 'video')",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash, missing)
+         VALUES (?1, ?2, 'clip.mov', 'video', 'v1', 0)",
+        rusqlite::params![source.to_string_lossy(), dir.path().to_string_lossy()],
+    ).unwrap();
+    let frame = dir.path().join("frame.jpg");
+    image::DynamicImage::new_rgb8(8, 8).save(&frame).unwrap();
+    let ffmpeg = dir.path().join("ffmpeg");
+    std::fs::write(
+        &ffmpeg,
+        format!(
+            "#!/bin/sh\nfor last do :; done\nif [ \"$last\" = pipe:1 ]; then\ncat '{}'\nelse\necho 'Duration: 00:00:10.00, start: 0' >&2\nexit 1\nfi\n",
+            frame.display(),
+        ),
+    ).unwrap();
+    std::fs::set_permissions(&ffmpeg, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let cache = CachePaths::new(dir.path().join("cache"));
+    let temp = dir.path().join("temp");
+
+    let stats = derive_videos_pending(&conn, &cache, Some(&ffmpeg), &temp, 320, 1600).unwrap();
+
+    assert_eq!((stats.derived, stats.failed), (1, 0));
+    assert!(cache.preview("v1").is_file());
+    assert_eq!(std::fs::read_dir(&temp).unwrap().count(), 0);
+}

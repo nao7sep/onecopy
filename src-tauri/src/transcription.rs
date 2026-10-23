@@ -9,8 +9,8 @@
 //! while a transcription runs.
 
 use std::io::Read;
-use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::path::Path;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 pub const TRANSCRIPTION_BUSY: &str = "a transcription is already running";
 
@@ -92,14 +92,6 @@ pub(crate) fn publish_if_active<T>(
 const SAMPLE_RATE: u32 = 16_000;
 const PCM_SILENCE_PEAK: f32 = 1.0 / i16::MAX as f32;
 
-struct RemoveFile(PathBuf);
-
-impl Drop for RemoveFile {
-    fn drop(&mut self) {
-        crate::fs_recovery::remove_file(&self.0, "transcription audio staging cleanup");
-    }
-}
-
 /// Extracts a media file's audio track as 16 kHz mono f32 PCM through the managed
 /// ffmpeg (bounded, cancellable — the same subprocess rules every ffmpeg call
 /// obeys). ~3.8 MB per minute of audio in memory, transient. An empty result
@@ -110,8 +102,9 @@ pub fn extract_pcm(ffmpeg: &Path, media: &Path, temp_dir: &Path) -> Result<Vec<f
         "Audio extraction",
     )?;
     std::fs::create_dir_all(temp_dir).map_err(|error| error.to_string())?;
-    let staged = temp_dir.join(format!("pcm-{}.f32le", crate::nanoid::generate()?));
-    let _cleanup = RemoveFile(staged.clone());
+    let staged = Arc::new(crate::subprocess::StagedOutput::new(
+        temp_dir.join(format!("pcm-{}.f32le", crate::nanoid::generate()?)),
+    ).map_err(|error| crate::resource_limits::cache_write_error("transcription staging", error))?);
     let mut command = std::process::Command::new(ffmpeg);
     command.args([
         "-hide_banner",
@@ -121,8 +114,6 @@ pub fn extract_pcm(ffmpeg: &Path, media: &Path, temp_dir: &Path) -> Result<Vec<f
         "-nostats",
         "-stats_period",
         "30",
-        "-progress",
-        "pipe:1",
         "-threads",
     ]);
     command.arg(crate::resource_limits::cpu_thread_budget().to_string());
@@ -136,21 +127,23 @@ pub fn extract_pcm(ffmpeg: &Path, media: &Path, temp_dir: &Path) -> Result<Vec<f
         &SAMPLE_RATE.to_string(),
         "-ac",
         "1",
-        "-fs",
-        &crate::resource_limits::MAX_PCM_OUTPUT.to_string(),
         "-f",
         "f32le",
-        "-y",
+        "pipe:1",
     ]);
-    command.arg(&staged);
-    let run = crate::subprocess::run_bounded(command, &is_cancelled)?;
+    let run = crate::subprocess::run_bounded_to_file(
+        command,
+        &is_cancelled,
+        Arc::clone(&staged),
+        crate::resource_limits::MAX_PCM_OUTPUT as u64,
+    )?;
     if !run.status_ok {
         if no_audio_output(&run.stderr) {
             return Ok(Vec::new());
         }
         return Err(format!("audio extraction failed: {}", run.stderr_text()));
     }
-    let bytes = std::fs::metadata(&staged)
+    let bytes = std::fs::metadata(staged.path())
         .map_err(|error| format!("audio extraction produced no PCM: {error}"))?
         .len();
     if bytes >= crate::resource_limits::MAX_PCM_OUTPUT as u64 {
@@ -163,7 +156,7 @@ pub fn extract_pcm(ffmpeg: &Path, media: &Path, temp_dir: &Path) -> Result<Vec<f
         return Err("audio extraction produced a partial PCM sample".to_string());
     }
     let mut reader = std::io::BufReader::new(
-        std::fs::File::open(&staged).map_err(|error| error.to_string())?,
+        std::fs::File::open(staged.path()).map_err(|error| error.to_string())?,
     );
     let mut pcm = Vec::with_capacity(bytes as usize / 4);
     let mut sample = [0u8; 4];

@@ -315,3 +315,35 @@ fn available_memory_bytes() -> Option<u64> {
 // crate's API only for this test.
 #[path = "../tests/unit/resource_limits.rs"]
 mod tests;
+
+/// Available bytes on the app-owned cache volume, measured at admission.
+/// Failure is a storage pause, never permission to assume unlimited capacity.
+pub(crate) fn available_storage_bytes(path: &Path) -> Result<u64, String> {
+    available_storage_bytes_raw(path).map_err(|error| cache_write_error("cache space measurement", error))
+}
+
+#[cfg(unix)]
+fn available_storage_bytes_raw(path: &Path) -> std::io::Result<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "cache path contains NUL"))?;
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: the path is NUL terminated and stat points to writable storage.
+    if unsafe { libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let stat = unsafe { stat.assume_init() };
+    Ok((stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64))
+}
+
+#[cfg(windows)]
+fn available_storage_bytes_raw(path: &Path) -> std::io::Result<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    let path: Vec<u16> = crate::winpath::for_fs(path).as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut available = 0u64;
+    // SAFETY: buffers remain valid; unused optional output pointers are null.
+    let ok = unsafe { windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW(
+        path.as_ptr(), &mut available, std::ptr::null_mut(), std::ptr::null_mut(),
+    ) };
+    if ok == 0 { Err(std::io::Error::last_os_error()) } else { Ok(available) }
+}

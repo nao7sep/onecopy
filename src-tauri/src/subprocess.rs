@@ -12,17 +12,16 @@
 //! left alone, while a genuinely stuck one is killed. A wall-clock limit
 //! cannot tell those apart and would kill real work on big files.
 //!
-//! Errors carry a bounded TAIL of recent output — enough to diagnose the one
-//! file that failed, not an ffmpeg essay carried into a database column.
+//! A caller may stop waiting after cancellation while its owner retains the
+//! child, bounded pipe readers, staged output and capacity until settlement.
 
-use std::io::Read;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
@@ -37,6 +36,77 @@ pub const STDERR_BYTES: usize = 1024 * 1024;
 
 /// How often the watcher wakes to check liveness, idleness and cancellation.
 const POLL: Duration = Duration::from_millis(100);
+const CANCEL_SETTLEMENT: Duration = Duration::from_secs(2);
+static PHYSICAL_RUNS: AtomicUsize = AtomicUsize::new(0);
+
+struct Capacity(&'static AtomicUsize);
+
+impl Capacity {
+    fn reserve() -> Result<Self, String> {
+        let ceiling = crate::resource_limits::cpu_thread_budget().max(1) as usize;
+        Self::reserve_from(&PHYSICAL_RUNS, ceiling)
+    }
+
+    fn reserve_from(counter: &'static AtomicUsize, ceiling: usize) -> Result<Self, String> {
+        counter.try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            (current < ceiling).then_some(current + 1)
+        }).map_err(|_| format!(
+            "{}managed tool capacity is occupied by work that has not settled",
+            crate::resource_limits::SAFETY_ERROR_PREFIX,
+        ))?;
+        Ok(Self(counter))
+    }
+}
+
+impl Drop for Capacity {
+    fn drop(&mut self) { self.0.fetch_sub(1, Ordering::AcqRel); }
+}
+
+/// A private output stays owned until the last caller or writer settles.
+pub(crate) struct StagedOutput {
+    path: PathBuf,
+    file: Mutex<Option<std::fs::File>>,
+}
+
+impl StagedOutput {
+    pub(crate) fn new(path: PathBuf) -> std::io::Result<Self> {
+        let mut options = std::fs::OpenOptions::new(); // data root
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(&path)?;
+        Ok(Self { path, file: Mutex::new(Some(file)) })
+    }
+
+    pub(crate) fn path(&self) -> &Path { &self.path }
+
+    fn take_file(&self) -> Result<std::fs::File, String> {
+        self.file.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take().ok_or_else(|| "staged subprocess output already has a writer".to_string())
+    }
+}
+
+impl Drop for StagedOutput {
+    fn drop(&mut self) {
+        // Windows cannot remove an open file. Close any unused writer first.
+        let file = self.file.get_mut().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
+        drop(file);
+        if let Err(error) = std::fs::remove_file(&self.path) { // data root
+            if error.kind() != std::io::ErrorKind::NotFound {
+                crate::logging::warn("staged subprocess output cleanup failed",
+                    serde_json::json!({ "error": { "message": error.to_string() } }));
+            }
+        }
+    }
+}
+
+enum StdoutTarget {
+    Capture(usize),
+    File(Arc<StagedOutput>, u64),
+}
 
 /// Every subprocess currently running, for the exit watchdog: if quitting's
 /// bounded wait for derived work, mutations or requested media expires
@@ -50,6 +120,8 @@ static RUNNING: Mutex<Vec<Arc<Mutex<OwnedProcess>>>> = Mutex::new(Vec::new());
 /// process group does.
 pub(crate) struct OwnedProcess {
     child: std::process::Child,
+    #[cfg(unix)]
+    guardian: Option<crate::subprocess_supervisor::Guard>,
     #[cfg(windows)]
     tree: Option<process_tree::Job>,
 }
@@ -70,6 +142,8 @@ impl OwnedProcess {
         };
         Self {
             child,
+            #[cfg(unix)]
+            guardian: None,
             #[cfg(windows)]
             tree,
         }
@@ -90,7 +164,7 @@ impl std::ops::DerefMut for OwnedProcess {
 }
 
 /// Registers a spawned child for the exit watchdog; dropping the guard
-/// removes it again, whichever way `run_bounded_idle_output` returns.
+/// removes it only when the owner and all pipe readers have settled.
 struct Registration(Arc<Mutex<OwnedProcess>>);
 
 impl Drop for Registration {
@@ -120,15 +194,16 @@ fn lock_child(
 /// the non-mutation exit joins expires, and again if quitting gives up on the
 /// active mutation at its own deadline.
 pub fn kill_all_running() {
-    let running = match RUNNING.lock() {
+    kill_running(&RUNNING);
+}
+
+fn kill_running(registry: &Mutex<Vec<Arc<Mutex<OwnedProcess>>>>) {
+    let running = match registry.lock() {
         Ok(running) => running.clone(),
         Err(poisoned) => poisoned.into_inner().clone(),
     };
     for child in running {
-        let mut guard = lock_child(&child);
-        if matches!(guard.try_wait(), Ok(None)) {
-            kill_owned(&mut guard);
-        }
+        kill_owned(&mut lock_child(&child));
     }
 }
 
@@ -154,13 +229,7 @@ fn signal_for_exit(registry: &Mutex<Vec<Arc<Mutex<OwnedProcess>>>>) {
             Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
             Err(std::sync::TryLockError::WouldBlock) => continue,
         };
-        if !matches!(child.try_wait(), Ok(None)) { continue; }
-        #[cfg(unix)]
-        // SAFETY: this registered child owns the process group created before
-        // exec. Only signal it; a wait after SIGKILL can still stall on I/O.
-        unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL); }
-        #[cfg(not(unix))]
-        signal_tree(&mut child);
+        kill_owned(&mut child);
     }
 }
 
@@ -214,252 +283,273 @@ pub fn run_bounded_idle(
 }
 
 fn run_bounded_idle_output(
-    mut command: Command,
+    command: Command,
     cancelled: &dyn Fn() -> bool,
     idle_timeout: Duration,
     max_stdout: usize,
 ) -> Result<Run, String> {
-    #[cfg(windows)]
-    // Managed command-line tools must remain app-owned background work. A
-    // GUI parent otherwise causes Windows to allocate a visible console for
-    // ffmpeg, covering OneCopy for the lifetime of a long media operation.
-    command.creation_flags(CREATE_NO_WINDOW);
+    start_owned(command, cancelled, idle_timeout, StdoutTarget::Capture(max_stdout))
+}
 
-    #[cfg(unix)]
-    // SAFETY: this closure runs in the child after fork and before exec. It
-    // performs one async-signal-safe syscall and returns only its OS error.
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setpgid(0, 0) == 0 {
-                Ok(())
-            } else {
-                Err(std::io::Error::last_os_error())
+/// Streams bounded stdout into an exclusively created private file. The
+/// reader owns the file and an output reference even if its caller cancels.
+pub(crate) fn run_bounded_to_file(
+    command: Command,
+    cancelled: &dyn Fn() -> bool,
+    output: Arc<StagedOutput>,
+    max_bytes: u64,
+) -> Result<Run, String> {
+    start_owned(command, cancelled, IDLE_TIMEOUT, StdoutTarget::File(output, max_bytes))
+}
+
+enum OwnerEvent {
+    Stopping(String),
+    Settled(Result<Run, String>),
+}
+
+fn start_owned(
+    command: Command,
+    cancelled: &dyn Fn() -> bool,
+    idle_timeout: Duration,
+    target: StdoutTarget,
+) -> Result<Run, String> {
+    if cancelled() { return Err(crate::scanner::CANCELLED.to_string()); }
+    // A brief busy period queues at the caller, without creating another
+    // physical owner. Unsettled children keep their slots and eventually
+    // refuse admission rather than spawning an unbounded replacement fleet.
+    let admission_started = Instant::now();
+    let capacity = loop {
+        match Capacity::reserve() {
+            Ok(capacity) => break capacity,
+            Err(error) if admission_started.elapsed() >= CANCEL_SETTLEMENT => return Err(error),
+            Err(_) => {
+                if cancelled() { return Err(crate::scanner::CANCELLED.to_string()); }
+                std::thread::sleep(POLL);
             }
+        }
+    };
+    let cancellation = Arc::new(AtomicBool::new(false));
+    let owner_cancellation = cancellation.clone();
+    let (settled, receiver) = std::sync::mpsc::channel();
+    std::thread::Builder::new().name("onecopy-subprocess-owner".to_string())
+        .spawn(move || {
+            let _capacity = capacity;
+            let result = crate::failure_runtime::contain_item(|| {
+                run_owned(command, &owner_cancellation, idle_timeout, target, &settled)
+            });
+            let _ = settled.send(OwnerEvent::Settled(result));
+        }).map_err(|error| format!("could not start subprocess owner: {error}"))?;
+    wait_for_owner(receiver, cancellation, cancelled, CANCEL_SETTLEMENT)
+}
+
+fn wait_for_owner(
+    receiver: std::sync::mpsc::Receiver<OwnerEvent>,
+    cancellation: Arc<AtomicBool>,
+    cancelled: &dyn Fn() -> bool,
+    settlement_bound: Duration,
+) -> Result<Run, String> {
+    let mut stopping: Option<(String, Instant)> = None;
+    loop {
+        if cancelled() && stopping.is_none() {
+            cancellation.store(true, Ordering::Release);
+            stopping = Some((crate::scanner::CANCELLED.to_string(), Instant::now()));
+        }
+        if let Some((reason, started)) = &stopping {
+            if started.elapsed() >= settlement_bound {
+                crate::logging::warn("subprocess settlement continues after caller return",
+                    serde_json::json!({"reason": reason}));
+                return Err(if reason == crate::scanner::CANCELLED { reason.clone() }
+                    else { format!("{reason}: subprocess settlement pending") });
+            }
+        }
+        let wait = stopping.as_ref().map_or(POLL, |(_, started)| {
+            settlement_bound.saturating_sub(started.elapsed()).min(POLL)
         });
+        match receiver.recv_timeout(wait) {
+            Ok(OwnerEvent::Stopping(reason)) => {
+                let started = stopping.as_ref().map_or_else(Instant::now, |(_, started)| *started);
+                stopping = Some((reason, started));
+            }
+            Ok(OwnerEvent::Settled(result)) => return match result {
+                Ok(_) if cancellation.load(Ordering::Acquire) => Err(crate::scanner::CANCELLED.to_string()),
+                result => result,
+            },
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {},
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(stopping.map_or_else(
+                    || "subprocess owner ended without a result".to_string(),
+                    |(reason, _)| format!("{reason}: subprocess owner ended without a result"),
+                ));
+            }
+        }
     }
-    let mut spawned = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| e.to_string())?;
+}
+
+fn run_owned(
+    mut command: Command,
+    cancelled: &AtomicBool,
+    idle_timeout: Duration,
+    target: StdoutTarget,
+    events: &std::sync::mpsc::Sender<OwnerEvent>,
+) -> Result<Run, String> {
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    if cancelled.load(Ordering::Acquire) { return Err(crate::scanner::CANCELLED.to_string()); }
+    #[cfg(unix)]
+    let guardian = crate::subprocess_supervisor::prepare(&mut command).map_err(|error| error.to_string())?;
+    let mut spawned = command.stdin(Stdio::null()).stdout(Stdio::piped())
+        .stderr(Stdio::piped()).spawn().map_err(|error| error.to_string())?;
     let stdout_pipe = spawned.stdout.take();
     let stderr_pipe = spawned.stderr.take();
-    // Shared with the global registry below so an exit watchdog can kill this
-    // child from outside this function if this function's own thread never
-    // reaches a poll iteration again — the registration
-    // guard removes it once this function returns by any path.
-    let child = Arc::new(Mutex::new(OwnedProcess::new(spawned)));
-    let _registration = register_running(Arc::clone(&child));
-
-    // Both pipes are drained on their own threads. This is not just tidiness:
-    // a child that fills a pipe buffer nobody reads blocks forever, which
-    // would be a hang this function exists to prevent.
+    let owned = OwnedProcess::new(spawned);
+    #[cfg(unix)]
+    let owned = { let mut owned = owned; owned.guardian = Some(guardian); owned };
+    let child = Arc::new(Mutex::new(owned));
+    let _registration = register_running(child.clone());
     let last_output = Arc::new(AtomicU64::new(0));
     let started = Instant::now();
-    let stdout_buf = Arc::new(Mutex::new(Vec::new()));
-    let stderr_buf = Arc::new(Mutex::new(Vec::new()));
-    let stdout_overflow = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let stderr_overflow = Arc::new(std::sync::atomic::AtomicBool::new(false));
-
+    let failure = Arc::new(Mutex::new(None::<String>));
     let mut readers = Vec::new();
-    if let Some(mut out) = stdout_pipe {
-        let buf = Arc::clone(&stdout_buf);
-        let seen = Arc::clone(&last_output);
-        let overflow = Arc::clone(&stdout_overflow);
-        let reader = std::thread::Builder::new()
-            .name("onecopy-subprocess-stdout".to_string())
-            .spawn(move || -> Result<(), String> {
+    let mut terminal = None;
+    if let Some(out) = stdout_pipe {
+        match start_reader("stdout", out, target, last_output.clone(), started, failure.clone()) {
+            Ok(reader) => readers.push(reader),
+            Err(error) => terminal = Some(error),
+        }
+    }
+    if let Some(err) = stderr_pipe {
+        match start_reader("stderr", err, StdoutTarget::Capture(STDERR_BYTES), last_output.clone(), started, failure.clone()) {
+            Ok(reader) => readers.push(reader),
+            Err(error) => { if terminal.is_none() { terminal = Some(error); } },
+        }
+    }
+    let mut status = None;
+    let mut signalled = false;
+    loop {
+        if terminal.is_none() {
+            terminal = failure.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        }
+        if terminal.is_none() && cancelled.load(Ordering::Acquire) {
+            terminal = Some(crate::scanner::CANCELLED.to_string());
+        }
+        if terminal.is_none() {
+            let idle_ms = (started.elapsed().as_millis() as u64)
+                .saturating_sub(last_output.load(Ordering::Relaxed));
+            if idle_ms > idle_timeout.as_millis() as u64 {
+                terminal = Some(format!("no output for {}s — killed as stuck", idle_timeout.as_secs()));
+            }
+        }
+        if terminal.is_some() && !signalled {
+            let _ = events.send(OwnerEvent::Stopping(terminal.as_ref().unwrap().clone()));
+            kill_owned(&mut lock_child(&child));
+            signalled = true;
+        }
+        if status.is_none() {
+            match lock_child(&child).try_wait() {
+                Ok(Some(exited)) => status = Some(exited.success()),
+                Ok(None) => {},
+                Err(error) => { if terminal.is_none() { terminal = Some(error.to_string()); } },
+            }
+        }
+        #[cfg(not(unix))]
+        let guardian_settled = true;
+        #[cfg(unix)]
+        let guardian_settled = if status.is_some() {
+            let mut owned = lock_child(&child);
+            if let Some(guardian) = owned.guardian.as_mut() {
+                guardian.signal();
+                guardian.try_settle().unwrap_or(false)
+            } else { true }
+        } else { false };
+        if status.is_some() && guardian_settled && readers.iter().all(|reader| reader.is_finished()) { break; }
+        std::thread::sleep(POLL);
+    }
+    let mut outputs = Vec::new();
+    for reader in readers {
+        match reader.join().map_err(crate::failure_runtime::panic_message).and_then(|result| result) {
+            Ok(output) => outputs.push(output),
+            Err(error) => { if terminal.is_none() { terminal = Some(error); } },
+        }
+    }
+    let mut stdout = Vec::new();
+    let mut stderr = String::new();
+    for (name, output) in outputs {
+        if name == "stdout" { stdout = output; }
+        else { stderr = String::from_utf8_lossy(&output).into_owned(); }
+    }
+    match terminal {
+        None => Ok(Run { status_ok: status.unwrap_or(false), stdout, stderr }),
+        Some(reason) => {
+            let detail = stderr.trim();
+            Err(if detail.is_empty() { reason } else { format!("{reason}: {detail}") })
+        }
+    }
+}
+
+type Reader = std::thread::JoinHandle<Result<(&'static str, Vec<u8>), String>>;
+
+fn start_reader(
+    name: &'static str,
+    mut pipe: impl Read + Send + 'static,
+    target: StdoutTarget,
+    seen: Arc<AtomicU64>,
+    started: Instant,
+    failure: Arc<Mutex<Option<String>>>,
+) -> Result<Reader, String> {
+    std::thread::Builder::new().name(format!("onecopy-subprocess-{name}"))
+        .spawn(move || {
+            let result = crate::failure_runtime::contain_item(|| {
+                let mut bytes = Vec::new();
+                // File closes before the target's last Arc can remove it.
+                let mut file = match &target {
+                    StdoutTarget::File(output, _) => Some(output.take_file()?),
+                    StdoutTarget::Capture(_) => None,
+                };
+                let limit = match &target {
+                    StdoutTarget::Capture(limit) => *limit as u64,
+                    StdoutTarget::File(_, limit) => *limit,
+                };
+                let mut total = 0u64;
                 let mut chunk = [0u8; 64 * 1024];
                 loop {
-                    let n = out.read(&mut chunk).map_err(|error| error.to_string())?;
-                    if n == 0 {
-                        return Ok(());
-                    }
+                    let count = pipe.read(&mut chunk).map_err(|error| format!("subprocess {name} read failed: {error}"))?;
+                    if count == 0 { break; }
                     seen.store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
-                    if let Ok(mut b) = buf.lock() {
-                        if b.len().saturating_add(n) > max_stdout {
-                            overflow.store(true, Ordering::Relaxed);
-                        } else if !overflow.load(Ordering::Relaxed) {
-                            b.extend_from_slice(&chunk[..n]);
-                        }
+                    total = total.saturating_add(count as u64);
+                    if total > limit {
+                        let stream = if name == "stdout" { "output" } else { name };
+                        return Err(format!("subprocess {stream} exceeded the {limit} byte safety limit"));
                     }
+                    if let Some(file) = &mut file {
+                        file.write_all(&chunk[..count]).map_err(|error| crate::resource_limits::cache_write_error("subprocess output write failed", error))?;
+                    } else { bytes.extend_from_slice(&chunk[..count]); }
                 }
+                if let Some(file) = &mut file {
+                    file.flush().map_err(|error| crate::resource_limits::cache_write_error("subprocess output flush failed", error))?;
+                }
+                Ok((name, bytes))
             });
-        match reader {
-            Ok(reader) => readers.push(reader),
-            Err(error) => {
-                kill_owned(&mut lock_child(&child));
-                return Err(format!("could not start subprocess stdout reader: {error}"));
+            if let Err(error) = &result {
+                let mut recorded = failure.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                if recorded.is_none() { *recorded = Some(error.clone()); }
             }
-        }
-    }
-    if let Some(mut err) = stderr_pipe {
-        let buf = Arc::clone(&stderr_buf);
-        let seen = Arc::clone(&last_output);
-        let overflow = Arc::clone(&stderr_overflow);
-        let reader = std::thread::Builder::new()
-            .name("onecopy-subprocess-stderr".to_string())
-            .spawn(move || -> Result<(), String> {
-                let mut chunk = [0u8; 16 * 1024];
-                loop {
-                    let n = err.read(&mut chunk).map_err(|error| error.to_string())?;
-                    if n == 0 {
-                        return Ok(());
-                    }
-                    seen.store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
-                    if let Ok(mut b) = buf.lock() {
-                        if b.len().saturating_add(n) > STDERR_BYTES {
-                            overflow.store(true, Ordering::Relaxed);
-                        } else if !overflow.load(Ordering::Relaxed) {
-                            b.extend_from_slice(&chunk[..n]);
-                        }
-                    }
-                }
-            });
-        match reader {
-            Ok(reader) => readers.push(reader),
-            Err(error) => {
-                kill_owned(&mut lock_child(&child));
-                for reader in readers {
-                    match reader.join() {
-                        Ok(Ok(())) => {}
-                        Ok(Err(read_error)) => crate::logging::warn(
-                            "subprocess reader cleanup failed",
-                            serde_json::json!({
-                                "error": { "message": read_error },
-                            }),
-                        ),
-                        Err(payload) => crate::logging::warn(
-                            "subprocess reader cleanup panicked",
-                            serde_json::json!({
-                                "error": {
-                                    "message": crate::failure_runtime::panic_message(payload),
-                                },
-                            }),
-                        ),
-                    }
-                }
-                return Err(format!("could not start subprocess stderr reader: {error}"));
-            }
-        }
-    }
-
-    let outcome = loop {
-        match lock_child(&child).try_wait() {
-            Ok(Some(status)) => break Ok(status.success()),
-            Ok(None) => {}
-            Err(e) => break Err(e.to_string()),
-        }
-        if cancelled() {
-            kill_owned(&mut lock_child(&child));
-            break Err(crate::scanner::CANCELLED.to_string());
-        }
-        if stdout_overflow.load(Ordering::Relaxed) {
-            kill_owned(&mut lock_child(&child));
-            break Err(format!(
-                "subprocess output exceeded the {} MiB safety limit",
-                max_stdout / 1024 / 1024
-            ));
-        }
-        if stderr_overflow.load(Ordering::Relaxed) {
-            kill_owned(&mut lock_child(&child));
-            break Err("subprocess stderr exceeded the 1 MiB safety limit".to_string());
-        }
-        let idle_ms = (started.elapsed().as_millis() as u64)
-            .saturating_sub(last_output.load(Ordering::Relaxed));
-        if idle_ms > idle_timeout.as_millis() as u64 {
-            kill_owned(&mut lock_child(&child));
-            break Err(format!(
-                "no output for {}s — killed as stuck",
-                idle_timeout.as_secs()
-            ));
-        }
-        std::thread::sleep(POLL);
-    };
-
-    // Joining after the child is gone: the readers end when their pipes close.
-    let mut reader_failure = None;
-    for reader in readers {
-        let result = reader
-            .join()
-            .map_err(crate::failure_runtime::panic_message)
-            .and_then(|result| result);
-        if reader_failure.is_none() {
-            reader_failure = result.err();
-        }
-    }
-    if let Some(error) = reader_failure {
-        return Err(error);
-    }
-    let stdout = stdout_buf
-        .lock()
-        .map_err(|_| "subprocess stdout buffer is unavailable".to_string())?
-        .clone();
-    let stderr_bytes = stderr_buf
-        .lock()
-        .map_err(|_| "subprocess stderr buffer is unavailable".to_string())?
-        .clone();
-    let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
-
-    if stdout_overflow.load(Ordering::Relaxed) {
-        return Err(format!(
-            "subprocess output exceeded the {} MiB safety limit",
-            max_stdout / 1024 / 1024
-        ));
-    }
-    if stderr_overflow.load(Ordering::Relaxed) {
-        return Err("subprocess stderr exceeded the 1 MiB safety limit".to_string());
-    }
-
-    match outcome {
-        Ok(status_ok) => Ok(Run { status_ok, stdout, stderr }),
-        Err(reason) => {
-            let run = Run { status_ok: false, stdout, stderr };
-            let detail = run.stderr_text();
-            Err(if detail.is_empty() {
-                reason
-            } else {
-                format!("{reason}: {detail}")
-            })
-        }
-    }
+            result
+        }).map_err(|error| format!("could not start subprocess {name} reader: {error}"))
 }
 
 #[cfg(unix)]
 fn kill_owned(child: &mut OwnedProcess) {
-    // The child created its own process group before exec, so the negative PID
-    // reaches ffmpeg and anything it spawned without touching unrelated app
-    // or external-player processes.
-    // SAFETY: kill has no memory preconditions; the PID is the owned child.
-    let killed = unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
-    if killed != 0 {
-        let error = std::io::Error::last_os_error();
-        if error.raw_os_error() != Some(libc::ESRCH) {
-            crate::logging::warn(
-                "subprocess group termination failed",
-                serde_json::json!({ "error": { "message": error.to_string() } }),
-            );
-        }
-    }
-    if let Err(error) = child.wait() {
-        crate::logging::warn(
-            "subprocess reap failed",
-            serde_json::json!({ "error": { "message": error.to_string() } }),
-        );
+    if let Some(guardian) = child.guardian.as_mut() {
+        guardian.signal();
+    } else if matches!(child.try_wait(), Ok(None)) {
+        // Direct isolated test owners have their own group. A live/unreaped
+        // child pins its PID, so this cannot signal a reused process group.
+        unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL); }
     }
 }
 
 #[cfg(not(unix))]
-fn kill_owned(child: &mut OwnedProcess) {
-    signal_tree(child);
-    if let Err(error) = child.wait() {
-        crate::logging::warn(
-            "subprocess reap failed",
-            serde_json::json!({ "error": { "message": error.to_string() } }),
-        );
-    }
-}
+fn kill_owned(child: &mut OwnedProcess) { signal_tree(child); }
 
 /// Ends the child and everything it started: the whole job when one holds
 /// it, otherwise only the direct child.
@@ -554,6 +644,9 @@ mod process_tree {
         }
     }
 }
+
+#[cfg(all(test, unix))]
+use std::os::unix::process::CommandExt;
 
 #[cfg(test)]
 // EXCEPTION: the deadline-only signal and registry are crate-private; these

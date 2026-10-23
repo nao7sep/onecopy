@@ -25,6 +25,7 @@ pub const PREVIEW_LONG_EDGE_PX: u32 = 1600;
 pub const THUMBNAIL_EDGE_PX: u32 = 320;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use image::DynamicImage;
 use rusqlite::Connection;
@@ -443,22 +444,21 @@ pub fn ensure_fullres(
     // not recorded: full-resolution conversion is a reconstructible binary
     // cache entry, staged beside its final path.
     // ffmpeg applies the container's display transforms itself, so the
-    // output is already upright (one decode route). It writes the
-    // PNG itself: a full-resolution frame never passes through this process,
-    // whose decode ceiling protects the native image worker, not this route.
+    // output is already upright (one decode route). Its PNG bytes stream to
+    // the staged file without decoding a full-resolution frame in this process;
+    // the decode ceiling protects the native image worker, not this route.
     let src = Path::new(&path);
     let parent = target.parent().ok_or("cache path has no parent")?;
     std::fs::create_dir_all(parent) // data root
         .map_err(|e| crate::resource_limits::cache_write_error("full-resolution cache", e))?;
     let stem = target.file_stem().and_then(|s| s.to_str()).unwrap_or("cache");
-    let tmp = parent.join(format!("{stem}-{}.tmp", crate::nanoid::generate()?));
-    let converted = convert_full_resolution(ffmpeg, src, &tmp).and_then(|()| {
-        std::fs::rename(&tmp, &target).map_err(|e| e.to_string()) // data root
-    });
-    if converted.is_err() {
-        crate::fs_recovery::remove_file(&tmp, "full-resolution staging cleanup");
-    }
-    converted
+    let max_bytes = crate::resource_limits::available_storage_bytes(parent)? / 2;
+    let staged = Arc::new(crate::subprocess::StagedOutput::new(
+        parent.join(format!("{stem}-{}.tmp", crate::nanoid::generate()?)),
+    ).map_err(|error| crate::resource_limits::cache_write_error("full-resolution staging", error))?);
+    convert_full_resolution(ffmpeg, src, Arc::clone(&staged), max_bytes)?;
+    std::fs::rename(staged.path(), &target) // data root
+        .map_err(|error| crate::resource_limits::cache_write_error("full-resolution cache", error)) // data root
 }
 
 /// Deletes every full-resolution render: at clean exit, and at launch for
@@ -476,7 +476,12 @@ pub fn clear_session_renders(cache: &CachePaths) {
 
 /// Writes `src`'s first frame at full resolution as a PNG at `output`, in a
 /// supervised, cancellable ffmpeg process.
-fn convert_full_resolution(ffmpeg: &Path, src: &Path, output: &Path) -> Result<(), String> {
+fn convert_full_resolution(
+    ffmpeg: &Path,
+    src: &Path,
+    output: Arc<crate::subprocess::StagedOutput>,
+    max_bytes: u64,
+) -> Result<(), String> {
     logging::debug(
         "ffmpeg invocation",
         serde_json::json!({ "op": "convert-full-resolution", "src": src.to_string_lossy() }),
@@ -486,10 +491,14 @@ fn convert_full_resolution(ffmpeg: &Path, src: &Path, output: &Path) -> Result<(
         .arg(crate::resource_limits::cpu_thread_budget().to_string())
         .arg("-i")
         .arg(src)
-        .args(["-frames:v", "1", "-c:v", "png", "-f", "image2", "-update", "1", "-y"])
-        .arg(output);
-    let run = crate::subprocess::run_bounded(cmd, &crate::derived_runtime::cancelled)?;
-    let written = std::fs::metadata(output).is_ok_and(|meta| meta.len() > 0); // data root
+        .args(["-frames:v", "1", "-c:v", "png", "-f", "image2pipe", "pipe:1"]);
+    let run = crate::subprocess::run_bounded_to_file(
+        cmd,
+        &crate::derived_runtime::cancelled,
+        Arc::clone(&output),
+        max_bytes,
+    )?;
+    let written = std::fs::metadata(output.path()).is_ok_and(|meta| meta.len() > 0); // data root
     if !run.status_ok || !written {
         return Err(format!(
             "ffmpeg could not decode this format: {}",

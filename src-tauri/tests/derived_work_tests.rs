@@ -284,7 +284,7 @@ fn transcription_attempt_publishes_digital_silence_without_loading_the_model() {
     std::fs::create_dir_all(ffmpeg.parent().unwrap()).unwrap();
     std::fs::write(
         &ffmpeg,
-        "#!/bin/sh\nfor last do :; done\nprintf '\\000\\000\\000\\000\\000\\000\\000\\000' > \"$last\"\n",
+        "#!/bin/sh\nfor last do :; done\n[ \"$last\" = pipe:1 ] || exit 3\nprintf '\\000\\000\\000\\000\\000\\000\\000\\000'\n",
     )
     .unwrap();
     std::fs::set_permissions(&ffmpeg, std::fs::Permissions::from_mode(0o700)).unwrap();

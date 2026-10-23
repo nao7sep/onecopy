@@ -29,6 +29,7 @@ fn oversized_bitmap_is_rejected_before_pixel_allocation() {
 
 #[cfg(unix)]
 #[test]
+#[serial_test::serial(subprocess)]
 fn subprocess_stdout_stops_at_the_declared_ceiling() {
     let mut command = Command::new("sh");
     command.args(["-c", "head -c 4096 /dev/zero"]);
@@ -41,6 +42,7 @@ fn subprocess_stdout_stops_at_the_declared_ceiling() {
 
 #[cfg(unix)]
 #[test]
+#[serial_test::serial(subprocess)]
 fn subprocess_stdout_has_a_default_ceiling() {
     let mut command = Command::new("sh");
     command.arg("-c").arg(format!("head -c {} /dev/zero", subprocess::STDOUT_BYTES + 1));
@@ -53,6 +55,7 @@ fn subprocess_stdout_has_a_default_ceiling() {
 
 #[cfg(unix)]
 #[test]
+#[serial_test::serial(subprocess)]
 fn subprocess_stderr_has_a_fixed_ceiling() {
     let mut command = Command::new("sh");
     command.arg("-c").arg(format!("head -c {} /dev/zero >&2", subprocess::STDERR_BYTES + 1));
@@ -65,6 +68,7 @@ fn subprocess_stderr_has_a_fixed_ceiling() {
 
 #[cfg(unix)]
 #[test]
+#[serial_test::serial(subprocess)]
 fn cancelling_a_subprocess_kills_its_owned_descendants() {
     let dir = tempfile::tempdir().unwrap();
     let pid_file = dir.path().join("descendant.pid");

@@ -83,6 +83,8 @@ pub mod startup;
 pub mod storage;
 mod store_patch;
 pub mod subprocess;
+#[cfg(unix)]
+mod subprocess_supervisor;
 pub mod text_preview;
 pub mod theme;
 pub mod timestamps;
