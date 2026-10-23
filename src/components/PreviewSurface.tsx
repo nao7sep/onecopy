@@ -1,6 +1,6 @@
 import { displayNativePath } from "../utils/nativePath";
-// ONE preview surface, two placements: the second-monitor preview window and
-// the main window's split pane both render this. Images show the cached
+// One preview surface serves Main’s split pane, the separate Preview window
+// and the fullscreen view. Images show the cached
 // preview at fit (press and hold for original pixels); video, audio, text, and
 // attributes retain distinct bodies while composing shared session mechanics.
 // Detail arrives as a prop from the anchor owner; bounded text and explicit
