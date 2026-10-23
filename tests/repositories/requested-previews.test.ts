@@ -1,4 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
+import type { ActivityDraft } from "../../src/repositories/activity";
 import { ensureRequestedPreview } from "../../src/repositories/requested-previews";
 import {
   invokeCalls,
@@ -32,6 +33,17 @@ it("preserves the backend's coalesced result for concurrent callers", async () =
   await vi.waitFor(() => expect(
     invokeCalls.filter((call) => call.command === "activity_record"),
   ).toHaveLength(4));
+  const records = invokeCalls.filter((call) => call.command === "activity_record")
+    .map((call) => call.args.draft as ActivityDraft);
+  const starts = records.filter((record) => record.kind === "started");
+  expect(starts).toHaveLength(2);
+  expect(starts[0].operationId).not.toBe(starts[1].operationId);
+  expect(records.filter((record) => record.kind !== "started")).toEqual([
+    { owner: "preview", operationId: starts[0].operationId,
+      kind: "completed", previous: "running", current: "succeeded", reason: "completion" },
+    { owner: "preview", operationId: starts[1].operationId,
+      kind: "coalesced", previous: "running", current: "coalesced", reason: "superseded" },
+  ]);
 });
 
 it("does not coalesce different previews", async () => {
@@ -46,4 +58,15 @@ it("does not coalesce different previews", async () => {
   expect(
     invokeCalls.filter((call) => call.command === "ensure_preview"),
   ).toHaveLength(2);
+  await vi.waitFor(() => expect(
+    invokeCalls.filter((call) => call.command === "activity_record"),
+  ).toHaveLength(4));
+  const records = invokeCalls.filter((call) => call.command === "activity_record")
+    .map((call) => call.args.draft as ActivityDraft);
+  const starts = records.filter((record) => record.kind === "started");
+  expect(new Set(starts.map((record) => record.operationId)).size).toBe(2);
+  expect(records.filter((record) => record.kind !== "started")).toEqual(
+    starts.map((start) => ({ owner: "preview", operationId: start.operationId,
+      kind: "completed", previous: "running", current: "succeeded", reason: "completion" })),
+  );
 });
