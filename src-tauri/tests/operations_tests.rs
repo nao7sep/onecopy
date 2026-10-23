@@ -410,10 +410,7 @@ fn cache_entries_go_when_the_last_copy_goes() {
 }
 
 #[test]
-fn cache_entries_survive_while_another_copy_remains() {
-    // The complementary branch of "when the LAST copy goes". The original test
-    // had a single copy, so `remaining` was always 0 and the false branch —
-    // the one that decides whether a shared cache entry survives — never ran.
+fn a_missing_sibling_does_not_pin_cache_after_the_last_live_copy_is_deleted() {
     let f = fixture("cache-gc-shared");
     for sub in ["a", "b"] {
         std::fs::create_dir_all(f.root.join(sub)).unwrap();
@@ -1967,7 +1964,9 @@ fn move_skips_a_changed_copy_and_never_destroys_the_unchanged_one() {
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(issues.len(), 1);
-        assert!(issues[0].ends_with("r.jpg") && issues[0].contains("/a/"));
+        let expected = std::fs::canonicalize(f.root.join("a").join("r.jpg")).unwrap();
+        let reported = onecopy_lib::native_path::from_text(&issues[0]);
+        assert_eq!(std::fs::canonicalize(reported.as_ref()).unwrap(), expected);
     }
 }
 
@@ -4098,4 +4097,43 @@ fn overwrite_cancellation_retains_each_already_preserved_member_in_the_receipt()
         .any(|entry| std::fs::read(entry.path()).is_ok_and(|bytes| bytes == b"old-primary"));
     assert!(recovered);
     assert!(private_leftovers(&dest).is_empty());
+}
+
+
+#[test]
+fn cache_entries_and_derived_results_survive_a_partial_accepted_deletion() {
+    for mode in [DeleteMode::Trash, DeleteMode::Permanent] {
+        let f = fixture("cache-partial-delete");
+        for sub in ["a", "b"] {
+            std::fs::create_dir_all(f.root.join(sub)).unwrap();
+            std::fs::write(f.root.join(sub).join("x.jpg"), b"same-bytes").unwrap();
+        }
+        scan(&f);
+        let hash: String = f.conn.query_row("SELECT content_hash FROM paths LIMIT 1", [], |row| row.get(0)).unwrap();
+        let items = [ItemIdentity { hash: Some(hash.clone()), path_id: None }];
+        let accepted = AcceptedFiles::capture(&f.conn, &items).unwrap();
+        std::fs::create_dir_all(f.root.join("late")).unwrap();
+        std::fs::write(f.root.join("late/x.jpg"), b"same-bytes").unwrap();
+        scan(&f);
+        let cached = [f.cache.thumb(&hash), f.cache.preview(&hash), f.cache.fullres(&hash)];
+        for path in &cached {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"cached-result").unwrap();
+        }
+        f.conn.execute("INSERT INTO face_checks (content_hash, model, model_version, face_count, checked_at_utc)
+            VALUES (?1, 'test-model', 'test-version', 0, '2026-01-01T00:00:00.000Z')", [&hash]).unwrap();
+        let outcome = delete_accepted_batch(&f.conn, &f.app_root, &f.cache, &items, &accepted,
+            mode, &|| false, |_| {}).unwrap();
+        assert_eq!(outcome.deleted_files, 2);
+        assert_eq!(outcome.failed_files, 0);
+        assert!(outcome.error.is_none());
+        assert!(!f.root.join("a/x.jpg").exists());
+        assert!(!f.root.join("b/x.jpg").exists());
+        assert_eq!(std::fs::read(f.root.join("late/x.jpg")).unwrap(), b"same-bytes");
+        for path in &cached { assert_eq!(std::fs::read(path).unwrap(), b"cached-result"); }
+        let remaining: i64 = f.conn.query_row("SELECT COUNT(*) FROM paths WHERE content_hash = ?1 AND missing = 0", [&hash], |row| row.get(0)).unwrap();
+        assert_eq!(remaining, 1);
+        let retained: (String, String, i64) = f.conn.query_row("SELECT model, model_version, face_count FROM face_checks WHERE content_hash = ?1", [&hash], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+        assert_eq!(retained, ("test-model".into(), "test-version".into(), 0));
+    }
 }
