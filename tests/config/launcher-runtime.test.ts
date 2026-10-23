@@ -1,4 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 // The launcher helper is plain ESM because both shell families execute it directly.
@@ -30,15 +32,18 @@ describe("launcher process identity", () => {
   });
 
   it("does not let a stale launcher generation clean up its replacement", async () => {
-    const first = `first-${randomUUID()}`;
-    const second = `second-${randomUUID()}`;
+    const directory = await mkdtemp(join(tmpdir(), "onecopy-launcher-test-"));
+    const ownerFile = join(directory, "runtime.owner");
+    const first = "first";
+    const second = "second";
     try {
-      await claimRuntime(first);
-      await claimRuntime(second);
-      expect(await isRuntimeOwner(first)).toBe(false);
-      expect(await isRuntimeOwner(second)).toBe(true);
+      await claimRuntime(first, ownerFile);
+      await claimRuntime(second, ownerFile);
+      expect(await isRuntimeOwner(first, ownerFile)).toBe(false);
+      expect(await releaseRuntime(first, ownerFile)).toBe(false);
+      expect(await isRuntimeOwner(second, ownerFile)).toBe(true);
     } finally {
-      await releaseRuntime(second);
+      await rm(directory, { recursive: true, force: true });
     }
   });
 });

@@ -131,23 +131,23 @@ function ancestorsOf(processes, pid) {
 
 const delay = (milliseconds) => new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
 
-export async function claimRuntime(token) {
-  await writeFile(OWNER_FILE, `${token}\n`, { encoding: "utf8", mode: 0o600 });
+export async function claimRuntime(token, ownerFile = OWNER_FILE) {
+  await writeFile(ownerFile, `${token}\n`, { encoding: "utf8", mode: 0o600 });
 }
 
-export async function isRuntimeOwner(token) {
+export async function isRuntimeOwner(token, ownerFile = OWNER_FILE) {
   try {
-    return (await readFile(OWNER_FILE, "utf8")).trim() === token;
+    return (await readFile(ownerFile, "utf8")).trim() === token;
   } catch (error) {
     if (error?.code === "ENOENT") return false;
     throw error;
   }
 }
 
-export async function releaseRuntime(token) {
-  if (!await isRuntimeOwner(token)) return false;
+export async function releaseRuntime(token, ownerFile = OWNER_FILE) {
+  if (!await isRuntimeOwner(token, ownerFile)) return false;
   try {
-    await unlink(OWNER_FILE);
+    await unlink(ownerFile);
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
   }
