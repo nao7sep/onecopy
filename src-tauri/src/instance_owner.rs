@@ -11,11 +11,10 @@
 //! next owner clears any stale endpoint before publishing its own.
 
 use std::fs::{File, OpenOptions, TryLockError};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -31,13 +30,13 @@ struct Owner {
     // not managed text. The file may remain after exit; only its live lock is
     // authoritative.
     _lock: File,
-    stop: Arc<AtomicBool>,
+    stop: tokio::sync::watch::Sender<bool>,
     worker: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl Owner {
     fn request_shutdown(&self) {
-        self.stop.store(true, Ordering::SeqCst);
+        self.stop.send_replace(true);
     }
 
     fn join(&self) {
@@ -147,14 +146,19 @@ fn notify_primary(endpoint_path: &Path) -> Result<(), String> {
 fn listen(
     listener: TcpListener,
     app: tauri::AppHandle,
-    stop: Arc<AtomicBool>,
+    stop: tokio::sync::watch::Receiver<bool>,
 ) -> Result<JoinHandle<()>, String> {
+    // One readiness-driven loop owns the socket through shutdown. It has no
+    // blocking tasks, so dropping its future closes every accepted connection.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io().enable_time().build()
+        .map_err(|error| format!("could not prepare instance listener: {error}"))?;
     let handle = app.clone();
     std::thread::Builder::new()
         .name("onecopy-instance-listener".to_string())
         .spawn(move || {
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run_listener(listener, &handle, &stop)
+                runtime.block_on(run_listener(listener, stop, || activate(&handle)))
             }));
             let failure = match outcome {
                 Ok(Ok(())) => return,
@@ -181,56 +185,47 @@ fn listen(
         .map_err(|error| format!("could not start instance listener: {error}"))
 }
 
-fn run_listener(
+async fn run_listener(
     listener: TcpListener,
-    app: &tauri::AppHandle,
-    stop: &AtomicBool,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+    mut activate: impl FnMut() -> Result<(), String>,
 ) -> Result<(), String> {
-    while !stop.load(Ordering::SeqCst) && !crate::app_lifecycle::shutting_down() {
-        match listener.accept() {
-            Ok((mut stream, _)) => {
-                if stop.load(Ordering::SeqCst) || crate::app_lifecycle::shutting_down() {
-                    return Ok(());
-                }
-                // The listener is non-blocking so this loop can poll `stop`;
-                // on macOS and Windows an accepted stream INHERITS that mode,
-                // so a read here could return WouldBlock before the client's
-                // 8 bytes arrive and silently drop the activation. Put the
-                // accepted stream into blocking mode with its own bounded
-                // read timeout instead.
-                let _ = stream.set_nonblocking(false);
-                let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-                let mut request = [0u8; 8];
-                if stream.read(&mut request).is_ok() && request.starts_with(b"activate") {
-                    if crate::app_lifecycle::shutting_down() {
-                        return Ok(());
-                    }
-                    if let Some(window) = app.get_webview_window("main") {
-                        let activation = window
-                            .show()
-                            .and_then(|()| window.set_focus())
-                            .map_err(|error| error.to_string());
-                        match activation {
-                            Ok(()) => {
-                                crate::failure_runtime::clear(
-                                    "instance-activation-failed",
-                                    Some("main"),
-                                );
-                            }
-                            Err(error) => crate::failure_runtime::report(
-                                app,
-                                "instance-activation-failed",
-                                Some("main"),
-                                &error,
-                            )?,
-                        }
-                    }
-                }
+    let listener = tokio::net::TcpListener::from_std(listener)
+        .map_err(|error| format!("could not register instance listener: {error}"))?;
+    let service = async {
+        loop {
+            let (mut stream, _) = listener.accept().await
+                .map_err(|error| format!("instance listener stopped: {error}"))?;
+            if read_activation(&mut stream).await {
+                activate()?;
             }
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(RETRY_DELAY);
-            }
-            Err(error) => return Err(format!("instance listener stopped: {error}")),
+        }
+    };
+    tokio::select! {
+        biased;
+        // A retained watch value also handles shutdown before the loop starts.
+        _ = stop.wait_for(|requested| *requested) => Ok(()),
+        result = service => result,
+    }
+}
+
+async fn read_activation(stream: &mut (impl tokio::io::AsyncRead + Unpin)) -> bool {
+    use tokio::io::AsyncReadExt;
+    // TCP may split even this small frame. One total connection deadline
+    // covers all fragments; an idle peer cannot retain the listener.
+    let mut request = [0u8; 8];
+    matches!(tokio::time::timeout(Duration::from_millis(500), stream.read_exact(&mut request)).await, Ok(Ok(_)))
+        && &request == b"activate"
+}
+
+fn activate(app: &tauri::AppHandle) -> Result<(), String> {
+    if crate::app_lifecycle::shutting_down() { return Ok(()); }
+    if let Some(window) = app.get_webview_window("main") {
+        match window.show().and_then(|()| window.set_focus()) {
+            Ok(()) => crate::failure_runtime::clear("instance-activation-failed", Some("main")),
+            Err(error) => crate::failure_runtime::report(
+                app, "instance-activation-failed", Some("main"), &error.to_string(),
+            )?,
         }
     }
     Ok(())
@@ -254,9 +249,8 @@ pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
             let root = crate::paths::resolve_data_root(app.app_handle())?;
             match claim(&root)? {
                 Claim::Primary { lock, listener } => {
-                    let stop = Arc::new(AtomicBool::new(false));
-                    let worker =
-                        listen(listener, app.app_handle().clone(), stop.clone())?;
+                    let (stop, stopped) = tokio::sync::watch::channel(false);
+                    let worker = listen(listener, app.app_handle().clone(), stopped)?;
                     app.manage(Owner {
                         _lock: lock,
                         stop,
