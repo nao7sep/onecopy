@@ -11,14 +11,26 @@ export interface SectionMemory {
 
 const NEIGHBOR_LIMIT = 64;
 
+function isIdentityKey(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    identityFromKey(value);
+    return true;
+  } catch {
+    // Persisted recovery hints are optional; an invalid neighbor must not
+    // prevent loading the saved section and its independently valid anchor.
+    return false;
+  }
+}
+
 export function parseAnchorContext(value: unknown): AnchorContext | null {
   if (typeof value !== "object" || value === null) return null;
   const record = value as Record<string, unknown>;
   if (!Number.isInteger(record.index) || (record.index as number) < 0) return null;
-  if (!Array.isArray(record.before) || !record.before.every((key) => typeof key === "string")) {
+  if (!Array.isArray(record.before) || !record.before.every(isIdentityKey)) {
     return null;
   }
-  if (!Array.isArray(record.after) || !record.after.every((key) => typeof key === "string")) {
+  if (!Array.isArray(record.after) || !record.after.every(isIdentityKey)) {
     return null;
   }
   return {

@@ -18,7 +18,7 @@ import { usePreviewStore } from "../../src/state/preview-store";
 import type { SectionItem } from "../../src/models/items";
 import type { LoadedAppData } from "../../src/repositories";
 import type { SectionCounts } from "../../src/models/sections";
-import { mockCommands, mockSectionItems, resetTauriMocks } from "../mocks/tauri";
+import { invokeCalls, mockCommands, mockSectionItems, resetTauriMocks } from "../mocks/tauri";
 
 function item(pathId: number): SectionItem {
   return {
@@ -191,4 +191,17 @@ it.each([
 ])("restores supported lane sort choices and retains defaults for unsupported state: $state", ({ state, expected }) => {
   renderHook(() => useAppBootstrapAndRestore({ appData: appData(state), counts, restorePaneIntents: () => {} }));
   expect(useItemsStore.getState().sortOrders).toEqual(expected);
+});
+
+it.each(["before", "after"])("restores a usable anchor despite malformed saved %s neighbors", async (side) => {
+  const data = appData({
+    lastSection: { kind: "image", month: "2026-01" }, lastItem: "h42",
+    lastItemContext: { index: 2, before: ["h1"], after: ["h2"], [side]: ["path-invalid"] },
+  });
+  await act(async () => {
+    renderHook(() => useAppBootstrapAndRestore({ appData: data, counts, restorePaneIntents: () => {} }));
+  });
+  expect(useItemsStore.getState().selectedItem).toBe("h42");
+  expect(useItemsStore.getState().loadError).toBeNull();
+  expect(invokeCalls.find((call) => call.command === "reconcile_section")?.args.recovery).toBeNull();
 });
