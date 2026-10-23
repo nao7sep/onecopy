@@ -1,7 +1,8 @@
 //! Durable results of optional media analysis, plus the narrow recovery
 //! policy that reopens failed ones. This is not a job queue: absence means
-//! pending, the coordinator remains the only dispatcher, and only fixed, safe
-//! classes can be retried from Issues.
+//! pending and the coordinator remains the only dispatcher. A new launch or
+//! section recheck reopens failed outputs; transcripts also offer explicit
+//! Retry. Dismissing an Issue does not admit another attempt.
 
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::Serialize;

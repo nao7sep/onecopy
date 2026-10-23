@@ -152,20 +152,37 @@ fn model_less_pass_is_a_silent_no_op_leaving_scores_null() {
     let conn = &database.conn;
     seed_image(&conn, "img", "a.jpg");
     let cache = onecopy_lib::preview::CachePaths::new(dir.path().join("cache"));
+    conn.execute("UPDATE contents SET derived_version = ?1 WHERE hash = 'img'", [onecopy_lib::derived_state::DERIVE_VERSION]).unwrap();
+    let preview = cache.preview("img");
+    std::fs::create_dir_all(preview.parent().unwrap()).unwrap();
+    image::DynamicImage::new_rgb8(2, 2).save(&preview).unwrap();
+    assert_eq!(
+        onecopy_lib::derived_state::face_candidates(conn, None, 10).unwrap(),
+        vec![("img".into(), "/pics/a.jpg".into())],
+        "the missing-model boundary must receive eligible work",
+    );
 
     let stats = face::face_scores_pending(
         &conn,
         &cache,
         None,
         &[],
-        |_| {},
-        |_| {},
-        |_, _| {},
+        |_| panic!("no model must not start an item"),
+        |_| panic!("no model must not publish a change"),
+        |_, _| panic!("no model must not report inference progress"),
         None,
         &|| false,
     )
     .unwrap();
-    assert_eq!((stats.scored, stats.failed), (0, 0));
+    assert_eq!((stats.scored, stats.failed, stats.attempted), (0, 0, 0));
+    assert!(!stats.issues_changed);
+    let receipts: (i64, i64, i64) = conn.query_row(
+        "SELECT (SELECT count(*) FROM face_checks),
+                (SELECT count(*) FROM records.analysis_events WHERE content_hash = 'img'),
+                (SELECT count(*) FROM active_issues)",
+        [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ).unwrap();
+    assert_eq!(receipts, (0, 0, 0));
     let score: Option<f64> = conn
         .query_row("SELECT score FROM face_scores WHERE content_hash = 'img'", [], |r| r.get(0))
         .optional()
