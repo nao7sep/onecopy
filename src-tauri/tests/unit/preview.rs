@@ -363,3 +363,33 @@ fn preview_reopens_the_exact_native_path_from_encoded_text() {
     assert!(cache.preview("exact-native").exists());
     assert!(!root.path().join("photo-\u{fffd}.png").exists());
 }
+
+#[test]
+fn requested_and_automatic_decode_limits_share_retryable_dependency_debt() {
+    for requested in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+        let cache = CachePaths::new(dir.path().join("cache"));
+        let source = dir.path().join("large.jpg").to_string_lossy().into_owned();
+        std::fs::write(&source, b"decoder substituted").unwrap();
+        conn.execute("INSERT INTO contents (hash, byte_size, kind) VALUES ('large01', 1, 'image')", []).unwrap();
+        conn.execute("INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash) VALUES (?1, ?2, 'large.jpg', 'image', 'large01')",
+            rusqlite::params![source, dir.path().to_str().unwrap()]).unwrap();
+        let error = format!("{}native allocation ceiling", crate::resource_limits::DECODE_LIMIT_PREFIX);
+        if requested {
+            assert_eq!(record_preview_failure_or_combine(&conn, "large01", &source, false, error), NEEDS_FFMPEG);
+        } else {
+            let stats = derive_candidate_rows_with(&conn, &cache, None, None, None,
+                vec![("large01".into(), source.clone())], 1, &|| false, &|_, _, _| Err(error.clone())).unwrap();
+            assert_eq!((stats.failed, stats.blocked_no_ffmpeg), (0, 1));
+        }
+        assert!(!crate::derived_state::preview_failed(&conn, "large01").unwrap());
+        assert!(crate::derived_state::image_candidates(&conn, false, None, None).unwrap().is_empty());
+        let rows = crate::derived_state::image_candidates(&conn, true, None, None).unwrap();
+        assert_eq!(rows, [("large01".into(), source)]);
+        let resumed = derive_candidate_rows_with(&conn, &cache, Some(Path::new("managed-ffmpeg")), None, None,
+            rows, 1, &|| false, &|_, _, _| Ok((None, DerivedFacts { width: 10, height: 10, sharpness: 1.0, phash: 1 }))).unwrap();
+        assert_eq!(resumed.derived, 1);
+        assert!(crate::derived_state::image_candidates(&conn, true, None, None).unwrap().is_empty());
+    }
+}

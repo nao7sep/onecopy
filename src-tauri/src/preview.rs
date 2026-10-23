@@ -554,72 +554,75 @@ pub fn derive_one(
     }
     let native_path = crate::indexed_file::live_path(conn, Some(hash), None)?;
     let path = crate::native_path::encode(&native_path).into_owned();
-    let src = native_path.as_path();
-    if ffmpeg.is_none() && needs_ffmpeg_decode(src) {
-        return Err(
-            "this format needs the video & HEIC support — install it from Background work & tools"
-                .to_string(),
-        );
-    }
     let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::BackgroundWork,
         Some(crate::activity::ActivitySubject::Previews), Some(hash));
-    let result = (|| {
-    let _awake = crate::sleep_prevention::begin_work();
-    if crate::scanner::is_provisional(hash) {
-        let (real, facts) =
-            generate_for_image_teeing(src, cache, thumb_edge, preview_long_edge, ffmpeg)
-                .map_err(|err| record_preview_failure_or_combine(conn, hash, &path, err))?;
-        crate::scanner::promote_identity(conn, cache, hash, &real)?;
+    let result: Result<String, String> = (|| {
+        let _awake = crate::sleep_prevention::begin_work();
+        let (promoted, facts) = derive_candidate(hash, &path, cache, thumb_edge, preview_long_edge, ffmpeg)
+            .map_err(|error| record_preview_failure_or_combine(conn, hash, &path, ffmpeg.is_some(), error))?;
+        let key = match promoted {
+            Some(real) => {
+                crate::scanner::promote_identity(conn, cache, hash, &real)?;
+                real
+            }
+            None => hash.to_string(),
+        };
         crate::derived_state::record_preview_success(
             conn,
-            &real,
+            &key,
             &path,
             facts.width,
             facts.height,
             facts.sharpness,
             facts.phash,
         )?;
-        return Ok(real);
-    }
-    let facts = generate_for_image(src, hash, cache, thumb_edge, preview_long_edge, ffmpeg)
-        .map_err(|err| {
-            // The same honesty as the bulk pass: a broken file is recorded,
-            // not silently retried on every click.
-            record_preview_failure_or_combine(conn, hash, &path, err)
-        })?;
-    crate::derived_state::record_preview_success(
-        conn,
-        hash,
-        &path,
-        facts.width,
-        facts.height,
-        facts.sharpness,
-        facts.phash,
-    )?;
-    Ok(hash.to_string())
+        Ok(key)
     })();
     match &result {
         Ok(key) => trace.finish(crate::activity::ActivityState::Succeeded, Some(key)),
-        Err(_) => trace.result(&result),
+        Err(error) => trace.finish(match preview_failure_kind(error, ffmpeg.is_some()) {
+            PreviewFailureKind::Dependency | PreviewFailureKind::Storage => crate::activity::ActivityState::Waiting,
+            PreviewFailureKind::Cancelled => crate::activity::ActivityState::Cancelled,
+            PreviewFailureKind::Content => crate::activity::ActivityState::Failed,
+        }, None),
     }
-    result
+    result.map_err(|error| if error == NEEDS_FFMPEG {
+        "this image needs the video & HEIC support — install it from Background work & tools".to_string()
+    } else { error })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PreviewFailureKind { Dependency, Cancelled, Storage, Content }
+
+/// Requested and automatic preparation must preserve the same retryable debt.
+fn preview_failure_kind(error: &str, ffmpeg_available: bool) -> PreviewFailureKind {
+    if error == NEEDS_FFMPEG || (!ffmpeg_available && crate::resource_limits::is_decode_limit(error)) {
+        PreviewFailureKind::Dependency
+    } else if error.starts_with(crate::scanner::CANCELLED) {
+        PreviewFailureKind::Cancelled
+    } else if crate::resource_limits::is_storage_unavailable(error) {
+        PreviewFailureKind::Storage
+    } else {
+        PreviewFailureKind::Content
+    }
 }
 
 fn record_preview_failure_or_combine(
     conn: &Connection,
     hash: &str,
     path: &str,
+    ffmpeg_available: bool,
     failure: String,
 ) -> String {
-    // A stopped attempt is not a failed one; the next attempt starts fresh.
-    // A full disk or unwritable cache is the same: every later click would
-    // fail the identical write, so this is not evidence the FILE is broken.
-    if failure.starts_with(crate::scanner::CANCELLED)
-        || crate::resource_limits::is_storage_unavailable(&failure)
-    {
-        return failure;
-    }
-    match crate::derived_state::record_preview_failure(conn, hash, path, &failure) {
+    let recorded = match preview_failure_kind(&failure, ffmpeg_available) {
+        PreviewFailureKind::Dependency => return match crate::derived_state::record_preview_blocked(conn, hash) {
+            Ok(()) => NEEDS_FFMPEG.to_string(),
+            Err(error) => format!("OneCopy could not record the preview dependency: {error}; preview outcome: {failure}"),
+        },
+        PreviewFailureKind::Cancelled | PreviewFailureKind::Storage => return failure,
+        PreviewFailureKind::Content => crate::derived_state::record_preview_failure(conn, hash, path, &failure),
+    };
+    match recorded {
         Ok(_) => failure,
         Err(record_error) => {
             format!("{failure}; OneCopy also could not record the preview failure: {record_error}")
@@ -908,15 +911,10 @@ fn derive_candidate_rows_with(
                     // native worker has joined, preserving subprocess
                     // exclusivity.
                     outcome = crate::failure_runtime::contain_item(|| decode(hash, path, ffmpeg));
-                } else {
-                    // A large ordinary still needs the same managed fallback as
-                    // HEIC. Missing ffmpeg is dependency debt, not a bad file;
-                    // keep it inert and retryable until the tool arrives.
-                    outcome = Err(NEEDS_FFMPEG.to_string());
                 }
             }
 
-            match outcome {
+            match outcome.map_err(|error| (preview_failure_kind(&error, ffmpeg.is_some()), error)) {
                 Ok((promoted, facts)) => {
                     let key = match promoted {
                         Some(real) => {
@@ -938,7 +936,7 @@ fn derive_candidate_rows_with(
                     traces[index].finish(crate::activity::ActivityState::Succeeded, Some(&key));
                     stats.changes.push((hash.clone(), key));
                 }
-                Err(err) if err == NEEDS_FFMPEG => {
+                Err((PreviewFailureKind::Dependency, _)) => {
                     // Waiting on a tool, not a bad file: no issue row. The marker
                     // keeps it inert until ffmpeg arrives and wakes the owner.
                     stats.blocked_no_ffmpeg += 1;
@@ -946,11 +944,11 @@ fn derive_candidate_rows_with(
                     traces[index].finish(crate::activity::ActivityState::Waiting, None);
                     stats.changes.push((hash.clone(), hash.clone()));
                 }
-                Err(err) if err.starts_with(crate::scanner::CANCELLED) => {
+                Err((PreviewFailureKind::Cancelled, _)) => {
                     traces[index].finish(crate::activity::ActivityState::Cancelled, None);
                     return Err(crate::scanner::CANCELLED.to_string());
                 }
-                Err(err) if crate::resource_limits::is_storage_unavailable(&err) => {
+                Err((PreviewFailureKind::Storage, err)) => {
                     // A full disk or unwritable cache, not a bad file: every
                     // remaining item would fail the same write. Stop the pass
                     // here rather than recording one permanent failure per
@@ -959,7 +957,7 @@ fn derive_candidate_rows_with(
                     traces[index].finish(crate::activity::ActivityState::Waiting, None);
                     return Err(err);
                 }
-                Err(err) => {
+                Err((PreviewFailureKind::Content, err)) => {
                     stats.failed += 1;
                     stats.issues_changed |=
                         crate::derived_state::record_preview_failure(conn, hash, path, &err)?;

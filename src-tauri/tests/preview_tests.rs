@@ -599,6 +599,11 @@ windows_test! {
         ))
         .unwrap();
 
+        let error = derive_one(&conn, &cache, 320, 1600, None, "large01").unwrap_err();
+        assert!(error.contains("install it"), "{error}");
+        assert_eq!(conn.query_row("SELECT derive_outcome FROM contents WHERE hash = 'large01'", [],
+            |row| row.get::<_, String>(0)).unwrap(), NEEDS_FFMPEG);
+        conn.execute("UPDATE contents SET derive_outcome = NULL WHERE hash = 'large01'", []).unwrap();
         let stats = derive_images_pending(&conn, &cache, 320, 1600, None, None).unwrap();
         assert_eq!((stats.derived, stats.failed, stats.blocked_no_ffmpeg), (0, 0, 1));
         assert_eq!(
@@ -923,4 +928,31 @@ fn previews_choose_an_available_duplicate_and_do_not_mark_offline_inputs_as_bad_
     assert!(cache.preview("same01").exists());
     gradient_jpeg(dir.path(), "z-good.jpg", 80, 60);
     assert_eq!(derive_images_pending(&conn, &cache, 32, 160, None, None).unwrap().derived, 1);
+}
+
+#[test]
+fn requested_native_decode_limit_records_dependency_instead_of_content_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    let cache = CachePaths::new(dir.path().join("cache"));
+    // Dimensions alone trigger admission before decoding pixels. The native
+    // Windows test above also exercises this with a complete ordinary JPEG.
+    let mut bytes = vec![0u8; 54];
+    bytes[0..2].copy_from_slice(b"BM");
+    bytes[10..14].copy_from_slice(&54u32.to_le_bytes());
+    bytes[14..18].copy_from_slice(&40u32.to_le_bytes());
+    bytes[18..22].copy_from_slice(&30_000i32.to_le_bytes());
+    bytes[22..26].copy_from_slice(&30_000i32.to_le_bytes());
+    bytes[26..28].copy_from_slice(&1u16.to_le_bytes());
+    bytes[28..30].copy_from_slice(&24u16.to_le_bytes());
+    let source = dir.path().join("large.bmp");
+    std::fs::write(&source, bytes).unwrap();
+    conn.execute("INSERT INTO contents (hash, byte_size, kind) VALUES ('large01', 54, 'image')", []).unwrap();
+    conn.execute("INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash) VALUES (?1, ?2, 'large.bmp', 'image', 'large01')",
+        rusqlite::params![source.to_str().unwrap(), dir.path().to_str().unwrap()]).unwrap();
+    let error = derive_one(&conn, &cache, 32, 160, None, "large01").unwrap_err();
+    assert!(error.contains("install it"), "{error}");
+    assert_eq!(conn.query_row("SELECT derive_outcome FROM contents WHERE hash = 'large01'", [],
+        |row| row.get::<_, String>(0)).unwrap(), NEEDS_FFMPEG);
+    assert_eq!(conn.query_row("SELECT count(*) FROM active_issues", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
 }
