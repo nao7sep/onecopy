@@ -60,7 +60,8 @@ it("retains Show more intent but replaces its obsolete cursor after a refresh", 
   requests[0].resolve({ total: 4, rows: [row(2)] });
   await pending(2);
   expect(useIssuesStore.getState().rows.map((value) => value.id)).toEqual([1]);
-  expect(requests[1].args).not.toHaveProperty("afterId");
+  // Undefined optional keys are omitted by the IPC JSON serializer.
+  expect(JSON.parse(JSON.stringify(requests[1].args))).not.toHaveProperty("afterId");
   requests[1].resolve({ total: 4, rows: [row(3)] });
   await pending(3);
   expect(requests[2].args).toMatchObject({ afterId: 3, afterFirstSeenUtc: row(3).firstSeenUtc });

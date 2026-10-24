@@ -62,7 +62,17 @@ function publish(): void {
     current: "running", reason: "viewportChange",
     lane: attention.sectionKind ?? undefined, itemCount: attention.visibleHashes.length,
   });
-  void invoke("prioritize_derived_work", { ...attention, generation }).then(() => {
+  void invoke("prioritize_derived_work", {
+    selectedHash: attention.selectedHash,
+    visibleHashes: attention.visibleHashes,
+    nearbyHashes: attention.nearbyHashes,
+    sectionKind: attention.sectionKind,
+    sectionMonth: attention.sectionMonth,
+    sectionSort: attention.sectionSort,
+    sectionAnchor: attention.sectionAnchor,
+    sectionTotal: attention.sectionTotal,
+    generation,
+  }).then(() => {
     recordActivity({ kind: "completed", owner: "priority", operationId, previous: "running", current: "succeeded", reason: "completion" });
   }).catch((error) => {
     if (last === signature) last = "";

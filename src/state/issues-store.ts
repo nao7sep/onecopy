@@ -62,9 +62,8 @@ export const useIssuesStore = create<IssuesState>((set, get) => {
         try {
           const result = await invoke<{ total: number; rows: IssueRow[] }>("get_issues", {
             limit: PAGE_SIZE,
-            ...(!refresh && last !== undefined ? {
-              afterFirstSeenUtc: last.firstSeenUtc, afterId: last.id,
-            } : {}),
+            afterFirstSeenUtc: refresh ? undefined : last?.firstSeenUtc,
+            afterId: refresh ? undefined : last?.id,
           });
           if (revision !== dismissalRevision || (!refresh && refreshPending)) continue;
           // A notification received during this read requests one successor;

@@ -128,10 +128,6 @@ const SESSION_DISMISS_LABEL: Record<SessionOwner, MessageKey> = {
   wrap: "textPreview.closeWrapResult",
 };
 
-function identityPayload(hash: string | null, pathId: number | null) {
-  return { hash, pathId: hash === null ? pathId : null };
-}
-
 export default function TextOrAttributesSurface({
   hash,
   pathId,
@@ -214,7 +210,8 @@ export default function TextOrAttributesSurface({
     }
     setError(null);
     void invoke<PreviewBody>("text_preview", {
-      ...identityPayload(hash, pathId),
+      hash,
+      pathId: hash === null ? pathId : null,
       encoding: selectedEncoding === "automatic" ? null : selectedEncoding,
     })
       .then((result) => {

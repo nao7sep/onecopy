@@ -199,7 +199,8 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       if (target === null) return "unavailable";
       if (expectedHash !== undefined && target.identity.hash !== expectedHash) return "unavailable";
       const result = await invoke<SectionReconciliation>("reconcile_section", {
-        ...target.section,
+        kind: target.section.kind,
+        month: target.section.month,
         sort: target.section.kind === "other" ? sorts.other : sorts.media,
         selected: [{ ...target.identity, index: 0 }], anchor: target.identity,
         rangeOrigin: target.identity, rangeBase: [target.identity],

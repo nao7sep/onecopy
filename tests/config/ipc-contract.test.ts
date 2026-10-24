@@ -19,6 +19,7 @@ import { identityFromKey, keyOf } from "../../src/models/items";
 import { workReasonKey } from "../../src/models/workReasons";
 import { BACKGROUND_CLASS_IDS, CORE_CLASS_STATES } from "../../src/state/derived-work-store";
 import { CORE_NAMES } from "../helpers/coreNames";
+import { argumentProblems, commandParameters, invokeCallsIn } from "../helpers/ipcContract";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -31,18 +32,10 @@ function sourceFiles(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-const frontendSource = sourceFiles(join(repoRoot, "src"))
-  .map((f) => readFileSync(f, "utf8"))
-  .join("\n");
-
+const frontendCalls = sourceFiles(join(repoRoot, "src"))
+  .flatMap((file) => invokeCallsIn(readFileSync(file, "utf8")).map((call) => ({ file, ...call })));
 const rustLib = readFileSync(join(repoRoot, "src-tauri/src/lib.rs"), "utf8");
-
-/** Command names the frontend actually calls. */
-const invoked = new Set(
-  [...frontendSource.matchAll(/invoke[^("]*\(\s*"([a-z_]+)"/g)].map(
-    (m) => m[1]!,
-  ),
-);
+const invoked = new Set(frontendCalls.map((call) => call.command));
 
 /** Command names the Rust side registers in generate_handler!. */
 const registered = new Set(
@@ -64,7 +57,7 @@ describe("the command registry", () => {
   });
 
   it("has a Rust command behind every invoke the frontend makes", () => {
-    const missing = [...invoked].filter((name) => !registered.has(name));
+    const missing = [...invoked].filter((name) => !registered.has(name ?? ""));
     expect(missing, "invoked but not registered").toEqual([]);
   });
 
@@ -77,100 +70,55 @@ describe("the command registry", () => {
 });
 
 describe("command arguments", () => {
-  /** `fn name(a: T, b_c: U)` → the camelCase keys Tauri expects. */
-  function paramsOf(command: string): string[] | null {
-    const pattern = new RegExp(
-      `#\\[tauri::command\\][\\s\\S]{0,80}?fn\\s+${command}\\s*\\(([\\s\\S]*?)\\)\\s*->`,
-    );
-    const raw = pattern.exec(rustLib)?.[1];
-    if (raw === undefined) return null;
-    return raw
-      .split(",")
-      .map((p) => p.trim())
-      .filter((p) => p.length > 0)
-      .map((p) => p.split(":")[0]!.trim())
-      // AppHandle/State are injected by Tauri, never sent by the caller.
-      .filter((name) => !/^(app|window|state)$/.test(name))
-      .map((name) => name.replace(/_([a-z])/g, (_m, c: string) => c.toUpperCase()));
-  }
+  it("checks every call against required and optional native parameters", () => {
+    const commands = commandParameters(rustLib);
+    expect([...registered].filter((command) => !commands.has(command))).toEqual([]);
+    const problems = frontendCalls.flatMap((call) => {
+      if (call.command === null) return [`${call.file}: dynamic command`];
+      const parameters = commands.get(call.command);
+      if (parameters === undefined) return []; // Registry coverage owns absent commands.
+      return argumentProblems(call, parameters).map((problem) => `${call.file}: ${call.command}: ${problem}`);
+    });
+    expect(problems).toEqual([]);
+  });
 
-  /**
-   * The invoke call's object-literal argument, matched to its BALANCED
-   * closing brace rather than the first `}` — a payload built from a
-   * `.map()` callback or a nested return value has closing braces of its
-   * own before the argument's real end.
-   */
-  function objectArgOf(source: string, openBraceIndex: number): string {
-    let depth = 0;
-    let i = openBraceIndex;
-    for (; i < source.length; i++) {
-      if (source[i] === "{") depth++;
-      else if (source[i] === "}") {
-        depth--;
-        if (depth === 0) break;
-      }
-    }
-    return source.slice(openBraceIndex + 1, i);
-  }
+  it("reads shorthand and quoted keys without treating nested values or comments as arguments", () => {
+    const calls = invokeCallsIn(`
+      // invoke("not_a_call", { wrong: true });
+      invoke<Result>("save", { renamed, "reportFailure": false,
+        payload: values.map(value => ({ nested: value, punctuation: "},:" })),
+        ...{ literalSpread: true } });
+    `);
+    expect(calls).toEqual([{ command: "save", keys: ["renamed", "reportFailure", "payload", "literalSpread"], unresolved: [] }]);
+    expect(argumentProblems(calls[0]!, [{ key: "changes", required: true },
+      ...["reportFailure", "payload", "literalSpread"].map(key => ({ key, required: false }))]))
+      .toEqual(["unknown renamed", "missing changes"]);
+  });
 
-  /** Reserved words that can precede a `:` without being an object key —
-   * a ternary's `cond ? null : value` reads exactly like `null:` to a
-   * text scan. */
-  const RESERVED_VALUE_WORDS = new Set(["null", "true", "false", "undefined"]);
+  it("reports dynamic arguments and computed keys rather than silently skipping them", () => {
+    const calls = invokeCallsIn(`invoke("save", args); invoke("save", { ...args });
+      invoke("save", { [key]: value }); invoke(command, {});`);
+    expect(calls.map(call => call.unresolved)).toEqual([["nonliteral arguments"], ["nonliteral arguments"], ["computed argument key"], []]);
+    expect(calls[3]!.command).toBeNull();
+  });
 
-  /**
-   * Top-level (brace/bracket/paren depth 0 within the object argument) keys
-   * only — a nested `{ hash, pathId }` inside a `.map()` callback is part of
-   * one array-typed argument's element shape, not a key of the command's own
-   * argument object, and must not be flagged as one.
-   */
-  function topLevelSentKeys(body: string): string[] {
-    const keys: string[] = [];
-    let depth = 0;
-    const re = /[{}[\]()]|(?:^|[,{\s])([a-zA-Z][a-zA-Z0-9]*)\s*:/g;
-    let match: RegExpExecArray | null;
-    while ((match = re.exec(body))) {
-      const token = match[0];
-      if (token === "{" || token === "[" || token === "(") {
-        depth++;
-        continue;
-      }
-      if (token === "}" || token === "]" || token === ")") {
-        depth = Math.max(0, depth - 1);
-        continue;
-      }
-      const key = match[1];
-      if (depth === 0 && key && !RESERVED_VALUE_WORDS.has(key)) {
-        keys.push(key);
-      }
-    }
-    return keys;
-  }
+  it("recognizes import aliases and calls with no argument object", () => {
+    const calls = invokeCallsIn(`import { invoke as native } from "@tauri-apps/api/core";
+      native("save");`);
+    expect(argumentProblems(calls[0]!, [{ key: "changes", required: true }])).toEqual(["missing changes"]);
+  });
 
-  it("accepts every argument key the frontend sends", () => {
-    const calls: { command: string; body: string }[] = [];
-    const callStart = /invoke[^("]*\(\s*"([a-z_]+)"\s*,\s*\{/g;
-    let match: RegExpExecArray | null;
-    while ((match = callStart.exec(frontendSource))) {
-      const openBrace = match.index + match[0].length - 1;
-      calls.push({
-        command: match[1]!,
-        body: objectArgOf(frontendSource, openBrace),
-      });
-    }
-    expect(calls.length).toBeGreaterThan(5);
-
-    const mismatches: string[] = [];
-    for (const { command, body } of calls) {
-      const accepted = paramsOf(command);
-      if (accepted === null) continue; // registry test above owns this case
-      for (const key of topLevelSentKeys(body)) {
-        if (!accepted.includes(key)) {
-          mismatches.push(`${command}: sends "${key}", accepts [${accepted}]`);
-        }
-      }
-    }
-    expect([...new Set(mismatches)]).toEqual([]);
+  it("excludes injected native types and permits omitted Option parameters, including defaulted ones", () => {
+    const commands = commandParameters(`
+      #[tauri::command]
+      async fn save(readiness: tauri::State<'_, Gate>, app: AppHandle,
+        changes: serde_json::Map<String, Value>, report_failure: Option<bool>) -> Result<(), String> { todo!() }
+      #[tauri::command]
+      fn notify(window: tauri::WebviewWindow, operation_id: u64) {}
+    `);
+    expect(commands.get("save")).toEqual([{ key: "changes", required: true }, { key: "reportFailure", required: false }]);
+    expect(commands.get("notify")).toEqual([{ key: "operationId", required: true }]);
+    expect(argumentProblems(invokeCallsIn('invoke("save", { changes });')[0]!, commands.get("save")!)).toEqual([]);
   });
 });
 
