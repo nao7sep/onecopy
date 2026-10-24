@@ -311,3 +311,58 @@ fn admitted_patch_preserves_invalid_bytes_and_refuses_newer_stores() {
     assert!(write_json_file(&target, &serde_json::json!({}), formats::STATE, false).is_err());
     assert_eq!(std::fs::read(&target).unwrap(), newer);
 }
+
+#[test]
+fn startup_cleanup_removes_only_recognized_regular_managed_stages() {
+    let dir = temp_dir("managed-stages");
+    let root = dir.path();
+    let id = crate::nanoid::generate().unwrap();
+    let mut abandoned = vec![root.join(format!("config-{id}.tmp")), root.join(format!("backups-{id}.tmp")), root.join(format!("backups-{id}.tmp-journal"))];
+    for target in crate::binaries_manager::managed_metadata_paths(root) {
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        abandoned.push(target.with_file_name(atomic_temp_name(target.file_name().unwrap().to_str().unwrap()).unwrap()));
+    }
+    for path in &abandoned { std::fs::write(path, b"unfinished private output").unwrap(); }
+    #[cfg(windows)] {
+        let mut permissions = std::fs::metadata(&abandoned[0]).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&abandoned[0], permissions).unwrap();
+    }
+    let kept: Vec<_> = ["config.json".to_string(), "backups.sqlite3".to_string(), "config-20261024-000000-utc.invalid".to_string(),
+        format!("unknown-{id}.tmp"), "config-short.tmp".to_string(), format!("config-{}é.tmp", "A".repeat(19)),
+        format!("config-{id}.tmp-journal"), format!("backups-{id}.tmp-wal")]
+        .into_iter().map(|name| root.join(name)).collect();
+    for path in &kept { std::fs::write(path, b"preserve these bytes").unwrap(); }
+    let nested = root.join(format!("state-{id}.tmp"));
+    std::fs::create_dir(&nested).unwrap();
+    std::fs::write(nested.join(format!("config-{id}.tmp")), b"not a top-level stage").unwrap();
+    #[cfg(unix)] {
+        std::os::unix::fs::symlink(&kept[0], root.join(format!("window-{id}.tmp"))).unwrap();
+    }
+    #[cfg(unix)] {
+        let alias = root.join("selected-home-alias");
+        std::os::unix::fs::symlink(root, &alias).unwrap();
+        cleanup_managed_stages(&alias);
+    }
+    #[cfg(not(unix))]
+    cleanup_managed_stages(root);
+    cleanup_managed_stages(root);
+    for path in abandoned { assert!(!path.exists(), "{}", path.display()); }
+    for path in kept { assert_eq!(std::fs::read(path).unwrap(), b"preserve these bytes"); }
+    assert_eq!(std::fs::read(nested.join(format!("config-{id}.tmp"))).unwrap(), b"not a top-level stage");
+    #[cfg(unix)] {
+        assert!(std::fs::symlink_metadata(root.join(format!("window-{id}.tmp"))).unwrap().file_type().is_symlink());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn startup_stage_cleanup_never_follows_a_replaced_metadata_folder() {
+    let dir = temp_dir("linked-metadata-folder");
+    let external = temp_dir("external-metadata-folder");
+    let staged = external.path().join(format!("ffmpeg-{}.tmp", crate::nanoid::generate().unwrap()));
+    std::fs::write(&staged, b"outside managed home").unwrap();
+    std::os::unix::fs::symlink(external.path(), dir.path().join(crate::paths::BIN_DIR_NAME)).unwrap();
+    cleanup_managed_stages(dir.path());
+    assert_eq!(std::fs::read(staged).unwrap(), b"outside managed home");
+}

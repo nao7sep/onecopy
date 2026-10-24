@@ -519,6 +519,24 @@ fn a_corrupt_config_is_set_aside_reported_and_not_reseeded() {
 
 #[test]
 #[serial(quarantine_journal)]
+fn a_failed_state_load_keeps_the_completed_config_quarantine_notice_for_retry() {
+    let owner = temp_dir("quarantine-load-retry");
+    let root = owner.path();
+    std::fs::write(root.join(CONFIG_FILE_NAME), b"invalid original settings").unwrap();
+    let state = root.join(STATE_FILE_NAME);
+    std::fs::create_dir(&state).unwrap();
+    assert!(load_from_root(root).is_err());
+    assert!(!root.join(CONFIG_FILE_NAME).exists());
+    std::fs::remove_dir(&state).unwrap();
+    let loaded = load_from_root(root).unwrap();
+    assert_eq!(loaded.quarantines.len(), 1);
+    assert_eq!(loaded.quarantines[0].file, CONFIG_FILE_NAME);
+    assert_eq!(std::fs::read(&loaded.quarantines[0].quarantined_to).unwrap(), b"invalid original settings");
+    assert!(load_from_root(root).unwrap().quarantines.is_empty());
+}
+
+#[test]
+#[serial(quarantine_journal)]
 fn a_corrupt_state_is_reported_without_disturbing_a_good_config() {
     let root_owner = temp_dir("quarantine-state");
     let root = root_owner.path();

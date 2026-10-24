@@ -475,6 +475,14 @@ struct ModelIdentity {
     file_version: Option<crate::file_identity::FileVersion>,
 }
 
+/// Managed text alongside installed artifacts, for startup-only stage cleanup.
+pub(crate) fn managed_metadata_paths(root: &Path) -> Vec<PathBuf> {
+    std::iter::once(version_sidecar_path(root)).chain(
+        DEPENDENCIES.iter().filter(|spec| spec.kind == DependencyKind::Model)
+            .map(|spec| model_identity_path(root, spec))
+    ).collect()
+}
+
 fn model_identity_path(root: &Path, spec: &DependencySpec) -> PathBuf {
     installed_path(root, spec).with_extension("json")
 }

@@ -26,6 +26,11 @@ pub fn generate() -> Result<String, String> {
         .collect())
 }
 
+/// Recognizes only the discriminator grammar emitted by this generator.
+pub(crate) fn is_generated_id(value: &str) -> bool {
+    value.len() == LENGTH && value.bytes().all(|byte| ALPHABET.contains(&byte))
+}
+
 #[cfg(test)]
 // EXCEPTION to tests-folder conventions: checks the identifier length of a
 // module that is private to the crate.

@@ -423,8 +423,10 @@ fn normalize_presentation_state(state: Option<JsonValue>) -> Option<JsonValue> {
 
 pub fn load_from_root(root: &Path) -> Result<LoadedAppData, String> {
     let config = (*config(root)?).clone();
-    let mut quarantines = take_pending_quarantines();
     let state_read = read_json_optional(&root.join(STATE_FILE_NAME), formats::STATE)?;
+    // Transfer startup notices only after the last fallible load step. A
+    // refused state read must leave earlier config recovery visible on retry.
+    let mut quarantines = take_pending_quarantines();
     if let Some(record) = state_read.quarantined {
         quarantines.push(record);
     }
@@ -984,23 +986,7 @@ fn write_atomic_admitted(
         std::fs::rename(&tmp, target).map_err(|error| error.to_string())
     })();
     if let Err(error) = publish {
-        #[cfg(windows)] {
-            let writable = (|| -> std::io::Result<()> {
-                let mut permissions = std::fs::metadata(&tmp)?.permissions();
-                if permissions.readonly() {
-                    permissions.set_readonly(false);
-                    std::fs::set_permissions(&tmp, permissions)?;
-                }
-                Ok(())
-            })();
-            if let Err(cleanup_error) = writable {
-                crate::logging::warn(
-                    "atomic store staging permissions cleanup failed",
-                    serde_json::json!({ "path": crate::native_path::encode(&tmp), "error": { "message": cleanup_error.to_string() } }),
-                );
-            }
-        }
-        crate::fs_recovery::remove_file(&tmp, "atomic store publication cleanup");
+        remove_managed_stage(&tmp, "atomic store publication cleanup");
         return Err(error);
     }
 
@@ -1022,6 +1008,94 @@ fn write_atomic_admitted(
     }
 
     Ok(())
+}
+
+/// Runs under the exclusive app-data owner before managed writers start.
+/// Only known store stems and the generator's exact private-name grammar
+/// establish ownership; canonical files, quarantines, links and unknown names
+/// are never cleanup candidates. Enumeration is streamed, including failures.
+pub(crate) fn cleanup_managed_stages(root: &Path) {
+    // The selected home may itself use an intentional alias. Resolve that
+    // owned root once; never follow links in its metadata subdirectories.
+    let resolved = match std::fs::canonicalize(root) {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            logging::warn("managed store staging cleanup failed",
+                serde_json::json!({ "path": crate::native_path::encode(root), "error": { "message": error.to_string() } }));
+            return;
+        }
+    };
+    let root = resolved.as_path();
+    let mut targets: Vec<_> = [
+        CONFIG_FILE_NAME, STATE_FILE_NAME, WINDOW_FILE_NAME,
+        PREVIEW_WINDOW_FILE_NAME, RECORDS_WINDOW_FILE_NAME,
+        paths::SOURCE_VOLUMES_FILE_NAME, paths::DEPENDENCIES_FILE_NAME,
+        crate::file_identity::INSTALLATION_ID_FILE_NAME,
+        backup_store::BACKUPS_DB_FILE_NAME,
+    ].into_iter().map(|name| root.join(name)).collect();
+    targets.extend(crate::binaries_manager::managed_metadata_paths(root));
+    let mut folders = std::collections::BTreeMap::<PathBuf, Vec<String>>::new();
+    for target in targets {
+        if let (Some(parent), Some(stem)) = (target.parent(), target.file_stem().and_then(|stem| stem.to_str())) {
+            folders.entry(parent.to_path_buf()).or_default().push(stem.to_string());
+        }
+    }
+    for (folder, stems) in folders {
+        if let Err(error) = cleanup_stage_folder(&folder, &stems, folder == root) {
+            logging::warn("managed store staging cleanup failed",
+                serde_json::json!({ "path": crate::native_path::encode(&folder), "error": { "message": error.to_string() } }));
+        }
+    }
+}
+
+fn cleanup_stage_folder(folder: &Path, stems: &[String], backup_journals: bool) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(folder) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+        Ok(metadata) if !metadata.file_type().is_dir() => return Ok(()),
+        Ok(_) => {}
+    }
+    for entry in std::fs::read_dir(folder)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let (name, journal) = name.strip_suffix("-journal").map_or((name, false), |name| (name, true));
+        let Some(stage) = name.strip_suffix(".tmp") else { continue };
+        let owned = stems.iter().any(|stem| {
+            // Initial backup databases use DELETE journals; a journal has the
+            // same private owner, never the canonical backup store's name.
+            if journal && (!backup_journals || stem != "backups") { return false; }
+            stage.strip_prefix(stem.as_str()).and_then(|suffix| suffix.strip_prefix('-'))
+                .is_some_and(crate::nanoid::is_generated_id)
+        });
+        if owned && entry.file_type()?.is_file() {
+            remove_managed_stage(&entry.path(), "abandoned managed-store stage");
+        }
+    }
+    Ok(())
+}
+
+fn remove_managed_stage(path: &Path, context: &str) {
+    // Replacement staging inherits ordinary permissions. Windows needs its
+    // read-only attribute cleared before removing this already-owned residue.
+    #[cfg(windows)] {
+        let writable = (|| -> std::io::Result<()> {
+            let mut permissions = std::fs::symlink_metadata(path)?.permissions();
+            if permissions.readonly() {
+                permissions.set_readonly(false);
+                std::fs::set_permissions(path, permissions)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = writable {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                logging::warn("managed store staging permissions cleanup failed",
+                    serde_json::json!({ "path": crate::native_path::encode(path), "error": { "message": error.to_string() } }));
+            }
+            return;
+        }
+    }
+    crate::fs_recovery::remove_file(path, context);
 }
 
 /// The staging temp-file name an atomic write renames into place:

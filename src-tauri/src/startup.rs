@@ -350,6 +350,10 @@ fn prepare(app: &tauri::AppHandle, debug_enabled: bool, diagnostic_root: &mut Op
     crate::activity::init(records_path.clone());
     crate::logging::install_panic_hook();
 
+    // This process owns the data-home lock. Retire only recognized private
+    // stages before backups, settings or dependency writers can create more.
+    crate::storage::cleanup_managed_stages(&data_root);
+
     // The backup store is best-effort by contract and records its own failure.
     // Its rows are kept per launch, named by the log session.
     crate::backup_store::init(
