@@ -41,14 +41,14 @@ async function pendingSnapshot() {
   const installed = notifications.installNotificationWiring();
   expect(notifications.installNotificationWiring()).toBe(installed);
   await vi.waitFor(() => expect(resolve).toBeTypeOf("function"));
-  for (const event of ["published", "dismissed", "cleared"]) {
+  for (const event of ["published", "dismissed", "cleared", "attention"]) {
     expect(listenerCount(`notification://${event}`)).toBe(1);
   }
   return { installed, resolve, reject };
 }
 
 function snapshot(revision: number, ...active: NotificationRecord[]): ActiveNotificationSnapshot {
-  return { revision, active };
+  return { revision, active, held: [] };
 }
 
 it("ignores a stale startup reply after a newer publication", async () => {
@@ -165,7 +165,7 @@ it("disposes failed startup callbacks before installing a fresh snapshot", async
   fireEvent("notification://published", snapshot(3, notice(7)));
   pending.reject(new Error("snapshot failed"));
   await expect(pending.installed).rejects.toThrow("snapshot failed");
-  for (const event of ["published", "dismissed", "cleared"]) {
+  for (const event of ["published", "dismissed", "cleared", "attention"]) {
     expect(listenerCount(`notification://${event}`)).toBe(0);
   }
   callbacks[0]!({ payload: snapshot(4, notice(8)) });
@@ -176,7 +176,7 @@ it("disposes failed startup callbacks before installing a fresh snapshot", async
   mockCommand("get_active_notifications", () => snapshot(7, notice(1)));
   await notifications.installNotificationWiring();
   expect(notifications.useNotificationsStore.getState().active).toEqual([notice(1)]);
-  for (const event of ["published", "dismissed", "cleared"]) {
+  for (const event of ["published", "dismissed", "cleared", "attention"]) {
     expect(listenerCount(`notification://${event}`)).toBe(1);
   }
 });
@@ -189,7 +189,30 @@ it("removes a partially registered startup before retrying it", async () => {
   mockCommand("get_active_notifications", () => snapshot(1, notice(1)));
   await notifications.installNotificationWiring();
   expect(notifications.useNotificationsStore.getState().active).toEqual([notice(1)]);
-  for (const event of ["published", "dismissed", "cleared"]) {
+  for (const event of ["published", "dismissed", "cleared", "attention"]) {
     expect(listenerCount(`notification://${event}`)).toBe(1);
   }
+});
+
+
+it("coalesces attention changes behind one physical request and keeps newer snapshots", async () => {
+  const pending = await pendingSnapshot();
+  pending.resolve(snapshot(1, notice(7)));
+  await pending.installed;
+  const replies: Array<(value: ActiveNotificationSnapshot) => void> = [];
+  mockCommand("set_notification_attention", () => new Promise<ActiveNotificationSnapshot>((resolve) => replies.push(resolve)));
+  const first = Symbol(), second = Symbol();
+  notifications.setNotificationAttention(first, 7, true);
+  notifications.setNotificationAttention(second, 7, true);
+  notifications.setNotificationAttention(first, 7, false);
+  notifications.setNotificationAttention(second, 7, false);
+  expect(replies).toHaveLength(1);
+  expect(notifications.useNotificationsStore.getState().localHeld.size).toBe(0);
+  replies[0]({ ...snapshot(2, notice(7)), held: [7] });
+  await vi.waitFor(() => expect(replies).toHaveLength(2));
+  expect(invokeCalls.filter(call => call.command === "set_notification_attention").map(call => call.args.ids)).toEqual([[7], []]);
+  fireEvent("notification://attention", { ...snapshot(4, notice(7)), held: [7] });
+  replies[1](snapshot(3, notice(7)));
+  await Promise.resolve();
+  expect(notifications.useNotificationsStore.getState().held.has(7)).toBe(true);
 });

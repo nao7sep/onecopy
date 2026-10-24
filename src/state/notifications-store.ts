@@ -31,6 +31,7 @@ export interface NotificationRecord {
 export interface ActiveNotificationSnapshot {
   revision: number;
   active: NotificationRecord[];
+  held: number[];
 }
 
 export interface NotificationRequest {
@@ -70,8 +71,10 @@ function descriptorFields(failure: Message): { messageKey: MessageKey; messageVa
 interface NotificationsState {
   revision: number;
   active: NotificationRecord[];
+  held: Set<number>;
+  localHeld: Set<number>;
   dismissing: Set<number>;
-  dismiss: (id: number) => Promise<void>;
+  dismiss: (id: number, automatic?: boolean) => Promise<void>;
 }
 
 function newestFirst(rows: NotificationRecord[]): NotificationRecord[] {
@@ -83,18 +86,20 @@ function newestFirst(rows: NotificationRecord[]): NotificationRecord[] {
 
 function applySnapshot(snapshot: ActiveNotificationSnapshot): void {
   useNotificationsStore.setState((state) => snapshot.revision > state.revision
-    ? { revision: snapshot.revision, active: newestFirst(snapshot.active) }
+    ? { revision: snapshot.revision, active: newestFirst(snapshot.active), held: new Set(snapshot.held) }
     : state);
 }
 
 export const useNotificationsStore = create<NotificationsState>((set) => ({
   revision: -1,
   active: [],
+  held: new Set(),
+  localHeld: new Set(),
   dismissing: new Set(),
-  dismiss: async (id) => {
+  dismiss: async (id, automatic = false) => {
     set((state) => ({ dismissing: new Set(state.dismissing).add(id) }));
     try {
-      applySnapshot(await invoke<ActiveNotificationSnapshot>("dismiss_notification", { id }));
+      applySnapshot(await invoke<ActiveNotificationSnapshot>("dismiss_notification", { id, automatic }));
     } catch (error) {
       log.error("notification dismissal failed", toErrorFields(error));
       reportActionFailure(
@@ -110,13 +115,47 @@ export const useNotificationsStore = create<NotificationsState>((set) => ({
   },
 }));
 
+// A webview publishes its complete current hold set, with one physical IPC
+// request at a time. Rapid pointer/focus changes replace pending intent.
+const attentionOwners = new Map<symbol, number>();
+let attentionDirty = false;
+let attentionWriter: Promise<void> | null = null;
+
+export function setNotificationAttention(owner: symbol, id: number, held: boolean): void {
+  if (held ? attentionOwners.get(owner) === id : !attentionOwners.has(owner)) return;
+  if (held) attentionOwners.set(owner, id);
+  else attentionOwners.delete(owner);
+  useNotificationsStore.setState({ localHeld: new Set(attentionOwners.values()) });
+  attentionDirty = true;
+  flushAttention();
+}
+
+function flushAttention(): void {
+  if (attentionWriter) return;
+  attentionWriter = (async () => {
+    while (attentionDirty) {
+      attentionDirty = false;
+      const ids = [...new Set(attentionOwners.values())];
+      try {
+        applySnapshot(await invoke<ActiveNotificationSnapshot>("set_notification_attention", { ids }));
+      } catch (error) {
+        log.error("notification attention update failed", toErrorFields(error));
+        recordInterfaceFailure(message("notice.unavailable"), error);
+      }
+    }
+  })().finally(() => {
+    attentionWriter = null;
+    if (attentionDirty) flushAttention();
+  });
+}
+
 let installation: Promise<void> | null = null;
 
 async function install(): Promise<void> {
   const unlisten: Array<() => void> = [];
   let disposed = false;
   try {
-    for (const event of ["published", "dismissed", "cleared"]) {
+    for (const event of ["published", "dismissed", "cleared", "attention"]) {
       unlisten.push(await listen<ActiveNotificationSnapshot>(`notification://${event}`, (event) => {
         if (!disposed) applySnapshot(event.payload);
       }));

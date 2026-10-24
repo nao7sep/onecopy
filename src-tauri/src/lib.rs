@@ -908,8 +908,13 @@ async fn record_recent_notification(
 // Dismissal updates the in-memory ACTIVE list, but failed event delivery
 // records activity in SQLite, so the entire delegate runs off the IPC thread.
 #[tauri::command]
-async fn dismiss_notification(app: AppHandle, id: i64) -> Result<notifications::ActiveNotificationSnapshot, String> {
-    dispatch(move || notifications::dismiss(&app, id)).await
+async fn dismiss_notification(app: AppHandle, id: i64, automatic: bool) -> Result<notifications::ActiveNotificationSnapshot, String> {
+    dispatch(move || notifications::dismiss(&app, id, automatic)).await
+}
+
+#[tauri::command]
+fn set_notification_attention(window: tauri::WebviewWindow, ids: Vec<i64>) -> Result<notifications::ActiveNotificationSnapshot, String> {
+    notifications::attention(window.app_handle(), window.label(), ids)
 }
 
 // On-demand derive for ONE clicked photo the scan's bulk pass has not reached
@@ -1659,6 +1664,11 @@ pub fn run() {
         .manage(theme::ThemeState::default())
         .manage(language)
         .on_window_event(move |window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed | tauri::WindowEvent::Focused(false)) {
+                if let Err(error) = notifications::attention(window.app_handle(), window.label(), Vec::new()) {
+                    logging::warn("notification attention could not be released", json!({ "error": { "message": error } }));
+                }
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if let Some(session_event) = fullscreen::session_close_event(
                     window.label(),
@@ -1701,6 +1711,9 @@ pub fn run() {
         // takes the recorded theme as its page starts loading, before it paints.
         .on_page_load(|webview, payload| {
             if payload.event() == tauri::webview::PageLoadEvent::Started {
+                if let Err(error) = notifications::attention(webview.app_handle(), webview.label(), Vec::new()) {
+                    logging::warn("notification attention could not be released", json!({ "error": { "message": error } }));
+                }
                 if webview.label() == "main" {
                     webview.state::<quit::RendererReadiness>().document_started();
                     if let Err(error) = menu::set_main_available(webview.app_handle(), false) {
@@ -1857,6 +1870,7 @@ pub fn run() {
             publish_notification,
             record_recent_notification,
             dismiss_notification,
+            set_notification_attention,
             ensure_fullres,
             transcribe,
             transcript_get,

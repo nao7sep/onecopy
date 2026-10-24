@@ -3,12 +3,13 @@
 //! currently projected above OneCopy's viewing surfaces. Live notices are
 //! presentation state for this process and clear each session.
 
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{LazyLock, Mutex};
 
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -66,6 +67,7 @@ pub struct NotificationRecord {
 pub struct ActiveNotificationSnapshot {
     pub revision: u64,
     pub active: Vec<NotificationRecord>,
+    pub held: BTreeSet<i64>,
 }
 
 impl ActiveNotificationSnapshot {
@@ -84,6 +86,7 @@ impl ActiveNotificationSnapshot {
 struct ActiveState {
     revision: u64,
     records: Vec<NotificationRecord>,
+    holds: HashMap<String, BTreeSet<i64>>,
 }
 
 impl ActiveState {
@@ -91,6 +94,7 @@ impl ActiveState {
         ActiveNotificationSnapshot {
             revision: self.revision,
             active: self.records.clone(),
+            held: self.holds.values().flatten().copied().collect(),
         }
     }
 
@@ -118,10 +122,39 @@ impl ActiveState {
         (current, self.snapshot())
     }
 
-    fn dismiss(&mut self, id: i64) -> ActiveNotificationSnapshot {
+    fn attention(&mut self, window: &str, ids: Vec<i64>) -> ActiveNotificationSnapshot {
+        let ids: BTreeSet<_> = ids
+            .into_iter()
+            .filter(|id| {
+                self.records.iter().any(|record| {
+                    record.id == *id && record.presentation == NotificationPresentation::Timed
+                })
+            })
+            .collect();
+        if self.holds.get(window).cloned().unwrap_or_default() != ids {
+            if ids.is_empty() {
+                self.holds.remove(window);
+            } else {
+                self.holds.insert(window.to_string(), ids);
+            }
+            self.revision += 1;
+        }
+        self.snapshot()
+    }
+
+    fn dismiss(&mut self, id: i64, automatic: bool) -> ActiveNotificationSnapshot {
+        // Check expiry and attention under the same lock: a delayed timer cannot
+        // dismiss a notice another window is still reading.
+        if automatic && self.holds.values().any(|ids| ids.contains(&id)) {
+            return self.snapshot();
+        }
         let previous_len = self.records.len();
         self.records.retain(|record| record.id != id);
         if self.records.len() != previous_len {
+            self.holds.retain(|_, ids| {
+                ids.remove(&id);
+                !ids.is_empty()
+            });
             self.revision += 1;
         }
         self.snapshot()
@@ -129,6 +162,7 @@ impl ActiveState {
 
     fn clear(&mut self) -> ActiveNotificationSnapshot {
         self.records.clear();
+        self.holds.clear();
         self.revision += 1;
         self.snapshot()
     }
@@ -136,8 +170,7 @@ impl ActiveState {
 
 // Capture revision and complete contents under the same lock. Delivery can
 // reorder across callers; a newer snapshot always subsumes every older one.
-static ACTIVE: LazyLock<Mutex<ActiveState>> =
-    LazyLock::new(|| Mutex::new(ActiveState::default()));
+static ACTIVE: LazyLock<Mutex<ActiveState>> = LazyLock::new(|| Mutex::new(ActiveState::default()));
 
 fn level_name(level: NotificationLevel) -> &'static str {
     match level {
@@ -173,8 +206,7 @@ fn record_notice(
 ) -> Result<NotificationRecord, String> {
     validate(request)?;
     let now = crate::logging::now_iso_millis();
-    let transaction = crate::sqlite::write_transaction(conn)
-        .map_err(|error| error.to_string())?;
+    let transaction = crate::sqlite::write_transaction(conn).map_err(|error| error.to_string())?;
     let message_values_json = request
         .message_values
         .as_ref()
@@ -249,15 +281,22 @@ fn record_delivery_failure(event: &str, error: &str) -> Result<(), String> {
         path: Some(event.to_string()),
         level: NotificationLevel::Error,
         presentation: NotificationPresentation::Persistent,
-        message: "OneCopy could not update part of the interface. Reload the window before continuing.".to_string(),
-        message_key: Some(crate::failure_runtime::condition_message_key("event-delivery-failed").to_string()),
+        message:
+            "OneCopy could not update part of the interface. Reload the window before continuing."
+                .to_string(),
+        message_key: Some(
+            crate::failure_runtime::condition_message_key("event-delivery-failed").to_string(),
+        ),
         message_values: None,
     };
     let _ = record_notice(&conn, &fallback)?;
     Ok(())
 }
 
-pub fn publish(app: &AppHandle, request: NotificationRequest) -> Result<NotificationRecord, String> {
+pub fn publish(
+    app: &AppHandle,
+    request: NotificationRequest,
+) -> Result<NotificationRecord, String> {
     let root = crate::paths::data_root()?;
     let conn = crate::index_store::open(&root.join(crate::storage::INDEX_DB_FILE_NAME))?;
     let (record, snapshot) = remember_active(record_notice(&conn, &request)?);
@@ -269,9 +308,7 @@ pub fn publish(app: &AppHandle, request: NotificationRequest) -> Result<Notifica
     Ok(record)
 }
 
-pub fn record_history(
-    request: NotificationRequest,
-) -> Result<NotificationRecord, String> {
+pub fn record_history(request: NotificationRequest) -> Result<NotificationRecord, String> {
     let root = crate::paths::data_root()?;
     let conn = crate::index_store::open(&root.join(crate::storage::INDEX_DB_FILE_NAME))?;
     record_notice(&conn, &request)
@@ -285,13 +322,35 @@ pub fn active() -> ActiveNotificationSnapshot {
     snapshot.sorted()
 }
 
-pub fn dismiss(app: &AppHandle, id: i64) -> Result<ActiveNotificationSnapshot, String> {
+pub fn dismiss(
+    app: &AppHandle,
+    id: i64,
+    automatic: bool,
+) -> Result<ActiveNotificationSnapshot, String> {
     let snapshot = ACTIVE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .dismiss(id);
+        .dismiss(id, automatic);
     let snapshot = snapshot.sorted();
     crate::failure_runtime::emit_checked(app, "notification://dismissed", &snapshot)?;
+    Ok(snapshot)
+}
+
+// Attention is transient memory state. Mutate and publish on the calling
+// event thread so blur, page replacement and destruction retire the same owner.
+// Delivery errors return to the caller; this path performs no database work.
+pub fn attention(
+    app: &AppHandle,
+    window: &str,
+    ids: Vec<i64>,
+) -> Result<ActiveNotificationSnapshot, String> {
+    let snapshot = ACTIVE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .attention(window, ids)
+        .sorted();
+    app.emit("notification://attention", &snapshot)
+        .map_err(|error| error.to_string())?;
     Ok(snapshot)
 }
 

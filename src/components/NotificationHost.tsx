@@ -7,6 +7,7 @@ import { useAppStore } from "../state/app-store";
 import {
   installNotificationWiring,
   noticeSentence,
+  setNotificationAttention,
   type NotificationRecord,
   useNotificationsStore,
 } from "../state/notifications-store";
@@ -26,15 +27,14 @@ function Toast({
 }: {
   record: NotificationRecord;
   durationMs: number;
-  // Only one open window may run the auto-dismiss timer: every NotificationHost
-  // shows the same records from the same backend list, so two windows each
-  // running their own timer meant hovering the notice in one window never
-  // paused the other's countdown.
+  // Main owns the countdown; every window contributes shared attention holds.
   ownsTimedDismissal: boolean;
 }) {
   const { t, text } = useI18n();
   const dismiss = useNotificationsStore((state) => state.dismiss);
   const dismissing = useNotificationsStore((state) => state.dismissing.has(record.id));
+  const paused = useNotificationsStore((state) => state.held.has(record.id) || state.localHeld.has(record.id));
+  const attentionOwner = useRef(Symbol("notification attention"));
   const remaining = useRef(durationMs);
   const started = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -56,7 +56,7 @@ function Toast({
       !ownsTimedDismissal ||
       record.presentation !== "timed" ||
       timer.current !== null ||
-      remaining.current <= 0 ||
+      paused ||
       hovering.current ||
       focused.current
     ) {
@@ -66,7 +66,7 @@ function Toast({
     timer.current = setTimeout(() => {
       timer.current = null;
       remaining.current = 0;
-      void dismiss(record.id);
+      void dismiss(record.id, true);
     }, remaining.current);
   };
 
@@ -76,6 +76,26 @@ function Toast({
     return stopTimer;
     // A repeated coalesced notice resets its one visible timer.
   }, [durationMs, record.id, record.lastSeenUtc, ownsTimedDismissal]);
+
+  useEffect(() => {
+    if (paused) stopTimer();
+    else startTimer();
+    return stopTimer;
+  }, [paused]);
+
+  const updateAttention = () => {
+    setNotificationAttention(attentionOwner.current, record.id,
+      record.presentation === "timed" && (hovering.current || focused.current));
+  };
+  useEffect(() => {
+    const release = () => {
+      hovering.current = false;
+      focused.current = false;
+      setNotificationAttention(attentionOwner.current, record.id, false);
+    };
+    window.addEventListener("blur", release);
+    return () => { window.removeEventListener("blur", release); release(); };
+  }, [record.id]);
 
   const tone =
     record.level === "error"
@@ -89,13 +109,13 @@ function Toast({
       data-notification
       role={record.level === "error" ? "alert" : "status"}
       className={`pointer-events-auto w-full rounded-lg border p-3 ${tone}`}
-      onMouseEnter={() => { hovering.current = true; stopTimer(); }}
-      onMouseLeave={() => { hovering.current = false; startTimer(); }}
-      onFocusCapture={() => { focused.current = true; stopTimer(); }}
+      onMouseEnter={() => { hovering.current = true; stopTimer(); updateAttention(); }}
+      onMouseLeave={() => { hovering.current = false; updateAttention(); }}
+      onFocusCapture={() => { focused.current = true; stopTimer(); updateAttention(); }}
       onBlurCapture={(event) => {
         if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
         focused.current = false;
-        startTimer();
+        updateAttention();
       }}
     >
       <div className="flex items-start gap-3 text-sm">

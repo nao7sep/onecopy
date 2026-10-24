@@ -37,10 +37,11 @@ beforeEach(() => {
   seedAppConfig();
   resetTauriMocks({ keepListeners: true });
   mockCommands({
-    get_active_notifications: () => ({ revision: 0, active: [] }),
-    dismiss_notification: () => ({ revision: useNotificationsStore.getState().revision + 1, active: [] }),
+    get_active_notifications: () => ({ revision: 0, active: [], held: [] }),
+    set_notification_attention: ({ ids }) => ({ revision: useNotificationsStore.getState().revision + 1, active: useNotificationsStore.getState().active, held: ids }),
+    dismiss_notification: () => ({ revision: useNotificationsStore.getState().revision + 1, active: [], held: [] }),
   });
-  useNotificationsStore.setState({ revision: -1, active: [], dismissing: new Set() });
+  useNotificationsStore.setState({ revision: -1, active: [], held: new Set(), localHeld: new Set(), dismissing: new Set() });
 });
 
 afterEach(() => {
@@ -209,7 +210,61 @@ describe("the app-frame notification host", () => {
     act(() => useNotificationsStore.setState({ active: [notice()] }));
     expect(document.body.textContent).toContain("Couldn’t open the selected file.");
 
-    await act(async () => fireBackendEvent("notification://cleared", { revision: useNotificationsStore.getState().revision + 1, active: [] }));
+    await act(async () => fireBackendEvent("notification://cleared", { revision: useNotificationsStore.getState().revision + 1, active: [], held: [] }));
     expect(document.body.textContent).not.toContain("Couldn’t open the selected file.");
   });
+});
+
+
+it("shares overlapping attention with a secondary host and resumes only its remaining duration", async () => {
+  vi.useFakeTimers();
+  const main = render(<NotificationHost />);
+  const secondary = render(<NotificationHost ownsTimedDismissal={false} />);
+  act(() => useNotificationsStore.setState({ active: [notice({ presentation: "timed", level: "info" })] }));
+  await act(async () => vi.advanceTimersByTimeAsync(2_000));
+  const card = secondary.container.querySelector("[data-notification]")!;
+  const button = main.container.querySelector("button")!;
+  fireEvent.mouseEnter(card);
+  fireEvent.focus(button);
+  await act(async () => vi.advanceTimersByTimeAsync(10_000));
+  fireEvent.mouseLeave(card);
+  await act(async () => vi.advanceTimersByTimeAsync(10_000));
+  expect(invokeCalls.filter(call => call.command === "dismiss_notification")).toHaveLength(0);
+  fireEvent.blur(button);
+  await act(async () => vi.advanceTimersByTimeAsync(3_999));
+  expect(invokeCalls.filter(call => call.command === "dismiss_notification")).toHaveLength(0);
+  await act(async () => vi.advanceTimersByTimeAsync(1));
+  expect(invokeCalls.find(call => call.command === "dismiss_notification")?.args).toEqual({ id: 7, automatic: true });
+});
+
+it.each(["unmount", "blur"])("releases a secondary host hold on %s", async (release) => {
+  vi.useFakeTimers();
+  render(<NotificationHost />);
+  const secondary = render(<NotificationHost ownsTimedDismissal={false} />);
+  act(() => useNotificationsStore.setState({ active: [notice({ presentation: "timed", level: "info" })] }));
+  await act(async () => vi.advanceTimersByTimeAsync(2_000));
+  fireEvent.mouseEnter(secondary.container.querySelector("[data-notification]")!);
+  await act(async () => vi.advanceTimersByTimeAsync(10_000));
+  if (release === "unmount") secondary.unmount();
+  else fireEvent(window, new Event("blur"));
+  await act(async () => vi.advanceTimersByTimeAsync(4_000));
+  expect(invokeCalls.filter(call => call.command === "dismiss_notification")).toHaveLength(1);
+});
+
+it("pauses Main from remote attention snapshots and rejects a late hold snapshot", async () => {
+  vi.useFakeTimers();
+  render(<NotificationHost />);
+  const record = notice({ presentation: "timed", level: "info" });
+  act(() => useNotificationsStore.setState({ active: [record] }));
+  await act(async () => vi.advanceTimersByTimeAsync(2_000));
+  const revision = useNotificationsStore.getState().revision + 1;
+  await act(async () => fireBackendEvent("notification://attention", { revision, active: [record], held: [7] }));
+  await act(async () => vi.advanceTimersByTimeAsync(10_000));
+  expect(invokeCalls.filter(call => call.command === "dismiss_notification")).toHaveLength(0);
+  await act(async () => fireBackendEvent("notification://attention", { revision: revision + 1, active: [record], held: [] }));
+  await act(async () => fireBackendEvent("notification://attention", { revision, active: [record], held: [7] }));
+  await act(async () => vi.advanceTimersByTimeAsync(3_999));
+  expect(invokeCalls.filter(call => call.command === "dismiss_notification")).toHaveLength(0);
+  await act(async () => vi.advanceTimersByTimeAsync(1));
+  expect(invokeCalls.filter(call => call.command === "dismiss_notification")).toHaveLength(1);
 });
