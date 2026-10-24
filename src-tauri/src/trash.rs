@@ -212,17 +212,16 @@ fn trash_file_checked(
         )
         .into());
     }
-    let metadata = volume_io::symlink_metadata(file)
+    let (snapshot, metadata) = crate::file_identity::SourceSnapshot::open(file)
         .map_err(|error| format!("trash source is unavailable: {error}"))?;
-    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
-        return Err(format!(
-            "trash source is not a regular file: {}",
-            crate::native_path::label(&file)
-        )
-        .into());
+    if source_version.is_some_and(|expected| expected != snapshot.version) {
+        return Err(TrashError {
+            source_changed: true,
+            ..crate::file_identity::changed_source_error().to_string().into()
+        });
     }
     let plan = prepare_trash(file, owning_root, content_hash, context, &metadata)?;
-    commit_trash(file, plan, source_version, destination, before_move, cancelled)
+    commit_trash(file, plan, snapshot, destination, before_move, cancelled)
 }
 
 struct TrashPlan {
@@ -351,7 +350,7 @@ fn prepare_trash(
 fn commit_trash(
     source: &Path,
     plan: TrashPlan,
-    source_version: Option<crate::file_identity::FileVersion>,
+    snapshot: crate::file_identity::SourceSnapshot,
     destination: Option<crate::file_identity::VerifiedDestination>,
     before_move: impl FnOnce(&Path),
     cancelled: &dyn Fn() -> bool,
@@ -368,9 +367,9 @@ fn commit_trash(
         })
         .and_then(|()| {
             #[cfg(target_os = "macos")]
-            let moved = plan.private.move_source(source, &plan.stored, source_version, destination);
+            let moved = plan.private.move_source(source, &plan.stored, snapshot, destination);
             #[cfg(windows)]
-            let moved = copy_before_remove(source, &plan, source_version, destination, || {}, cancelled);
+            let moved = copy_before_remove(source, &plan, snapshot, destination, || {}, cancelled);
             #[cfg(not(any(target_os = "macos", windows)))]
             let moved: std::io::Result<()> = Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "private deletion is unsupported on this platform"));
             moved.map_err(|error| TrashError {
@@ -403,13 +402,14 @@ fn commit_trash(
 fn copy_before_remove(
     source: &Path,
     plan: &TrashPlan,
-    expected: Option<crate::file_identity::FileVersion>,
+    mut snapshot: crate::file_identity::SourceSnapshot,
     destination: Option<crate::file_identity::VerifiedDestination>,
     before_remove: impl FnOnce(),
     cancelled: &dyn Fn() -> bool,
 ) -> std::io::Result<()> {
     use crate::hashing::CopyFailure;
-    if let Some(expected) = expected { expected.require_path(source)?; }
+    snapshot.require_current(source)?;
+    let expected = snapshot.version;
     let stage = plan.day_dir.join(crate::file_identity::private_stage_file_name().map_err(std::io::Error::other)?);
     let (mut copied, version) = crate::hashing::copy_to_private(source, &stage, || plan.private.create_file(&stage), cancelled)
         .map_err(|error| match error {
@@ -417,7 +417,7 @@ fn copy_before_remove(
             CopyFailure::Cancelled => std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled"),
             CopyFailure::SourceChanged => crate::file_identity::changed_source_error(),
         })?;
-    if expected.is_some_and(|expected| expected != version) {
+    if expected != version {
         return Err(crate::file_identity::changed_source_error());
     }
     let writer = copied.file_mut();
@@ -438,7 +438,7 @@ fn copy_before_remove(
     let stored = plan.stored.clone();
     volume_io::call(source, volume_io::Op::Remove, None, move || {
         stored_version.require_path(&stored)?;
-        version.require_path(&source_path)?;
+        snapshot.require_current(&source_path)?;
         if crate::file_identity::volume_of(&stored)? != crate::file_identity::volume_of(&source_path)? {
             return Err(std::io::Error::other("private recovery moved to a different filesystem"));
         }

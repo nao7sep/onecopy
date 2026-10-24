@@ -347,7 +347,7 @@ fn newer_records_added_after_trash_preparation_leave_the_source_in_place() {
 }
 
 #[test]
-fn replacement_before_commit_follows_the_platform_move_or_verified_copy_boundary() {
+fn replacement_before_commit_preserves_the_source_on_every_platform() {
     let dir = tempfile::tempdir().unwrap();
     let source_dir = dir.path().join("source");
     std::fs::create_dir_all(&source_dir).unwrap();
@@ -355,24 +355,58 @@ fn replacement_before_commit_follows_the_platform_move_or_verified_copy_boundary
     let held = source_dir.join("held.jpg");
     std::fs::write(&source, b"original").unwrap();
 
+    let modified = std::fs::metadata(&source).unwrap().modified().unwrap();
     let result = trash_file_with_before_move(&source, &source_dir, None, &ctx(), |_| {
         std::fs::rename(&source, &held).unwrap();
-        std::fs::write(&source, b"replacement").unwrap();
+        std::fs::write(&source, b"replaced").unwrap();
+        std::fs::File::options().write(true).open(&source).unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified)).unwrap();
     });
 
     assert_eq!(std::fs::read(&held).unwrap(), b"original");
-    #[cfg(windows)]
-    {
-        // The copy must match the prepared manifest before removing anything.
-        assert!(result.unwrap_err().source_changed);
-        assert_eq!(std::fs::read(&source).unwrap(), b"replacement");
-    }
-    #[cfg(not(windows))]
-    {
-        // An ordinary atomic Delete still acts on the path the user chose.
-        assert_eq!(std::fs::read(result.unwrap().stored_path).unwrap(), b"replacement");
-        assert!(!source.exists());
-    }
+    assert!(result.unwrap_err().source_changed);
+    assert_eq!(std::fs::read(&source).unwrap(), b"replaced");
+}
+
+#[test]
+fn edited_source_is_kept_and_retry_creates_a_restorable_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("source");
+    std::fs::create_dir(&root).unwrap();
+    let source = root.join("photo.jpg");
+    std::fs::write(&source, b"original").unwrap();
+    let error = trash_file_with_before_move(&source, &root, None, &ctx(), |_| {
+        std::fs::write(&source, b"edited source with different length").unwrap();
+    }).unwrap_err();
+    assert!(error.source_changed);
+    assert!(!error.outcome_unknown);
+    assert_eq!(std::fs::read(&source).unwrap(), b"edited source with different length");
+    assert!(list_root(&root, &dir.path().join("data")).unwrap().entries.is_empty());
+
+    let record = trash_file(&source, &root, None, &ctx()).unwrap();
+    let listing = list_root(&root, &dir.path().join("data")).unwrap();
+    assert_eq!(listing.entries.len(), 1);
+    assert_eq!(listing.entries[0].status, EntryStatus::Restorable);
+    assert_eq!(std::fs::read(crate::native_path::from_text(&record.stored_path).as_ref()).unwrap(), b"edited source with different length");
+    assert!(!source.exists());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn recoverable_delete_needs_attributes_but_not_source_read_permission() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("private.jpg");
+    std::fs::write(&source, b"unreadable source").unwrap();
+    std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0)).unwrap();
+    let record = trash_file(&source, dir.path(), None, &ctx()).unwrap();
+    assert!(!source.exists());
+    let listing = list_root(dir.path(), &dir.path().join("data")).unwrap();
+    assert_eq!(listing.entries[0].status, EntryStatus::Restorable);
+    let stored = crate::native_path::from_text(&record.stored_path);
+    assert_eq!(std::fs::metadata(stored.as_ref()).unwrap().permissions().mode() & 0o777, 0);
+    std::fs::set_permissions(stored.as_ref(), std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(std::fs::read(stored.as_ref()).unwrap(), b"unreadable source");
 }
 
 #[test]
@@ -684,7 +718,7 @@ fn private_copy_publishes_complete_recovery_before_removing_source() {
     std::fs::hard_link(&source, &alias).unwrap();
     let original_permissions = std::fs::metadata(&alias).unwrap().permissions();
     let plan = prepare_trash(&source, root.path(), None, &TrashContext::new(TrashKind::Delete, "copy-test"), &std::fs::metadata(&source).unwrap()).unwrap();
-    copy_before_remove(&source, &plan, None, None, || {
+    copy_before_remove(&source, &plan, crate::file_identity::SourceSnapshot::open(&source).unwrap().0, None, || {
         assert_eq!(std::fs::read(&plan.stored).unwrap(), b"protected recovery bytes");
         assert!(source.exists());
     }, &|| false).unwrap();
@@ -700,7 +734,7 @@ fn private_copy_keeps_both_recovery_and_replaced_original_on_cleanup_failure() {
     let source = root.path().join("original.jpg");
     std::fs::write(&source, b"original bytes").unwrap();
     let plan = prepare_trash(&source, root.path(), None, &TrashContext::new(TrashKind::Delete, "copy-test"), &std::fs::metadata(&source).unwrap()).unwrap();
-    let result = copy_before_remove(&source, &plan, None, None, || {
+    let result = copy_before_remove(&source, &plan, crate::file_identity::SourceSnapshot::open(&source).unwrap().0, None, || {
         std::fs::rename(&source, root.path().join("old-source")).unwrap();
         std::fs::write(&source, b"new unrepresented bytes").unwrap();
     }, &|| false);
@@ -721,7 +755,7 @@ fn private_copy_retains_original_and_recovery_when_delivery_changes() {
     let proof = crate::file_identity::VerifiedDestination::hold(&mut file, &destination, version).unwrap();
     let plan = prepare_trash(&source, root.path(), None,
         &TrashContext::new(TrashKind::Delete, "changed-delivery"), &std::fs::metadata(&source).unwrap()).unwrap();
-    let error = copy_before_remove(&source, &plan, None, Some(proof), || {
+    let error = copy_before_remove(&source, &plan, crate::file_identity::SourceSnapshot::open(&source).unwrap().0, Some(proof), || {
         std::fs::rename(&destination, root.path().join("old-delivery")).unwrap();
         std::fs::write(&destination, b"another file").unwrap();
     }, &|| false).unwrap_err();
@@ -737,7 +771,7 @@ fn private_copy_preserves_source_and_winner_when_publication_is_occupied() {
     std::fs::write(&source, b"original bytes").unwrap();
     let plan = prepare_trash(&source, root.path(), None, &TrashContext::new(TrashKind::Delete, "copy-test"), &std::fs::metadata(&source).unwrap()).unwrap();
     std::fs::write(&plan.stored, b"other writer").unwrap();
-    assert!(copy_before_remove(&source, &plan, None, None, || {}, &|| false).is_err());
+    assert!(copy_before_remove(&source, &plan, crate::file_identity::SourceSnapshot::open(&source).unwrap().0, None, || {}, &|| false).is_err());
     assert_eq!(std::fs::read(&source).unwrap(), b"original bytes");
     assert_eq!(std::fs::read(&plan.stored).unwrap(), b"other writer");
     assert!(!std::fs::read_dir(&plan.day_dir).unwrap().any(|entry| crate::file_identity::is_private_tmp_name(&entry.unwrap().path())));
@@ -750,7 +784,7 @@ fn cancelling_private_copy_keeps_original_and_removes_unpublished_staging() {
     std::fs::write(&source, vec![42u8; 1024 * 1024]).unwrap();
     let plan = prepare_trash(&source, root.path(), None, &TrashContext::new(TrashKind::Delete, "copy-cancel"), &std::fs::metadata(&source).unwrap()).unwrap();
     let polls = std::cell::Cell::new(0);
-    let result = copy_before_remove(&source, &plan, None, None, || {}, &|| {
+    let result = copy_before_remove(&source, &plan, crate::file_identity::SourceSnapshot::open(&source).unwrap().0, None, || {}, &|| {
         polls.set(polls.get() + 1);
         polls.get() > 2
     });
@@ -771,7 +805,7 @@ fn failed_private_copy_write_leaves_original_and_no_published_recovery() {
     fake.stall(&[Op::Write], Some(&plan.day_dir));
     let failed = std::thread::scope(|scope| {
         scope.spawn(|| { assert!(fake.wait_until_held(1, std::time::Duration::from_secs(10))); fake.fail(); });
-        copy_before_remove(&source, &plan, None, None, || {}, &|| false)
+        copy_before_remove(&source, &plan, crate::file_identity::SourceSnapshot::open(&source).unwrap().0, None, || {}, &|| false)
     });
     assert!(failed.is_err());
     assert_eq!(std::fs::read(&source).unwrap(), b"original bytes");

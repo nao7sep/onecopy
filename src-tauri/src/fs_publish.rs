@@ -55,7 +55,7 @@ pub(crate) fn rename_into_directory(
     source: &Path,
     target: &Path,
     directory: std::sync::Arc<std::fs::File>,
-    version: Option<crate::file_identity::FileVersion>,
+    mut snapshot: crate::file_identity::SourceSnapshot,
     destination: Option<crate::file_identity::VerifiedDestination>,
 ) -> io::Result<()> {
     use std::os::fd::AsRawFd;
@@ -71,7 +71,7 @@ pub(crate) fn rename_into_directory(
         if !crate::file_identity::path_names_file(&parent, &directory) {
             return Err(io::Error::other("private deleted-file directory was replaced"));
         }
-        require_source_version(&source, version)?;
+        snapshot.require_current(&source)?;
         if let Some(destination) = &destination { destination.require_current()?; }
         rename_exclusive_at(&source, Path::new(&name), directory.as_raw_fd())
     })

@@ -87,10 +87,10 @@ impl Directory {
         &self,
         source: &Path,
         target: &Path,
-        version: Option<crate::file_identity::FileVersion>,
+        snapshot: crate::file_identity::SourceSnapshot,
         destination: Option<crate::file_identity::VerifiedDestination>,
     ) -> io::Result<()> {
-        crate::fs_publish::rename_into_directory(source, target, self.handle.clone(), version, destination)
+        crate::fs_publish::rename_into_directory(source, target, self.handle.clone(), snapshot, destination)
     }
 
     #[cfg(any(windows, test))]

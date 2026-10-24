@@ -476,7 +476,7 @@ fn delete_targets(
                     )?;
                     return Err(err.message);
                 }
-                Err(err) if err.source_changed => {
+                Err(err) if err.source_changed && target.source_version.is_some() => {
                     outcome.failed_files += 1;
                     on_attempt(target.bytes, true);
                     changed_sources.push(target.path_id);

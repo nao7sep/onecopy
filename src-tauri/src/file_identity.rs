@@ -44,7 +44,7 @@ impl FileIdentity {
             return volume_io::call(path, Op::Stat, None, move || {
                 use std::os::windows::fs::OpenOptionsExt;
                 let mut options = std::fs::OpenOptions::new(); // volume_io worker
-                options.read(true).custom_flags(
+                options.access_mode(windows_sys::Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES).custom_flags(
                     windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT
                         | windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS,
                 );
@@ -103,10 +103,14 @@ impl FileVersion {
 
     fn from_file(file: &File) -> io::Result<Self> {
         let metadata = file.metadata()?; // volume_io worker
+        Self::from_file_metadata(file, &metadata)
+    }
+
+    fn from_file_metadata(file: &File, metadata: &Metadata) -> io::Result<Self> {
         #[cfg(windows)]
         let identity = FileIdentity::from_file(file)?;
         #[cfg(not(windows))]
-        let identity = FileIdentity::from_metadata(&metadata)?;
+        let identity = { let _ = file; FileIdentity::from_metadata(metadata)? };
         Ok(Self { identity, bytes: metadata.len(), modified: metadata.modified()? })
     }
 
@@ -119,21 +123,77 @@ impl FileVersion {
         }
     }
 
+    #[cfg(unix)]
+    fn from_metadata(metadata: &Metadata) -> io::Result<Self> {
+        Ok(Self { identity: FileIdentity::from_metadata(metadata)?, bytes: metadata.len(), modified: metadata.modified()? })
+    }
+
     pub(crate) fn matches_path(self, path: &Path) -> io::Result<bool> {
-        let (mut file, identity) = open_regular_nofollow(path)?;
-        Ok(identity == self.identity
-            && Self::of(&mut file)? == self
-            && path_names(path, self.identity))
+        #[cfg(unix)]
+        {
+            let metadata = volume_io::symlink_metadata(path)?;
+            Ok(metadata.file_type().is_file() && Self::from_metadata(&metadata)? == self)
+        }
+        #[cfg(not(unix))]
+        {
+            let (mut file, identity) = open_regular_attributes(path)?;
+            Ok(identity == self.identity
+                && Self::of(&mut file)? == self
+                && path_names(path, self.identity))
+        }
     }
 
     /// Used inside the final mutation worker, after its queued wait. The
-    /// typed refusal keeps a Move source failure distinct from an ordinary
-    /// Delete failure without interpreting an error's text.
+    /// typed refusal distinguishes a changed source from a failed syscall
+    /// without interpreting an error's text.
     pub(crate) fn require_path(self, path: &Path) -> io::Result<()> {
         match self.matches_path(path) {
             Ok(true) => Ok(()),
             result => Err(io::Error::other(SourceVersionChanged { cause: result.err() })),
         }
+    }
+}
+
+/// The recovery manifest and final removal refer to this same held source.
+/// Its descriptor stays with the physical worker after a caller times out.
+/// macOS may permit rename but deny opening even an event-only descriptor.
+/// Those files retain native stat/version evidence without changing permissions;
+/// like other version checks, it cannot exclude a writer at the final syscall.
+#[derive(Debug)]
+pub(crate) struct SourceSnapshot {
+    file: Option<VolumeFile>,
+    pub(crate) version: FileVersion,
+}
+
+impl SourceSnapshot {
+    pub(crate) fn open(path: &Path) -> io::Result<(Self, Metadata)> {
+        let (mut file, _) = match open_regular_attributes(path) {
+            Ok(opened) => opened,
+            #[cfg(target_os = "macos")]
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                let metadata = volume_io::symlink_metadata(path)?;
+                if !metadata.is_file() { return Err(error); }
+                let version = FileVersion::from_metadata(&metadata)?;
+                return Ok((Self { file: None, version }, metadata));
+            }
+            Err(error) => return Err(error),
+        };
+        let (metadata, version) = file.with(Op::Stat, None, None, |file| {
+            let metadata = file.metadata()?;
+            let version = FileVersion::from_file_metadata(file, &metadata)?;
+            Ok((metadata, version))
+        })?;
+        Ok((Self { file: Some(file), version }, metadata))
+    }
+
+    pub(crate) fn require_current(&mut self, path: &Path) -> io::Result<()> {
+        if let Some(file) = &mut self.file {
+            match FileVersion::of(file) {
+                Ok(version) if version == self.version => {}
+                result => return Err(io::Error::other(SourceVersionChanged { cause: result.err() })),
+            }
+        }
+        self.version.require_path(path)
     }
 }
 
@@ -196,7 +256,7 @@ struct SourceVersionChanged {
 
 impl std::fmt::Display for SourceVersionChanged {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("source no longer matches the version read for Move")?;
+        f.write_str("source no longer matches its captured version")?;
         if let Some(cause) = &self.cause {
             write!(f, ": {cause}")?;
         }
@@ -213,7 +273,6 @@ impl std::error::Error for SourceVersionChanged {
 /// A source changed across a bounded copy, even when no path probe failed.
 /// Move must retain that source's remaining family rather than classify it as
 /// an ordinary destination failure.
-#[cfg(any(windows, test))]
 pub(crate) fn changed_source_error() -> io::Error {
     io::Error::other(SourceVersionChanged { cause: None })
 }
@@ -331,7 +390,7 @@ pub(crate) fn hard_link_key(path: &Path, metadata: &Metadata) -> io::Result<Opti
 pub fn open_regular_nofollow(path: &Path) -> io::Result<(VolumeFile, FileIdentity)> {
     let owned = path.to_path_buf();
     let (file, identity) =
-        volume_io::call(path, Op::Open, None, move || open_regular_nofollow_raw(&owned, false))?;
+        volume_io::call(path, Op::Open, None, move || open_regular_nofollow_raw(&owned, FileAccess::Read))?;
     Ok((VolumeFile::new(file, path.to_path_buf()), identity))
 }
 
@@ -339,17 +398,29 @@ pub fn open_regular_nofollow(path: &Path) -> io::Result<(VolumeFile, FileIdentit
 pub(crate) fn open_regular_for_sync(path: &Path) -> io::Result<(VolumeFile, FileIdentity)> {
     let owned = path.to_path_buf();
     let (file, identity) = volume_io::call(path, Op::Open, None, move || {
-        open_regular_nofollow_raw(&owned, true)
+        open_regular_nofollow_raw(&owned, FileAccess::Sync)
     })?;
     Ok((VolumeFile::new(file, path.to_path_buf()), identity))
 }
 
-fn open_regular_nofollow_raw(path: &Path, for_sync: bool) -> io::Result<(File, FileIdentity)> {
+/// Opens only attributes on Windows; Unix still enforces native open access.
+fn open_regular_attributes(path: &Path) -> io::Result<(VolumeFile, FileIdentity)> {
+    let owned = path.to_path_buf();
+    let (file, identity) = volume_io::call(path, Op::Open, None, move || {
+        open_regular_nofollow_raw(&owned, FileAccess::Attributes)
+    })?;
+    Ok((VolumeFile::new(file, path.to_path_buf()), identity))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FileAccess { Read, Sync, Attributes }
+
+fn open_regular_nofollow_raw(path: &Path, access: FileAccess) -> io::Result<(File, FileIdentity)> {
     let fs_path = crate::winpath::for_fs(path);
     let mut options = std::fs::OpenOptions::new(); // volume_io worker
     options.read(true);
     // Windows FlushFileBuffers requires write access; Unix fsync does not.
-    options.write(cfg!(windows) && for_sync);
+    options.write(cfg!(windows) && access == FileAccess::Sync);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -360,6 +431,9 @@ fn open_regular_nofollow_raw(path: &Path, for_sync: bool) -> io::Result<(File, F
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
+        if access == FileAccess::Attributes {
+            options.access_mode(windows_sys::Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES);
+        }
         options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
     }
     let file = options.open(fs_path.as_ref())?;

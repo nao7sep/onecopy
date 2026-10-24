@@ -54,7 +54,7 @@ fn an_unsupported_publication_creates_no_placeholder_for_invalid_sources() {
 
 #[test]
 fn a_proven_move_without_exclusive_rename_preserves_a_queued_source_replacement() {
-    use crate::file_identity::{open_regular_nofollow, FileVersion};
+    use crate::file_identity::SourceSnapshot;
     use crate::volume_io::{FakeStallingVolume, Op};
     use std::time::Duration;
 
@@ -62,8 +62,7 @@ fn a_proven_move_without_exclusive_rename_preserves_a_queued_source_replacement(
     let source = dir.path().join("source.jpg");
     let target = dir.path().join("stored.jpg");
     std::fs::write(&source, b"covered-by-output").unwrap();
-    let (mut file, _) = open_regular_nofollow(&source).unwrap();
-    let version = FileVersion::of(&mut file).unwrap();
+    let (snapshot, _) = SourceSnapshot::open(&source).unwrap();
     let bound = Duration::from_secs(10);
     let volume = FakeStallingVolume::mount(dir.path(), bound);
     volume.stall(&[Op::Rename], None);
@@ -74,7 +73,7 @@ fn a_proven_move_without_exclusive_rename_preserves_a_queued_source_replacement(
             std::fs::write(&source, b"new-uncovered-source-bytes").unwrap();
             volume.release();
         });
-        without_exclusive_rename(|| rename_into_directory(&source, &target, std::sync::Arc::new(std::fs::File::open(dir.path()).unwrap()), Some(version), None))
+        without_exclusive_rename(|| rename_into_directory(&source, &target, std::sync::Arc::new(std::fs::File::open(dir.path()).unwrap()), snapshot, None))
     });
     assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Unsupported);
     assert_eq!(
