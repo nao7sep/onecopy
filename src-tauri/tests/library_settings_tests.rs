@@ -2,7 +2,7 @@
 // (tests-folder conventions, Rust form).
 
 use onecopy_lib::library_settings;
-use onecopy_lib::scanner::{self, ResolveScope, ScanSettings};
+use onecopy_lib::scanner::{self, ScanSettings};
 use onecopy_lib::visibility::Policy;
 use onecopy_lib::{extensions, index_store};
 use rusqlite::Connection;
@@ -51,7 +51,7 @@ fn indexed_under_tokyo() -> Fixture {
     scanner::hash_pending(&fixture.conn, &cache).unwrap();
     scanner::extract_pending(&fixture.conn).unwrap();
     let tokyo = settings(&fixture, "Asia/Tokyo");
-    scanner::resolve_from_evidence(&fixture.conn, &tokyo.resolution, ResolveScope::PendingOnly)
+    scanner::resolve_from_evidence(&fixture.conn, &tokyo.resolution)
         .unwrap();
     library_settings::adopt_unrecorded(&fixture.conn, &tokyo).unwrap();
     fixture

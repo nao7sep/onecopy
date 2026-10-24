@@ -6,9 +6,9 @@
 //! macOS: the volume UUID via `diskutil info -plist` on the mount point.
 //! Windows: the volume serial via a direct `GetVolumeInformationW` call (a
 //! ~20-line FFI declaration beats a whole windows-crate dependency).
-//! A volume whose identity cannot be read yields None — nothing is recorded
-//! and presence remains the only verification (honest degradation for
-//! filesystems without a stable identity, e.g. some network mounts).
+//! Without a recorded identity, filesystems that expose none can use presence
+//! verification. Once an identity is recorded, an unreadable current identity
+//! refuses admission for that source rather than degrading to presence alone.
 
 use std::collections::BTreeMap;
 use std::path::Path;

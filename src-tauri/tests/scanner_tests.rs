@@ -659,7 +659,7 @@ fn resolve_uses_filename_then_filesystem_and_flags_undated() {
     hash_pending(&f.conn, &test_cache(&f)).unwrap();
     extract_pending(&f.conn).unwrap();
     let stats =
-        resolve_from_evidence(&f.conn, &resolution_config(), ResolveScope::PendingOnly)
+        resolve_from_evidence(&f.conn, &resolution_config())
             .unwrap();
     assert_eq!(stats.resolved, 2);
     assert_eq!(stats.undated, 1, "the pre-1995 file must land in Undated");
@@ -1425,7 +1425,7 @@ fn settings_changes_re_resolve_from_evidence_without_file_reads() {
     walk_root(&f.conn, &f.root, &lists()).unwrap();
     hash_pending(&f.conn, &test_cache(&f)).unwrap();
     extract_pending(&f.conn).unwrap();
-    resolve_from_evidence(&f.conn, &resolution_config(), ResolveScope::PendingOnly).unwrap();
+    resolve_from_evidence(&f.conn, &resolution_config()).unwrap();
 
     // Delete the file from disk: a re-resolve that needed to re-read it
     // would now fail or go undated. It must not — evidence is in the DB.
@@ -1503,12 +1503,7 @@ fn settings_re_resolution_leaves_absent_rows_as_resumable_debt() {
         .unwrap();
     assert!(pending_index_work_exists(&f.conn).unwrap());
 
-    let resumed = resolve_from_evidence(
-        &f.conn,
-        &resolution_config(),
-        ResolveScope::PendingOnly,
-    )
-    .unwrap();
+    let resumed = resolve_from_evidence(&f.conn, &resolution_config()).unwrap();
     assert_eq!(resumed.resolved, 1);
 }
 
@@ -1535,7 +1530,7 @@ fn date_resolution_seeks_across_multiple_bounded_pages() {
     }
 
     let stats =
-        resolve_from_evidence(&f.conn, &resolution_config(), ResolveScope::PendingOnly).unwrap();
+        resolve_from_evidence(&f.conn, &resolution_config()).unwrap();
     assert_eq!((stats.resolved, stats.undated), (600, 0));
     assert_eq!(
         count(
@@ -1950,7 +1945,7 @@ fn exif_datetime_and_camera_are_extracted_and_win_resolution() {
     walk_root(&f.conn, &f.root, &lists()).unwrap();
     hash_pending(&f.conn, &test_cache(&f)).unwrap();
     extract_pending(&f.conn).unwrap();
-    resolve_from_evidence(&f.conn, &resolution_config(), ResolveScope::PendingOnly).unwrap();
+    resolve_from_evidence(&f.conn, &resolution_config()).unwrap();
 
     let (source, ms): (String, i64) = f
         .conn
@@ -3057,11 +3052,11 @@ fn malformed_timestamp_receipts_reopen_extraction_without_publishing_a_fallback_
             std::fs::write(f.root.join("plain.txt"), b"fallback").unwrap();
             walk_root(&f.conn, &f.root, &lists()).unwrap();
             extract_pending(&f.conn).unwrap();
-            resolve_from_evidence(&f.conn, &resolution_config(), ResolveScope::PendingOnly).unwrap();
+            resolve_from_evidence(&f.conn, &resolution_config()).unwrap();
             let id: i64 = f.conn.query_row("SELECT id FROM paths WHERE file_name = '20200102.txt'", [], |row| row.get(0)).unwrap();
             f.conn.execute("DELETE FROM evidence WHERE path_id = ?1 AND source = ?2", rusqlite::params![id, source]).unwrap();
             f.conn.execute("INSERT INTO evidence(path_id, source, raw) VALUES (?1, ?2, ?3)", rusqlite::params![id, source, raw]).unwrap();
-            let result = resolve_from_evidence(&f.conn, &resolution_config(), ResolveScope::All).unwrap();
+            let result = re_resolve_all_with_progress(&f.conn, &resolution_config(), false, &|_| {}).unwrap();
             assert_eq!(result.failed, 1);
             assert_eq!(result.resolved, 1, "ordinary absent metadata still permits filesystem evidence");
             assert_eq!(result.undated, 0, "a damaged receipt is not a successful undated result");
@@ -3069,7 +3064,7 @@ fn malformed_timestamp_receipts_reopen_extraction_without_publishing_a_fallback_
             assert_eq!(count(&f.conn, "SELECT count(*) FROM active_issues WHERE kind = 'metadata-read-error'"), 1);
             assert!(pending_index_work_exists(&f.conn).unwrap());
             assert_eq!(extract_pending(&f.conn).unwrap().extracted, 1);
-            let repaired = resolve_from_evidence(&f.conn, &resolution_config(), ResolveScope::PendingOnly).unwrap();
+            let repaired = resolve_from_evidence(&f.conn, &resolution_config()).unwrap();
             assert_eq!(repaired.failed, 0);
             assert_eq!(repaired.resolved, 1);
             assert_eq!(count(&f.conn, "SELECT count(*) FROM active_issues WHERE kind = 'metadata-read-error'"), 0);

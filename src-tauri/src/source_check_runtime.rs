@@ -372,10 +372,6 @@ fn join_finished(workers: &mut Vec<std::thread::JoinHandle<()>>) {
 }
 
 fn fail(app: &AppHandle, error: &str) {
-    crate::logging::error(
-        "source-folder check failed",
-        json!({ "error": { "message": error } }),
-    );
     crate::scan_runtime::record_runtime_failure(app, "source-check-failed", error);
 }
 

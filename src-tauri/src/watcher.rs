@@ -1,14 +1,12 @@
-//! The filesystem watcher — a core feature, ON by default (the Camera Roll
-//! inflow case): `notify` events mark the affected DIRECTORIES dirty; a
-//! debounced background pass re-stats exactly those directories, runs the
-//! pending pipeline stages over whatever changed, and tells the UI. Correctness
-//! never depends on it — app-owned mutations update the index synchronously,
-//! and a watcher overflow ("events lost") rechecks the affected roots
-//! automatically. Failed recovery stays in Issues.
+//! Filesystem notifications feed a debounced, bounded directory queue. Its
+//! watcher worker acquires the shared index claim, re-stats changed directories,
+//! publishes affected sections and wakes the independent file-information owner.
+//! Overflow and returning sources run scoped root discovery; failed recovery
+//! remains in Issues. App-owned mutations update the index themselves.
 //!
-//! One watcher thread per app run; events are collected into a dirty set and
-//! drained every couple of seconds. While a full scan is running the drain
-//! simply waits — the scan's own walk covers the changes.
+//! Discovery and completion have separate lifetimes. Watcher ingestion waits
+//! for the index claim during source checking and retains queued events; a full
+//! event queue requests root recovery rather than growing without bound.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -618,7 +616,6 @@ fn report_failure(app: &tauri::AppHandle, error: &str) {
         Some(crate::activity::ActivityReason::Error),
         None,
     );
-    logging::error("watcher failed", json!({ "error": { "message": error } }));
     crate::scan_runtime::record_runtime_failure(app, "watcher-failed", error);
     for event in ["watch://failed", "watch://rescan-needed"] {
         crate::failure_runtime::emit_or_record(app, event, json!({ "reason": error }));

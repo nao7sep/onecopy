@@ -1,9 +1,10 @@
-//! Content hashing, tiered (the indexing pipeline's design): files with a
-//! unique size are never content-read; size collisions read a 64 KB head+tail
-//! prehash; size+prehash collisions get a full blake3 hash. Only full-hash
-//! equality collapses copies — a destructive claim needs certainty — and
-//! same-size-same-prehash-different-hash surfaces as the copies-disagree
-//! anomaly upstream.
+//! Content hashing primitives for the indexing ladder. An unseen unique size
+//! needs no content read; size collisions without known content use a 64 KB head/tail prehash,
+//! then complete blake3 identities for equal cohorts. A size matching already
+//! hashed content goes directly to a full read. A prehash that reads the whole
+//! small file retains its complete hash and version for validated reuse.
+//! Only full-hash equality collapses copies; matching prehashes with differing
+//! full hashes become a copies-disagree Issue upstream.
 //!
 //! `hash_while_copying` is the move/copy-out primitive: it hashes the current
 //! source bytes while writing, gives the output the source's metadata

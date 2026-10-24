@@ -1,21 +1,18 @@
-//! The indexing core: walk → stat → hash tiers → metadata/evidence → resolve,
-//! all checkpointed into the index DB so an interrupted run resumes where it
-//! stopped (unchanged size+mtime rows are skipped on the next pass). Symlinks
-//! are not followed; hard links are distinct paths by design.
+//! Checkpointed discovery and file-information algorithms over the library
+//! index. `source_check_runtime` owns finite folder discovery; the independent
+//! `file_information_runtime` completes hashing, extraction, timestamp resolution
+//! and companion pairing from durable debt. `scan_runtime` coordinates their
+//! index claims and typed progress transport. Symlinks are not followed; hard
+//! links remain distinct paths.
 //!
-//! Hashing is ONE ladder for every kind (no media exception): a unique size
-//! reads nothing, a size collision gets the 64 KB prehash, and only prehash
-//! collisions get the full hash — the single-copy user's library is hardly
-//! read at all. Media with nothing to compare against get a PROVISIONAL
-//! identity (`p<path_id>`) so the cache and UI have a key; it promotes to the
-//! real hash when image derivation streams a hash before bounded decoding,
-//! move-out hashes its copy stream, or the ladder later demands one. Same size
-//! + same prehash + different full hash among supposed copies is recorded as
-//! a `copies-disagree` issue.
-//!
-//! This module is synchronous and testable against temp trees. It owns the
-//! typed progress facts because only the index pipeline knows what a durable
-//! checkpoint means; `scan_runtime` owns worker lifetime and event transport.
+//! Content identity uses one ladder across file kinds. A previously unseen
+//! unique size avoids a content read; size collisions without known content use a 64 KB
+//! head/tail prehash before full hashing equal cohorts. A size already associated
+//! with real content goes directly to a full hash. Prehash reads covering an
+//! entire small file can supply that full hash after version/name revalidation.
+//! Only full-hash equality collapses copies. A unique media row gets a
+//! provisional identity until derivation, delivery or a later collision proves
+//! its content; equal prehashes with differing full hashes remain an Issue.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -941,7 +938,6 @@ fn run_index_tail_scoped(
     let resolve_stats = resolve_from_evidence_with_progress(
         conn,
         &settings.resolution,
-        ResolveScope::PendingOnly,
         progress,
     )?;
     summary.resolved = resolve_stats.resolved;
@@ -1733,9 +1729,10 @@ pub fn promote_identity(
 }
 
 /// The unified content ladder over rows without a REAL hash — one rule for
-/// every kind, no media exception: a unique size reads nothing, a size
-/// collision reads the 64 KB head+tail prehash, and only a prehash collision
-/// reads the full blake3. Collapsing copies still requires full-hash
+/// every kind, no media exception: an unseen unique size reads nothing, cohorts
+/// without known content use the 64 KB head/tail prehash, and equal cohorts need
+/// a complete blake3 identity. A complete small-file prehash read can supply it
+/// after version/name revalidation. Collapsing copies still requires full-hash
 /// equality, always. Media with nothing to compare against get a PROVISIONAL
 /// identity (the cache and UI need a key before any read; image derivation
 /// promotes it after a separate streamed full hash); other-files stay
@@ -2168,15 +2165,6 @@ fn extract_pending_with_progress(
     Ok(stats)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum ResolveScope {
-    /// Rows never resolved (the normal pipeline tail).
-    PendingOnly,
-    /// Every non-missing extracted row — a settings change re-resolves the
-    /// whole index from stored evidence, no file reads.
-    All,
-}
-
 #[derive(Default, Debug, PartialEq, Eq)]
 pub struct ResolveStats {
     pub resolved: u64,
@@ -2191,9 +2179,8 @@ pub const RESOLVE_PAGE_SIZE: usize = 256;
 pub fn resolve_from_evidence(
     conn: &Connection,
     config: &ResolutionConfig,
-    scope: ResolveScope,
 ) -> Result<ResolveStats, String> {
-    resolve_from_evidence_with_progress(conn, config, scope, &|_| {})
+    resolve_from_evidence_with_progress(conn, config, &|_| {})
 }
 
 /// Settings changed the resolution policy. Invalidate the old projection
@@ -2277,7 +2264,6 @@ pub fn re_resolve_all_with_progress(
     let stats = resolve_from_evidence_with_progress(
         conn,
         config,
-        ResolveScope::PendingOnly,
         progress,
     )?;
     pair_companions_with_progress(conn, pairing_enabled, None, progress)?;
@@ -2293,19 +2279,11 @@ pub fn re_resolve_all_with_progress(
 fn resolve_from_evidence_with_progress(
     conn: &Connection,
     config: &ResolutionConfig,
-    scope: ResolveScope,
     progress: &dyn Fn(ScanProgress),
 ) -> Result<ResolveStats, String> {
     let mut stats = ResolveStats::default();
 
-    let predicate = match scope {
-        ResolveScope::PendingOnly => {
-            "missing = 0 AND indexed_at_utc IS NOT NULL AND resolved_source IS NULL"
-        }
-        ResolveScope::All => {
-            "missing = 0 AND indexed_at_utc IS NOT NULL"
-        }
-    };
+    let predicate = "missing = 0 AND indexed_at_utc IS NOT NULL AND resolved_source IS NULL";
     let total = conn
         .query_row(
             &format!("SELECT COUNT(*) FROM paths WHERE {predicate}"),
