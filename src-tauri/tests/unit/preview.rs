@@ -82,7 +82,7 @@ fn decoder_panics_record_one_failure_and_continue_in_serial_and_parallel() {
             &|hash, _, _| {
                 if hash == "bad001" { panic!("synthetic corrupt decoder input"); }
                 Ok((None, DerivedFacts { width: 10, height: 10, sharpness: 1.0, phash: 1 }))
-            }).unwrap();
+            }, None).unwrap();
         assert_eq!((stats.failed, stats.derived), (1, 1));
         let issues: i64 = conn.query_row("SELECT count(*) FROM active_issues WHERE kind = ?1", [crate::derived_state::PREVIEW_ERROR], |row| row.get(0)).unwrap();
         assert_eq!(issues, 1);
@@ -430,7 +430,7 @@ fn requested_and_automatic_decode_limits_share_retryable_dependency_debt() {
             assert_eq!(record_preview_failure_or_combine(&conn, "large01", &source, false, error), NEEDS_FFMPEG);
         } else {
             let stats = derive_candidate_rows_with(&conn, &cache, None, None, None,
-                vec![("large01".into(), source.clone())], 1, &|| false, &|_, _, _| Err(error.clone())).unwrap();
+                vec![("large01".into(), source.clone())], 1, &|| false, &|_, _, _| Err(error.clone()), None).unwrap();
             assert_eq!((stats.failed, stats.blocked_no_ffmpeg), (0, 1));
         }
         assert!(!crate::derived_state::preview_failed(&conn, "large01").unwrap());
@@ -438,7 +438,7 @@ fn requested_and_automatic_decode_limits_share_retryable_dependency_debt() {
         let rows = crate::derived_state::image_candidates(&conn, true, None, None).unwrap();
         assert_eq!(rows, [("large01".into(), source)]);
         let resumed = derive_candidate_rows_with(&conn, &cache, Some(Path::new("managed-ffmpeg")), None, None,
-            rows, 1, &|| false, &|_, _, _| Ok((None, DerivedFacts { width: 10, height: 10, sharpness: 1.0, phash: 1 }))).unwrap();
+            rows, 1, &|| false, &|_, _, _| Ok((None, DerivedFacts { width: 10, height: 10, sharpness: 1.0, phash: 1 })), None).unwrap();
         assert_eq!(resumed.derived, 1);
         assert!(crate::derived_state::image_candidates(&conn, true, None, None).unwrap().is_empty());
     }
@@ -490,7 +490,7 @@ fn automatic_preview_turn_records_one_ordinary_terminal_outcome() {
                 "cancel" => Err(crate::scanner::CANCELLED.into()),
                 "storage" => Err(format!("{}fixture", crate::resource_limits::STORAGE_UNAVAILABLE_PREFIX)),
                 _ => Ok((None, DerivedFacts { width: 2, height: 2, sharpness: 1.0, phash: 1 })),
-            });
+            }, None);
         assert_eq!(result.is_err(), matches!(case, "cancel" | "storage"));
         let mut query = reader.prepare("SELECT draft_json, user_visible FROM activity_events WHERE id > ?1 ORDER BY id").unwrap();
         let events = query.query_map([before], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
@@ -514,4 +514,81 @@ fn automatic_preview_turn_records_one_ordinary_terminal_outcome() {
     }
     assert!(crate::logging::flush(std::time::Duration::from_secs(5)));
     std::fs::write(root.join("activity-verified"), b"complete").unwrap();
+}
+
+#[test]
+fn healthy_parallel_previews_publish_before_a_held_peer_and_fallback_waits_for_it() {
+    use std::sync::{Mutex, atomic::{AtomicBool, Ordering}, mpsc};
+    let root = tempfile::tempdir().unwrap();
+    let conn = crate::index_store::open(&root.path().join("index.sqlite3")).unwrap();
+    let cache = CachePaths::new(root.path().join("cache"));
+    let mut rows = Vec::new();
+    for hash in ["held", "fallback", "healthy"] {
+        let path = root.path().join(format!("{hash}.jpg"));
+        std::fs::write(&path, b"fixture").unwrap();
+        let path = crate::native_path::encode(&path).into_owned();
+        conn.execute("INSERT INTO contents(hash, byte_size, kind) VALUES (?1, 7, 'image')", [hash]).unwrap();
+        conn.execute("INSERT INTO paths(abs_path, dir_path, file_name, kind, content_hash)
+                      VALUES (?1, ?2, ?3, 'image', ?3)", rusqlite::params![path, crate::native_path::encode(root.path()), hash]).unwrap();
+        rows.push((hash.to_string(), path));
+    }
+    let (release, held) = mpsc::channel();
+    let held = Mutex::new(held);
+    let settled = AtomicBool::new(false);
+    let observed = std::cell::RefCell::new(Vec::new());
+    let result = derive_candidate_rows_with(&conn, &cache, Some(Path::new("fixture-ffmpeg")), None, None,
+        rows, 3, &|| false, &|hash, _, tool| {
+            if hash == "held" {
+                held.lock().unwrap().recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+                settled.store(true, Ordering::SeqCst);
+            }
+            if hash == "fallback" {
+                if tool.is_none() {
+                    return Err(format!("{}fixture", crate::resource_limits::DECODE_LIMIT_PREFIX));
+                }
+                assert!(settled.load(Ordering::SeqCst), "exclusive fallback overlapped the native worker");
+            }
+            Ok((None, DerivedFacts { width: 10, height: 10, sharpness: 1.0, phash: 1 }))
+        }, Some(&|previous, current| {
+            assert_eq!(previous, current);
+            let ready: bool = conn.query_row("SELECT derived_at_utc IS NOT NULL FROM contents WHERE hash = ?1", [current], |row| row.get(0)).unwrap();
+            assert!(ready, "notification precedes the durable receipt");
+            if current == "healthy" {
+                assert!(!settled.load(Ordering::SeqCst), "healthy publication waited for its peer");
+                release.send(()).unwrap();
+            }
+            observed.borrow_mut().push(current.to_string());
+        })).unwrap();
+    assert_eq!(result.derived, 3);
+    assert_eq!(*observed.borrow(), ["healthy", "held", "fallback"]);
+}
+
+#[test]
+fn a_failed_parallel_publication_still_joins_its_physical_workers() {
+    use std::sync::{Arc, Mutex, mpsc};
+    let (entered, observed) = mpsc::channel();
+    let (release, held) = mpsc::channel();
+    let held = Arc::new(Mutex::new(held));
+    let (failed, failure_seen) = mpsc::channel();
+    let (returned, result) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let rows = vec![(0, "held".into(), "held.jpg".into()), (1, "healthy".into(), "healthy.jpg".into())];
+        let result = derive_native_candidates_parallel(&rows, &|hash, _, _| {
+            if hash == "held" {
+                entered.send(()).unwrap();
+                held.lock().unwrap().recv().unwrap();
+            }
+            Ok((None, DerivedFacts { width: 10, height: 10, sharpness: 1.0, phash: 1 }))
+        }, |_, _| {
+            failed.send(()).unwrap();
+            Err("fixture publication failure".into())
+        });
+        returned.send(result).unwrap();
+    });
+    observed.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    failure_seen.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    assert!(matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)));
+    release.send(()).unwrap();
+    assert_eq!(result.recv_timeout(std::time::Duration::from_secs(5)).unwrap().unwrap_err(), "fixture publication failure");
+    worker.join().unwrap();
 }

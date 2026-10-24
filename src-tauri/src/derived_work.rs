@@ -1227,12 +1227,12 @@ fn derive_priority_previews(
                 &turn,
                 is_idle(),
                 &|| ATTENTION_GENERATION.load(Ordering::SeqCst) != generation,
+                Some(&|previous, current| notify_item_update(app, conn, projection, "previews", previous, current)),
             )
         }),
     )?;
     if image.derived + image.failed + image.blocked_no_ffmpeg > 0 {
         emit_progress(app, WorkClass::Previews, None);
-        notify_image_changes(app, conn, projection, &image.changes);
         // Issues change only when a write actually opened or resolved one; a
         // clean batch of successes with nothing to resolve has nothing new
         // for the Issues inbox, and deriving hundreds of thousands of items
@@ -1303,13 +1303,13 @@ fn derive_global_required(
                 settings.ffmpeg.as_deref(),
                 is_idle(),
                 &|hash| crate::derived_runtime::active_item(app, WorkClass::Previews, hash),
+                Some(&|previous, current| notify_item_update(app, conn, projection, "previews", previous, current)),
             )
         }),
     )?;
     let mut did_work = image.derived + image.failed + image.blocked_no_ffmpeg > 0;
     if did_work {
         emit_progress(app, WorkClass::Previews, None);
-        notify_image_changes(app, conn, projection, &image.changes);
         if image.issues_changed {
             notify_issues(app);
         }
@@ -1808,17 +1808,6 @@ pub fn notify_item_update(
             "derived item notification failed",
             json!({ "hash": hash, "error": { "message": error } }),
         ),
-    }
-}
-
-fn notify_image_changes(
-    app: &AppHandle,
-    conn: &Connection,
-    projection: crate::queries::ItemProjectionContext,
-    changes: &[(String, String)],
-) {
-    for (previous, current) in changes {
-        notify_item_update(app, conn, projection, "previews", previous, current);
     }
 }
 

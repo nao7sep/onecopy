@@ -665,6 +665,7 @@ pub fn derive_images_pending(
         None,
         None,
         true,
+        None,
     )
 }
 
@@ -679,6 +680,7 @@ pub(crate) fn derive_next_images(
     ffmpeg: Option<&Path>,
     idle: bool,
     on_item: &dyn Fn(&str),
+    on_changed: Option<&dyn Fn(&str, &str)>,
 ) -> Result<DeriveStats, String> {
     let limit = crate::resource_limits::image_worker_capacity(idle);
     derive_images_pending_limit(
@@ -692,6 +694,7 @@ pub(crate) fn derive_next_images(
         Some(limit),
         None,
         idle,
+        on_changed,
     )
 }
 
@@ -707,6 +710,7 @@ pub(crate) fn derive_image_hashes(
     hashes: &[String],
     idle: bool,
     priority_changed: &dyn Fn() -> bool,
+    on_changed: Option<&dyn Fn(&str, &str)>,
 ) -> Result<DeriveStats, String> {
     let mut rows = Vec::with_capacity(hashes.len());
     let mut seen = std::collections::HashSet::with_capacity(hashes.len());
@@ -732,6 +736,7 @@ pub(crate) fn derive_image_hashes(
         rows,
         idle,
         priority_changed,
+        on_changed,
     )
 }
 
@@ -746,6 +751,7 @@ fn derive_images_pending_limit(
     limit: Option<usize>,
     only_hash: Option<&str>,
     idle: bool,
+    on_changed: Option<&dyn Fn(&str, &str)>,
 ) -> Result<DeriveStats, String> {
     let rows = crate::derived_state::image_candidates(conn, ffmpeg.is_some(), limit, only_hash)?;
     derive_candidate_rows(
@@ -759,6 +765,7 @@ fn derive_images_pending_limit(
         rows,
         idle,
         &|| false,
+        on_changed,
     )
 }
 
@@ -799,7 +806,8 @@ fn derive_candidate(
 fn derive_native_candidates_parallel(
     rows: &[(usize, String, String)],
     decode: &(dyn Fn(&str, &str, Option<&Path>) -> DeriveOutcome + Sync),
-) -> Result<Vec<(usize, DeriveOutcome)>, String> {
+    mut publish: impl FnMut(usize, DeriveOutcome) -> Result<(), String>,
+) -> Result<(), String> {
     std::thread::scope(|scope| {
         let (send, receive) = std::sync::mpsc::channel();
         for (index, hash, path) in rows {
@@ -815,11 +823,10 @@ fn derive_native_candidates_parallel(
                 .map_err(|error| format!("could not start an image preview worker: {error}"))?;
         }
         drop(send);
-        let mut outcomes = receive
-            .into_iter()
-            .collect::<Vec<_>>();
-        outcomes.sort_by_key(|(index, _)| *index);
-        Ok(outcomes)
+        for (index, outcome) in receive {
+            publish(index, outcome)?;
+        }
+        Ok(())
     })
 }
 
@@ -835,10 +842,11 @@ fn derive_candidate_rows(
     rows: Vec<(String, String)>,
     idle: bool,
     priority_changed: &dyn Fn() -> bool,
+    on_changed: Option<&dyn Fn(&str, &str)>,
 ) -> Result<DeriveStats, String> {
     derive_candidate_rows_with(conn, cache, ffmpeg, on_item, progress, rows,
         crate::resource_limits::image_worker_capacity(idle), priority_changed,
-        &|hash, path, tool| derive_candidate(hash, path, cache, thumb_edge, preview_long_edge, tool))
+        &|hash, path, tool| derive_candidate(hash, path, cache, thumb_edge, preview_long_edge, tool), on_changed)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -847,6 +855,7 @@ fn derive_candidate_rows_with(
     on_item: Option<&dyn Fn(&str)>, progress: Option<&dyn Fn(u64, u64)>,
     rows: Vec<(String, String)>, capacity: usize, priority_changed: &dyn Fn() -> bool,
     decode: &(dyn Fn(&str, &str, Option<&Path>) -> DeriveOutcome + Sync),
+    on_changed: Option<&dyn Fn(&str, &str)>,
 ) -> Result<DeriveStats, String> {
     if rows.is_empty() { return Ok(DeriveStats::default()); }
     let total = rows.len() as u64;
@@ -859,7 +868,7 @@ fn derive_candidate_rows_with(
         Some(&|done, total| {
             trace.progress(done, total);
             if let Some(report) = progress { report(done, total); }
-        }), rows, capacity, priority_changed, decode);
+        }), rows, capacity, priority_changed, decode, on_changed);
     use crate::activity::ActivityState;
     let state = match &result {
         Ok(stats) if stats.failed > 0 => ActivityState::Failed,
@@ -881,6 +890,7 @@ fn derive_candidate_rows_inner_with(
     on_item: Option<&dyn Fn(&str)>, progress: Option<&dyn Fn(u64, u64)>,
     rows: Vec<(String, String)>, capacity: usize, priority_changed: &dyn Fn() -> bool,
     decode: &(dyn Fn(&str, &str, Option<&Path>) -> DeriveOutcome + Sync),
+    on_changed: Option<&dyn Fn(&str, &str)>,
 ) -> Result<DeriveStats, String> {
     let mut stats = DeriveStats::default();
 
@@ -924,31 +934,9 @@ fn derive_candidate_rows_inner_with(
         // this chunk already records one ordinary trace.
         let mut traces: Vec<_> = chunk.iter().map(|(hash, _)| crate::activity::WorkTrace::begin_debug(
             crate::activity::ActivityOwner::BackgroundWork, Some(crate::activity::ActivitySubject::Previews), Some(hash))).collect();
-        if parallel.len() > 1 {
-            for (index, outcome) in
-                derive_native_candidates_parallel(&parallel, decode)?
-            {
-                outcomes[index] = Some(outcome);
-            }
-        }
-
-        for (index, (hash, path)) in chunk.iter().enumerate() {
-            let mut outcome = outcomes[index].take().unwrap_or_else(|| {
-                crate::failure_runtime::contain_item(|| decode(hash, path, ffmpeg))
-            });
-            if outcome
-                .as_ref()
-                .is_err_and(|error| crate::resource_limits::is_decode_limit(error))
-            {
-                if ffmpeg.is_some() {
-                    // The native worker hit its per-decode ceiling. Retry this
-                    // one item through bounded ffmpeg only after every parallel
-                    // native worker has joined, preserving subprocess
-                    // exclusivity.
-                    outcome = crate::failure_runtime::contain_item(|| decode(hash, path, ffmpeg));
-                }
-            }
-
+        let mut published = vec![false; chunk.len()];
+        let mut publish = |index: usize, outcome: DeriveOutcome| -> Result<(), String> {
+            let (hash, path) = &chunk[index];
             match outcome.map_err(|error| (preview_failure_kind(&error, ffmpeg.is_some()), error)) {
                 Ok((promoted, facts)) => {
                     let key = match promoted {
@@ -1001,10 +989,38 @@ fn derive_candidate_rows_inner_with(
                 }
             }
 
+            if let (Some(report), Some((previous, current))) = (on_changed, stats.changes.last()) {
+                report(previous, current);
+            }
             done += 1;
             if let Some(report) = progress {
                 report(done.min(total), total);
             }
+            Ok(())
+        };
+        if parallel.len() > 1 {
+            derive_native_candidates_parallel(&parallel, decode, |index, outcome| {
+                if ffmpeg.is_some() && outcome.as_ref().is_err_and(|error| crate::resource_limits::is_decode_limit(error)) {
+                    // Exclusive fallback waits for the scope to join every
+                    // native worker; other completed items publish immediately.
+                    outcomes[index] = Some(outcome);
+                } else {
+                    publish(index, outcome)?;
+                    published[index] = true;
+                }
+                Ok(())
+            })?;
+        }
+
+        for (index, (hash, path)) in chunk.iter().enumerate() {
+            if published[index] { continue; }
+            let mut outcome = outcomes[index].take().unwrap_or_else(|| {
+                crate::failure_runtime::contain_item(|| decode(hash, path, ffmpeg))
+            });
+            if ffmpeg.is_some() && outcome.as_ref().is_err_and(|error| crate::resource_limits::is_decode_limit(error)) {
+                outcome = crate::failure_runtime::contain_item(|| decode(hash, path, ffmpeg));
+            }
+            publish(index, outcome)?;
         }
 
         if crate::derived_runtime::cancelled() {
