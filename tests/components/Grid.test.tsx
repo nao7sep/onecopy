@@ -7,8 +7,8 @@
 
 import { readFileSync } from "node:fs";
 import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
-import { beforeEach, afterEach, describe, expect, it } from "vitest";
-import { render, cleanup, act, fireEvent } from "@testing-library/react";
+import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { render, cleanup, act, fireEvent, waitFor } from "@testing-library/react";
 import Grid from "../../src/components/Grid";
 import { useItemsStore } from "../../src/state/items-store";
 import type { SectionItem } from "../../src/models/items";
@@ -526,5 +526,32 @@ it.each(["tiles", "list"] as const)("paints the anchored %s selection surface wh
     expect(useItemsStore.getState().selectedKeys.has("h2")).toBe(true);
   } finally {
     style.remove();
+  }
+});
+
+
+it("fills a large viewport at small zoom beyond one native page", async () => {
+  // A 4K display at 50% zoom has this CSS viewport. The browser supplies
+  // these measurements; the test drives the real grid and window reader.
+  const width = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(7680);
+  const height = vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(4320);
+  const rows = Array.from({ length: 3000 }, (_, index) => item(index + 1));
+  mockSectionItems(() => rows);
+  mockCommands({ prioritize_derived_work: () => null, log_event: () => null });
+  await useItemsStore.getState().select({ kind: "image", month: "2026-01" });
+  function LiveGrid() {
+    const items = useItemsStore((state) => state.items);
+    return <Grid items={items} loading={false} loadError={null} layout="tiles" />;
+  }
+  const view = render(<LiveGrid />);
+  try {
+    await waitFor(() => expect(view.container.querySelector('[data-item-key="h1012"]')).not.toBeNull());
+    expect(useItemsStore.getState().items.length).toBeGreaterThan(1012);
+    expect(useItemsStore.getState().items.length).toBeLessThan(rows.length);
+    expect(invokeCalls.filter((call) => call.command === "get_section_window")
+      .every((call) => Number(call.args.limit) <= 512)).toBe(true);
+  } finally {
+    view.unmount();
+    width.mockRestore(); height.mockRestore();
   }
 });

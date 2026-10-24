@@ -733,7 +733,8 @@ export default function Grid({
     if (emptyState !== null) return;
     if (desiredStart >= windowStart && desiredEnd <= windowStart + items.length) return;
     const timer = setTimeout(() => {
-      void loadWindow(Math.max(0, desiredStart - columns * 4));
+      void loadWindow(Math.max(0, desiredStart - columns * 4),
+        Math.min(effectiveTotalItems, desiredEnd + columns * 4));
     }, 50);
     return () => clearTimeout(timer);
   }, [
@@ -741,6 +742,7 @@ export default function Grid({
     desiredEnd,
     desiredStart,
     emptyState,
+    effectiveTotalItems,
     items.length,
     loadWindow,
     windowStart,

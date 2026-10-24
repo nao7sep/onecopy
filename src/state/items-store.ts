@@ -50,7 +50,7 @@ interface ExplicitRestore {
   rangeBase?: readonly string[];
 }
 
-const SECTION_WINDOW_LIMIT = 512;
+const SECTION_PAGE_LIMIT = 512;
 
 interface ItemsState {
   selected: SelectedSection | null;
@@ -89,7 +89,7 @@ interface ItemsState {
     section: SelectedSection,
     restore?: ExplicitRestore,
   ) => Promise<void>;
-  loadWindow: (start: number) => Promise<void>;
+  loadWindow: (start: number, end?: number) => Promise<void>;
   selectPosition: (index: number, extend: boolean) => Promise<void>;
   selectIdentity: (key: string) => Promise<void>;
   revealPath: (path: string, isCurrent: () => boolean, expectedHash?: string) => Promise<"revealed" | "unavailable" | "superseded" | "failed">;
@@ -106,11 +106,11 @@ interface ItemsState {
 
 const sectionLoad = requestSeq();
 const windowLoad = requestSeq();
-/** The window start Main most recently asked for: the last requested scroll
+/** The window range Main most recently asked for: the last requested scroll
  * load or published reconcile. A refresh reloads this intent, never an older
  * committed `windowStart`, so it serves a pending scroll load rather than
  * replacing it with the region the user left. */
-let windowIntent = 0;
+let windowIntent = { start: 0, limit: SECTION_PAGE_LIMIT };
 const rangeLoad = requestSeq();
 const detailLoad = requestSeq();
 let scrollRequestId = 0;
@@ -203,7 +203,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
         sort: target.section.kind === "other" ? sorts.other : sorts.media,
         selected: [{ ...target.identity, index: 0 }], anchor: target.identity,
         rangeOrigin: target.identity, rangeBase: [target.identity],
-        recovery: null, selectFirst: false, limit: SECTION_WINDOW_LIMIT,
+        recovery: null, selectFirst: false, limit: SECTION_PAGE_LIMIT,
       });
       if (!fresh()) return "superseded";
       if (result.anchor === null || identityKey(result.anchor) !== identityKey(target.identity)) return "unavailable";
@@ -261,7 +261,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       };
     }
     const remembered = restore ?? memory[sectionId(section)] ?? null;
-    if (!sameSection) windowIntent = 0;
+    if (!sameSection) windowIntent = { start: 0, limit: SECTION_PAGE_LIMIT };
     set({
       selected: section,
       sectionMemory: memory,
@@ -298,18 +298,21 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
     );
   },
 
-  loadWindow: async (requestedStart) => {
+  loadWindow: async (requestedStart, requestedEnd) => {
     const state = get();
     const section = state.selected;
     if (section === null || state.totalItems === 0) return;
-    const maxStart = Math.max(0, state.totalItems - SECTION_WINDOW_LIMIT);
+    const limit = Math.min(state.totalItems, Math.max(SECTION_PAGE_LIMIT,
+      Math.ceil(requestedEnd ?? requestedStart + SECTION_PAGE_LIMIT) - Math.floor(requestedStart)));
+    const maxStart = Math.max(0, state.totalItems - limit);
     const start = Math.min(Math.max(Math.floor(requestedStart), 0), maxStart);
-    const requestedEnd = Math.min(state.totalItems, start + SECTION_WINDOW_LIMIT);
-    if (start >= state.windowStart && requestedEnd <= state.windowStart + state.items.length) {
+    windowIntent = { start, limit };
+    if (start >= state.windowStart && start + limit <= state.windowStart + state.items.length) {
+      // Returning into the retained window supersedes a pending distant read.
+      windowLoad.begin();
       return;
     }
-    windowIntent = start;
-    const loaded = await readWindow(get, section, start);
+    const loaded = await readWindow(get, section, start, limit);
     if (loaded !== null) await adoptWindow(set, get, loaded);
   },
 
@@ -323,7 +326,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
       .map((item, offset) => [itemKey(item), before.windowStart + offset] as const)
       .find((candidate) => candidate[1] === index);
     if (entry === undefined) {
-      await get().loadWindow(index - Math.floor(SECTION_WINDOW_LIMIT / 2));
+      await get().loadWindow(index - Math.floor(SECTION_PAGE_LIMIT / 2));
       if (!ownsIntent()) return;
       const state = get();
       entry = state.items
@@ -649,7 +652,7 @@ export const useItemsStore = create<ItemsState>((set, get) => ({
   refreshWindow: async () => {
     const section = get().selected;
     if (section === null) return;
-    const loaded = await readWindow(get, section, windowIntent);
+    const loaded = await readWindow(get, section, windowIntent.start, windowIntent.limit);
     if (loaded !== null) await adoptWindow(set, get, loaded);
   },
 
@@ -730,25 +733,34 @@ async function readWindow(
   get: () => ItemsState,
   section: SelectedSection,
   start: number,
+  limit: number,
 ): Promise<SectionWindow | null> {
   const sort = get().currentSort();
   const fresh = windowLoad.begin();
   try {
-    const window = await invoke<SectionWindow>("get_section_window", {
-      kind: section.kind,
-      month: section.month,
-      sort,
-      start,
-      limit: SECTION_WINDOW_LIMIT,
-    });
-    const current = get();
-    if (
-      !fresh() ||
-      current.selected?.kind !== section.kind ||
-      current.selected.month !== section.month ||
-      !sameSort(current.currentSort(), sort)
-    ) return null;
-    return window;
+    let first: SectionWindow | null = null;
+    const items: SectionItem[] = [];
+    // Viewport capacity can exceed one IPC page at supported zoom. Keep each
+    // read bounded and publish only pages from the same authoritative order.
+    while (items.length < limit) {
+      const offset = items.length;
+      const window: SectionWindow = await invoke<SectionWindow>("get_section_window", {
+        kind: section.kind, month: section.month, sort,
+        start: start + offset, limit: Math.min(SECTION_PAGE_LIMIT, limit - offset),
+      });
+      const current = get();
+      if (!fresh() || current.selected?.kind !== section.kind ||
+        current.selected.month !== section.month || !sameSort(current.currentSort(), sort)) return null;
+      if (first !== null && first.order !== window.order) {
+        // Never combine two orders. The normal adoption owner reconciles this
+        // newer snapshot; the viewport then requests its still-missing range.
+        return window;
+      }
+      first ??= window;
+      items.push(...window.items);
+      if (window.items.length === 0 || window.start + window.items.length >= window.total) break;
+    }
+    return first === null ? null : { ...first, items };
   } catch (error) {
     if (!fresh()) return null;
     log.error("section window load failed", toErrorFields(error));
@@ -868,7 +880,7 @@ async function reconcileCurrent(
       rangeBase,
       recovery: anchorContextPayload(recovery),
       selectFirst,
-      limit: SECTION_WINDOW_LIMIT,
+      limit: SECTION_PAGE_LIMIT,
     });
     if (!fresh()) {
       // A later routine refresh owns the newer order read, but does not cancel
@@ -980,7 +992,7 @@ function publishReconciliation(
   }
   const rangeOrigin = result.rangeOrigin === null ? anchor : identityKey(result.rangeOrigin);
   const rangeOriginPosition = result.rangeOrigin?.index ?? result.anchor?.index ?? null;
-  windowIntent = result.window.start;
+  windowIntent = { start: result.window.start, limit: SECTION_PAGE_LIMIT };
   set({
     ...patch,
     items: result.window.items,

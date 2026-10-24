@@ -1127,3 +1127,62 @@ describe("refreshWindow", () => {
     expect(invokeCalls).toEqual([]);
   });
 });
+
+
+describe("viewport-sized section windows", () => {
+  it("retains the requested visible range using bounded native pages", async () => {
+    const rows = Array.from({ length: 3000 }, (_, index) => item(index + 1));
+    mockSection(rows);
+    await useItemsStore.getState().select(SECTION);
+    invokeCalls.length = 0;
+    await useItemsStore.getState().loadWindow(300, 1700);
+    expect(useItemsStore.getState().items.map((row) => row.hash)).toEqual(rows.slice(300, 1700).map((row) => row.hash));
+    expect(invokeCalls.filter((call) => call.command === "get_section_window")
+      .map((call) => [call.args.start, call.args.limit])).toEqual([[300, 512], [812, 512], [1324, 376]]);
+    invokeCalls.length = 0;
+    await useItemsStore.getState().refreshWindow();
+    expect(useItemsStore.getState().items).toHaveLength(1400);
+    expect(invokeCalls.filter((call) => call.command === "get_section_window")).toHaveLength(3);
+  });
+
+  it("cancels remaining pages when the viewport returns to retained rows", async () => {
+    const rows = Array.from({ length: 3000 }, (_, index) => item(index + 1));
+    mockSection(rows);
+    await useItemsStore.getState().select(SECTION);
+    const original = useItemsStore.getState();
+    let finish!: () => void;
+    mockCommand("get_section_window", ({ start, limit }) => new Promise((resolve) => {
+      finish = () => resolve({ total: rows.length, start, order: original.orderToken,
+        items: rows.slice(Number(start), Number(start) + Number(limit)) });
+    }));
+    const pending = useItemsStore.getState().loadWindow(1000, 2400);
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    await useItemsStore.getState().loadWindow(0, 300);
+    finish();
+    await pending;
+    expect(useItemsStore.getState().items).toBe(original.items);
+    expect(invokeCalls.filter((call) => call.command === "get_section_window")).toHaveLength(1);
+  });
+
+  it("never publishes pages assembled from different section orders", async () => {
+    let rows = Array.from({ length: 3000 }, (_, index) => item(index + 1));
+    mockSection(() => rows);
+    await useItemsStore.getState().select(SECTION);
+    const originalOrder = useItemsStore.getState().orderToken;
+    const publications: string[][] = [];
+    const unsubscribe = useItemsStore.subscribe((state) => publications.push(state.items.map((row) => row.hash!)));
+    let page = 0;
+    mockCommand("get_section_window", ({ start, limit }) => {
+      if (++page === 2) rows = rows.map((row) => ({ ...row, hash: `new-${row.hash}` }));
+      return { total: rows.length, start, order: page === 1 ? originalOrder : "changed",
+        items: rows.slice(Number(start), Number(start) + Number(limit)) };
+    });
+    try {
+      await useItemsStore.getState().loadWindow(0, 1400);
+      expect(page).toBe(2);
+      expect(useItemsStore.getState().items.every((row) => row.hash?.startsWith("new-"))).toBe(true);
+      expect(publications.every((keys) => keys.every((key) => key.startsWith("new-")) ||
+        keys.every((key) => !key.startsWith("new-")))).toBe(true);
+    } finally { unsubscribe(); }
+  });
+});
