@@ -47,6 +47,8 @@ static LAST_ACTIVITY: Mutex<Option<Instant>> = Mutex::new(None);
 static STARTED: [AtomicBool; 2] = [AtomicBool::new(false), AtomicBool::new(false)];
 static AUTOMATIC_ADMITTED: AtomicBool = AtomicBool::new(false);
 static DEBT_REVISION: AtomicU64 = AtomicU64::new(0);
+static IMAGE_PREVIEW_REVISION: AtomicU64 = AtomicU64::new(0);
+static VIDEO_POSTER_REVISION: AtomicU64 = AtomicU64::new(0);
 static ATTENTION_GENERATION: AtomicU64 = AtomicU64::new(0);
 static WORKERS: Mutex<Vec<JoinHandle<()>>> = Mutex::new(Vec::new());
 static WAKE: OnceLock<(Mutex<u64>, Condvar)> = OnceLock::new();
@@ -148,6 +150,8 @@ struct CandidateCursor {
 #[derive(Default)]
 struct CandidateCursors {
     previews_exhausted: bool,
+    image_preview_revision: u64,
+    video_poster_revision: u64,
     snapshots: CandidateCursor,
     faces: CandidateCursor,
     video_transcripts: CandidateCursor,
@@ -184,6 +188,22 @@ impl CandidateCursors {
         // invalidate this cursor; urgent preview tiers bypass it.
         self.previews_exhausted = searched && !worked;
         Ok(worked)
+    }
+
+    fn refresh_prerequisites(&mut self) {
+        let image = IMAGE_PREVIEW_REVISION.load(Ordering::SeqCst);
+        let video = VIDEO_POSTER_REVISION.load(Ordering::SeqCst);
+        if image != self.image_preview_revision {
+            self.faces = CandidateCursor::default();
+            self.image_preview_revision = image;
+            self.section = SectionCursor::default();
+        }
+        if video != self.video_poster_revision {
+            self.snapshots = CandidateCursor::default();
+            self.video_transcripts = CandidateCursor::default();
+            self.video_poster_revision = video;
+            self.section = SectionCursor::default();
+        }
     }
 
     fn invalidate(&mut self) {
@@ -377,6 +397,15 @@ pub(crate) fn admit_automatic() {
 /// source triggers own derived invalidation; this signal only schedules work.
 pub fn wake() {
     DEBT_REVISION.fetch_add(1, Ordering::SeqCst);
+    wake_priority();
+}
+
+/// A committed prerequisite can create work below an advanced or exhausted
+/// heavy cursor. Reopen only its dependents; preview and audio debt did not
+/// change. The publication owner calls this after the receipt commits.
+pub(crate) fn preview_published(video: bool) {
+    let revision = if video { &VIDEO_POSTER_REVISION } else { &IMAGE_PREVIEW_REVISION };
+    revision.fetch_add(1, Ordering::SeqCst);
     wake_priority();
 }
 
@@ -594,6 +623,9 @@ fn run_worker_loop(app: &AppHandle, lane: Lane) -> Result<(), String> {
             cursors.invalidate();
             debt_revision = revision;
         }
+        if lane == Lane::Heavy {
+            cursors.refresh_prerequisites();
+        }
         if !available() {
             continue;
         }
@@ -724,9 +756,6 @@ fn ensure_preview_once(
         settings.ffmpeg.as_deref(),
         hash,
     );
-    if result.is_ok() {
-        wake();
-    }
     let projection = crate::queries::ItemProjectionContext {
         capabilities: settings.capabilities(),
     };

@@ -364,3 +364,83 @@ fn idle_budget_uses_monotonic_elapsed_time_and_resets_after_input() {
     assert!(!idle_since(Some(later_input), later_input));
     assert!(idle_since(Some(later_input), later_input + IDLE_AFTER));
 }
+
+#[test]
+fn committed_previews_reopen_only_their_dependent_cursors() {
+    const CHILD_ROOT: &str = "ONECOPY_PREVIEW_DEBT_TEST_ROOT";
+    let Some(root) = std::env::var_os(CHILD_ROOT) else {
+        // Publication revisions are process-wide; isolate this proof from
+        // unrelated preview fixtures publishing on other test threads.
+        let root = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "derived_work::tests::committed_previews_reopen_only_their_dependent_cursors", "--nocapture"])
+            .env(CHILD_ROOT, root.path()).output().unwrap();
+        assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        assert!(root.path().join("verified").is_file());
+        return;
+    };
+    let root = PathBuf::from(root);
+    let conn = crate::index_store::open(&root.join("index.sqlite3")).unwrap();
+    let revisions = || (IMAGE_PREVIEW_REVISION.load(Ordering::SeqCst), VIDEO_POSTER_REVISION.load(Ordering::SeqCst));
+    let wake_generation = || *WAKE.get_or_init(|| (Mutex::new(0), Condvar::new())).0.lock().unwrap();
+    let debt = DEBT_REVISION.load(Ordering::SeqCst);
+    for video in [false, true] {
+        for exhausted in [false, true] {
+            let hash = format!("a-{video}-{exhausted}");
+            let kind = if video { "video" } else { "image" };
+            conn.execute("INSERT INTO contents(hash, byte_size, kind) VALUES (?1, 1, ?2)", rusqlite::params![hash, kind]).unwrap();
+            conn.execute("INSERT INTO paths(abs_path, dir_path, file_name, kind, content_hash)
+                          VALUES (?1, '/', ?1, ?2, ?1)", rusqlite::params![hash, kind]).unwrap();
+            let mut cursors = CandidateCursors::default();
+            cursors.refresh_prerequisites();
+            cursors.previews_exhausted = true;
+            for cursor in [&mut cursors.faces, &mut cursors.snapshots, &mut cursors.video_transcripts, &mut cursors.audio_transcripts] {
+                cursor.after_hash = Some("z".into());
+                cursor.exhausted = exhausted;
+            }
+            cursors.section.initialized = true;
+            let before = wake_generation();
+            if video {
+                crate::derived_state::record_poster_success(&conn, &hash, &hash, Some(1000)).unwrap();
+            } else {
+                crate::derived_state::record_preview_success(&conn, &hash, &hash, 10, 10, 1.0, 1).unwrap();
+            }
+            assert!(wake_generation() > before, "publication wakes the waiting worker");
+            cursors.refresh_prerequisites();
+            assert!(cursors.previews_exhausted);
+            assert_eq!(cursors.audio_transcripts.after_hash.as_deref(), Some("z"));
+            assert_eq!(cursors.audio_transcripts.exhausted, exhausted);
+            assert!(!cursors.section.initialized, "section work may also lie behind its cursor");
+            if video {
+                assert!(cursors.snapshots.after_hash.is_none());
+                assert!(!cursors.snapshots.exhausted);
+                assert!(cursors.video_transcripts.after_hash.is_none());
+                assert!(!cursors.video_transcripts.exhausted);
+                assert_eq!(cursors.faces.after_hash.as_deref(), Some("z"));
+                assert_eq!(cursors.faces.exhausted, exhausted);
+                assert!(crate::derived_state::strip_candidates(&conn, cursors.snapshots.after_hash.as_deref(), 10)
+                    .unwrap().iter().any(|(candidate, _, _)| candidate == &hash));
+            } else {
+                assert!(cursors.faces.after_hash.is_none());
+                assert!(!cursors.faces.exhausted);
+                assert_eq!(cursors.snapshots.after_hash.as_deref(), Some("z"));
+                assert_eq!(cursors.snapshots.exhausted, exhausted);
+                assert_eq!(cursors.video_transcripts.after_hash.as_deref(), Some("z"));
+                assert_eq!(cursors.video_transcripts.exhausted, exhausted);
+                assert!(crate::derived_state::face_candidates(&conn, cursors.faces.after_hash.as_deref(), 10)
+                    .unwrap().iter().any(|(candidate, _)| candidate == &hash));
+            }
+            assert_eq!(DEBT_REVISION.load(Ordering::SeqCst), debt, "unrelated debt stays settled");
+        }
+    }
+    let before = (revisions(), wake_generation());
+    crate::derived_state::record_preview_success(&conn, "absent", "absent", 10, 10, 1.0, 1).unwrap();
+    crate::derived_state::record_poster_success(&conn, "absent", "absent", Some(1000)).unwrap();
+    assert_eq!((revisions(), wake_generation()), before, "no receipt creates no debt");
+    conn.execute_batch("CREATE TEMP TRIGGER reject_preview BEFORE UPDATE ON contents
+                        BEGIN SELECT RAISE(ABORT, 'fixture publication refused'); END;").unwrap();
+    assert!(crate::derived_state::record_preview_success(&conn, "a-false-false", "a-false-false", 10, 10, 1.0, 1).is_err());
+    assert!(crate::derived_state::record_poster_success(&conn, "a-true-false", "a-true-false", Some(1000)).is_err());
+    assert_eq!((revisions(), wake_generation()), before, "failed publication cannot advertise debt");
+    std::fs::write(root.join("verified"), b"verified").unwrap();
+}

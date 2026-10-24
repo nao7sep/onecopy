@@ -1107,7 +1107,7 @@ pub fn record_preview_success(
 ) -> Result<bool, String> {
     let transaction = crate::sqlite::write_transaction(conn)
         .map_err(|error| error.to_string())?;
-    transaction
+    let published = transaction
         .execute(
             &format!(
                 "UPDATE contents SET width = COALESCE(width, ?2), \
@@ -1127,6 +1127,9 @@ pub fn record_preview_success(
         .map_err(|error| error.to_string())?;
     let issues_changed = crate::index_store::clear_issues(&transaction, path, &[PREVIEW_ERROR])?;
     crate::records::commit(transaction).map_err(|error| error.to_string())?;
+    if published > 0 {
+        crate::derived_work::preview_published(false);
+    }
     Ok(issues_changed)
 }
 
@@ -1238,7 +1241,7 @@ pub fn record_poster_success(
 ) -> Result<bool, String> {
     let transaction = crate::sqlite::write_transaction(conn)
         .map_err(|error| error.to_string())?;
-    transaction
+    let published = transaction
         .execute(
             &format!(
                 "UPDATE contents SET duration_ms = COALESCE(duration_ms, ?2), \
@@ -1257,6 +1260,9 @@ pub fn record_poster_success(
     let issues_changed =
         crate::index_store::clear_issues(&transaction, path, &[VIDEO_POSTER_ERROR])?;
     crate::records::commit(transaction).map_err(|error| error.to_string())?;
+    if published > 0 {
+        crate::derived_work::preview_published(true);
+    }
     Ok(issues_changed)
 }
 
