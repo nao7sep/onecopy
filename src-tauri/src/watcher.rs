@@ -608,24 +608,30 @@ fn recover_roots(app: &tauri::AppHandle, roots: &[String], generation: u64) {
     let sections = crate::section_changes::SectionLog::default();
     for root in roots {
         if !crate::volume_io::is_dir(crate::native_path::from_text(root).as_ref()).unwrap_or(false) { continue; }
-        let result = crate::scan_runtime::with_watcher_claim(
-            move || !owns_generation(generation),
-            || {
-                let data_root = crate::paths::data_root()?;
-                let config = crate::storage::config(&data_root)?;
-                let settings = scanner::settings_from_config(Some(&config), &data_root, chrono::Utc::now().timestamp_millis());
-                let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
-                let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::Watcher, None, None);
-                let report = trace.progress_reporter();
-                sections.track(&conn);
-                let result = scanner::run_source_check_scoped(&conn, &settings, Some(std::slice::from_ref(root)), &|progress| report(progress.done, progress.total));
-                sections.finish(&conn);
-                if result.as_ref().is_ok_and(|summary| summary.failures > 0) {
-                    trace.finish(crate::activity::ActivityState::Failed, None);
-                } else { trace.result(&result); }
-                result
-            },
-        );
+        let result = loop {
+            let result = crate::scan_runtime::with_watcher_claim(
+                move || !owns_generation(generation),
+                || {
+                    let data_root = crate::paths::data_root()?;
+                    let config = crate::storage::config(&data_root)?;
+                    let settings = scanner::settings_from_config(Some(&config), &data_root, chrono::Utc::now().timestamp_millis());
+                    let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
+                    let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::Watcher, None, None);
+                    let report = trace.progress_reporter();
+                    sections.track(&conn);
+                    let result = scanner::run_source_check_scoped(&conn, &settings, Some(std::slice::from_ref(root)), &|progress| report(progress.done, progress.total));
+                    sections.finish(&conn);
+                    if result.as_ref().is_ok_and(|summary| summary.failures > 0) {
+                        trace.finish(crate::activity::ActivityState::Failed, None);
+                    } else { trace.result(&result); }
+                    result
+                },
+            );
+            match result {
+                Err(error) if error == crate::scan_runtime::RESTART => continue,
+                result => break result,
+            }
+        };
         if !owns_generation(generation) { return; }
         match result {
             Ok(summary) if summary.failures == 0 => {

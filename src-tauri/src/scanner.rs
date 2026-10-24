@@ -1326,6 +1326,7 @@ fn walk_root_with_progress(
     data_root: Option<&Path>,
     progress: &dyn Fn(ScanProgress),
 ) -> Result<WalkStats, String> {
+    let walk_epoch = crate::scan_runtime::source_walk_epoch();
     let mut stats = WalkStats::default();
     // Pick the filesystem spelling once. On Windows WalkDir inherits the
     // `\\?\` form into every entry it yields, so scan_dirs and the missing-row
@@ -1414,8 +1415,25 @@ fn walk_root_with_progress(
             None
         }
     };
-    while let Some(next) = walk.as_mut().and_then(|walk| walk.next(Some(&cancelled))) {
+    loop {
+        let next = match walk.as_mut() {
+            Some(walk) => match walk.next_ready() {
+                Some(next) => next,
+                None => crate::scan_runtime::wait_for_walk_entry(|cancel| walk.next(Some(cancel)))?,
+            },
+            None => None,
+        };
+        // This also checks a foreground mutation between the last entry and
+        // end-of-stream before the accumulated inventory can prove absence.
+        if crate::scan_runtime::yield_at_safe_point()? {
+            visibility_directories = crate::visibility_index::DirectoryFacts::default();
+            issues_present = crate::index_store::any_issues(conn)?;
+        }
         check_cancel()?;
+        if walk_epoch != crate::scan_runtime::source_walk_epoch() {
+            return Err(crate::scan_runtime::RESTART.to_string());
+        }
+        let Some(next) = next else { break; };
         let entry = match next {
             Ok(Ok(entry)) => entry,
             Ok(Err(err)) => {
@@ -1440,13 +1458,6 @@ fn walk_root_with_progress(
                 break;
             }
         };
-        // A pending foreground action or urgent preparation takes the index
-        // here and the walk continues from this entry afterwards. Rows and
-        // attributes it cached may have changed meanwhile.
-        if crate::scan_runtime::yield_at_safe_point()? {
-            visibility_directories = crate::visibility_index::DirectoryFacts::default();
-            issues_present = crate::index_store::any_issues(conn)?;
-        }
         if issues_present {
             let entry_path = crate::native_path::encode(&entry.path).to_string();
             crate::index_store::clear_issues(conn, &entry_path, &[WALK_ERROR])?;
@@ -1492,9 +1503,8 @@ fn walk_root_with_progress(
                 }
             }
             Err(_) if vanished(path) => {
-                // Listed, then removed before its stat: a walk parked for a
-                // foreground action resumes with entries that action may
-                // have deleted or moved. The file is absent, not failing.
+                // An external deletion can race enumeration and its later
+                // metadata checks. The file is absent, not failing.
                 stats.seen -= 1;
                 conn.execute("DELETE FROM walk_present_paths WHERE abs_path = ?1", [&abs])
                     .map_err(|error| error.to_string())?;

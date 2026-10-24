@@ -55,11 +55,11 @@ const WAIT_SLICE: Duration = Duration::from_millis(50);
 pub(crate) const FOREGROUND_DEADLINE: Duration = Duration::from_secs(10);
 pub(crate) const BUSY: &str =
     "OneCopy is still finishing background work. Try again in a moment.";
-/// A yielded source walk whose index or configuration was replaced by the
-/// foreground action it yielded to starts again from its first root. It
+/// A yielded source walk whose files, index or configuration changed during
+/// foreground work starts again from its first root. It
 /// begins with `scanner::CANCELLED`, so the abandoned attempt is recorded as
 /// cancelled rather than failed.
-pub(crate) const RESTART: &str = "scan cancelled: the source walk restarts after a library reset";
+pub(crate) const RESTART: &str = "scan cancelled: the source walk restarts after a library change";
 
 #[derive(Default)]
 struct IndexState {
@@ -127,6 +127,10 @@ fn release(id: u64) {
     let mut state = index_state();
     if state.holder == Some(id) {
         state.holder = None;
+        INDEX.1.notify_all();
+    }
+    if state.parked == Some(id) {
+        state.parked = None;
         INDEX.1.notify_all();
     }
 }
@@ -418,6 +422,19 @@ pub(crate) fn yield_at_safe_point() -> Result<bool, String> {
     if !foreground_pending() && !urgent_pending() {
         return Ok(false);
     }
+    park_while(true, |_| ()).map(|(yielded, ())| yielded)
+}
+
+/// Filesystem waiting owns no database work. Keep the source reservation
+/// parked so foreground work and urgent previews can proceed, then validate
+/// the source snapshot before its next publication. Buffered entries avoid
+/// this path entirely. The wait uses this owner's cancellation, never the
+/// global bit of a foreground owner admitted while it is parked.
+pub(crate) fn wait_for_walk_entry<T>(wait: impl FnOnce(&dyn Fn() -> bool) -> T) -> Result<T, String> {
+    park_while(false, wait).map(|(_, result)| result)
+}
+
+fn park_while<T>(notify: bool, wait: impl FnOnce(&dyn Fn() -> bool) -> T) -> Result<(bool, T), String> {
     let parked = YIELDER.with(|current| {
         current.borrow().as_ref().map(|yielder| {
             (
@@ -430,10 +447,10 @@ pub(crate) fn yield_at_safe_point() -> Result<bool, String> {
         })
     });
     let Some((owner, claim, epoch, cancelled, on_yield)) = parked else {
-        return Ok(false);
+        return Ok((false, wait(&crate::scanner::cancelled)));
     };
     retire(owner);
-    on_yield(true);
+    if notify { on_yield(true); }
     let idle = crate::sleep_prevention::idle_while_parked();
     {
         let mut state = index_state();
@@ -443,6 +460,7 @@ pub(crate) fn yield_at_safe_point() -> Result<bool, String> {
             INDEX.1.notify_all();
         }
     }
+    let result = wait(&|| crate::app_lifecycle::shutting_down() || cancelled());
     loop {
         if crate::app_lifecycle::shutting_down() || cancelled() {
             let mut state = index_state();
@@ -451,7 +469,7 @@ pub(crate) fn yield_at_safe_point() -> Result<bool, String> {
                 INDEX.1.notify_all();
             }
             drop(state);
-            on_yield(false);
+            if notify { on_yield(false); }
             return Err(crate::scanner::CANCELLED.to_string());
         }
         let mut state = index_state();
@@ -464,19 +482,23 @@ pub(crate) fn yield_at_safe_point() -> Result<bool, String> {
     }
     drop(idle);
     publish(owner, &*cancelled);
-    on_yield(false);
+    if notify { on_yield(false); }
     if epoch.is_some_and(|epoch| epoch != WALK_EPOCH.load(Ordering::SeqCst)) {
         return Err(RESTART.to_string());
     }
     if crate::scanner::SCAN_CANCEL.load(Ordering::SeqCst) {
         return Err(crate::scanner::CANCELLED.to_string());
     }
-    Ok(true)
+    Ok((true, result))
 }
 
-/// Called inside a foreground action that replaces what a parked source walk
-/// already recorded (index rebuild) or the configuration it walks with
-/// (Settings apply). The parked walk starts again when it resumes.
+pub(crate) fn source_walk_epoch() -> u64 {
+    WALK_EPOCH.load(Ordering::SeqCst)
+}
+
+/// Called inside foreground file mutation, index rebuild and Settings apply.
+/// Buffered metadata and the accumulated absence inventory belong to the
+/// earlier snapshot, so the parked source check starts again when it resumes.
 pub(crate) fn restart_source_walks() {
     WALK_EPOCH.fetch_add(1, Ordering::SeqCst);
 }
@@ -782,7 +804,12 @@ pub(crate) fn begin_admitted_mutation(
     on_wait: &mut dyn FnMut(),
 ) -> Result<Option<ForegroundGuard>, String> {
     match admit_foreground(Some(app), None, cancelled, on_wait) {
-        Ok(guard) => Ok(Some(guard)),
+        Ok(guard) => {
+            // Delete, Move and Restore invalidate both buffered entries and
+            // the accumulated absence inventory of a parked source walk.
+            restart_source_walks();
+            Ok(Some(guard))
+        }
         Err(Refusal::Cancelled) => Ok(None),
         Err(refusal) => Err(refusal.message()),
     }

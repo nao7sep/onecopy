@@ -217,7 +217,7 @@ fn a_parked_owner_takes_the_claim_back_before_another_background_owner() {
 }
 
 #[test]
-fn a_file_removed_while_its_walk_was_parked_is_absent_not_a_failure() {
+fn a_file_removed_while_its_walk_was_parked_restarts_without_a_failure() {
     let _serial = serial_test();
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("index.sqlite3");
@@ -259,17 +259,17 @@ fn a_file_removed_while_its_walk_was_parked_is_absent_not_a_failure() {
             &mut || {},
         )
         .unwrap();
-        // The foreground action deletes the listed file.
+        // Mutation admission invalidates even a producer that has not yet
+        // delivered its first entry.
+        restart_source_walks();
         std::fs::remove_file(&removed).unwrap();
         drop(guard);
     });
     wait_until(foreground_pending);
     go_tx.send(()).unwrap();
 
-    let stats = walker.join().unwrap().unwrap();
+    assert_eq!(walker.join().unwrap().unwrap_err(), RESTART);
     foreground.join().unwrap();
-    assert_eq!(stats.errors, 0);
-    assert_eq!(stats.seen, 0);
     let conn = crate::index_store::open(&db).unwrap();
     let issues: i64 = conn
         .query_row(
@@ -352,4 +352,108 @@ fn section_recheck_cancellation_stops_before_directory_work() {
     let dirs = [crate::native_path::encode(&root).into_owned()];
     assert_eq!(recheck_section_dirs(&conn, &settings, &dirs, &|| Err(crate::scanner::CANCELLED.into())).unwrap_err(), crate::scanner::CANCELLED);
     assert_eq!(conn.query_row("SELECT count(*) FROM paths", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+}
+
+#[test]
+fn a_stalled_source_entry_releases_the_index_and_keeps_its_own_cancellation() {
+    let _serial = serial_test();
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("source");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("file.txt"), b"file").unwrap();
+    let db = temp.path().join("index.sqlite3");
+    let volume = crate::volume_io::FakeStallingVolume::mount(&root, Duration::from_secs(5));
+    volume.stall(&[crate::volume_io::Op::List], None);
+    let source = root.clone();
+    let walker = std::thread::spawn(move || {
+        let conn = crate::index_store::open(&db).unwrap();
+        let settings = crate::scanner::settings_from_config(None, &temp.path().join("data"), 0);
+        with_source_check_claim(|| false, |_| {}, || crate::scanner::walk_root(&conn, &source, &settings.lists))
+    });
+    assert!(volume.wait_until_held(1, Duration::from_secs(3)));
+    // Admission completes while the physical listing is still held.
+    let foreground = admit_foreground(None, Some(Instant::now() + Duration::from_secs(2)), &|| false, &mut || {}).unwrap();
+    request_cancel(Owner::Foreground);
+    assert!(crate::scanner::cancelled());
+    volume.release();
+    drop(foreground);
+    let stats = walker.join().unwrap().unwrap();
+    assert_eq!(stats.seen, 1);
+    assert_eq!(stats.errors, 0);
+    assert!(index_state().parked.is_none());
+}
+
+#[test]
+fn a_source_snapshot_cannot_publish_buffered_files_or_absence_after_delete_and_restore() {
+    let _serial = serial_test();
+    for watcher in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("source");
+        std::fs::create_dir(&root).unwrap();
+        for name in ["first.txt", "second.txt", "third.txt"] {
+            std::fs::write(root.join(name), b"old").unwrap();
+        }
+        let db = temp.path().join("index.sqlite3");
+        let config = serde_json::json!({"sourceDirs": [root]});
+        let settings = crate::scanner::settings_from_config(Some(&config), &temp.path().join("data"), 0);
+        let conn = crate::index_store::open(&db).unwrap();
+        crate::scanner::run_source_check(&conn, &settings, &|_| {}).unwrap();
+        let (paused, observed) = mpsc::channel();
+        let (resume, held) = mpsc::channel();
+        let walk_db = db.clone();
+        let walk_settings = crate::scanner::settings_from_config(Some(&config), &temp.path().join("data"), 0);
+        let walker = std::thread::spawn(move || {
+            let conn = crate::index_store::open(&walk_db).unwrap();
+            let once = std::cell::Cell::new(false);
+            let work = || crate::scanner::run_source_check(&conn, &walk_settings, &|value| {
+                if value.discovered == Some(1) && !once.replace(true) {
+                    paused.send(()).unwrap();
+                    held.recv().unwrap();
+                }
+            });
+            if watcher { with_watcher_claim(|| false, work) }
+            else { with_source_check_claim(|| false, |_| {}, work) }
+        });
+        observed.recv_timeout(Duration::from_secs(5)).unwrap();
+        let mutation_root = root.clone();
+        let mutation_db = db.clone();
+        let mutation_settings = crate::scanner::settings_from_config(Some(&config), &temp.path().join("data"), 0);
+        let mutation = std::thread::spawn(move || {
+            let foreground = admit_foreground(None, Some(Instant::now() + Duration::from_secs(5)), &|| false, &mut || {}).unwrap();
+            // The mutation admission uses this invalidation before any effect.
+            restart_source_walks();
+            for name in ["first.txt", "second.txt", "third.txt"] {
+                std::fs::remove_file(mutation_root.join(name)).unwrap();
+            }
+            std::fs::write(mutation_root.join("restored.txt"), b"restored").unwrap();
+            let conn = crate::index_store::open(&mutation_db).unwrap();
+            conn.execute("DELETE FROM paths", []).unwrap();
+            crate::scanner::walk_root(&conn, &std::fs::canonicalize(&mutation_root).unwrap(), &mutation_settings.lists).unwrap();
+            drop(foreground);
+        });
+        wait_until(foreground_pending);
+        resume.send(()).unwrap();
+        assert_eq!(walker.join().unwrap().unwrap_err(), RESTART);
+        mutation.join().unwrap();
+        let names: Vec<(String, bool)> = conn.prepare("SELECT file_name, missing FROM paths").unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+        assert_eq!(names, vec![("restored.txt".into(), false)]);
+        with_source_check_claim(|| false, |_| {}, || crate::scanner::run_source_check(&conn, &settings, &|_| {})).unwrap();
+        assert_eq!(conn.query_row("SELECT count(*) FROM paths WHERE missing = 0", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+    }
+}
+
+#[test]
+fn unwinding_a_source_wait_releases_its_parked_reservation() {
+    let _serial = serial_test();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        with_source_check_claim(|| false, |_| {}, || {
+            wait_for_walk_entry::<()>(|_| panic!("injected source wait panic"))
+        })
+    }));
+    assert!(result.is_err());
+    assert!(index_state().holder.is_none());
+    assert!(index_state().parked.is_none());
+    let guard = admit_foreground(None, Some(Instant::now() + Duration::from_secs(1)), &|| false, &mut || {}).unwrap();
+    drop(guard);
 }

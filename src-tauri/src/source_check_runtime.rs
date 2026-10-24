@@ -242,8 +242,8 @@ fn run(
         "source-check://progress",
         next_event_sequence,
     );
-    // A foreground action parks the walk in place; one that reset the index
-    // or applied Settings makes it start again with the current configuration.
+    // A foreground action parks the walk in place; file mutation, index
+    // rebuild or Settings apply restarts it with a fresh source snapshot.
     let summary = loop {
         let parked = app.clone();
         let result = with_admitted_settings(

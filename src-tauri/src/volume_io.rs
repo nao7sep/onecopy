@@ -1291,6 +1291,17 @@ pub fn stream_dir(path: &Path, with_metadata: bool) -> io::Result<Directory> {
 }
 
 impl<T> EntryStream<T> {
+    /// Consume already delivered work without waiting. The outer `None`
+    /// means the caller would need to wait for physical filesystem work.
+    pub(crate) fn next_ready(&mut self) -> Option<Option<io::Result<T>>> {
+        if self.finished { return Some(None); }
+        match self.receiver.try_recv() {
+            Ok(message) => Some(self.deliver(Some(message))),
+            Err(mpsc::TryRecvError::Disconnected) => Some(self.deliver(None)),
+            Err(mpsc::TryRecvError::Empty) => None,
+        }
+    }
+
     /// The next entry, `None` at the end. An `Err` whose `io::Error` carries
     /// a `VolumeWait` ends the walk: it was abandoned or cancelled.
     pub fn next(
