@@ -61,7 +61,7 @@ pub fn restat_dir(
     source_roots: &[String],
     data_root: &Path,
 ) -> Result<u64, String> {
-    restat_dir_with(conn, dir, lists, source_roots, data_root, &|path| crate::volume_io::read_dir(path, true))
+    restat_dir_with(conn, dir, lists, source_roots, data_root, &|path| crate::volume_io::stream_dir(path, true))
         .map_err(|error| error.message().to_owned())
 }
 
@@ -83,10 +83,10 @@ impl From<String> for RestatFailure {
     fn from(message: String) -> Self { Self::Stop(message) }
 }
 
-fn restat_dir_with(
+fn restat_dir_with<Entries: Iterator<Item = std::io::Result<crate::volume_io::DirEntryInfo>>>(
     conn: &rusqlite::Connection, dir: &Path, lists: &ScanLists,
     source_roots: &[String], data_root: &Path,
-    read_dir: &dyn Fn(&Path) -> std::io::Result<Vec<crate::volume_io::DirEntryInfo>>,
+    read_dir: &dyn Fn(&Path) -> std::io::Result<Entries>,
 ) -> Result<u64, RestatFailure> {
     if crate::trash::is_trash_path(dir) || crate::paths::is_within_data_root(dir, data_root) {
         return Ok(0);
@@ -131,37 +131,41 @@ fn restat_dir_with(
     let mut visibility_directories = crate::visibility_index::DirectoryFacts::default();
     let inherited = visibility_directories.refresh(conn, &root, dir)?;
     let mut changed = visibility_directories.changed_files as u64;
-    let mut present: HashSet<String> = HashSet::new();
+    // The connection uses file-backed temporary storage. Presence survives
+    // only this complete enumeration, never a partial/error result.
+    conn.execute_batch("CREATE TEMP TABLE IF NOT EXISTS restat_present_paths (
+                          abs_path TEXT PRIMARY KEY COLLATE BINARY
+                        ) WITHOUT ROWID;
+                        DELETE FROM restat_present_paths;").map_err(|error| error.to_string())?;
 
-    // One bounded listing that also reads each entry's metadata.
-    let entries = match read_dir(dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            // A race after the check above (deleted between the two calls):
-            // same treatment.
+    let listing_error = |error: std::io::Error, changed: u64| -> Result<u64, RestatFailure> {
+        // A partial listing alone proves no absence. A separate observation
+        // of the directory's removal can still settle that exact subtree.
+        if error.kind() == std::io::ErrorKind::NotFound
+            && crate::volume_io::symlink_metadata(dir).is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+        {
             if !crate::volume_io::is_dir(&root).unwrap_or(false) { return Ok(changed); }
-            let dir_str = crate::native_path::encode(&dir).to_string();
-            let changed = scanner::mark_missing_under(conn, &dir_str)?;
-            return Ok(changed);
+            return scanner::mark_missing_under(conn, &crate::native_path::encode(dir)).map_err(RestatFailure::from);
         }
-        Err(error) => {
-            crate::index_store::upsert_issue_with_descriptor(
-                conn,
-                Some(crate::native_path::encode(&dir).as_ref()),
-                scanner::WALK_ERROR,
-                Some(scanner::scan_issue_message_key(scanner::WALK_ERROR)),
-                None,
-                &error.to_string(),
-            )?;
-            return Err(if crate::volume_io::wait_failure(&error).is_some() {
-                RestatFailure::Stop(error.to_string())
-            } else { RestatFailure::Directory(error.to_string()) });
-        }
+        crate::index_store::upsert_issue_with_descriptor(conn,
+            Some(crate::native_path::encode(dir).as_ref()), scanner::WALK_ERROR,
+            Some(scanner::scan_issue_message_key(scanner::WALK_ERROR)), None, &error.to_string())?;
+        Err(if crate::volume_io::wait_failure(&error).is_some() {
+            RestatFailure::Stop(error.to_string())
+        } else { RestatFailure::Directory(error.to_string()) })
     };
-    // Bound issue membership reads independently of the directory's size.
-    for batch in entries.chunks(RESTAT_ISSUE_BATCH_SIZE) {
-        let issue_paths = restat_issue_paths(conn, batch)?;
-        for entry in batch {
+    let mut entries = match read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) => return listing_error(error, changed),
+    };
+    loop {
+        let batch = match entries.by_ref().take(RESTAT_ISSUE_BATCH_SIZE).collect::<std::io::Result<Vec<_>>>() {
+            Ok(batch) if batch.is_empty() => break,
+            Ok(batch) => batch,
+            Err(error) => return listing_error(error, changed),
+        };
+        let issue_paths = restat_issue_paths(conn, &batch)?;
+        for entry in &batch {
             let path = &entry.path;
             let Some(file_type) = entry.file_type else {
                 let error = "could not read the entry's type".to_string();
@@ -173,7 +177,8 @@ fn restat_dir_with(
                     None,
                     &error,
                 )?;
-                present.insert(crate::native_path::encode(path).into_owned());
+                conn.execute("INSERT OR IGNORE INTO restat_present_paths VALUES (?1)", [crate::native_path::encode(path).as_ref()])
+                    .map_err(|error| error.to_string())?;
                 continue;
             };
             if !file_type.is_file() {
@@ -188,11 +193,12 @@ fn restat_dir_with(
             {
                 continue;
             }
-            present.insert(abs.clone());
+            conn.execute("INSERT OR IGNORE INTO restat_present_paths VALUES (?1)", [&abs])
+                .map_err(|error| error.to_string())?;
             let meta = match &entry.metadata {
                 Some(Ok(meta)) => meta,
                 Some(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                    present.remove(&abs);
+                    conn.execute("DELETE FROM restat_present_paths WHERE abs_path = ?1", [&abs]).map_err(|error| error.to_string())?;
                     continue;
                 }
                 failure => {
@@ -210,13 +216,13 @@ fn restat_dir_with(
             // An online-only file is not indexed, as in the walk (`cloud_files`);
             // the folder's count is the next source check's to update.
             if crate::cloud_files::is_online_only(meta) {
-                present.remove(&abs);
+                conn.execute("DELETE FROM restat_present_paths WHERE abs_path = ?1", [&abs]).map_err(|error| error.to_string())?;
                 continue;
             }
             let file_key = match crate::file_identity::hard_link_key(path, meta) {
                 Ok(key) => key,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    present.remove(&abs);
+                    conn.execute("DELETE FROM restat_present_paths WHERE abs_path = ?1", [&abs]).map_err(|error| error.to_string())?;
                     continue;
                 }
                 Err(error) => {
@@ -249,21 +255,22 @@ fn restat_dir_with(
     if !crate::volume_io::is_dir(&root).unwrap_or(false) { return Ok(changed); }
     // Rows directly in this dir whose files are gone → missing.
     let dir_str = crate::native_path::encode(&dir).to_string();
-    let mut stmt = conn
-        .prepare("SELECT abs_path FROM paths WHERE dir_path = ?1 AND missing = 0")
-        .map_err(|e| e.to_string())?;
-    let known: Vec<String> = stmt
-        .query_map([&dir_str], |r| r.get::<_, String>(0))
-        .map_err(|e| e.to_string())?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|e| e.to_string())?;
-    drop(stmt);
-    for path in known {
-        if !present.contains(&path) {
+    let mut after_id = 0i64;
+    loop {
+        let absent: Vec<(i64, String)> = conn.prepare(
+            "SELECT id, abs_path FROM paths WHERE dir_path = ?1 AND id > ?2 AND missing = 0
+             AND NOT EXISTS (SELECT 1 FROM restat_present_paths seen WHERE seen.abs_path = paths.abs_path)
+             ORDER BY id LIMIT ?3"
+        ).and_then(|mut statement| statement.query_map(rusqlite::params![dir_str, after_id, RESTAT_ISSUE_BATCH_SIZE as i64],
+            |row| Ok((row.get(0)?, row.get(1)?)))?.collect()).map_err(|error| error.to_string())?;
+        let Some((last, _)) = absent.last() else { break; };
+        after_id = *last;
+        for (_, path) in absent {
             scanner::mark_path_missing(conn, &path)?;
             changed += 1;
         }
     }
+    conn.execute("DELETE FROM restat_present_paths", []).map_err(|error| error.to_string())?;
 
     Ok(changed)
 }
@@ -895,7 +902,7 @@ pub(crate) fn restat_batch(
     let data_root = settings.data_root();
     for dir in dirs {
         between()?;
-        match restat_dir_with(conn, dir, &settings.lists, &settings.source_dirs, data_root, &|path| crate::volume_io::read_dir(path, true)) {
+        match restat_dir_with(conn, dir, &settings.lists, &settings.source_dirs, data_root, &|path| crate::volume_io::stream_dir(path, true)) {
             Ok(count) => pass.changed += count,
             Err(RestatFailure::Stop(error)) => return Err(error),
             Err(RestatFailure::Directory(error)) => {

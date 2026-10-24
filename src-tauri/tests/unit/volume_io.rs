@@ -168,13 +168,17 @@ fn failed_first_worker_rejects_a_rename_without_enqueuing_or_effects() {
 #[test]
 fn a_directory_probe_stops_before_reading_later_entries_and_metadata() {
     let root = tempfile::tempdir().unwrap();
-    std::fs::create_dir(root.path().join("child")).unwrap();
-    let entries = directory_entries(root.path(), true).unwrap()
-        .chain(std::iter::once_with(|| panic!("an answered probe read another directory entry")));
-    assert_eq!(probe_directory_entries(entries, &AtomicBool::new(false), |entry| {
+    for name in ["first", "second", "third"] {
+        std::fs::create_dir(root.path().join(name)).unwrap();
+    }
+    let visits = Arc::new(AtomicUsize::new(0));
+    let counted = visits.clone();
+    assert_eq!(probe_dir(root.path(), move |entry| {
+        counted.fetch_add(1, Ordering::SeqCst);
         assert!(entry.metadata.as_ref().unwrap().as_ref().unwrap().is_dir());
         Ok(entry.file_type.unwrap().is_dir())
     }).unwrap(), (true, false));
+    assert_eq!(visits.load(Ordering::SeqCst), 1);
 }
 
 #[test]
@@ -201,5 +205,59 @@ fn a_timed_out_directory_probe_stops_after_its_current_entry_settles() {
     release.send(()).unwrap();
     assert!(volume.wait_until_settled(Duration::from_secs(5)));
     assert_eq!(visits.load(Ordering::SeqCst), 1);
+    assert!(!is_stalled(root.path()));
+}
+
+#[test]
+fn directory_stream_preserves_listing_error_kind() {
+    let root = tempfile::tempdir().unwrap();
+    let mut entries = stream_dir(&root.path().join("absent"), true).unwrap();
+    assert_eq!(entries.next().unwrap().unwrap_err().kind(), io::ErrorKind::NotFound);
+    assert!(entries.next().is_none());
+}
+
+#[test]
+fn streaming_progress_can_outlive_the_per_entry_deadline() {
+    let root = tempfile::tempdir().unwrap();
+    let _volume = FakeStallingVolume::mount(root.path(), Duration::from_millis(300));
+    let (advance, steps) = mpsc::channel();
+    let mut stream = entry_stream(root.path(), move |producer| {
+        for value in 0..4 {
+            steps.recv().unwrap();
+            if !producer.send(value) { return Ok(false); }
+        }
+        Ok(true)
+    }).unwrap();
+    let started = Instant::now();
+    for value in 0..4 {
+        // Consumer work is not evidence that the source stopped responding.
+        thread::sleep(Duration::from_millis(100));
+        advance.send(()).unwrap();
+        assert_eq!(stream.next(None).unwrap().unwrap(), value);
+    }
+    assert!(started.elapsed() > Duration::from_millis(300));
+    assert!(stream.next(None).is_none());
+    assert!(!is_stalled(root.path()));
+}
+
+#[test]
+fn streaming_read_ahead_is_bounded_and_drop_releases_the_producer() {
+    let root = tempfile::tempdir().unwrap();
+    let volume = FakeStallingVolume::mount(root.path(), Duration::from_secs(2));
+    let (observed, progress) = mpsc::channel();
+    let stream = entry_stream(root.path(), move |producer| {
+        for value in 0..STREAM_CAPACITY * 2 {
+            observed.send(value).unwrap();
+            if !producer.send(value) { return Ok(false); }
+        }
+        Ok(true)
+    }).unwrap();
+    // One current entry can sit outside the bounded queue while sending.
+    for value in 0..=STREAM_CAPACITY {
+        assert_eq!(progress.recv_timeout(Duration::from_secs(2)).unwrap(), value);
+    }
+    assert!(matches!(progress.recv_timeout(Duration::from_millis(100)), Err(RecvTimeoutError::Timeout)));
+    drop(stream);
+    assert!(volume.wait_until_settled(Duration::from_secs(2)));
     assert!(!is_stalled(root.path()));
 }

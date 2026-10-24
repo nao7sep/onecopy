@@ -93,7 +93,7 @@ fn a_file_stat_failure_preserves_its_row_and_allows_other_entries_to_update() {
                     if type_unknown { entry.file_type = None; }
                 }
             }
-            Ok(entries)
+            Ok(entries.into_iter().map(Ok))
         }).unwrap();
         let present: i64 = conn.query_row("SELECT count(*) FROM paths WHERE missing = 0", [], |row| row.get(0)).unwrap();
         assert_eq!(present, 2);
@@ -482,7 +482,7 @@ fn restat_batches_close_recovered_conditions_but_keep_new_and_unrelated_failures
                 entry.metadata = Some(Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)));
             }
         }
-        Ok(entries)
+        Ok(entries.into_iter().map(Ok))
     }).unwrap();
     assert_eq!(conn.query_row("SELECT count(*) FROM active_issues WHERE kind = ?1", [crate::scanner::STAT_ERROR], |row| row.get::<_, i64>(0)).unwrap(), 1);
     assert_eq!(conn.query_row("SELECT count(*) FROM active_issues WHERE kind = ?1", [crate::scanner::WALK_ERROR], |row| row.get::<_, i64>(0)).unwrap(), 0);
@@ -568,7 +568,42 @@ fn an_old_directory_event_does_not_treat_failed_enumeration_as_absence() {
         paths: vec![directory.clone()], attrs: Default::default() }), &mut dirty, &mut overflowed, settings.data_root());
     assert_eq!(dirty, std::collections::HashSet::from([directory.clone()]));
     assert!(super::restat_dir_with(&conn, &directory, &settings.lists, &settings.source_dirs, settings.data_root(),
-        &|_| Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))).is_err());
+        &|_| Err::<std::vec::IntoIter<std::io::Result<crate::volume_io::DirEntryInfo>>, _>(std::io::Error::from(std::io::ErrorKind::PermissionDenied))).is_err());
     assert_eq!(conn.query_row("SELECT missing FROM paths", [], |row| row.get::<_, bool>(0)).unwrap(), false);
     assert_eq!(conn.query_row("SELECT count(*) FROM active_issues", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+}
+
+#[test]
+fn incomplete_stream_keeps_absent_rows_until_a_complete_retry() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("source");
+    std::fs::create_dir(&root).unwrap();
+    let count = super::RESTAT_ISSUE_BATCH_SIZE * 2 + 3;
+    for index in 0..count {
+        std::fs::write(root.join(format!("{index}.txt")), b"original").unwrap();
+    }
+    let conn = crate::index_store::open(&temp.path().join("index.sqlite3")).unwrap();
+    let settings = crate::scanner::settings_from_config(
+        Some(&serde_json::json!({"sourceDirs": [root]})), &temp.path().join("data"), 0,
+    );
+    super::restat_dir(&conn, &root, &settings.lists, &settings.source_dirs, settings.data_root()).unwrap();
+    for index in 0..count {
+        std::fs::remove_file(root.join(format!("{index}.txt"))).unwrap();
+    }
+    for index in 0..=super::RESTAT_ISSUE_BATCH_SIZE {
+        std::fs::write(root.join(format!("new-{index}.txt")), b"new").unwrap();
+    }
+    let result = super::restat_dir_with(&conn, &root, &settings.lists, &settings.source_dirs, settings.data_root(), &|path| {
+        let entries = crate::volume_io::stream_dir(path, true)?;
+        Ok(entries.take(super::RESTAT_ISSUE_BATCH_SIZE).chain(std::iter::once(
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)))))
+    });
+    assert!(result.is_err());
+    assert_eq!(conn.query_row("SELECT count(*) FROM paths WHERE missing = 1", [], |row| row.get::<_, i64>(0).map(|value| value as usize)).unwrap(), 0);
+    assert_eq!(conn.query_row("SELECT count(*) FROM paths", [], |row| row.get::<_, i64>(0).map(|value| value as usize)).unwrap(), count + super::RESTAT_ISSUE_BATCH_SIZE);
+    assert_eq!(conn.query_row("PRAGMA temp_store", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+    super::restat_dir(&conn, &root, &settings.lists, &settings.source_dirs, settings.data_root()).unwrap();
+    assert_eq!(conn.query_row("SELECT count(*) FROM paths WHERE missing = 1", [], |row| row.get::<_, i64>(0).map(|value| value as usize)).unwrap(), count);
+    assert_eq!(conn.query_row("SELECT count(*) FROM paths WHERE missing = 0", [], |row| row.get::<_, i64>(0).map(|value| value as usize)).unwrap(), super::RESTAT_ISSUE_BATCH_SIZE + 1);
+    assert_eq!(conn.query_row("SELECT count(*) FROM restat_present_paths", [], |row| row.get::<_, i64>(0).map(|value| value as usize)).unwrap(), 0);
 }

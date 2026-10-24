@@ -789,11 +789,14 @@ fn directory_entries(
     }))
 }
 
-/// Lists a directory in one bounded call. `with_metadata` also reads each
-/// entry's metadata inside the same call.
+/// Collects a directory using the shared progress-bounded stream. Callers
+/// that can process entries incrementally use `stream_dir` instead.
 pub fn read_dir(path: &Path, with_metadata: bool) -> io::Result<Vec<DirEntryInfo>> {
-    let target = fs_path(path);
-    call(path, Op::List, None, move || directory_entries(&target, with_metadata)?.collect())
+    if on_worker() {
+        // A composing native primitive already owns this worker and its wait.
+        return directory_entries(&fs_path(path), with_metadata)?.collect();
+    }
+    stream_dir(path, with_metadata)?.collect()
 }
 
 /// Answers whether any child matches and whether the directory is empty.
@@ -802,35 +805,29 @@ pub fn read_dir(path: &Path, with_metadata: bool) -> io::Result<Vec<DirEntryInfo
 /// reading another entry; the volume remains owned until that worker settles.
 pub(crate) fn probe_dir(
     path: &Path,
-    accepts: impl FnMut(&DirEntryInfo) -> io::Result<bool> + Send + 'static,
+    mut accepts: impl FnMut(&DirEntryInfo) -> io::Result<bool> + Send + 'static,
 ) -> io::Result<(bool, bool)> {
-    struct StopOnReturn(Arc<AtomicBool>);
-    impl Drop for StopOnReturn {
-        fn drop(&mut self) { self.0.store(true, Ordering::Release); }
-    }
-    let stop = Arc::new(AtomicBool::new(false));
-    let _stop_on_return = StopOnReturn(stop.clone());
     let target = fs_path(path);
-    call(path, Op::List, None, move || {
-        probe_directory_entries(directory_entries(&target, true)?, &stop, accepts)
-    })
-}
-
-fn probe_directory_entries(
-    mut entries: impl Iterator<Item = io::Result<DirEntryInfo>>,
-    stop: &AtomicBool,
-    mut accepts: impl FnMut(&DirEntryInfo) -> io::Result<bool>,
-) -> io::Result<(bool, bool)> {
-    let mut is_empty = true;
-    loop {
-        if stop.load(Ordering::Acquire) {
-            return Err(io::Error::new(io::ErrorKind::Interrupted, "directory probe stopped"));
+    let mut stream = entry_stream(path, move |producer| {
+        producer.hold(&target)?;
+        let mut entries = directory_entries(&target, true)?;
+        loop {
+            if producer.stopped() { return Ok(false); }
+            let Some(entry) = entries.next() else { return Ok(true); };
+            let entry = entry?;
+            producer.hold(&entry.path)?;
+            let accepted = accepts(&entry)?;
+            if !producer.send(accepted) { return Ok(false); }
+            if accepted { return Ok(true); }
         }
-        let Some(entry) = entries.next() else { return Ok((false, is_empty)); };
-        let entry = entry?;
-        is_empty = false;
-        if accepts(&entry)? { return Ok((true, false)); }
+    })?;
+    let mut empty = true;
+    let mut found = false;
+    while let Some(accepted) = stream.next(None) {
+        empty = false;
+        found |= accepted?;
     }
+    Ok((found, empty))
 }
 
 /// Reads a whole small file in one bounded call.
@@ -1151,21 +1148,21 @@ pub struct WalkError {
     pub message: String,
 }
 
-enum WalkMessage {
-    Entry(Result<WalkEntry, WalkError>),
+enum StreamMessage<T> {
+    Entry(T),
     /// The walk ended; `Err` when its thread failed or panicked.
-    End(Result<(), String>),
+    End(io::Result<()>),
     /// The walk stopped early because its consumer cancelled it.
     Stopped,
 }
 
-/// A walk of a directory tree running on a pool thread, consumed on the
+/// A bounded entry stream produced on a pool thread and consumed on the
 /// caller's thread. Each `next` waits at most `IO_BOUND` for the next entry;
-/// a walk that goes quiet longer is abandoned and its volume marked stalled
-/// until the walk's thread returns. Dropping the walk early stops it at its
+/// a producer that goes quiet longer is abandoned and its volume marked stalled
+/// until that producer returns. Dropping the stream early stops it at its
 /// next entry.
-pub struct Walk {
-    receiver: mpsc::Receiver<WalkMessage>,
+pub struct EntryStream<T> {
+    receiver: mpsc::Receiver<StreamMessage<T>>,
     stop: Arc<AtomicBool>,
     state: Arc<Mutex<CallState>>,
     lane: Lane,
@@ -1176,81 +1173,51 @@ pub struct Walk {
     producer_done: bool,
 }
 
-/// Starts walking `root` without following symlinks. `filter` decides, on
-/// the walk's thread, whether to yield an entry and descend into it; calls it
-/// makes run inline there.
-pub fn walk(
+pub type Walk = EntryStream<Result<WalkEntry, WalkError>>;
+
+struct StreamProducer<T> {
+    sender: mpsc::SyncSender<StreamMessage<T>>,
+    stop: Arc<AtomicBool>,
+    fake: Option<Arc<FakeState>>,
+}
+
+impl<T> StreamProducer<T> {
+    fn stopped(&self) -> bool { self.stop.load(Ordering::Acquire) }
+    fn send(&self, entry: T) -> bool {
+        !self.stopped() && self.sender.send(StreamMessage::Entry(entry)).is_ok()
+    }
+    fn hold(&self, path: &Path) -> io::Result<()> {
+        match self.fake.as_ref().and_then(|fake| fake.hold(Op::List, path)) {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+}
+
+fn entry_stream<T: Send + 'static>(
     root: &Path,
-    filter: impl Fn(&Path, &FileType) -> bool + Send + 'static,
-) -> io::Result<Walk> {
+    produce: impl FnOnce(&StreamProducer<T>) -> io::Result<bool> + Send + 'static,
+) -> io::Result<EntryStream<T>> {
     let lane = lane_of(root);
     if lane_stalled(&lane) {
         return Err(VolumeWait {
-            failure: WaitFailure::Stalled,
-            volume: lane.display.clone(),
-            op: Op::List,
-        }
-        .into_io());
+            failure: WaitFailure::Stalled, volume: lane.display.clone(), op: Op::List,
+        }.into_io());
     }
     let bound = lane.fake.as_ref().map_or(IO_BOUND, |fake| fake.bound);
-    let (sender, receiver) = mpsc::sync_channel::<WalkMessage>(STREAM_CAPACITY);
+    let (sender, receiver) = mpsc::sync_channel(STREAM_CAPACITY);
     let stop = Arc::new(AtomicBool::new(false));
     let state = Arc::new(Mutex::new(CallState::Running));
-    let producer_stop = stop.clone();
+    let producer = StreamProducer { sender, stop: stop.clone(), fake: lane.fake.clone() };
     let producer_state = state.clone();
     let key = lane.key.clone();
-    let fake = lane.fake.clone();
-    let walk_root = fs_path(root);
     submit(Box::new(move || {
-        let produced = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            for entry in walkdir::WalkDir::new(&walk_root)
-                .follow_links(false)
-                .into_iter()
-                .filter_entry(|entry| filter(entry.path(), &entry.file_type()))
-            {
-                if producer_stop.load(Ordering::Acquire) {
-                    return Ok(false);
-                }
-                let message = match entry {
-                    Ok(entry) => {
-                        if let Some(error) =
-                            fake.as_ref().and_then(|fake| fake.hold(Op::List, entry.path()))
-                        {
-                            Err(WalkError {
-                                path: Some(entry.path().to_path_buf()),
-                                message: error.to_string(),
-                            })
-                        } else {
-                            let metadata = entry
-                                .file_type()
-                                .is_file()
-                                .then(|| entry.metadata().map_err(io::Error::from));
-                            Ok(WalkEntry {
-                                path: entry.path().to_path_buf(),
-                                file_type: entry.file_type(),
-                                depth: entry.depth(),
-                                metadata,
-                            })
-                        }
-                    }
-                    Err(error) => Err(WalkError {
-                        path: error.path().map(Path::to_path_buf),
-                        message: error.to_string(),
-                    }),
-                };
-                if sender.send(WalkMessage::Entry(message)).is_err() {
-                    return Ok(false);
-                }
-            }
-            Ok(true)
-        }));
-        // A walk cut short is never reported as a complete one: a consumer
-        // must not read absence into entries it never received.
+        let produced = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| produce(&producer)));
         let end = match produced {
-            Ok(Ok(true)) => WalkMessage::End(Ok(())),
-            Ok(Ok(false)) => WalkMessage::Stopped,
-            Ok(Err(error)) => WalkMessage::End(Err(error)),
-            Err(_) => WalkMessage::End(Err("the walk panicked".to_string())),
+            Ok(Ok(true)) => StreamMessage::End(Ok(())),
+            Ok(Ok(false)) => StreamMessage::Stopped,
+            Ok(Err(error)) => StreamMessage::End(Err(error)),
+            Err(_) => StreamMessage::End(Err(io::Error::other("directory reader panicked"))),
         };
         let mut state = producer_state.lock().unwrap_or_else(|p| p.into_inner());
         if *state == CallState::Abandoned {
@@ -1259,30 +1226,77 @@ pub fn walk(
         } else {
             *state = CallState::Done;
             drop(state);
-            let _ = sender.send(end);
+            let _ = producer.sender.send(end);
         }
-        if let Some(fake) = &fake {
-            fake.walk_returned();
-        }
+        if let Some(fake) = &producer.fake { fake.walk_returned(); }
     }))?;
-    Ok(Walk {
-        receiver,
-        stop,
-        state,
-        lane,
-        bound,
-        finished: false,
-        producer_done: false,
+    Ok(EntryStream { receiver, stop, state, lane, bound, finished: false, producer_done: false })
+}
+
+/// Starts walking `root` without following symlinks. `filter` decides, on
+/// the walk's thread, whether to yield an entry and descend into it; calls it
+/// makes run inline there.
+pub fn walk(
+    root: &Path,
+    filter: impl Fn(&Path, &FileType) -> bool + Send + 'static,
+) -> io::Result<Walk> {
+    let walk_root = fs_path(root);
+    entry_stream(root, move |producer| {
+        for entry in walkdir::WalkDir::new(&walk_root).follow_links(false).into_iter()
+            .filter_entry(|entry| filter(entry.path(), &entry.file_type()))
+        {
+            if producer.stopped() { return Ok(false); }
+            let message = match entry {
+                Ok(entry) => match producer.hold(entry.path()) {
+                    Err(error) => Err(WalkError { path: Some(entry.path().to_path_buf()), message: error.to_string() }),
+                    Ok(()) => Ok(WalkEntry {
+                        path: entry.path().to_path_buf(), file_type: entry.file_type(), depth: entry.depth(),
+                        metadata: entry.file_type().is_file().then(|| entry.metadata().map_err(io::Error::from)),
+                    }),
+                },
+                Err(error) => Err(WalkError { path: error.path().map(Path::to_path_buf), message: error.to_string() }),
+            };
+            if !producer.send(message) { return Ok(false); }
+        }
+        Ok(true)
     })
 }
 
-impl Walk {
+/// One non-recursive listing with bounded read-ahead and an inactivity
+/// deadline per next entry. Partial enumeration is never a complete listing.
+pub struct Directory {
+    stream: EntryStream<io::Result<DirEntryInfo>>,
+}
+
+impl Iterator for Directory {
+    type Item = io::Result<DirEntryInfo>;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.stream.next(None).map(|result| result.and_then(|entry| entry))
+    }
+}
+
+pub fn stream_dir(path: &Path, with_metadata: bool) -> io::Result<Directory> {
+    let target = fs_path(path);
+    let stream = entry_stream(path, move |producer| {
+        producer.hold(&target)?;
+        let mut entries = directory_entries(&target, with_metadata)?;
+        loop {
+            if producer.stopped() { return Ok(false); }
+            let Some(entry) = entries.next() else { return Ok(true); };
+            if let Ok(entry) = &entry { producer.hold(&entry.path)?; }
+            if !producer.send(entry) { return Ok(false); }
+        }
+    })?;
+    Ok(Directory { stream })
+}
+
+impl<T> EntryStream<T> {
     /// The next entry, `None` at the end. An `Err` whose `io::Error` carries
     /// a `VolumeWait` ends the walk: it was abandoned or cancelled.
     pub fn next(
         &mut self,
         cancel: Option<&dyn Fn() -> bool>,
-    ) -> Option<io::Result<Result<WalkEntry, WalkError>>> {
+    ) -> Option<io::Result<T>> {
         if self.finished {
             return None;
         }
@@ -1362,19 +1376,19 @@ impl Walk {
     /// Hands one message from the walk's thread to the consumer.
     fn deliver(
         &mut self,
-        message: Option<WalkMessage>,
-    ) -> Option<io::Result<Result<WalkEntry, WalkError>>> {
+        message: Option<StreamMessage<T>>,
+    ) -> Option<io::Result<T>> {
         match message {
-            Some(WalkMessage::Entry(entry)) => Some(Ok(entry)),
-            Some(WalkMessage::End(Ok(()))) => {
+            Some(StreamMessage::Entry(entry)) => Some(Ok(entry)),
+            Some(StreamMessage::End(Ok(()))) => {
                 self.finished = true;
                 None
             }
-            Some(WalkMessage::End(Err(message))) => {
+            Some(StreamMessage::End(Err(message))) => {
                 self.finished = true;
-                Some(Err(io::Error::other(message)))
+                Some(Err(message))
             }
-            Some(WalkMessage::Stopped) => {
+            Some(StreamMessage::Stopped) => {
                 self.finished = true;
                 Some(Err(VolumeWait {
                     failure: WaitFailure::Cancelled,
@@ -1391,7 +1405,7 @@ impl Walk {
     }
 }
 
-impl Drop for Walk {
+impl<T> Drop for EntryStream<T> {
     fn drop(&mut self) {
         self.abandon();
     }
