@@ -1723,6 +1723,13 @@ pub fn promote_identity(
         )
         .optional()
         .map_err(|e| e.to_string())?;
+    if byte_size.is_none() {
+        drop(tx);
+        if let Err(error) = crate::preview::finish_cache_promotion(conn, cache, provisional) {
+            logging::warn("cache identity promotion remains pending", serde_json::json!({"error": error}));
+        }
+        return Ok(());
+    }
     if byte_size.is_some_and(|size| !carries_content_identity(size)) {
         // An empty file keeps its individual provisional identity; a full
         // hash of nothing would merge it with every other empty file.
@@ -1767,9 +1774,9 @@ pub fn promote_identity(
         // row under the real key, repoint the children, drop the old row.
         tx.execute(
             "INSERT INTO contents (hash, byte_size, kind, phash, camera_make, camera_model, \
-             width, height, duration_ms, sharpness, strip_frames, derived_at_utc, derive_outcome) \
+             width, height, duration_ms, sharpness, strip_frames, derived_at_utc, derive_outcome, derived_version) \
              SELECT ?2, byte_size, kind, phash, camera_make, camera_model, \
-             width, height, duration_ms, sharpness, strip_frames, derived_at_utc, derive_outcome \
+             width, height, duration_ms, sharpness, strip_frames, derived_at_utc, derive_outcome, derived_version \
              FROM contents WHERE hash = ?1",
             params![provisional, real_hash],
         )
@@ -1793,6 +1800,8 @@ pub fn promote_identity(
             .map_err(|e| e.to_string())?;
         tx.execute("DELETE FROM contents WHERE hash = ?1", [provisional])
             .map_err(|e| e.to_string())?;
+        tx.execute("INSERT INTO cache_promotions (old_hash, content_hash, strip_frames) VALUES (?1, ?2, ?3)",
+            params![provisional, real_hash, strip_frames.unwrap_or(0)]).map_err(|error| error.to_string())?;
         Some(strip_frames.unwrap_or(0))
     };
     // The reservation remains held through the cache rename/removal below, so
@@ -1803,8 +1812,10 @@ pub fn promote_identity(
     // file this function is about to rename out from under it.
     crate::records::commit(tx).map_err(|e| e.to_string())?;
 
-    if let Some(strip_frames) = strip_frames_for_rename {
-        crate::preview::rename_entries(cache, provisional, real_hash, strip_frames);
+    if strip_frames_for_rename.is_some() {
+        if let Err(error) = crate::preview::finish_cache_promotion(conn, cache, provisional) {
+            logging::warn("cache identity promotion remains pending", serde_json::json!({"error": error}));
+        }
     } else {
         crate::preview::remove_entries(cache, provisional);
     }

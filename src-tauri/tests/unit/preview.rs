@@ -173,7 +173,7 @@ fn a_sweep_cohort_cannot_run_between_an_identity_promotions_commit_and_its_renam
     );
 
     // Now do the rename half of the promotion, still under the lock.
-    rename_entries(&cache, "p1", "real1", 0);
+    rename_entries(&cache, "p1", "real1", 0).unwrap();
     drop(identity_lock);
 
     let removed = sweep.join().unwrap().unwrap();
@@ -677,4 +677,122 @@ fn requested_preview_publication_requires_the_captured_source_and_index_incarnat
         }
     }
     std::fs::write(root.join("verified"), b"verified").unwrap();
+}
+
+fn promotion_fixture(conn: &Connection) {
+    conn.execute_batch("INSERT INTO contents (hash, byte_size, kind, derived_at_utc, derived_version, strip_frames, phash)
+        VALUES ('p1', 42, 'video', '2026-01-01T00:00:00Z', 7, 2, 123);
+        INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash)
+        VALUES ('/movie.mp4', '/', 'movie.mp4', 'video', 'p1');
+        INSERT INTO transcripts VALUES ('p1', 'model', '1', 'en', 'kept', '[]', 'now');
+        INSERT INTO face_checks VALUES ('p1', 'model', '1', 0, 'now');").unwrap();
+}
+
+#[test]
+fn cache_promotion_receipt_failure_rolls_back_identity_and_analysis() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = crate::index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    let cache = CachePaths::new(dir.path().join("cache"));
+    promotion_fixture(&conn);
+    conn.execute_batch("CREATE TEMP TRIGGER reject_receipt BEFORE INSERT ON cache_promotions
+        BEGIN SELECT RAISE(ABORT, 'receipt rejected'); END;").unwrap();
+    assert!(crate::scanner::promote_identity(&conn, &cache, "p1", "real1").is_err());
+    for sql in ["SELECT hash FROM contents", "SELECT content_hash FROM paths", "SELECT content_hash FROM transcripts", "SELECT content_hash FROM face_checks"] {
+        assert_eq!(conn.query_row(sql, [], |row| row.get::<_, String>(0)).unwrap(), "p1");
+    }
+}
+
+#[test]
+fn cache_promotion_recovers_partial_moves_after_reopening_the_index() {
+    for blocked_output in ["thumb", "preview", "strip"] {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("index.sqlite3");
+        let conn = crate::index_store::open(&db).unwrap();
+        let cache = CachePaths::new(dir.path().join("cache"));
+        promotion_fixture(&conn);
+        let pairs = [
+            (cache.thumb("p1"), cache.thumb("real1")),
+            (cache.preview("p1"), cache.preview("real1")),
+            (crate::video::strip_path(&cache, "p1", 0), crate::video::strip_path(&cache, "real1", 0)),
+            (crate::video::strip_path(&cache, "p1", 1), crate::video::strip_path(&cache, "real1", 1)),
+        ];
+        for (old, _) in &pairs {
+            std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+            std::fs::write(old, b"completed derivative").unwrap();
+        }
+        let blocked = &pairs[match blocked_output { "thumb" => 0, "preview" => 1, _ => 2 }].1;
+        // A directory at the output deterministically fails this individual rename.
+        std::fs::create_dir_all(blocked).unwrap();
+        crate::scanner::promote_identity(&conn, &cache, "p1", "real1").unwrap();
+        crate::scanner::promote_identity(&conn, &cache, "p1", "real1").unwrap();
+        assert_eq!(conn.query_row("SELECT count(*) FROM cache_promotions", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        let cohort = vec![("thumbs".into(), cache.thumb("p1")), ("previews".into(), cache.preview("p1"))];
+        assert_eq!(sweep_cohort(&conn, &cohort, std::time::SystemTime::now() + std::time::Duration::from_secs(10)).unwrap(), 0);
+        drop(conn);
+        std::fs::remove_dir(blocked).unwrap();
+        let conn = crate::index_store::open(&db).unwrap();
+        startup_sweep(&conn, &cache, std::time::SystemTime::now(), &|| false).unwrap();
+        for (old, new) in &pairs {
+            assert!(!old.exists());
+            assert_eq!(std::fs::read(new).unwrap(), b"completed derivative");
+        }
+        assert_eq!(conn.query_row("SELECT count(*) FROM cache_promotions", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        assert_eq!(conn.query_row("SELECT derived_version, strip_frames, phash, derived_at_utc IS NOT NULL FROM contents", [], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, bool>(3)?))).unwrap(), (7, 2, 123, true));
+        for table in ["transcripts", "face_checks"] {
+            assert_eq!(conn.query_row(&format!("SELECT content_hash FROM {table}"), [], |r| r.get::<_, String>(0)).unwrap(), "real1");
+        }
+    }
+}
+
+#[test]
+fn cache_promotion_reopens_only_missing_successful_derivatives() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = crate::index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    let cache = CachePaths::new(dir.path().join("cache"));
+    promotion_fixture(&conn);
+    // Already published canonical output survives replay; missing preview and
+    // strip outputs must owe regeneration without discarding expensive analysis.
+    let thumb = cache.thumb("real1");
+    std::fs::create_dir_all(thumb.parent().unwrap()).unwrap();
+    std::fs::write(&thumb, b"canonical output").unwrap();
+    crate::scanner::promote_identity(&conn, &cache, "p1", "real1").unwrap();
+    assert_eq!(std::fs::read(thumb).unwrap(), b"canonical output");
+    assert_eq!(conn.query_row("SELECT derived_at_utc IS NULL, strip_frames IS NULL, phash FROM contents", [], |r| Ok((r.get::<_, bool>(0)?, r.get::<_, bool>(1)?, r.get::<_, i64>(2)?))).unwrap(), (true, true, 123));
+    assert_eq!(conn.query_row("SELECT text FROM transcripts", [], |r| r.get::<_, String>(0)).unwrap(), "kept");
+    assert_eq!(conn.query_row("SELECT face_count FROM face_checks", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+}
+
+#[test]
+fn cache_promotion_replays_after_final_receipt_commit_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = crate::index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    let cache = CachePaths::new(dir.path().join("cache"));
+    promotion_fixture(&conn);
+    conn.execute_batch("CREATE TEMP TRIGGER reject_completion BEFORE DELETE ON cache_promotions
+        BEGIN SELECT RAISE(ABORT, 'completion rejected'); END;").unwrap();
+    crate::scanner::promote_identity(&conn, &cache, "p1", "real1").unwrap();
+    assert_eq!(conn.query_row("SELECT count(*) FROM cache_promotions", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    assert!(conn.query_row("SELECT derived_at_utc IS NOT NULL FROM contents", [], |r| r.get::<_, bool>(0)).unwrap());
+    conn.execute_batch("DROP TRIGGER reject_completion;").unwrap();
+    startup_sweep(&conn, &cache, std::time::SystemTime::now(), &|| false).unwrap();
+    assert_eq!(conn.query_row("SELECT count(*) FROM cache_promotions", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    assert!(conn.query_row("SELECT derived_at_utc IS NULL FROM contents", [], |r| r.get::<_, bool>(0)).unwrap());
+}
+
+#[test]
+fn cache_promotion_preserves_failed_attempts_and_known_real_results() {
+    for known in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+        let cache = CachePaths::new(dir.path().join("cache"));
+        promotion_fixture(&conn);
+        conn.execute_batch("UPDATE contents SET derive_outcome = 'failed', strip_frames = 0;").unwrap();
+        if known {
+            conn.execute_batch("INSERT INTO contents (hash, byte_size, kind, derive_outcome, strip_frames, phash)
+                VALUES ('real1', 42, 'video', 'needs-ffmpeg', 0, 999);").unwrap();
+        }
+        crate::scanner::promote_identity(&conn, &cache, "p1", "real1").unwrap();
+        let facts = conn.query_row("SELECT derive_outcome, strip_frames, phash FROM contents", [], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))).unwrap();
+        assert_eq!(facts, (if known { "needs-ffmpeg" } else { "failed" }.into(), 0, if known { 999 } else { 123 }));
+    }
 }

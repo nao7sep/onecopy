@@ -1230,30 +1230,75 @@ pub(crate) fn lock_cache_identity() -> std::sync::MutexGuard<'static, ()> {
     }
 }
 
-/// Moves one identity's cache entries to a new key (provisional→real
-/// promotion): thumb, preview, and any strip frames. Best-effort — a missing
-/// source has nothing to move, and the startup sweep collects strays.
-pub fn rename_entries(cache: &CachePaths, old: &str, new: &str, strip_frames: i64) {
-    // Session renders retain physical-reader ownership; regenerate at the new key.
+/// Moves one identity's bounded sequence of cache files. Existing output at
+/// the real key wins; missing files reopen derivative debt after recovery.
+pub fn rename_entries(cache: &CachePaths, old: &str, new: &str, strip_frames: i64) -> Result<(bool, bool), String> {
     crate::fullres_cache::retire(&cache.fullres(old));
-    let mut moves = vec![
-        (cache.thumb(old), cache.thumb(new)),
-        (cache.preview(old), cache.preview(new)),
-    ];
-    for i in 0..strip_frames.max(0) as u32 {
-        moves.push((
-            crate::video::strip_path(cache, old, i),
-            crate::video::strip_path(cache, new, i),
-        ));
-    }
-    for (from, to) in moves {
-        if from.exists() { // data root
-            if let Some(parent) = to.parent() {
-                if !crate::fs_recovery::create_dir_all(parent, "cache identity promotion") {
-                    continue;
-                }
+    let move_entry = |from: PathBuf, to: PathBuf| -> Result<bool, String> {
+        let exists = |path: &Path| match std::fs::metadata(path) { // data root
+            Ok(metadata) if metadata.is_file() => Ok(true),
+            Ok(_) => Err(format!("cache entry is not a file: {}", crate::native_path::label(path))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.to_string()),
+        };
+        if exists(&to)? {
+            match std::fs::remove_file(&from) { // data root
+                Ok(()) => {},
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+                Err(error) => return Err(error.to_string()),
             }
-            crate::fs_recovery::rename(&from, &to, "cache identity promotion");
+            return Ok(true);
+        }
+        if !exists(&from)? { return Ok(false); }
+        std::fs::create_dir_all(to.parent().expect("cache files have a shard")) // data root
+            .map_err(|error| error.to_string())?;
+        std::fs::rename(from, to).map_err(|error| error.to_string())?; // data root
+        Ok(true)
+    };
+    let thumb = move_entry(cache.thumb(old), cache.thumb(new))?;
+    let preview = move_entry(cache.preview(old), cache.preview(new))?;
+    let mut strips = true;
+    for index in 0..strip_frames.max(0) as u32 {
+        strips &= move_entry(crate::video::strip_path(cache, old, index), crate::video::strip_path(cache, new, index))?;
+    }
+    Ok((thumb && preview, strips))
+}
+
+/// Called with the cache identity reservation, after the identity transaction
+/// committed. Failure retains the durable mapping and its old cache keys.
+pub(crate) fn finish_cache_promotion(conn: &Connection, cache: &CachePaths, old: &str) -> Result<(), String> {
+    let pending: Option<(String, i64)> = conn.query_row(
+        "SELECT content_hash, strip_frames FROM cache_promotions WHERE old_hash = ?1", [old],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).optional().map_err(|error| error.to_string())?;
+    let Some((new, frames)) = pending else { return Ok(()); };
+    let (preview, strips) = rename_entries(cache, old, &new, frames)?;
+    let tx = crate::sqlite::write_transaction(conn).map_err(|error| error.to_string())?;
+    let reopened = tx.execute(
+        "UPDATE contents SET
+           derived_at_utc = CASE WHEN ?2 = 0 AND derive_outcome IS NULL THEN NULL ELSE derived_at_utc END,
+           strip_frames = CASE WHEN ?3 = 0 AND strip_frames > 0 THEN NULL ELSE strip_frames END
+         WHERE hash = ?1 AND ((?2 = 0 AND derived_at_utc IS NOT NULL AND derive_outcome IS NULL)
+                              OR (?3 = 0 AND strip_frames > 0))",
+        rusqlite::params![new, preview, strips],
+    ).map_err(|error| error.to_string())?;
+    tx.execute("DELETE FROM cache_promotions WHERE old_hash = ?1", [old]).map_err(|error| error.to_string())?;
+    crate::records::commit(tx).map_err(|error| error.to_string())?;
+    if reopened > 0 { crate::derived_work::wake(); }
+    Ok(())
+}
+
+fn recover_cache_promotions(conn: &Connection, cache: &CachePaths, cancel: &impl Fn() -> bool) -> Result<(), String> {
+    loop {
+        if cancel() { return Ok(()); }
+        let pending: Vec<String> = conn.prepare("SELECT old_hash FROM cache_promotions ORDER BY old_hash LIMIT 128")
+            .and_then(|mut statement| statement.query_map([], |row| row.get(0))?.collect())
+            .map_err(|error| error.to_string())?;
+        if pending.is_empty() { return Ok(()); }
+        for old in pending {
+            if cancel() { return Ok(()); }
+            let _identity = lock_cache_identity();
+            finish_cache_promotion(conn, cache, &old)?;
         }
     }
 }
@@ -1309,7 +1354,7 @@ fn sweep_cohort(
 ) -> Result<u64, String> {
     let _identity_lock = lock_cache_identity();
     let mut membership = std::collections::HashMap::new();
-    let mut exists = conn.prepare("SELECT 1 FROM contents WHERE hash = ?1").map_err(|e| e.to_string())?;
+    let mut exists = conn.prepare("SELECT 1 FROM contents WHERE hash = ?1 UNION ALL SELECT 1 FROM cache_promotions WHERE old_hash = ?1 LIMIT 1").map_err(|e| e.to_string())?;
     let mut removed = 0u64;
     for (sub, path) in cohort {
         // Recheck after waiting for promotion; enumeration metadata can be stale.
@@ -1356,6 +1401,7 @@ pub fn startup_sweep(
     launched: std::time::SystemTime,
     cancel_when: &impl Fn() -> bool,
 ) -> Result<u64, String> {
+    recover_cache_promotions(conn, cache, cancel_when)?;
     reconcile_orphan_contents(conn, cancel_when)?;
     let mut removed = 0;
     let mut cohort = Vec::with_capacity(CACHE_COHORT_SIZE);
