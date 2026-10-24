@@ -415,6 +415,38 @@ pub fn begin_scoped_index_repair(
     Ok(roots)
 }
 
+/// Persists the exact watcher scopes before restatting. Root-wide walk debt
+/// remains separate, so changing one folder does not reopen its siblings.
+/// Return only newly created receipts: an unchanged caller cannot clear work
+/// that an earlier interrupted caller still owns.
+pub(crate) fn begin_directory_repair(conn: &Connection, dirs: &[String]) -> Result<Vec<String>, String> {
+    let transaction = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    let mut marked = Vec::new();
+    for dir in dirs {
+        if transaction.execute("INSERT OR IGNORE INTO relationship_repair_dirs VALUES (?1)", [dir])
+            .map_err(|error| error.to_string())? > 0 {
+            marked.push(dir.clone());
+        }
+    }
+    crate::records::commit(transaction).map_err(|error| error.to_string())?;
+    Ok(marked)
+}
+
+pub(crate) fn complete_directory_repair(conn: &Connection, dirs: &[String]) -> Result<(), String> {
+    for dir in dirs {
+        conn.execute("DELETE FROM relationship_repair_dirs WHERE dir_path = ?1", [dir])
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn pending_directory_repairs(conn: &Connection) -> Result<Vec<String>, String> {
+    conn.prepare("SELECT dir_path FROM relationship_repair_dirs ORDER BY dir_path")
+        .and_then(|mut statement| statement.query_map([], |row| row.get(0))?.collect())
+        .map_err(|error| error.to_string())
+}
+
 /// Runs `work` under the scoped repair receipt for `dirs`: the roots it marks
 /// are cleared only when `work` succeeds, so a failed or cancelled repair is
 /// retried by a later index repair.
@@ -915,7 +947,7 @@ pub fn pending_index_work_exists(conn: &Connection) -> Result<bool, String> {
     )? {
         return Ok(true);
     }
-    if probe("SELECT EXISTS(SELECT 1 FROM scan_dirs WHERE relationship_dirty = 1)")? {
+    if probe("SELECT EXISTS(SELECT 1 FROM scan_dirs WHERE relationship_dirty = 1) OR EXISTS(SELECT 1 FROM relationship_repair_dirs)")? {
         return Ok(true);
     }
     Ok(false)
@@ -931,12 +963,12 @@ pub fn run_index_tail(
     summary: &mut ScanSummary,
 ) -> Result<(), String> {
     let recovery_dirs = pending_index_dirs(conn)?;
-    let mut repair_roots = pending_relationship_roots(conn)?;
-    repair_roots.extend(begin_scoped_index_repair(conn, &recovery_dirs)?);
-    repair_roots.sort();
-    repair_roots.dedup();
-    run_index_tail_scoped(conn, settings, None, progress, summary)?;
-    complete_scoped_index_repair(conn, &repair_roots)
+    let repair_roots = pending_relationship_roots(conn)?;
+    let mut receipts = pending_directory_repairs(conn)?;
+    receipts.extend(begin_directory_repair(conn, &recovery_dirs)?);
+    run_index_tail_scoped(conn, settings, Some(&recovery_dirs), progress, summary)?;
+    complete_scoped_index_repair(conn, &repair_roots)?;
+    complete_directory_repair(conn, &receipts)
 }
 
 /// The same durable tail for a watcher/section repair. Directory scope applies
@@ -1003,8 +1035,8 @@ fn pending_index_dirs(conn: &Connection) -> Result<Vec<String>, String> {
         .prepare(
             "SELECT DISTINCT p.dir_path FROM paths p
              WHERE p.missing = 0 AND (
-               (p.content_hash IS NULL AND p.kind IN ('image', 'video', 'audio'))
-               OR p.indexed_at_utc IS NULL
+               (p.content_hash IS NULL AND p.hash_attempt_failed = 0 AND p.kind IN ('image', 'video', 'audio'))
+               OR (p.indexed_at_utc IS NULL AND p.metadata_attempt_failed = 0)
                OR (p.indexed_at_utc IS NOT NULL AND p.resolved_source IS NULL)
              )",
         )
@@ -1014,7 +1046,43 @@ fn pending_index_dirs(conn: &Connection) -> Result<Vec<String>, String> {
         .map_err(|error| error.to_string())?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|error| error.to_string())?;
-    dirs.extend(pending_relationship_roots(conn)?);
+    // Durable scopes include descendants (a removed directory can leave
+    // surviving companion rows below it). Root receipts come from walks;
+    // exact directory receipts come from watcher and tail publication.
+    let mut scopes = pending_relationship_roots(conn)?;
+    scopes.extend(pending_directory_repairs(conn)?);
+    // Binary range bounds keep each scope on idx_paths_dir, including
+    // encoded native names. The separator is the prefix's final ASCII byte.
+    let sql = "SELECT DISTINCT dir_path FROM paths WHERE dir_path = ?1 COLLATE BINARY
+               OR (dir_path >= ?2 COLLATE BINARY AND dir_path < ?3 COLLATE BINARY)";
+    let roots: Vec<(String, String)> = conn.prepare("SELECT root, configured_root FROM scan_dirs")
+        .and_then(|mut statement| statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect())
+        .map_err(|error| error.to_string())?;
+    let mut descendants = conn.prepare(sql).map_err(|error| error.to_string())?;
+    for scope in scopes {
+        let mut spellings = vec![scope.clone()];
+        // Watcher events can use a configured alias even after that directory
+        // vanished. Translate through the remembered source owner without
+        // requiring filesystem access to the removed directory.
+        for (settled, configured) in &roots {
+            if directory_belongs_to_root(&scope, configured) {
+                let configured = crate::native_path::from_text(configured);
+                let configured = crate::winpath::for_fs(configured.as_ref());
+                let path = crate::native_path::from_text(&scope);
+                let path = crate::winpath::for_fs(path.as_ref());
+                let suffix: PathBuf = path.components().skip(configured.components().count()).collect();
+                spellings.push(crate::native_path::encode(&crate::native_path::from_text(settled).join(suffix)).into_owned());
+            }
+        }
+        for spelling in spellings {
+            let prefix = ensure_trailing_separator(&spelling);
+            let mut end = prefix.clone();
+            end.pop();
+            end.push(char::from(std::path::MAIN_SEPARATOR as u8 + 1));
+            dirs.extend(descendants.query_map(rusqlite::params![spelling, prefix, end], |row| row.get::<_, String>(0))
+                .map_err(|error| error.to_string())?.collect::<rusqlite::Result<Vec<_>>>().map_err(|error| error.to_string())?);
+        }
+    }
     dirs.sort();
     dirs.dedup();
     Ok(dirs)

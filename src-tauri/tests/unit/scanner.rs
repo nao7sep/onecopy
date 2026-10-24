@@ -284,3 +284,25 @@ fn complete_prehash_cannot_identify_a_file_changed_before_cohort_publication() {
     assert_eq!(conn.query_row("SELECT content_hash IS NULL FROM paths WHERE file_name = 'first.bin'", [], |row| row.get::<_, bool>(0)).unwrap(), true);
     assert_eq!(conn.query_row("SELECT hash_attempt_failed FROM paths WHERE file_name = 'first.bin'", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
 }
+
+#[test]
+fn directory_repair_receipts_survive_reopening_and_only_their_owner_can_clear_them() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("index.sqlite3");
+    let conn = crate::index_store::open(&db).unwrap();
+    let dirs = vec![crate::native_path::encode(&temp.path().join("source").join("changed")).into_owned()];
+    let marked = super::begin_directory_repair(&conn, &dirs).unwrap();
+    assert_eq!(marked, dirs);
+    drop(conn);
+    let conn = crate::index_store::open(&db).unwrap();
+    assert!(super::pending_index_work_exists(&conn).unwrap());
+    let inherited = super::begin_directory_repair(&conn, &dirs).unwrap();
+    assert!(inherited.is_empty());
+    super::complete_directory_repair(&conn, &inherited).unwrap();
+    assert_eq!(super::pending_directory_repairs(&conn).unwrap(), dirs);
+    super::complete_directory_repair(&conn, &marked).unwrap();
+    assert!(!super::pending_index_work_exists(&conn).unwrap());
+    super::begin_directory_repair(&conn, &dirs).unwrap();
+    crate::index_store::clear_reconstructible(&conn, false, true).unwrap();
+    assert!(super::pending_directory_repairs(&conn).unwrap().is_empty());
+}

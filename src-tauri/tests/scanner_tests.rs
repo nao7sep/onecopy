@@ -3129,3 +3129,51 @@ fn small_colliding_files_reuse_the_complete_prehash_without_reading_bytes_again(
         assert_eq!(count(&f.conn, "SELECT count(*) FROM contents"), 1);
     }
 }
+
+#[test]
+fn the_index_tail_repairs_pending_directories_without_revisiting_settled_siblings() {
+    let f = fixture("tail-directory-repair");
+    let changed = f.root.join("changed");
+    let nested = changed.join("nested");
+    let sibling = f.root.join("changed-other");
+    for dir in [&nested, &sibling] {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("IMG.JPG"), b"jpeg").unwrap();
+        std::fs::write(dir.join("IMG.ARW"), b"raw").unwrap();
+    }
+    let settings = ScanSettings {
+        source_dirs: vec![stored_path(&f.root)], lists: lists(), resolution: resolution_config(),
+        pairing_enabled: true, cache_root: f._dir.path().join("apphome").join("cache"),
+    };
+    run_source_check(&f.conn, &settings, &|_| {}).unwrap();
+    run_index_tail(&f.conn, &settings, &|_| {}, &mut ScanSummary::default()).unwrap();
+    assert_eq!(count(&f.conn, "SELECT count(*) FROM paths WHERE companion_of IS NOT NULL"), 2);
+    f.conn.execute_batch(
+        "CREATE TEMP TABLE protected_directory (dir_path TEXT);
+         CREATE TEMP TRIGGER refuse_unrelated_candidates BEFORE INSERT ON onecopy_pair_results
+         WHEN NEW.path_id IN (SELECT id FROM paths WHERE dir_path IN (SELECT dir_path FROM protected_directory))
+         BEGIN SELECT RAISE(ABORT, 'unrelated candidate recomputed'); END;
+         CREATE TEMP TRIGGER interrupt_relationship_publication BEFORE UPDATE OF companion_of ON paths
+         WHEN OLD.companion_of IS NOT NULL AND NEW.companion_of IS NULL
+         BEGIN SELECT RAISE(ABORT, 'interrupted relationship publication'); END;",
+    ).unwrap();
+    f.conn.execute("INSERT INTO protected_directory VALUES (?1)", [stored_path(&std::fs::canonicalize(&sibling).unwrap())]).unwrap();
+    f.conn.execute("UPDATE paths SET indexed_at_utc = NULL, metadata_attempt_failed = 1 WHERE dir_path = ?1",
+        [stored_path(&std::fs::canonicalize(&sibling).unwrap())]).unwrap();
+    // A watcher receipt precedes its observations. The parent scope must
+    // cover nested files, while the similarly prefixed sibling stays settled.
+    f.conn.execute("INSERT INTO relationship_repair_dirs VALUES (?1)", [stored_path(&changed)]).unwrap();
+    std::fs::remove_file(nested.join("IMG.JPG")).unwrap();
+    onecopy_lib::watcher::restat_dir(&f.conn, &std::fs::canonicalize(&nested).unwrap(), &settings.lists, &settings.source_dirs, settings.data_root()).unwrap();
+    assert!(pending_index_work_exists(&f.conn).unwrap());
+    let error = run_index_tail(&f.conn, &settings, &|_| {}, &mut ScanSummary::default()).unwrap_err();
+    assert!(error.contains("interrupted relationship publication"), "{error}");
+    assert!(count(&f.conn, "SELECT count(*) FROM relationship_repair_dirs") > 0);
+    f.conn.execute_batch("DROP TRIGGER interrupt_relationship_publication").unwrap();
+    run_index_tail(&f.conn, &settings, &|_| {}, &mut ScanSummary::default()).unwrap();
+    assert_eq!(count(&f.conn, "SELECT count(*) FROM paths WHERE companion_of IS NOT NULL"), 1);
+    assert_eq!(count(&f.conn, "SELECT count(*) FROM relationship_repair_dirs"), 0);
+    assert!(!pending_index_work_exists(&f.conn).unwrap());
+    // No pending directory means no candidates, even on an explicit tail call.
+    run_index_tail(&f.conn, &settings, &|_| {}, &mut ScanSummary::default()).unwrap();
+}

@@ -950,7 +950,7 @@ fn process_dirty_claimed(
         .map(|dir| crate::native_path::encode(crate::winpath::for_fs(dir).as_ref()).to_string())
         .collect();
     crate::volume::enforce_no_substitution(&data_root, &affected_roots(&settings.source_dirs, dirs))?;
-    let repair_roots = scanner::begin_scoped_index_repair(&conn, &affected_dirs)?;
+    let repair_dirs = scanner::begin_directory_repair(&conn, &affected_dirs)?;
 
     let timezone = crate::queries::display_timezone();
     let before = crate::queries::sections_under_directories(&conn, &affected_dirs, timezone)?;
@@ -972,7 +972,7 @@ fn process_dirty_claimed(
         );
         crate::file_information_runtime::wake(app.clone());
     } else if failed.is_empty() {
-        scanner::complete_scoped_index_repair(&conn, &repair_roots)?;
+        scanner::complete_directory_repair(&conn, &repair_dirs)?;
     }
     let mut sections = before;
     sections.extend(crate::queries::sections_under_directories(&conn, &affected_dirs, timezone)?);

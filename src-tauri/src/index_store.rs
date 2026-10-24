@@ -438,6 +438,10 @@ BEGIN
   DELETE FROM face_checks WHERE content_hash = OLD.hash;
 END;
 
+CREATE TABLE IF NOT EXISTS relationship_repair_dirs (
+  dir_path TEXT PRIMARY KEY COLLATE BINARY
+) WITHOUT ROWID;
+
 CREATE TABLE IF NOT EXISTS scan_dirs (
   id                    INTEGER PRIMARY KEY,
   root                  TEXT NOT NULL UNIQUE,
@@ -593,6 +597,7 @@ fn current_shape(conn: &Connection) -> Result<bool, String> {
             AND EXISTS (SELECT 1 FROM pragma_table_info('scan_dirs')
                         WHERE name = 'configured_root' AND \"notnull\" = 1)
             AND NOT EXISTS (SELECT 1 FROM pragma_table_info('scan_dirs') WHERE name = 'dirty')
+            AND EXISTS (SELECT 1 FROM pragma_table_info('relationship_repair_dirs') WHERE name = 'dir_path')
             AND NOT EXISTS (SELECT 1 FROM sqlite_master
                             WHERE type = 'index' AND name = 'idx_paths_media_repair_by_id')",
         [],
@@ -868,6 +873,7 @@ pub fn clear_reconstructible(
              DELETE FROM similarity_dirty_buckets;
              DELETE FROM similarity_state;
              DELETE FROM scan_dirs;
+             DELETE FROM relationship_repair_dirs;
              DELETE FROM rebuild_keeps_results;",
             )
             .map_err(|error| error.to_string())

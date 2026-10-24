@@ -94,6 +94,7 @@ fn rebuild_clears_reconstructible_library_facts_and_closes_issues() {
         "similarity_dirty_buckets",
         "similarity_state",
         "scan_dirs",
+        "relationship_repair_dirs",
     ] {
         let count: i64 = conn
             .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
