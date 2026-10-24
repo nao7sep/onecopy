@@ -2139,6 +2139,81 @@ fn forgetting_a_parent_excludes_only_the_exact_nested_root_in_every_batch_step()
 }
 
 #[test]
+fn forgetting_a_source_closes_only_its_current_conditions_and_keeps_history() {
+    let f = fixture("forget-source-issues");
+    let removed = f.root.join("Photos!%_[");
+    let alias = f.root.join("Configured!%_[");
+    let kept = removed.join("Child");
+    let kept_alias = alias.join("ChildAlias");
+    for (root, configured) in [(&removed, &alias), (&kept, &kept_alias)] {
+        f.conn.execute("INSERT INTO scan_dirs(root, configured_root) VALUES (?1, ?2)",
+            rusqlite::params![root.to_string_lossy(), configured.to_string_lossy()]).unwrap();
+    }
+    seed_forget_path(&f.conn, &removed.join("gone.jpg"), "gone", false);
+    seed_forget_path(&f.conn, &kept.join("kept.jpg"), "kept", false);
+    let retired = [removed.clone(), removed.join("gone.jpg"), alias.clone(), alias.join("unread/failed.jpg")];
+    let retained = [kept.clone(), kept.join("kept.jpg"), kept_alias.clone(), kept_alias.join("unread.jpg"),
+        f.root.join("Unrelated!%_[/sibling.jpg"), f.root.join("Photos!%_[2/sibling.jpg")];
+    let kinds = [WALK_ERROR, STAT_ERROR, READ_ERROR, METADATA_READ_ERROR, COPIES_DISAGREE,
+        ONLINE_ONLY_SKIPPED, onecopy_lib::watcher::WATCHER_RECOVERY_FAILED, "watcher-root-failed", "source-unavailable", "source-identity-unavailable"];
+    for path in retired.iter().chain(&retained) {
+        for kind in kinds {
+            index_store::upsert_issue(&f.conn, Some(&path.to_string_lossy()), kind, "original condition").unwrap();
+        }
+        index_store::upsert_issue(&f.conn, Some(&path.to_string_lossy()), "mutation-failed", "operation failure").unwrap();
+    }
+    index_store::upsert_issue(&f.conn, None, "watcher-failed", "global failure").unwrap();
+    let occurrences = count(&f.conn, "SELECT COUNT(*) FROM records.issue_events WHERE event = 'occurred'");
+    let configured = [kept_alias.to_string_lossy().to_string(),
+        f.root.join("Unrelated!%_[").to_string_lossy().to_string(),
+        f.root.join("Photos!%_[2").to_string_lossy().to_string()];
+    assert_eq!(forget_unconfigured_roots(&f.conn, &configured, &test_cache(&f)).unwrap(), 1);
+    for path in &retired {
+        assert_eq!(f.conn.query_row("SELECT COUNT(*) FROM active_issues WHERE path = ?1", [path.to_string_lossy()], |row| row.get::<_, i64>(0)).unwrap(), 1,
+            "operation failures remain independently owned");
+    }
+    for path in &retained {
+        assert_eq!(f.conn.query_row("SELECT COUNT(*) FROM active_issues WHERE path = ?1", [path.to_string_lossy()], |row| row.get::<_, i64>(0)).unwrap(), kinds.len() as i64 + 1);
+    }
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM active_issues WHERE kind = 'watcher-failed'"), 1);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM records.issue_events WHERE event = 'occurred'"), occurrences);
+    let closures = (retired.len() * kinds.len()) as i64;
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM records.issue_events WHERE event = 'resolved'"), closures);
+    assert_eq!(forget_unconfigured_roots(&f.conn, &configured, &test_cache(&f)).unwrap(), 0);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM records.issue_events WHERE event = 'resolved'"), closures);
+}
+
+#[test]
+fn a_source_removed_before_its_first_walk_retires_its_issue() {
+    let f = fixture("forget-unwalked-issue");
+    let removed = f.root.join("removed");
+    let retained = f.root.join("retained");
+    for root in [&removed, &retained] {
+        index_store::upsert_issue(&f.conn, Some(&root.to_string_lossy()), WALK_ERROR, "unreachable source").unwrap();
+    }
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM scan_dirs"), 0);
+    forget_unconfigured_roots(&f.conn, &[retained.to_string_lossy().to_string()], &test_cache(&f)).unwrap();
+    assert_eq!(f.conn.query_row("SELECT path FROM active_issues", [], |row| row.get::<_, String>(0)).unwrap(), retained.to_string_lossy());
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM records.issue_events WHERE event = 'occurred'"), 2);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM records.issue_events WHERE event = 'resolved'"), 1);
+}
+
+#[test]
+fn failed_source_forgetting_rolls_back_issue_closure_with_the_index() {
+    let f = fixture("forget-issue-rollback");
+    let root = f.root.to_string_lossy();
+    f.conn.execute("INSERT INTO scan_dirs(root, configured_root) VALUES (?1, ?1)", [&root]).unwrap();
+    seed_forget_path(&f.conn, &f.root.join("photo.jpg"), "retained", false);
+    index_store::upsert_issue(&f.conn, Some(&root), WALK_ERROR, "unread source").unwrap();
+    f.conn.execute_batch("CREATE TEMP TRIGGER refuse_forgetting BEFORE DELETE ON scan_dirs BEGIN SELECT RAISE(ABORT, 'injected forgetting failure'); END;").unwrap();
+    assert!(forget_unconfigured_roots(&f.conn, &[], &test_cache(&f)).unwrap_err().contains("injected forgetting failure"));
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths"), 1);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM scan_dirs"), 1);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM active_issues"), 1);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM records.issue_events WHERE event = 'resolved'"), 0);
+}
+
+#[test]
 fn removing_a_root_with_more_orphaned_hashes_than_sqlites_bound_parameter_limit_still_works() {
     // Orphan collection is a subquery over `batch_touched_hashes`,
     // never one bound parameter per orphaned hash, so a root holding more

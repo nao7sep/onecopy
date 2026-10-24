@@ -532,14 +532,21 @@ pub fn forget_unconfigured_roots(
         .map(|(root, _)| root.clone())
         .collect();
 
+    let kept_issue_roots: Vec<&str> = recorded.iter()
+        .filter(|(root, _)| kept_roots.contains(root))
+        .flat_map(|(root, configured)| [root.as_str(), configured.as_str()])
+        .chain(configured.iter().map(String::as_str))
+        .chain(keep.iter().map(String::as_str))
+        .collect();
+
     let mut forgotten = 0u64;
-    for (root, _) in recorded {
-        if kept_roots.contains(&root) {
+    for (root, configured_root) in &recorded {
+        if kept_roots.contains(root) {
             continue;
         }
         let nested_kept_roots: Vec<&String> = kept_roots
             .iter()
-            .filter(|kept| crate::native_path::from_text(kept).as_ref().starts_with(crate::native_path::from_text(&root).as_ref()) && kept.as_str() != root)
+            .filter(|kept| crate::native_path::from_text(kept).as_ref().starts_with(crate::native_path::from_text(&root).as_ref()) && kept.as_str() != root.as_str())
             .collect();
         // `?1` is always the forgotten root's own prefix; `?2`, `?3`, ... are
         // any nested still-configured roots, bound (never interpolated) like
@@ -601,7 +608,8 @@ pub fn forget_unconfigured_roots(
                         rusqlite::params_from_iter(abs_path_params.iter()),
                     )
                     .map_err(|e| e.to_string())?;
-                tx.execute("DELETE FROM scan_dirs WHERE root = ?1", [&root])
+                close_unconfigured_source_issues(tx, Some((root, configured_root)), &kept_issue_roots)?;
+                tx.execute("DELETE FROM scan_dirs WHERE root = ?1", [root])
                     .map_err(|e| e.to_string())?;
 
                 // Orphan collection stays set-based inside SQL end to end: the
@@ -671,7 +679,44 @@ pub fn forget_unconfigured_roots(
             );
         }
     }
+    // A source that failed before its first walk may have Issues but no
+    // scan_dirs receipt. All recorded removals have settled before retiring
+    // these remaining conditions outside current source membership.
+    close_unconfigured_source_issues(conn, None, &kept_issue_roots)?;
     Ok(forgotten)
+}
+
+/// Retire only conditions owned by the removed source. Both recorded spellings
+/// can own Issues, including roots that were never readable. Still-configured
+/// nested sources keep their conditions; operation failures keep their history
+/// and current state independently of source membership.
+fn close_unconfigured_source_issues(
+    conn: &Connection, removed: Option<(&str, &str)>, kept: &[&str],
+) -> Result<(), String> {
+    let mut values = Vec::<String>::new();
+    let mut scope_for = |root: &str| {
+        values.push(root.to_string());
+        let exact = values.len();
+        values.push(ensure_trailing_separator(root));
+        format!("(path = ?{exact} COLLATE BINARY OR {})", descendant_path_predicate("path", values.len()))
+    };
+    let mut scope = match removed {
+        Some((root, configured)) => format!("({} OR {})", scope_for(root), scope_for(configured)),
+        None => "path <> ''".to_string(),
+    };
+    for root in kept {
+        scope.push_str(&format!(" AND NOT {}", scope_for(root)));
+    }
+    let mut kinds = Vec::new();
+    for kind in PATH_SCAN_ISSUES.iter().copied().chain([
+        ONLINE_ONLY_SKIPPED, crate::watcher::WATCHER_RECOVERY_FAILED,
+        "watcher-root-failed", "source-unavailable", "source-identity-unavailable",
+    ]) {
+        values.push(kind.to_string());
+        kinds.push(format!("?{}", values.len()));
+    }
+    let params: Vec<&dyn rusqlite::ToSql> = values.iter().map(|value| value as &dyn rusqlite::ToSql).collect();
+    crate::index_store::close_issues(conn, "resolved", &format!("{scope} AND kind IN ({})", kinds.join(",")), &params)
 }
 
 /// Settles ONE spelling for a configured root, once per scan.
