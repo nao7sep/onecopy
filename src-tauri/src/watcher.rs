@@ -117,8 +117,13 @@ fn restat_dir_with(
     // after its events arrived is normal (Shift+Del, `rm -r`), not a walk
     // failure. Every row under it is marked missing instead, contained to
     // this one dirty entry rather than aborting the whole watcher batch.
-    if matches!(crate::volume_io::symlink_metadata(dir), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
-    {
+    // A former directory replaced by a regular file likewise has no
+    // discoverable descendants. Other metadata errors never prove absence.
+    let no_directory = match crate::volume_io::symlink_metadata(dir) {
+        Ok(metadata) => metadata.is_file(),
+        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+    };
+    if no_directory {
         if !crate::volume_io::is_dir(&root).unwrap_or(false) { return Ok(0); }
         let dir_str = crate::native_path::encode(&dir).to_string();
         return scanner::mark_missing_under(conn, &dir_str).map_err(RestatFailure::from);
@@ -794,13 +799,28 @@ fn collect(
                 *overflowed = true;
                 return;
             }
-            for path in event.paths {
+            for (index, path) in event.paths.into_iter().enumerate() {
                 if crate::packages::within_package(&path, false)
                     || crate::trash::is_trash_path(&path)
                     || crate::paths::is_within_data_root(&path, data_root)
                     || crate::scanner::is_apple_double_sidecar(&path)
                     || crate::file_identity::is_private_tmp_name(&path)
                 {
+                    continue;
+                }
+                // A removal or rename's old path can have indexed descendants
+                // even though it no longer answers is_dir. Keep that scope for
+                // admission-time absence verification; the parent handles files.
+                use notify::{EventKind, event::{ModifyKind, RenameMode, RemoveKind}};
+                let old_scope = matches!(event.kind,
+                    EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(
+                        RenameMode::From | RenameMode::Any | RenameMode::Other)))
+                    || (index == 0 && matches!(event.kind, EventKind::Modify(ModifyKind::Name(RenameMode::Both))));
+                if old_scope {
+                    dirty.insert(path.clone());
+                    if !matches!(event.kind, EventKind::Remove(RemoveKind::Folder)) {
+                        if let Some(parent) = path.parent() { dirty.insert(parent.to_path_buf()); }
+                    }
                     continue;
                 }
                 // Bounded: a volume that does not answer reads as "not a

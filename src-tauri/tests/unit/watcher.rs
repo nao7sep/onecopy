@@ -491,3 +491,84 @@ fn restat_batches_close_recovered_conditions_but_keep_new_and_unrelated_failures
     super::restat_dir(&conn, &root, &settings.lists, &settings.source_dirs, settings.data_root()).unwrap();
     assert_eq!(conn.query_row("SELECT count(*) FROM active_issues WHERE kind = ?1", [crate::scanner::STAT_ERROR], |row| row.get::<_, i64>(0)).unwrap(), 0);
 }
+
+#[test]
+fn directory_removal_and_rename_old_events_reconcile_descendants_without_child_events() {
+    use notify::{EventKind, event::{ModifyKind, RenameMode, RemoveKind}};
+    for kind in [EventKind::Remove(RemoveKind::Folder), EventKind::Remove(RemoveKind::Any),
+        EventKind::Modify(ModifyKind::Name(RenameMode::From)),
+        EventKind::Modify(ModifyKind::Name(RenameMode::Both))] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("source");
+        let removed = root.join("Removed");
+        let renamed = root.join("Renamed");
+        std::fs::create_dir_all(removed.join("deep")).unwrap();
+        std::fs::write(removed.join("deep/photo.txt"), b"removed").unwrap();
+        std::fs::write(root.join("kept.txt"), b"kept").unwrap();
+        let conn = crate::index_store::open(&temp.path().join("index.sqlite3")).unwrap();
+        let settings = crate::scanner::settings_from_config(
+            Some(&serde_json::json!({"sourceDirs": [root]})), &temp.path().join("data"), 0,
+        );
+        crate::scanner::walk_root(&conn, &root, &settings.lists).unwrap();
+        if matches!(kind, EventKind::Modify(_)) {
+            std::fs::rename(&removed, &renamed).unwrap();
+        } else {
+            std::fs::remove_dir_all(&removed).unwrap();
+        }
+        let mut paths = vec![removed.clone()];
+        if matches!(kind, EventKind::Modify(ModifyKind::Name(RenameMode::Both))) { paths.push(renamed); }
+        let mut dirty = std::collections::HashSet::new();
+        let mut overflowed = false;
+        super::collect(Ok(notify::Event { kind, paths, attrs: Default::default() }),
+            &mut dirty, &mut overflowed, settings.data_root());
+        assert!(!overflowed);
+        assert!(dirty.contains(&removed));
+        let pass = super::restat_batch(&conn, &dirty.into_iter().collect::<Vec<_>>(), &settings, &|| Ok(())).unwrap();
+        assert!(pass.failure().is_none(), "{:?}: {:?}", kind, pass.failure());
+        assert_eq!(conn.query_row("SELECT missing FROM paths WHERE file_name = 'photo.txt'", [], |row| row.get::<_, bool>(0)).unwrap(), true);
+        assert_eq!(conn.query_row("SELECT missing FROM paths WHERE file_name = 'kept.txt'", [], |row| row.get::<_, bool>(0)).unwrap(), false);
+    }
+}
+
+#[test]
+fn an_old_path_replaced_by_a_file_retires_descendants_without_a_directory_error() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("source");
+    let replaced = root.join("replaced");
+    std::fs::create_dir_all(&replaced).unwrap();
+    std::fs::write(replaced.join("old.txt"), b"old").unwrap();
+    let conn = crate::index_store::open(&temp.path().join("index.sqlite3")).unwrap();
+    let settings = crate::scanner::settings_from_config(
+        Some(&serde_json::json!({"sourceDirs": [root]})), &temp.path().join("data"), 0,
+    );
+    crate::scanner::walk_root(&conn, &root, &settings.lists).unwrap();
+    std::fs::remove_dir_all(&replaced).unwrap();
+    std::fs::write(&replaced, b"replacement").unwrap();
+    let pass = super::restat_batch(&conn, &[replaced, root], &settings, &|| Ok(())).unwrap();
+    assert!(pass.failure().is_none());
+    assert_eq!(conn.query_row("SELECT missing FROM paths WHERE file_name = 'old.txt'", [], |row| row.get::<_, bool>(0)).unwrap(), true);
+    assert_eq!(conn.query_row("SELECT count(*) FROM active_issues", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+}
+
+#[test]
+fn an_old_directory_event_does_not_treat_failed_enumeration_as_absence() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("source");
+    let directory = root.join("directory");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("kept.txt"), b"kept").unwrap();
+    let conn = crate::index_store::open(&temp.path().join("index.sqlite3")).unwrap();
+    let settings = crate::scanner::settings_from_config(
+        Some(&serde_json::json!({"sourceDirs": [root]})), &temp.path().join("data"), 0,
+    );
+    crate::scanner::walk_root(&conn, &root, &settings.lists).unwrap();
+    let mut dirty = std::collections::HashSet::new();
+    let mut overflowed = false;
+    super::collect(Ok(notify::Event { kind: notify::EventKind::Remove(notify::event::RemoveKind::Folder),
+        paths: vec![directory.clone()], attrs: Default::default() }), &mut dirty, &mut overflowed, settings.data_root());
+    assert_eq!(dirty, std::collections::HashSet::from([directory.clone()]));
+    assert!(super::restat_dir_with(&conn, &directory, &settings.lists, &settings.source_dirs, settings.data_root(),
+        &|_| Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))).is_err());
+    assert_eq!(conn.query_row("SELECT missing FROM paths", [], |row| row.get::<_, bool>(0)).unwrap(), false);
+    assert_eq!(conn.query_row("SELECT count(*) FROM active_issues", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+}
