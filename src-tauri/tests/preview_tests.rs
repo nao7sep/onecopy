@@ -919,11 +919,13 @@ fn previews_choose_an_available_duplicate_and_do_not_mark_offline_inputs_as_bad_
     }
     let stats = derive_images_pending(&conn, &cache, 32, 160, None, None).unwrap();
     assert_eq!((stats.derived, stats.failed), (1, 0));
+    assert!(!stats.waiting_source);
     assert!(cache.preview("same01").exists());
     conn.execute("UPDATE contents SET derived_at_utc = NULL", []).unwrap();
     std::fs::remove_file(&good).unwrap();
     let offline = derive_images_pending(&conn, &cache, 32, 160, None, None).unwrap();
     assert_eq!((offline.derived, offline.failed), (0, 0));
+    assert!(offline.waiting_source);
     assert!(cache.preview("same01").exists());
     gradient_jpeg(dir.path(), "z-good.jpg", 80, 60);
     assert_eq!(derive_images_pending(&conn, &cache, 32, 160, None, None).unwrap().derived, 1);

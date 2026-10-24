@@ -520,6 +520,7 @@ fn convert_full_resolution(
 
 #[derive(Default, Debug, PartialEq, Eq)]
 pub struct DeriveStats {
+    pub waiting_source: bool,
     pub derived: u64,
     pub failed: u64,
     /// Rows left for a later pass because their format needs the managed
@@ -998,6 +999,8 @@ fn derive_candidate_rows_inner_with(
         for (hash, _) in chunk {
             if let Some(path) = crate::indexed_file::available_path(conn, Some(hash), None)? {
                 available.push((hash.clone(), crate::native_path::encode(&path).into_owned()));
+            } else {
+                stats.waiting_source = true;
             }
         }
         let chunk = available;

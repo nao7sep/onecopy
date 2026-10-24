@@ -444,3 +444,56 @@ fn committed_previews_reopen_only_their_dependent_cursors() {
     assert_eq!((revisions(), wake_generation()), before, "failed publication cannot advertise debt");
     std::fs::write(root.join("verified"), b"verified").unwrap();
 }
+
+#[test]
+fn settled_workers_do_not_open_passes_for_time_priority_or_admission_notifications() {
+    let before = WakeSnapshot { debt: 5, image: 8, video: 3, attention: 9, scheduler: 20 };
+    let settled = WorkerWait::after_pass(false, false, false);
+    assert_eq!(settled, WorkerWait::Settled);
+    assert_eq!(settled.poll_interval(), None);
+    for scheduler in 20..200 {
+        let notification = WakeSnapshot { scheduler, attention: scheduler, ..before };
+        assert!(!settled.changed(before, notification, true));
+    }
+    // Sampled before the pass, not after it: publication during the pass is
+    // new debt even if it precedes the worker entering the condition wait.
+    for changed in [
+        WakeSnapshot { debt: 6, ..before },
+        WakeSnapshot { image: 9, ..before },
+        WakeSnapshot { video: 4, ..before },
+    ] {
+        assert!(settled.changed(before, changed, false));
+    }
+    let denied = WorkerWait::after_pass(false, true, false);
+    assert_eq!(denied.poll_interval(), None);
+    let release = WakeSnapshot { scheduler: 21, ..before };
+    assert!(!denied.changed(before, release, false));
+    assert!(denied.changed(before, release, true));
+    let source = WorkerWait::after_pass(false, false, true);
+    assert_eq!(source.poll_interval(), Some(Duration::from_secs(POLL_SECONDS)));
+    assert!(!source.changed(before, release, true), "own job releases must not busy-poll an unavailable file");
+    assert!(source.changed(before, WakeSnapshot { attention: 10, ..before }, true));
+    assert_eq!(WorkerWait::after_pass(true, true, true), WorkerWait::Ready);
+}
+
+#[test]
+fn source_retries_reopen_only_cursors_that_skipped_unavailable_inputs() {
+    let mut cursors = CandidateCursors::default();
+    cursors.previews_exhausted = true;
+    cursors.previews_waiting_source = true;
+    cursors.snapshots.after_hash = Some("later-successful-file".into());
+    cursors.snapshots.exhausted = true;
+    cursors.snapshots.waiting_source = true;
+    cursors.faces.after_hash = Some("completed-face".into());
+    cursors.faces.exhausted = true;
+    cursors.audio_transcripts.exhausted = true;
+    assert!(cursors.waiting_source());
+    cursors.retry_sources();
+    assert!(!cursors.waiting_source());
+    assert!(!cursors.previews_exhausted);
+    assert!(!cursors.snapshots.exhausted);
+    assert!(cursors.snapshots.after_hash.is_none(), "earlier unavailable files remain retryable");
+    assert!(cursors.faces.exhausted);
+    assert_eq!(cursors.faces.after_hash.as_deref(), Some("completed-face"));
+    assert!(cursors.audio_transcripts.exhausted);
+}

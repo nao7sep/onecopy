@@ -233,3 +233,31 @@ fn incomplete_snapshot_attempts_remove_only_their_published_frames() {
         assert_eq!(std::fs::read_dir(&temp).unwrap().count(), 0);
     }
 }
+
+#[test]
+fn unavailable_video_sources_request_polling_but_missing_tools_do_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = onecopy_lib::index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    conn.execute_batch("INSERT INTO contents(hash, byte_size, kind) VALUES ('v1', 10, 'video');
+        INSERT INTO paths(abs_path, dir_path, file_name, kind, content_hash)
+        VALUES ('/unavailable/clip.mov', '/unavailable', 'clip.mov', 'video', 'v1');").unwrap();
+    let cache = CachePaths::new(dir.path().join("cache"));
+    let temp = dir.path().join("temp");
+    let ffmpeg = dir.path().join("unused-ffmpeg");
+    let blocked = derive_videos_pending(&conn, &cache, None, &temp, 32, 64).unwrap();
+    assert!(!blocked.waiting_source);
+    let offline = derive_videos_pending(&conn, &cache, Some(&ffmpeg), &temp, 32, 64).unwrap();
+    assert!(offline.waiting_source);
+    assert_eq!((offline.derived, offline.failed), (0, 0));
+    conn.execute("UPDATE contents SET derived_at_utc = '2026-01-01T00:00:00.000Z', derived_version = ?1, duration_ms = 10000",
+        [onecopy_lib::derived_state::DERIVE_VERSION]).unwrap();
+    let strips = derive_strips_pending(&conn, &cache, &ffmpeg, &temp, &config(), 64,
+        &[], &|_| {}, &|_| {}, None, &|| false, &|_, _| {}).unwrap();
+    assert!(strips.waiting_source);
+    assert_eq!(strips.attempted, 0);
+    conn.execute("UPDATE paths SET missing = 1", []).unwrap();
+    let absent = derive_strips_pending(&conn, &cache, &ffmpeg, &temp, &config(), 64,
+        &[], &|_| {}, &|_| {}, None, &|| false, &|_, _| {}).unwrap();
+    assert!(!absent.waiting_source);
+    assert!(!absent.candidates_found);
+}

@@ -168,6 +168,7 @@ fn extract_frame(
 
 #[derive(Default, Debug, PartialEq, Eq)]
 pub struct VideoDeriveStats {
+    pub waiting_source: bool,
     pub derived: u64,
     pub failed: u64,
     pub skipped_no_ffmpeg: bool,
@@ -179,6 +180,7 @@ pub struct VideoDeriveStats {
 
 #[derive(Default, Debug, PartialEq, Eq)]
 pub struct StripDeriveStats {
+    pub waiting_source: bool,
     pub completed: u64,
     pub failed: u64,
     pub attempted: u64,
@@ -282,7 +284,10 @@ fn derive_videos_pending_limit(
     let rows = crate::derived_state::video_candidates(conn, true, limit, only_hash)?;
 
     for (hash, _) in rows {
-        let Some(available) = crate::indexed_file::available_path(conn, Some(&hash), None)? else { continue; };
+        let Some(available) = crate::indexed_file::available_path(conn, Some(&hash), None)? else {
+            stats.waiting_source = true;
+            continue;
+        };
         let path = crate::native_path::encode(&available);
         let _awake = crate::sleep_prevention::begin_work();
         let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::BackgroundWork,
@@ -414,7 +419,10 @@ pub fn derive_strips_pending(
             break;
         }
         stats.last_attempted_hash = Some(hash.clone());
-        let Some(available) = crate::indexed_file::available_path(conn, Some(&hash), None)? else { continue; };
+        let Some(available) = crate::indexed_file::available_path(conn, Some(&hash), None)? else {
+            stats.waiting_source = true;
+            continue;
+        };
         let path = crate::native_path::encode(&available);
         let _awake = crate::sleep_prevention::begin_work();
         on_item(&hash);

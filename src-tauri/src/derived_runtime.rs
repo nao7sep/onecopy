@@ -431,6 +431,7 @@ impl Drop for JobLease {
         } else {
             report_poison_once(self.app.as_ref());
         }
+        crate::derived_work::wake_scheduler();
         emit(self.app.as_ref());
     }
 }
@@ -464,6 +465,12 @@ pub(crate) fn preview_lane_open_for_automatic() -> bool {
         && runtime.previews.len() < capacity
         && !runtime.previews.iter().any(|job| job.manual)
         && runtime.preview_queue.is_empty()
+}
+
+pub(crate) fn heavy_lane_open_for_automatic() -> bool {
+    let Ok(runtime) = RUNTIME.0.lock() else { return false; };
+    !shutting_down() && runtime.claim.is_none()
+        && runtime.heavy.is_none() && !runtime.manual_heavy_queued()
 }
 
 pub(crate) fn with_active<T>(
@@ -617,6 +624,7 @@ impl Drop for ExclusiveGuard {
         } else {
             report_poison_once(self.app.as_ref());
         }
+        crate::derived_work::wake_scheduler();
         emit(self.app.as_ref());
     }
 }

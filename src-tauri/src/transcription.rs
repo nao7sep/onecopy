@@ -42,6 +42,8 @@ impl Drop for TranscriptionClaim {
         let mut state = state();
         state.running = false;
         state.cancelled = false;
+        drop(state);
+        crate::derived_work::wake_scheduler();
     }
 }
 

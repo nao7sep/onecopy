@@ -145,11 +145,14 @@ pub struct SectionTraversal {
 struct CandidateCursor {
     after_hash: Option<String>,
     exhausted: bool,
+    waiting_source: bool,
 }
 
 #[derive(Default)]
 struct CandidateCursors {
     previews_exhausted: bool,
+    previews_waiting_source: bool,
+    deferred: bool,
     image_preview_revision: u64,
     video_poster_revision: u64,
     snapshots: CandidateCursor,
@@ -178,6 +181,20 @@ impl SectionCursor {
 }
 
 impl CandidateCursors {
+    fn waiting_source(&self) -> bool {
+        self.previews_waiting_source || self.snapshots.waiting_source
+    }
+
+    fn retry_sources(&mut self) {
+        if self.previews_waiting_source {
+            self.previews_exhausted = false;
+            self.previews_waiting_source = false;
+        }
+        if self.snapshots.waiting_source {
+            self.snapshots = CandidateCursor::default();
+        }
+    }
+
     fn run_preview_search(
         &mut self,
         search: impl FnOnce() -> Result<(bool, bool), String>,
@@ -208,6 +225,7 @@ impl CandidateCursors {
 
     fn invalidate(&mut self) {
         self.previews_exhausted = false;
+        self.previews_waiting_source = false;
         self.snapshots = CandidateCursor::default();
         self.faces = CandidateCursor::default();
         self.video_transcripts = CandidateCursor::default();
@@ -583,52 +601,92 @@ fn derived_worker(app: AppHandle, lane: Lane) {
     }
 }
 
+/// Admission notifications do not create work in an exhausted lane. Keep the
+/// revisions sampled before a pass so changes during that pass cannot be lost.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct WakeSnapshot {
+    debt: u64,
+    image: u64,
+    video: u64,
+    attention: u64,
+    scheduler: u64,
+}
+
+impl WakeSnapshot {
+    fn current(lane: Lane, scheduler: u64) -> Self {
+        Self {
+            debt: DEBT_REVISION.load(Ordering::SeqCst),
+            image: if lane == Lane::Heavy { IMAGE_PREVIEW_REVISION.load(Ordering::SeqCst) } else { 0 },
+            video: if lane == Lane::Heavy { VIDEO_POSTER_REVISION.load(Ordering::SeqCst) } else { 0 },
+            attention: ATTENTION_GENERATION.load(Ordering::SeqCst),
+            scheduler,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorkerWait { Ready, Admission, Source, Settled }
+
+impl WorkerWait {
+    fn poll_interval(self) -> Option<Duration> {
+        (self == Self::Source).then(|| Duration::from_secs(POLL_SECONDS))
+    }
+
+    fn changed(self, before: WakeSnapshot, now: WakeSnapshot, admitted: bool) -> bool {
+        self == Self::Ready || before.debt != now.debt || before.image != now.image
+            || before.video != now.video
+            || (self == Self::Admission && admitted && before.scheduler != now.scheduler)
+            || (self == Self::Source && before.attention != now.attention)
+    }
+
+    fn after_pass(worked: bool, deferred: bool, waiting_source: bool) -> Self {
+        if worked { Self::Ready }
+        else if deferred { Self::Admission }
+        else if waiting_source { Self::Source }
+        else { Self::Settled }
+    }
+}
+
 fn run_worker_loop(app: &AppHandle, lane: Lane) -> Result<(), String> {
     let (generation, ready) = WAKE.get_or_init(|| (Mutex::new(0), Condvar::new()));
-    let mut observed = 0u64;
-    let mut run_again = true;
+    let mut observed = WakeSnapshot::default();
+    let mut waiting = WorkerWait::Ready;
     let mut cursors = CandidateCursors::default();
     let mut debt_revision = DEBT_REVISION.load(Ordering::SeqCst);
     let mut cleared_previous_failure = false;
     loop {
-        if crate::derived_runtime::shutting_down() {
-            return Ok(());
-        }
-        if !run_again {
-            let value = generation
-                .lock()
-                .map_err(|_| "derived-work wake state is unavailable".to_string())?;
-            let (current, _) = ready
-                .wait_timeout_while(
-                    value,
-                    std::time::Duration::from_secs(POLL_SECONDS),
-                    |current| *current == observed && !crate::derived_runtime::shutting_down(),
-                )
-                .map_err(|_| "derived-work wake state is unavailable".to_string())?;
-            observed = *current;
+        let value = generation.lock()
+            .map_err(|_| "derived-work wake state is unavailable".to_string())?;
+        let unchanged = |current: &mut u64| {
+            let admitted = waiting != WorkerWait::Admission || (available()
+                && crate::scan_runtime::ordinary_share_free()
+                && match lane {
+                    Lane::Previews => crate::derived_runtime::preview_lane_open_for_automatic(),
+                    Lane::Heavy => crate::derived_runtime::heavy_lane_open_for_automatic(),
+                });
+            !crate::derived_runtime::shutting_down()
+                && !waiting.changed(observed, WakeSnapshot::current(lane, *current), admitted)
+        };
+        let current = if let Some(interval) = waiting.poll_interval() {
+            ready.wait_timeout_while(value, interval, unchanged)
+                .map(|(value, _)| value)
+                .map_err(|_| "derived-work wake state is unavailable".to_string())
         } else {
-            let current = *generation
-                .lock()
-                .map_err(|_| "derived-work wake state is unavailable".to_string())?;
-            if current != observed {
-                observed = current;
-            }
-        }
-        if crate::derived_runtime::shutting_down() {
-            return Ok(());
-        }
-        run_again = false;
-        let revision = DEBT_REVISION.load(Ordering::SeqCst);
-        if revision != debt_revision {
+            ready.wait_while(value, unchanged)
+                .map_err(|_| "derived-work wake state is unavailable".to_string())
+        }?;
+        observed = WakeSnapshot::current(lane, *current);
+        drop(current);
+        if crate::derived_runtime::shutting_down() { return Ok(()); }
+        if waiting == WorkerWait::Source { cursors.retry_sources(); }
+        if observed.debt != debt_revision {
             cursors.invalidate();
-            debt_revision = revision;
+            debt_revision = observed.debt;
         }
-        if lane == Lane::Heavy {
-            cursors.refresh_prerequisites();
-        }
-        if !available() {
-            continue;
-        }
+        if lane == Lane::Heavy { cursors.refresh_prerequisites(); }
+        waiting = WorkerWait::Admission;
+        if !available() { continue; }
+        cursors.deferred = false;
         let pass = match lane {
             Lane::Previews => run_preview_pass(app, &mut cursors),
             Lane::Heavy => run_heavy_pass(app, &mut cursors),
@@ -639,11 +697,11 @@ fn run_worker_loop(app: &AppHandle, lane: Lane) -> Result<(), String> {
                     crate::failure_runtime::clear(WORKER_FAILED, None);
                     cleared_previous_failure = true;
                 }
-                run_again = did_work;
+                waiting = WorkerWait::after_pass(did_work, cursors.deferred || !available(), cursors.waiting_source());
             }
             Err(error) if error.starts_with(crate::scanner::CANCELLED) => {
                 logging::debug("derived work stopped", json!({ "reason": "cancelled" }));
-                run_again = true;
+                waiting = WorkerWait::Ready;
             }
             Err(error) => return Err(error),
         }
@@ -915,6 +973,7 @@ fn lane_classes(lane: Lane) -> &'static [WorkClass] {
 /// points; the section sweep and the library run under an ordinary share.
 fn run_preview_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool, String> {
     if class_paused(WorkClass::Previews) {
+        cursors.previews_waiting_source = false;
         return Ok(false);
     }
     let pass = open_pass()?;
@@ -922,7 +981,7 @@ fn run_preview_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<b
         match crate::scan_runtime::with_derived_share(ShareRank::Urgent, || {
             run_urgent_previews(app, &pass)
         }) {
-            None => return Ok(false),
+            None => { cursors.deferred = true; return Ok(false); },
             Some(result) => {
                 if result? {
                     cursors.turns.completed(Tier::Visible);
@@ -934,7 +993,7 @@ fn run_preview_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<b
     crate::scan_runtime::with_derived_share(ShareRank::Ordinary, || {
         run_lane_tiers(app, Lane::Previews, &pass, cursors)
     })
-    .unwrap_or(Ok(false))
+    .unwrap_or_else(|| { cursors.deferred = true; Ok(false) })
 }
 
 fn urgent_preview_pending(pass: &Pass) -> Result<bool, String> {
@@ -1005,6 +1064,7 @@ fn run_urgent_previews(app: &AppHandle, pass: &Pass) -> Result<bool, String> {
 /// so a waiting index owner runs then and the item publishes after it.
 fn run_heavy_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<bool, String> {
     if OPTIONAL_CLASSES.into_iter().all(class_paused) {
+        cursors.snapshots.waiting_source = false;
         return Ok(false);
     }
     let pass = open_pass()?;
@@ -1012,7 +1072,7 @@ fn run_heavy_pass(app: &AppHandle, cursors: &mut CandidateCursors) -> Result<boo
         crate::similarity::ensure_config_current(&pass.conn, &pass.settings.similarity)?;
         run_lane_tiers(app, Lane::Heavy, &pass, cursors)
     })
-    .unwrap_or(Ok(false))
+    .unwrap_or_else(|| { cursors.deferred = true; Ok(false) })
 }
 
 /// One bounded turn of `lane` in fair-turn order. The preview lane's visible
@@ -1072,9 +1132,18 @@ fn run_lane_tiers(
                     SECTION_PREVIEW_TURN,
                 )?
             }
-            (Lane::Previews, _) => cursors.run_preview_search(|| {
-                derive_global_required(app, conn, cache, settings, projection)
-            })?,
+            (Lane::Previews, _) => {
+                let mut waiting_source = false;
+                let mut searched = true;
+                let worked = cursors.run_preview_search(|| {
+                    let result = derive_global_required(app, conn, cache, settings, projection, &mut waiting_source)?;
+                    searched = result.1;
+                    Ok(result)
+                })?;
+                cursors.previews_waiting_source |= waiting_source;
+                cursors.deferred |= !searched && !class_paused(WorkClass::Previews);
+                worked
+            },
             (Lane::Heavy, Tier::Visible) => run_priority_optional_turn(
                 app,
                 conn,
@@ -1282,6 +1351,7 @@ fn derive_global_required(
     cache: &CachePaths,
     settings: &Settings,
     projection: crate::queries::ItemProjectionContext,
+    waiting_source: &mut bool,
 ) -> Result<(bool, bool), String> {
     if !available() {
         return Ok((false, false));
@@ -1307,6 +1377,7 @@ fn derive_global_required(
             )
         }),
     )?;
+    *waiting_source |= image.waiting_source;
     let mut did_work = image.derived + image.failed + image.blocked_no_ffmpeg > 0;
     if did_work {
         emit_progress(app, WorkClass::Previews, None);
@@ -1334,6 +1405,7 @@ fn derive_global_required(
             )
         }),
     )?;
+    *waiting_source |= video.waiting_source;
     if video.derived + video.failed > 0 {
         emit_progress(app, WorkClass::Previews, None);
         notify_video_changes(app, conn, projection, &video.changed_hashes);
@@ -1426,6 +1498,7 @@ fn run_optional_class(
     if class_paused(class)
         || class.gate(settings.capabilities()) != crate::derived_state::ClassGate::Runnable
     {
+        if class == WorkClass::Snapshots { cursors.snapshots.waiting_source = false; }
         return Ok(false);
     }
     let stop = cancelled;
@@ -1475,7 +1548,8 @@ fn run_optional_class(
                     );
                     Ok(true)
                 }
-                Ok(Some(None)) | Ok(None) => Ok(false),
+                Ok(Some(None)) => Ok(false),
+                Ok(None) => { cursors.deferred |= !class_paused(class); Ok(false) },
                 Err(error) => {
                     if crate::resource_limits::is_safety_error(&error) {
                         pause_for_resource_safety(app, conn, class, &error)?;
@@ -1494,11 +1568,13 @@ fn run_optional_class(
             let Some(ffmpeg) = settings.ffmpeg.as_deref() else {
                 return Ok(false);
             };
+            let mut searched = false;
             let stats = active_or_pause_for_storage(
                 app,
                 conn,
                 class,
                 with_active(app, class, || {
+                    searched = true;
                     crate::video::derive_strips_pending(
                         conn,
                         cache,
@@ -1519,6 +1595,11 @@ fn run_optional_class(
                     )
                 }),
             )?;
+            if !searched {
+                cursors.deferred |= !class_paused(class);
+                return Ok(false);
+            }
+            cursor.waiting_source |= stats.waiting_source;
             if stats.attempted > 0 {
                 // Issues change only when a write actually opened or resolved
                 // one; a clean attempt has nothing new for the Issues inbox.
@@ -1533,6 +1614,7 @@ fn run_optional_class(
             if !foreground && !stats.candidates_found {
                 cursor.exhausted = true;
             }
+            cursors.deferred |= stats.candidates_found && !stats.waiting_source && !class_paused(class);
             Ok(false)
         }
         WorkClass::Faces => {
@@ -1565,7 +1647,8 @@ fn run_optional_class(
                 )
             });
             let stats = match result {
-                Ok(value) => value.unwrap_or_default(),
+                Ok(Some(value)) => value,
+                Ok(None) => { cursors.deferred |= !class_paused(class); return Ok(false); },
                 Err(error) if crate::resource_limits::is_safety_error(&error) => {
                     pause_for_resource_safety(app, conn, class, &error)?;
                     return Ok(false);
@@ -1591,6 +1674,7 @@ fn run_optional_class(
             if !foreground && !stats.candidates_found {
                 cursor.exhausted = true;
             }
+            cursors.deferred |= stats.candidates_found && !class_paused(class);
             Ok(false)
         }
         WorkClass::VideoTranscripts | WorkClass::AudioTranscripts => {
@@ -1613,7 +1697,7 @@ fn run_optional_class(
                 app,
                 projection,
             };
-            let step = with_active(app, class, || {
+            let Some(step) = with_active(app, class, || {
                 transcribe_next(
                     class,
                     &context,
@@ -1625,8 +1709,11 @@ fn run_optional_class(
                     },
                     foreground,
                 )
-            })?
-            .unwrap_or_default();
+            })? else {
+                cursors.deferred |= !class_paused(class);
+                return Ok(false);
+            };
+            cursors.deferred |= step.deferred;
             if step.attempted_hash.is_some() {
                 if step.issues_changed {
                     notify_issues(app);
@@ -1828,6 +1915,7 @@ fn progress(app: &AppHandle, class: WorkClass) -> impl Fn(u64, u64) + '_ {
 
 #[derive(Default)]
 struct TranscriptStep {
+    deferred: bool,
     attempted_hash: Option<String>,
     exhausted: bool,
     /// Whether this attempt actually opened or resolved a live transcript
@@ -2247,7 +2335,7 @@ fn transcribe_next(
         &path,
     ) {
         Err(error) if error == crate::transcription::TRANSCRIPTION_BUSY => {
-            return Ok(TranscriptStep::default())
+            return Ok(TranscriptStep { deferred: true, ..TranscriptStep::default() })
         }
         other => other?,
     };
@@ -2262,12 +2350,13 @@ fn transcribe_next(
             issues_changed,
             ..
         } => TranscriptStep {
+            deferred: false,
             attempted_hash: Some(hash),
             exhausted: false,
             issues_changed,
         },
-        TranscriptionAttemptOutcome::Cancelled { .. }
-        | TranscriptionAttemptOutcome::Unavailable { .. }
+        TranscriptionAttemptOutcome::Cancelled { .. } => TranscriptStep { deferred: true, ..TranscriptStep::default() },
+        TranscriptionAttemptOutcome::Unavailable { .. }
         | TranscriptionAttemptOutcome::StorageUnavailable { .. }
         | TranscriptionAttemptOutcome::ResourceSafety { .. }
         | TranscriptionAttemptOutcome::ModelUnavailable { .. } => TranscriptStep::default(),
