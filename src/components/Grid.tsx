@@ -285,8 +285,12 @@ function columnStyle(
   widths: Record<SizedColumn, number>,
 ): React.CSSProperties {
   return key === "folders"
-    ? { flex: "1 1 0", minWidth: 0 }
+    ? { flex: "1 1 0", minWidth: MIN_COLUMN_WIDTH }
     : { width: widths[key], flex: "0 0 auto" };
+}
+
+function minimumColumnsWidth(widths: Record<SizedColumn, number>): number {
+  return SIZED_COLUMNS.reduce((total, key) => total + widths[key], MIN_COLUMN_WIDTH);
 }
 
 function ListHeader({
@@ -322,7 +326,10 @@ function ListHeader({
     window.addEventListener("mouseup", onUp);
   };
   return (
-    <div className="flex shrink-0 items-center border-b border-border px-5 py-1 text-[11px] font-semibold uppercase tracking-wide text-ink-muted">
+    <div
+      className="flex items-center border-b border-border px-[calc(1.25rem+1px)] py-1 text-[11px] font-semibold uppercase tracking-wide text-ink-muted"
+      style={{ minWidth: `calc(${minimumColumnsWidth(widths) + 2}px + 2.5rem)` }}
+    >
       {OTHER_COLUMNS.map((column) => (
         <span
           key={column.key}
@@ -514,6 +521,7 @@ const GridCell = memo(function GridCell({
       role="option"
       aria-selected={isSelected}
       className={layout === "list" ? "w-full" : undefined}
+      style={layout === "list" ? { minWidth: `calc(${minimumColumnsWidth(widths) + 2}px + 1.5rem)` } : undefined}
     >
       {layout === "list" ? (
         <ListRow
@@ -600,6 +608,7 @@ export default function Grid({
   // in DOM focus), arrows move the selection, Shift+arrows extend it. The
   // command layer (Delete/Enter in useGlobalCommands) reads the same source of truth.
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const listHeaderRef = useRef<HTMLDivElement | null>(null);
 
   const [columns, setColumns] = useState(1);
   useEffect(() => {
@@ -631,16 +640,20 @@ export default function Grid({
   const scrollTopRef = useRef(0);
   const [, setScrolledRows] = useState("0:0");
   const [viewportHeight, setViewportHeight] = useState(600);
+  const [viewportWidth, setViewportWidth] = useState<number | undefined>();
   const [measuredItemHeight, setMeasuredItemHeight] = useState<number | null>(null);
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
-    const measure = () => setViewportHeight(container.clientHeight);
+    const measure = () => {
+      setViewportHeight(container.clientHeight);
+      setViewportWidth(container.clientWidth);
+    };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(container);
     return () => observer.disconnect();
-  }, []);
+  }, [layout, items.length]);
   const gap = layout === "list" ? LIST_GAP : TILE_GAP;
   const rowHeight =
     (measuredItemHeight ?? (layout === "list" ? LIST_ROW_ESTIMATE - gap : TILE_ROW_ESTIMATE - gap)) +
@@ -704,6 +717,9 @@ export default function Grid({
   const viewportHeightRef = useRef(viewportHeight);
   viewportHeightRef.current = viewportHeight;
   const onScroll = (event: React.UIEvent<HTMLDivElement>) => {
+    if (listHeaderRef.current !== null) {
+      listHeaderRef.current.scrollLeft = event.currentTarget.scrollLeft;
+    }
     const top = event.currentTarget.scrollTop;
     scrollTopRef.current = top;
     // The two numbers `visibleWindow` derives everything from.
@@ -877,14 +893,24 @@ export default function Grid({
         </OperationResult>
       ) : null}
       {layout === "list" ? (
-        // The table header lives OUTSIDE the scroll container, so the
-        // virtualization geometry below never has to account for it.
-        <ListHeader
-          sort={sortChoice}
-          onSort={setSortOrder}
-          widths={columnWidths}
-          onWidths={setColumnWidths}
-        />
+        // Keep vertical geometry independent while sharing horizontal position
+        // and the body's usable width (which excludes its native scrollbar).
+        <div
+          ref={listHeaderRef}
+          className="shrink-0 overflow-hidden"
+          style={{ width: viewportWidth }}
+          onScroll={(event) => {
+            // Keyboard focus can scroll an offscreen heading into view too.
+            if (containerRef.current !== null) containerRef.current.scrollLeft = event.currentTarget.scrollLeft;
+          }}
+        >
+          <ListHeader
+            sort={sortChoice}
+            onSort={setSortOrder}
+            widths={columnWidths}
+            onWidths={setColumnWidths}
+          />
+        </div>
       ) : null}
       <div
         ref={containerRef}

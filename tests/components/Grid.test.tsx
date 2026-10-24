@@ -29,6 +29,8 @@ import { useComparisonStore } from "../../src/state/comparison-store";
 import { pushModal, popModal } from "../../src/utils/modalStack";
 import { message, type Message } from "../../src/i18n/translate";
 import { seedAppConfig } from "../helpers/config";
+import { useAppStore } from "../../src/state/app-store";
+import { english } from "../helpers/i18n";
 
 function item(pathId: number, over: Partial<SectionItem> = {}): SectionItem {
   return {
@@ -439,6 +441,37 @@ describe("thumbnail information hierarchy", () => {
 });
 
 describe("other files", () => {
+  it.each([300, 600])("keeps headings and rows aligned while scrolling and resizing a saved %spx name column", (nameWidth) => {
+    const data = useAppStore.getState().appData!;
+    useAppStore.setState({ appData: { ...data, state: { otherColumnWidths: { name: nameWidth } } } });
+    const width = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(528);
+    try {
+      const { view, container } = renderGrid(ITEMS, false, "list");
+      const nameHeading = view.getByTitle(english.t("grid.sortByName"));
+      const headingRow = nameHeading.parentElement!.parentElement!;
+      const headingViewport = headingRow.parentElement!;
+      expect(headingViewport.style.width).toBe("528px");
+      const row = view.container.querySelector<HTMLElement>(".item-selection-surface")!;
+      expect((nameHeading.parentElement as HTMLElement).style.width).toBe(`${nameWidth}px`);
+      expect((row.children[1] as HTMLElement).style.width).toBe(`${nameWidth}px`);
+      expect(row.parentElement!.style.minWidth).toContain(`${56 + nameWidth + 84 + 190 + 40 + 2}px`);
+      expect(headingRow.style.minWidth).toContain(`${56 + nameWidth + 84 + 190 + 40 + 2}px`);
+
+      fireEvent.scroll(container, { target: { scrollLeft: 240, scrollTop: 0 } });
+      expect(headingViewport.scrollLeft).toBe(240);
+      // A browser can scroll a focused heading; that direction owns the body too.
+      fireEvent.scroll(headingViewport, { target: { scrollLeft: 360 } });
+      expect(container.scrollLeft).toBe(360);
+      const resize = view.getAllByTitle(english.t("grid.dragToResize"))[1]!;
+      fireEvent.mouseDown(resize, { clientX: 100 });
+      fireEvent.mouseMove(window, { clientX: 160 });
+      fireEvent.mouseUp(window);
+      expect((nameHeading.parentElement as HTMLElement).style.width).toBe(`${nameWidth + 60}px`);
+      expect((row.children[1] as HTMLElement).style.width).toBe(`${nameWidth + 60}px`);
+      expect(headingViewport.scrollLeft).toBe(container.scrollLeft);
+    } finally { width.mockRestore(); }
+  });
+
   it("render as rows, and Down moves ONE row rather than a tile column", async () => {
     // A list is one column by definition; measuring tiles would compute a
     // column count the layout does not have, and Down would skip files.
