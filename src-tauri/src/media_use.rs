@@ -24,11 +24,140 @@ struct Release {
     restore_playback: bool,
 }
 
-static RELEASES: LazyLock<(Mutex<HashMap<u64, Release>>, Condvar)> =
-    LazyLock::new(|| (Mutex::new(HashMap::new()), Condvar::new()));
+#[derive(Default)]
+struct ReleaseRegistry {
+    releases: Mutex<HashMap<u64, Release>>,
+    changed: Condvar,
+}
+
+static RELEASES: LazyLock<ReleaseRegistry> = LazyLock::new(ReleaseRegistry::default);
+
+struct ReleaseLease<'a> {
+    registry: &'a ReleaseRegistry,
+    token: Option<u64>,
+}
+
+impl ReleaseLease<'_> {
+    fn retire(&mut self) -> Result<(), String> {
+        let Some(token) = self.token.take() else {
+            return Ok(());
+        };
+        self.registry
+            .releases
+            .lock()
+            .map_err(|_| "media-use state is unavailable".to_string())?
+            .remove(&token);
+        self.registry.changed.notify_all();
+        Ok(())
+    }
+}
+
+impl Drop for ReleaseLease<'_> {
+    fn drop(&mut self) {
+        // Ordinary owners retire explicitly so they can surface a state failure.
+        // This also removes admission when preparation unwinds unexpectedly.
+        if let Err(error) = self.retire() {
+            crate::logging::error("media release retirement failed", json!({ "error": error }));
+        }
+    }
+}
+
+impl ReleaseRegistry {
+    fn acquire(
+        &self,
+        token: u64,
+        release: Release,
+        deadline: Instant,
+        publish: impl FnOnce() -> Result<(), String>,
+        live_windows: impl Fn() -> HashSet<String>,
+        resume: impl FnOnce(),
+    ) -> Result<ReleaseLease<'_>, String> {
+        self.releases
+            .lock()
+            .map_err(|_| "media-use state is unavailable".to_string())?
+            .insert(token, release);
+        let mut lease = ReleaseLease {
+            registry: self,
+            token: Some(token),
+        };
+        if let Err(error) = publish().and_then(|()| self.wait(token, deadline, live_windows)) {
+            // Retire before resuming: a webview whose acknowledgement races
+            // recovery must observe that the operation no longer owns readers.
+            let retired = lease.retire();
+            resume();
+            retired?;
+            return Err(error);
+        }
+        Ok(lease)
+    }
+
+    fn wait(
+        &self,
+        token: u64,
+        deadline: Instant,
+        live_windows: impl Fn() -> HashSet<String>,
+    ) -> Result<(), String> {
+        let mut releases = self
+            .releases
+            .lock()
+            .map_err(|_| "media-use state is unavailable".to_string())?;
+        loop {
+            let live = live_windows();
+            let release = releases
+                .get_mut(&token)
+                .ok_or_else(|| "media release was interrupted".to_string())?;
+            release.pending.retain(|label| live.contains(label));
+            if release.pending.is_empty() {
+                return Ok(());
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                let mut pending: Vec<_> = release.pending.iter().cloned().collect();
+                pending.sort();
+                return Err(format!(
+                    "Media is still in use in {}; no files were changed.",
+                    pending.join(", ")
+                ));
+            }
+            releases = self
+                .changed
+                .wait_timeout(releases, WAIT_SLICE.min(deadline - now))
+                .map_err(|_| "media-use state is unavailable".to_string())?
+                .0;
+        }
+    }
+
+    fn current(&self, window_label: &str) -> Result<Option<serde_json::Value>, String> {
+        let mut releases = self
+            .releases
+            .lock()
+            .map_err(|_| "media-use state is unavailable".to_string())?;
+        let Some((&token, release)) = releases.iter_mut().next() else {
+            return Ok(None);
+        };
+        release.pending.insert(window_label.to_string());
+        Ok(Some(
+            json!({ "token": token, "keys": release.keys, "restorePlayback": release.restore_playback }),
+        ))
+    }
+
+    fn acknowledge(&self, token: u64, window_label: &str) -> Result<bool, String> {
+        let mut releases = self
+            .releases
+            .lock()
+            .map_err(|_| "media-use state is unavailable".to_string())?;
+        if let Some(release) = releases.get_mut(&token) {
+            release.pending.remove(window_label);
+            self.changed.notify_all();
+            return Ok(true);
+        }
+        Ok(false)
+    }
+}
 
 pub struct Guard {
     app: AppHandle,
+    lease: ReleaseLease<'static>,
     token: u64,
     item_count: Option<u64>,
     exclusive: Option<crate::derived_runtime::ExclusiveGuard>,
@@ -38,12 +167,8 @@ pub struct Guard {
 
 impl Drop for Guard {
     fn drop(&mut self) {
-        let state_available = match RELEASES.0.lock() {
-            Ok(mut releases) => {
-                releases.remove(&self.token);
-                RELEASES.1.notify_all();
-                true
-            }
+        let state_available = match self.lease.retire() {
+            Ok(()) => true,
             Err(_) => {
                 let _ = crate::failure_runtime::report(
                     &self.app,
@@ -92,7 +217,11 @@ impl Drop for Guard {
 /// and releases playback handles in every webview. An empty `keys` list means
 /// every displayed item (used for shutdown and index rebuild). Waiting for a
 /// job to stop ends only when `cancelled` answers true.
-pub fn begin(app: &AppHandle, keys: &[String], cancelled: &dyn Fn() -> bool) -> Result<Guard, String> {
+pub fn begin(
+    app: &AppHandle,
+    keys: &[String],
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Guard, String> {
     let exclusive = crate::derived_runtime::begin_exclusive(
         app,
         keys,
@@ -133,26 +262,6 @@ fn begin_release(
     let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
     // An empty key list means "all displayed media", not zero items.
     let item_count = (!keys.is_empty()).then_some(keys.len() as u64);
-    let windows: HashSet<String> = app.webview_windows().into_keys().collect();
-    if windows.is_empty() {
-        record_activity(
-            crate::activity::ActivityKind::Started,
-            token,
-            None,
-            crate::activity::ActivityState::Running,
-            None,
-            item_count,
-        );
-        return Ok(Guard {
-            app: app.clone(),
-            token,
-            item_count,
-            exclusive,
-            restore_playback,
-            resume_on_drop: !shutting_down,
-        });
-    }
-
     record_activity(
         crate::activity::ActivityKind::Admitted,
         token,
@@ -161,151 +270,48 @@ fn begin_release(
         None,
         item_count,
     );
-    let mut releases = RELEASES.0.lock().map_err(|_| {
-        record_activity(
-            crate::activity::ActivityKind::Failed,
-            token,
-            Some(crate::activity::ActivityState::Waiting),
-            crate::activity::ActivityState::Failed,
-            Some(crate::activity::ActivityReason::Error),
-            item_count,
-        );
-        "media-use state is unavailable".to_string()
-    })?;
-    releases.insert(
+    // Even a release with no current windows remains registered until its
+    // guard retires, so a newly created webview cannot render during mutation.
+    let lease = RELEASES.acquire(
         token,
-        Release {
-            pending: windows,
-            keys: keys.to_vec(),
-            restore_playback,
+        Release { pending: app.webview_windows().into_keys().collect(), keys: keys.to_vec(), restore_playback },
+        Instant::now() + RELEASE_TIMEOUT,
+        || {
+            let emit = || app.emit("media-use://release", json!({ "token": token, "keys": keys, "restorePlayback": restore_playback }));
+            let publication = if shutting_down { Some(emit()) } else { crate::app_lifecycle::publish_if_running(emit) };
+            match publication {
+                Some(Ok(())) => Ok(()),
+                Some(Err(error)) => Err(format!("could not request media release: {error}")),
+                None => Err(crate::scanner::CANCELLED.to_string()),
+            }
         },
-    );
-    drop(releases);
-    let emit = || app.emit("media-use://release", json!({ "token": token, "keys": keys }));
-    let publication = if shutting_down {
-        Some(emit())
-    } else {
-        crate::app_lifecycle::publish_if_running(emit)
-    };
-    let publication_error = match publication {
-        Some(Ok(())) => None,
-        Some(Err(error)) => Some(format!("could not request media release: {error}")),
-        None => Some(crate::scanner::CANCELLED.to_string()),
-    };
-    if let Some(error) = publication_error {
-        match RELEASES.0.lock() {
-            Ok(mut releases) => {
-                releases.remove(&token);
-            }
-            Err(_) => {
-                let _ = crate::failure_runtime::report(
-                    app,
-                    "media-use-state-failed",
-                    None,
-                    "Media ownership state is unavailable. Restart OneCopy before changing files.",
-                );
-            }
-        }
+        || app.webview_windows().into_keys().collect(),
+        || crate::failure_runtime::emit_or_record(app, "media-use://resume", json!({ "token": token, "restorePlayback": restore_playback })),
+    ).map_err(|error| {
         record_activity(
-            crate::activity::ActivityKind::Failed,
-            token,
-            Some(crate::activity::ActivityState::Waiting),
-            crate::activity::ActivityState::Failed,
-            Some(crate::activity::ActivityReason::Error),
-            item_count,
+            crate::activity::ActivityKind::Failed, token,
+            Some(crate::activity::ActivityState::Waiting), crate::activity::ActivityState::Failed,
+            Some(crate::activity::ActivityReason::Error), item_count,
         );
-        return Err(error);
-    }
-
-    let deadline = Instant::now() + RELEASE_TIMEOUT;
-    let mut releases = RELEASES.0.lock().map_err(|_| {
-        record_activity(
-            crate::activity::ActivityKind::Failed,
-            token,
-            Some(crate::activity::ActivityState::Waiting),
-            crate::activity::ActivityState::Failed,
-            Some(crate::activity::ActivityReason::Error),
-            item_count,
-        );
-        "media-use state is unavailable".to_string()
+        error
     })?;
-    loop {
-        let live: HashSet<String> = app.webview_windows().into_keys().collect();
-        let Some(release) = releases.get_mut(&token) else {
-            drop(releases);
-            record_activity(
-                crate::activity::ActivityKind::Failed,
-                token,
-                Some(crate::activity::ActivityState::Waiting),
-                crate::activity::ActivityState::Failed,
-                Some(crate::activity::ActivityReason::Error),
-                item_count,
-            );
-            return Err("media release was interrupted".to_string());
-        };
-        release.pending.retain(|label| live.contains(label));
-        if release.pending.is_empty() {
-            drop(releases);
-            record_activity(
-                crate::activity::ActivityKind::Started,
-                token,
-                Some(crate::activity::ActivityState::Waiting),
-                crate::activity::ActivityState::Running,
-                None,
-                item_count,
-            );
-            return Ok(Guard {
-                app: app.clone(),
-                token,
-                item_count,
-                exclusive,
-                restore_playback,
-                resume_on_drop: !shutting_down,
-            });
-        }
-        let now = Instant::now();
-        if now >= deadline {
-            let pending = release
-                .pending
-                .iter()
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", ");
-            releases.remove(&token);
-            drop(releases);
-            crate::failure_runtime::emit_or_record(
-                app,
-                "media-use://resume",
-                json!({ "token": token }),
-            );
-            record_activity(
-                crate::activity::ActivityKind::Failed,
-                token,
-                Some(crate::activity::ActivityState::Waiting),
-                crate::activity::ActivityState::Failed,
-                Some(crate::activity::ActivityReason::Error),
-                item_count,
-            );
-            return Err(format!(
-                "Media is still in use in {pending}; no files were changed."
-            ));
-        }
-        let wait = RELEASES
-            .1
-            .wait_timeout(releases, WAIT_SLICE.min(deadline - now))
-            .map_err(|_| {
-                record_activity(
-                    crate::activity::ActivityKind::Failed,
-                    token,
-                    Some(crate::activity::ActivityState::Waiting),
-                    crate::activity::ActivityState::Failed,
-                    Some(crate::activity::ActivityReason::Error),
-                    item_count,
-                );
-                "media-use state is unavailable".to_string()
-            })?;
-        releases = wait.0;
-    }
+    record_activity(
+        crate::activity::ActivityKind::Started,
+        token,
+        Some(crate::activity::ActivityState::Waiting),
+        crate::activity::ActivityState::Running,
+        None,
+        item_count,
+    );
+    Ok(Guard {
+        app: app.clone(),
+        lease,
+        token,
+        item_count,
+        exclusive,
+        restore_playback,
+        resume_on_drop: !shutting_down,
+    })
 }
 
 fn record_activity(
@@ -339,32 +345,15 @@ fn record_activity(
 /// webview is allowed to render. Keeping the release record for the guard's
 /// full lifetime closes the create-window-after-broadcast race.
 pub fn current(window_label: &str) -> Result<Option<serde_json::Value>, String> {
-    let mut releases = RELEASES
-        .0
-        .lock()
-        .map_err(|_| "media-use state is unavailable".to_string())?;
-    let Some((&token, release)) = releases.iter_mut().next() else {
-        return Ok(None);
-    };
-    release.pending.insert(window_label.to_string());
-    Ok(Some(json!({
-        "token": token,
-        "keys": release.keys,
-        "restorePlayback": release.restore_playback,
-    })))
+    RELEASES.current(window_label)
 }
 
 /// Returns whether this release is still active. A webview uses the answer to
 /// recover if the matching resume event raced ahead of its acknowledgement.
 pub fn acknowledge(token: u64, window_label: &str) -> Result<bool, String> {
-    let mut releases = RELEASES
-        .0
-        .lock()
-        .map_err(|_| "media-use state is unavailable".to_string())?;
-    if let Some(release) = releases.get_mut(&token) {
-        release.pending.remove(window_label);
-        RELEASES.1.notify_all();
-        return Ok(true);
-    }
-    Ok(false)
+    RELEASES.acknowledge(token, window_label)
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/media_use.rs"]
+mod tests;
