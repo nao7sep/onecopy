@@ -8,7 +8,7 @@ import {
   parseJsonVersion,
 } from "./helpers/versions";
 
-// The app version is declared in four manifests, each of which its own tool
+// The app version is declared in these manifests, each of which its own tool
 // requires to carry a literal value:
 //
 //   - src-tauri/tauri.conf.json  the version the bundle/installer carries and
@@ -16,12 +16,13 @@ import {
 //     vitest.config.ts) and is what the release workflow names the installer
 //     from. This is the canonical source of truth.
 //   - package.json               the npm manifest (private; never published).
+//   - package-lock.json          the top-level version and root package entry.
 //   - src-tauri/Cargo.toml       the Rust crate version.
 //   - src-tauri/Cargo.lock       the lockfile's own [[package]] entry for the
 //     "onecopy" crate (isolated from every other crate's [[package]] block,
 //     since a dependency can easily share the same literal version number).
 //
-// Every user-facing surface derives from tauri.conf.json, so the other three
+// Every user-facing surface derives from tauri.conf.json, so the other values
 // only have to stay equal to it. This file is the guard that they do; a drift
 // fails the suite and blocks the release before any installer is built.
 //

@@ -243,8 +243,8 @@ opt-level = 2
 opt-level = 2
 
 [dev-dependencies]
-# Serializes the tests that share the process-global backup-store singleton
-# (`static STORE` in backup_store.rs); unrelated tests still parallelize.
+# Serializes tests that share the process-global backup writer;
+# unrelated tests still parallelize.
 serial_test = { version = "4", default-features = false }
 tempfile = "3.27"
 # A paused tokio clock, so a test of a fixed request timeout advances time
