@@ -1368,13 +1368,7 @@ fn section_items_by_identity(
     let mut items = HashMap::with_capacity(identities.len());
 
     if !hashes.is_empty() {
-        let placeholders = std::iter::repeat_n("?", hashes.len())
-            .collect::<Vec<_>>()
-            .join(",");
-        let sql = format!(
-            "{} WHERE c.hash IN ({placeholders})",
-            hashed_section_select()
-        );
+        let sql = hashed_section_select(hashes.len());
         let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
         let hashed = statement
             .query_map(rusqlite::params_from_iter(hashes.iter()), |row| {
@@ -1432,8 +1426,10 @@ fn hashed_dirs_for_hashes(
     let placeholders = std::iter::repeat_n("?", hashes.len())
         .collect::<Vec<_>>()
         .join(",");
+    // The requested hashes own this lookup. Without the explicit index,
+    // SQLite can prefer the live-path index and scan unrelated library rows.
     let sql = format!(
-        "SELECT DISTINCT content_hash, dir_path FROM paths \
+        "SELECT DISTINCT content_hash, dir_path FROM paths INDEXED BY idx_paths_content_hash \
          WHERE content_hash IN ({placeholders}) AND missing = 0 \
            AND companion_of IS NULL ORDER BY content_hash, dir_path"
     );
@@ -1505,7 +1501,7 @@ pub fn item_by_hash(
     hash: &str,
     projection: ItemProjectionContext,
 ) -> Result<Option<SectionItem>, String> {
-    let sql = format!("{} WHERE c.hash = ?1", hashed_section_select());
+    let sql = hashed_section_select(1);
     let mut item = conn
         .query_row(&sql, [hash], |row| section_item_from_row(row, projection))
         .optional()
@@ -1571,23 +1567,32 @@ pub fn comparison_selection_valid(
     Ok(true)
 }
 
-fn hashed_section_select() -> String {
+// The requested set is a bounded display window (or one item). Materialize
+// its distinct groups before counting, so a dense group's members are visited
+// once and unrelated groups are not aggregated. All facts share one SQL read.
+fn hashed_section_select(hash_count: usize) -> String {
+    let placeholders = (1..=hash_count).map(|index| format!("?{index}")).collect::<Vec<_>>().join(",");
     let preview_available = crate::derived_state::preview_available_predicate("c");
     let face_state = crate::derived_state::face_state_sql("c");
     let face_score = crate::derived_state::face_score_sql("c");
     let transcript_state = crate::derived_state::transcript_state_sql("c");
     format!(
-        "SELECT c.hash, l.representative_path_id, rp.file_name, l.resolved_utc_ms, \
+        "WITH requested AS MATERIALIZED (
+            SELECT c.hash, (SELECT m.group_id FROM similar_group_members m
+                           WHERE m.content_hash = c.hash LIMIT 1) AS group_id
+            FROM contents c WHERE c.hash IN ({placeholders})
+         ), group_counts AS MATERIALIZED (
+            SELECT members.group_id, COUNT(*) AS live_members
+            FROM (SELECT DISTINCT group_id FROM requested WHERE group_id IS NOT NULL) wanted
+            CROSS JOIN similar_group_members members ON members.group_id = wanted.group_id
+            CROSS JOIN review_contents member_items ON member_items.content_hash = members.content_hash
+            WHERE member_items.live_copy_count > 0
+            GROUP BY members.group_id
+         )
+         SELECT c.hash, l.representative_path_id, rp.file_name, l.resolved_utc_ms, \
             l.live_copy_count, c.width, c.height, \
             (l.kind IN ('image', 'video') AND {preview_available}), \
-            (SELECT m.group_id FROM similar_group_members m \
-             WHERE m.content_hash = c.hash LIMIT 1), \
-            (SELECT COUNT(*) FROM similar_group_members members \
-             JOIN review_contents member_items \
-               ON member_items.content_hash = members.content_hash \
-             WHERE member_items.live_copy_count > 0 \
-               AND members.group_id = (SELECT m.group_id FROM similar_group_members m \
-                                       WHERE m.content_hash = c.hash LIMIT 1)), \
+            requested.group_id, COALESCE(group_counts.live_members, 0), \
             c.sharpness, c.byte_size, \
             EXISTS (SELECT 1 FROM paths pri INDEXED BY idx_paths_content_hash \
                     CROSS JOIN paths comp INDEXED BY idx_paths_companion \
@@ -1604,9 +1609,11 @@ fn hashed_section_select() -> String {
               )
             ), \
             c.derive_outcome \
-     FROM review_contents l \
-     JOIN contents c ON c.hash = l.content_hash \
-     JOIN paths rp ON rp.id = l.representative_path_id "
+     FROM requested \
+     JOIN contents c ON c.hash = requested.hash \
+     JOIN review_contents l ON l.content_hash = c.hash \
+     JOIN paths rp ON rp.id = l.representative_path_id \
+     LEFT JOIN group_counts ON group_counts.group_id = requested.group_id "
     )
 }
 

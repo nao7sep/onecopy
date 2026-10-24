@@ -673,3 +673,53 @@ fn diagnostic_library_lookup_uses_exact_native_source_components() {
     assert_eq!(detail.file_name, name);
     assert_eq!(detail.copy_paths, vec![abs.into_owned()]);
 }
+
+#[test]
+fn displayed_similarity_members_share_one_live_group_count() {
+    use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
+    let (_dir, conn) = seeded();
+    let transaction = conn.unchecked_transaction().unwrap();
+    transaction.execute_batch("INSERT INTO similar_groups(id, bucket, created_at_utc) VALUES (1, 'undated', 'now'), (2, 'undated', 'now');").unwrap();
+    for index in 0..1024 {
+        let hash = format!("dense-{index}");
+        seed_month_image(&transaction, &hash, &format!("{hash}.jpg"), 0);
+        transaction.execute("INSERT INTO similar_group_members VALUES (1, ?1)", [&hash]).unwrap();
+    }
+    transaction.execute("UPDATE paths SET missing = 1 WHERE content_hash = 'dense-1023'", []).unwrap();
+    transaction.execute("UPDATE paths SET review_visible = 0 WHERE content_hash = 'dense-1022'", []).unwrap();
+    seed_month_image(&transaction, "ungrouped", "ungrouped.jpg", 0);
+    transaction.commit().unwrap();
+
+    let measured = |size: usize| {
+        let identities: Vec<_> = (0..size).map(|index| SectionIdentity { hash: Some(format!("dense-{index}")), path_id: 0 }).collect();
+        let steps = Arc::new(AtomicU64::new(0));
+        let observed = steps.clone();
+        conn.progress_handler(1, Some(move || { observed.fetch_add(1, Ordering::Relaxed); false })).unwrap();
+        let items = section_items_by_identity(&conn, &identities, projection()).unwrap();
+        conn.progress_handler(0, None::<fn() -> bool>).unwrap();
+        assert_eq!(items.len(), size);
+        assert!(items.iter().all(|item| item.similar_group_id == Some(1) && item.similar_count == 1022));
+        steps.load(Ordering::Relaxed)
+    };
+    let few = measured(2);
+    let many = measured(32);
+    assert!(many < few * 3, "group traversal must not multiply per displayed row: {few} -> {many}");
+    assert_eq!(item_by_hash(&conn, "dense-0", projection()).unwrap().unwrap().similar_count, 1022);
+    let ungrouped = item_by_hash(&conn, "ungrouped", projection()).unwrap().unwrap();
+    assert_eq!(ungrouped.similar_group_id, None);
+    assert_eq!(ungrouped.similar_count, 0);
+
+    let transaction = conn.unchecked_transaction().unwrap();
+    for index in 0..1024 {
+        let hash = format!("unrequested-{index}");
+        seed_month_image(&transaction, &hash, &format!("{hash}.jpg"), 0);
+        transaction.execute("INSERT INTO similar_group_members VALUES (2, ?1)", [&hash]).unwrap();
+    }
+    transaction.commit().unwrap();
+    let after = measured(32);
+    assert!(after < many + 1000, "an unrelated group must not add a full traversal: {many} -> {after}");
+    let mixed: Vec<_> = ["dense-0", "unrequested-0", "ungrouped"].into_iter()
+        .map(|hash| SectionIdentity { hash: Some(hash.to_string()), path_id: 0 }).collect();
+    let items = section_items_by_identity(&conn, &mixed, projection()).unwrap();
+    assert_eq!(items.iter().map(|item| item.similar_count).collect::<Vec<_>>(), vec![1022, 1024, 0]);
+}
