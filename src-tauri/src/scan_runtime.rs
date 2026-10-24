@@ -45,9 +45,9 @@ static FOREGROUND_WAITERS: AtomicUsize = AtomicUsize::new(0);
 static BACKGROUND_WAITERS: AtomicUsize = AtomicUsize::new(0);
 static URGENT_WAITERS: AtomicUsize = AtomicUsize::new(0);
 static WALK_EPOCH: AtomicU64 = AtomicU64::new(0);
-/// Counts announced foreground admissions, so heavy work that computed with
-/// its share set aside can tell whether one overlapped it.
-static FOREGROUND_TURNS: AtomicU64 = AtomicU64::new(0);
+/// Invalidates work computed outside a share when foreground admission or
+/// cache retirement can remove its already-written outputs.
+static PUBLICATION_EPOCH: AtomicU64 = AtomicU64::new(0);
 const CLOSING: &str = "OneCopy is closing; no new library work can start.";
 const WAIT_SLICE: Duration = Duration::from_millis(50);
 /// How long a foreground action that answers busy waits for background work
@@ -332,6 +332,21 @@ fn claim_background(cancelled: &dyn Fn() -> bool) -> Option<Claim> {
     }
 }
 
+/// Startup cache retirement shares the index's background admission, one
+/// bounded cohort at a time, without becoming a source-check lifecycle owner.
+pub(crate) fn with_cache_maintenance<T>(cancel: &dyn Fn() -> bool, work: impl FnOnce() -> T) -> Option<T> {
+    let _claim = claim_background(cancel)?;
+    if cancel() { return None; }
+    Some(work())
+}
+
+/// Called under exclusive index admission before retiring cache files. Heavy
+/// jobs computing outside their share must not publish a success receipt for
+/// outputs that this retirement may have removed, even if a path reappears.
+pub(crate) fn invalidate_cache_publications() {
+    PUBLICATION_EPOCH.fetch_add(1, Ordering::SeqCst);
+}
+
 fn run_owner<T>(
     owner: Owner,
     cancelled: Rc<dyn Fn() -> bool>,
@@ -595,14 +610,14 @@ pub(crate) fn with_derived_share<T>(rank: ShareRank, work: impl FnOnce() -> T) -
 }
 
 /// Captured while a short derived share protects source admission. A
-/// foreground turn can replace the index and reuse provisional keys while
-/// requested work computes without that share.
+/// foreground turn can replace the index and reuse provisional keys, and
+/// cache retirement can remove outputs while work computes without a share.
 pub(crate) fn publication_epoch() -> u64 {
-    FOREGROUND_TURNS.load(Ordering::SeqCst)
+    PUBLICATION_EPOCH.load(Ordering::SeqCst)
 }
 
 pub(crate) fn publication_epoch_current(epoch: u64) -> bool {
-    FOREGROUND_TURNS.load(Ordering::SeqCst) == epoch && !foreground_pending()
+    PUBLICATION_EPOCH.load(Ordering::SeqCst) == epoch && !foreground_pending()
 }
 
 /// Whether automatic derived work admitted on this thread holds an urgent
@@ -629,8 +644,8 @@ pub(crate) fn ordinary_share_held() -> bool {
 ///
 /// Returns `None`, and the caller discards the result, when the job is
 /// stopped, paused or the app exits meanwhile, or when a foreground admission
-/// overlapped the compute: that admission preempts automatic work as it does
-/// a held share, may have interrupted the compute's engine, and may have
+/// or cache retirement overlapped the compute. Admission preempts automatic
+/// work as it does a held share, may have interrupted the engine, and may have
 /// rebuilt the index, which reuses provisional content keys. The caller
 /// still checks that the content it computed for is the content the index
 /// names now. Without an ordinary share (requested work, urgent preparation)
@@ -641,7 +656,7 @@ pub(crate) fn outside_share<T>(compute: impl FnOnce() -> T) -> Option<T> {
     }
     // Read before the check below: an admission announced after this read is
     // caught at the publish point, one announced before it by the check.
-    let turns = FOREGROUND_TURNS.load(Ordering::SeqCst);
+    let turns = PUBLICATION_EPOCH.load(Ordering::SeqCst);
     if !derived_work_admissible() || crate::derived_runtime::cancelled() {
         return None;
     }
@@ -667,7 +682,7 @@ pub(crate) fn outside_share<T>(compute: impl FnOnce() -> T) -> Option<T> {
         wait_slice(state, None);
     }
     SHARE.with(|share| share.set(held(false)));
-    (FOREGROUND_TURNS.load(Ordering::SeqCst) == turns).then_some(result)
+    (PUBLICATION_EPOCH.load(Ordering::SeqCst) == turns).then_some(result)
 }
 
 #[derive(Debug)]
@@ -697,7 +712,7 @@ pub(crate) fn admit_foreground(
     on_wait: &mut dyn FnMut(),
 ) -> Result<ForegroundGuard, Refusal> {
     FOREGROUND_WAITERS.fetch_add(1, Ordering::SeqCst);
-    FOREGROUND_TURNS.fetch_add(1, Ordering::SeqCst);
+    PUBLICATION_EPOCH.fetch_add(1, Ordering::SeqCst);
     let waiting = ForegroundWait { app: app.cloned() };
     crate::file_information_runtime::preempt();
     crate::derived_runtime::preempt_automatic();

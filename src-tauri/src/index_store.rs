@@ -442,6 +442,15 @@ CREATE TABLE IF NOT EXISTS cache_retirements (
   content_hash TEXT PRIMARY KEY COLLATE BINARY
 ) WITHOUT ROWID;
 
+-- Only proven source absence changes missing. Offline/incomplete sources
+-- retain live rows and therefore never authorize derivative retirement.
+CREATE TRIGGER IF NOT EXISTS paths_queue_missing_cache
+AFTER UPDATE OF missing ON paths
+WHEN OLD.missing = 0 AND NEW.missing = 1 AND NEW.content_hash IS NOT NULL
+BEGIN
+  INSERT OR IGNORE INTO cache_retirements VALUES (NEW.content_hash);
+END;
+
 CREATE TABLE IF NOT EXISTS cache_promotions (
   old_hash TEXT PRIMARY KEY COLLATE BINARY,
   content_hash TEXT NOT NULL,
@@ -610,6 +619,7 @@ fn current_shape(conn: &Connection) -> Result<bool, String> {
             AND EXISTS (SELECT 1 FROM pragma_table_info('relationship_repair_dirs') WHERE name = 'dir_path')
             AND EXISTS (SELECT 1 FROM pragma_table_info('cache_promotions') WHERE name = 'old_hash')
             AND EXISTS (SELECT 1 FROM pragma_table_info('cache_retirements') WHERE name = 'content_hash')
+            AND EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = 'paths_queue_missing_cache')
             AND NOT EXISTS (SELECT 1 FROM sqlite_master
                             WHERE type = 'index' AND name = 'idx_paths_media_repair_by_id')",
         [],
@@ -887,7 +897,7 @@ pub fn clear_reconstructible(
              DELETE FROM scan_dirs;
              DELETE FROM relationship_repair_dirs;
              DELETE FROM cache_promotions;
-              DELETE FROM cache_retirements;
+             DELETE FROM cache_retirements;
              DELETE FROM rebuild_keeps_results;",
             )
             .map_err(|error| error.to_string())

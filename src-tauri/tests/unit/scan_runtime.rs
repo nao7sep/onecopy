@@ -533,3 +533,30 @@ fn a_healthy_parent_cannot_admit_a_refused_nested_source_through_its_settled_ali
     assert_eq!(failures, ["nested source refused"]);
     assert_eq!(*probes.borrow(), [parent, nested]);
 }
+
+#[test]
+fn cache_retirement_fences_heavy_outputs_computed_outside_the_share() {
+    let _serial = serial_test();
+    let (computing, observed) = mpsc::channel();
+    let (resume, resumed) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        with_derived_share(ShareRank::Ordinary, || outside_share(|| {
+            computing.send(()).unwrap();
+            resumed.recv().unwrap();
+            "obsolete cache success"
+        }))
+    });
+    observed.recv_timeout(Duration::from_secs(5)).unwrap();
+    let epoch = publication_epoch();
+    let dir = tempfile::tempdir().unwrap();
+    let conn = crate::index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    conn.execute_batch("INSERT INTO contents (hash, byte_size, kind, derived_at_utc) VALUES ('old', 1, 'video', 'done');
+        INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash) VALUES ('/old', '/', 'old', 'video', 'old');
+        UPDATE paths SET missing = 1;").unwrap();
+    let cache = crate::preview::CachePaths::new(dir.path().join("cache"));
+    crate::preview::startup_sweep(&conn, &cache, std::time::SystemTime::now(), &|| false).unwrap();
+    assert!(!publication_epoch_current(epoch));
+    resume.send(()).unwrap();
+    assert_eq!(worker.join().unwrap(), Some(None));
+    assert!(!holder_present());
+}

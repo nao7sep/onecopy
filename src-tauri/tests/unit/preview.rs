@@ -799,6 +799,7 @@ fn cache_promotion_preserves_failed_attempts_and_known_real_results() {
 
 #[test]
 fn durable_retirement_cancels_between_bounded_cohorts_and_replays_after_reopen() {
+    let _serial = crate::scan_runtime::serial_test();
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("index.sqlite3");
     let conn = crate::index_store::open(&db).unwrap();
@@ -830,6 +831,7 @@ fn durable_retirement_cancels_between_bounded_cohorts_and_replays_after_reopen()
 
 #[test]
 fn durable_retirement_retains_failed_cleanup_and_preserves_revived_identity() {
+    let _serial = crate::scan_runtime::serial_test();
     let dir = tempfile::tempdir().unwrap();
     let conn = crate::index_store::open(&dir.path().join("index.sqlite3")).unwrap();
     let cache = CachePaths::new(dir.path().join("cache"));
@@ -848,4 +850,26 @@ fn durable_retirement_retains_failed_cleanup_and_preserves_revived_identity() {
     drain_cache_retirements(&conn, &cache, &|| false).unwrap();
     assert_eq!(std::fs::read(live).unwrap(), b"still needed");
     assert_eq!(conn.query_row("SELECT count(*) FROM cache_retirements", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+}
+
+#[test]
+fn scoped_cache_retirement_leaves_unadmitted_absence_receipts_untouched() {
+    let _serial = crate::scan_runtime::serial_test();
+    let dir = tempfile::tempdir().unwrap();
+    let conn = crate::index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    let cache = CachePaths::new(dir.path().join("cache"));
+    for hash in ["admitted", "unrelated"] {
+        conn.execute("INSERT INTO contents (hash, byte_size, kind, derived_at_utc) VALUES (?1, 1, 'image', 'done')", [hash]).unwrap();
+        conn.execute("INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash) VALUES (?1, ?1, 'a.jpg', 'image', ?1)", [hash]).unwrap();
+        let path = cache.thumb(hash);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"pixels").unwrap();
+    }
+    conn.execute("UPDATE paths SET missing = 1", []).unwrap();
+    let _scope = crate::path_scope::Directories::new(&conn, &["admitted".into()]).unwrap();
+    drain_scoped_cache_retirements(&conn, &cache, &|| false, crate::path_scope::Scope::AdmittedDirectories).unwrap();
+    assert!(!cache.thumb("admitted").exists());
+    assert!(cache.thumb("unrelated").exists());
+    assert_eq!(conn.query_row("SELECT content_hash FROM cache_retirements", [], |r| r.get::<_, String>(0)).unwrap(), "unrelated");
+    assert!(conn.query_row("SELECT derived_at_utc IS NOT NULL FROM contents WHERE hash = 'unrelated'", [], |r| r.get::<_, bool>(0)).unwrap());
 }

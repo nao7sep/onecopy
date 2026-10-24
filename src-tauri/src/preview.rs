@@ -1184,26 +1184,67 @@ fn remove_entries_batch_checked(cache: &CachePaths, hashes: &[String]) -> Result
 pub(crate) fn drain_cache_retirements(
     conn: &Connection, cache: &CachePaths, cancel: &impl Fn() -> bool,
 ) -> Result<(), String> {
+    drain_scoped_cache_retirements(conn, cache, cancel, crate::path_scope::Scope::Library)
+}
+
+pub(crate) fn drain_scoped_cache_retirements(
+    conn: &Connection, cache: &CachePaths, cancel: &impl Fn() -> bool, scope: crate::path_scope::Scope,
+) -> Result<(), String> {
+    drain_cache_retirements_with(conn, cache, cancel, false, scope)
+}
+
+fn drain_cache_retirements_with(
+    conn: &Connection, cache: &CachePaths, cancel: &impl Fn() -> bool, startup: bool, scope: crate::path_scope::Scope,
+) -> Result<(), String> {
+    let membership = match scope {
+        crate::path_scope::Scope::Library => "1",
+        crate::path_scope::Scope::AdmittedDirectories => "EXISTS(SELECT 1 FROM paths p WHERE p.content_hash = r.content_hash AND p.dir_path IN (SELECT dir_path FROM temp.admitted_information_dirs))",
+    };
     loop {
         if cancel() { return Ok(()); }
-        let _identity = lock_cache_identity();
-        let pending: Vec<(String, bool)> = conn.prepare(
-            "SELECT content_hash,
-                NOT EXISTS(SELECT 1 FROM contents c WHERE c.hash = r.content_hash)
-                AND NOT EXISTS(SELECT 1 FROM cache_promotions p WHERE p.old_hash = r.content_hash)
-             FROM cache_retirements r ORDER BY content_hash LIMIT 128",
-        ).and_then(|mut statement| statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect())
-            .map_err(|error| error.to_string())?;
-        if pending.is_empty() { return Ok(()); }
-        let retired: Vec<String> = pending.iter().filter(|(_, remove)| *remove).map(|(hash, _)| hash.clone()).collect();
-        remove_entries_batch_checked(cache, &retired)?;
+        if !conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM cache_retirements r WHERE {membership})"), [], |row| row.get::<_, bool>(0))
+            .map_err(|error| error.to_string())? { return Ok(()); }
+        let work = || retire_cache_cohort(conn, cache, membership);
+        let finished = if startup {
+            crate::scan_runtime::with_cache_maintenance(cancel, work).transpose()?.unwrap_or(true)
+        } else { work()? };
+        if finished { return Ok(()); }
+    }
+}
+
+fn retire_cache_cohort(conn: &Connection, cache: &CachePaths, membership: &str) -> Result<bool, String> {
+    let _identity = lock_cache_identity();
+    let pending: Vec<(String, bool)> = conn.prepare(
+        &format!("SELECT content_hash,
+            NOT EXISTS(SELECT 1 FROM paths p WHERE p.content_hash = r.content_hash AND p.missing = 0)
+            AND NOT EXISTS(SELECT 1 FROM cache_promotions p WHERE p.old_hash = r.content_hash)
+         FROM cache_retirements r WHERE {membership} ORDER BY content_hash LIMIT 128"),
+    ).and_then(|mut statement| statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect())
+        .map_err(|error| error.to_string())?;
+    if pending.is_empty() { return Ok(true); }
+    let retired: Vec<String> = pending.iter().filter(|(_, remove)| *remove).map(|(hash, _)| hash.clone()).collect();
+    if !retired.is_empty() {
+        crate::scan_runtime::invalidate_cache_publications();
+        // Reopen successful physical-output checkpoints before removal. Kept
+        // analysis and failed/no-output policies survive; a returning path
+        // owes its previews again even after partial filesystem cleanup.
         let tx = crate::sqlite::write_transaction(conn).map_err(|error| error.to_string())?;
-        for (hash, _) in pending {
-            tx.execute("DELETE FROM cache_retirements WHERE content_hash = ?1", [hash])
-                .map_err(|error| error.to_string())?;
+        for hash in &retired {
+            tx.execute("UPDATE contents SET
+                derived_at_utc = CASE WHEN derive_outcome IS NULL THEN NULL ELSE derived_at_utc END,
+                strip_frames = CASE WHEN strip_frames > 0 THEN NULL ELSE strip_frames END
+                WHERE hash = ?1", [hash]).map_err(|error| error.to_string())?;
         }
         crate::records::commit(tx).map_err(|error| error.to_string())?;
     }
+    remove_entries_batch_checked(cache, &retired)?;
+    let tx = crate::sqlite::write_transaction(conn).map_err(|error| error.to_string())?;
+    for (hash, _) in pending {
+        tx.execute("DELETE FROM cache_retirements WHERE content_hash = ?1", [hash])
+            .map_err(|error| error.to_string())?;
+    }
+    crate::records::commit(tx).map_err(|error| error.to_string())?;
+    Ok(false)
 }
 
 /// Keeps committed orphan cleanup owned through early error returns.
@@ -1453,7 +1494,7 @@ pub fn startup_sweep(
     cancel_when: &impl Fn() -> bool,
 ) -> Result<u64, String> {
     recover_cache_promotions(conn, cache, cancel_when)?;
-    drain_cache_retirements(conn, cache, cancel_when)?;
+    drain_cache_retirements_with(conn, cache, cancel_when, true, crate::path_scope::Scope::Library)?;
     reconcile_orphan_contents(conn, cancel_when)?;
     let mut removed = 0;
     let mut cohort = Vec::with_capacity(CACHE_COHORT_SIZE);

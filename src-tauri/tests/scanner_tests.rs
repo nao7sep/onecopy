@@ -3202,3 +3202,66 @@ fn forgetting_retirement_membership_commits_with_index_removal_and_survives_clea
     onecopy_lib::preview::startup_sweep(&f.conn, &cache, std::time::SystemTime::now(), &|| false).unwrap();
     assert_eq!(count(&f.conn, "SELECT count(*) FROM cache_retirements"), 0);
 }
+
+#[test]
+fn proven_last_copy_absence_retires_media_but_preserves_analysis_and_offline_copies() {
+    let f = fixture("external-cache-retirement");
+    let cache = test_cache(&f);
+    let a = f.root.join("a.jpg");
+    let b = f.root.join("b.jpg");
+    std::fs::write(&a, b"same bytes").unwrap();
+    std::fs::write(&b, b"same bytes").unwrap();
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+    hash_pending(&f.conn, &cache).unwrap();
+    let hash: String = f.conn.query_row("SELECT hash FROM contents", [], |r| r.get(0)).unwrap();
+    f.conn.execute("UPDATE contents SET derived_at_utc = 'done', strip_frames = 2, phash = 123 WHERE hash = ?1", [&hash]).unwrap();
+    f.conn.execute("INSERT INTO transcripts VALUES (?1, 'model', '1', 'en', 'keep', '[]', 'now')", [&hash]).unwrap();
+    f.conn.execute("INSERT INTO face_checks VALUES (?1, 'model', '1', 0, 'now')", [&hash]).unwrap();
+    let outputs = [cache.thumb(&hash), cache.preview(&hash), onecopy_lib::video::strip_path(&cache, &hash, 0), onecopy_lib::video::strip_path(&cache, &hash, 1)];
+    for path in &outputs {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"cached pixels").unwrap();
+    }
+    std::fs::remove_file(&a).unwrap();
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+    onecopy_lib::preview::startup_sweep(&f.conn, &cache, std::time::SystemTime::now(), &|| false).unwrap();
+    assert!(outputs.iter().all(|path| path.exists()), "one indexed live copy keeps every derivative");
+    std::fs::remove_dir_all(&f.root).unwrap();
+    assert!(walk_root(&f.conn, &f.root, &lists()).unwrap().errors > 0);
+    onecopy_lib::preview::startup_sweep(&f.conn, &cache, std::time::SystemTime::now(), &|| false).unwrap();
+    assert!(outputs.iter().all(|path| path.exists()), "an unavailable source proves no absence");
+    std::fs::create_dir_all(&f.root).unwrap();
+    assert_eq!(walk_root(&f.conn, &f.root, &lists()).unwrap().marked_missing, 1);
+    assert!(pending_index_work_exists(&f.conn).unwrap());
+    onecopy_lib::preview::startup_sweep(&f.conn, &cache, std::time::SystemTime::now(), &|| false).unwrap();
+    assert!(outputs.iter().all(|path| !path.exists()));
+    assert_eq!(count(&f.conn, "SELECT count(*) FROM contents WHERE derived_at_utc IS NULL AND strip_frames IS NULL AND phash = 123"), 1);
+    assert_eq!(count(&f.conn, "SELECT count(*) FROM transcripts WHERE text = 'keep'"), 1);
+    assert_eq!(count(&f.conn, "SELECT count(*) FROM face_checks WHERE face_count = 0"), 1);
+    std::fs::write(&b, b"same bytes").unwrap();
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+    hash_pending(&f.conn, &cache).unwrap();
+    assert_eq!(count(&f.conn, "SELECT count(*) FROM contents WHERE derived_at_utc IS NULL AND strip_frames IS NULL"), 1, "a returned file still owes its physical derivatives");
+}
+
+#[test]
+fn watcher_absence_is_cleaned_by_the_ordinary_information_tail() {
+    let f = fixture("watcher-cache-retirement");
+    let path = f.root.join("a.jpg");
+    std::fs::write(&path, b"image bytes").unwrap();
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+    let cache = test_cache(&f);
+    hash_pending(&f.conn, &cache).unwrap();
+    let hash: String = f.conn.query_row("SELECT hash FROM contents", [], |r| r.get(0)).unwrap();
+    let thumb = cache.thumb(&hash);
+    std::fs::create_dir_all(thumb.parent().unwrap()).unwrap();
+    std::fs::write(&thumb, b"pixels").unwrap();
+    std::fs::remove_file(path).unwrap();
+    onecopy_lib::watcher::restat_dir(&f.conn, &f.root, &lists(), &[stored_path(&f.root)], &f._dir.path().join("app-data")).unwrap();
+    assert_eq!(count(&f.conn, "SELECT count(*) FROM cache_retirements"), 1);
+    let mut settings = settings_from_config(None, f._dir.path(), 0);
+    settings.cache_root = cache.root_dir().to_path_buf();
+    run_index_tail(&f.conn, &settings, &|_| {}, &mut ScanSummary::default()).unwrap();
+    assert!(!thumb.exists());
+    assert_eq!(count(&f.conn, "SELECT count(*) FROM cache_retirements"), 0);
+}

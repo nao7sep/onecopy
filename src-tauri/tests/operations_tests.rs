@@ -433,9 +433,8 @@ fn a_missing_sibling_does_not_pin_cache_after_the_last_live_copy_is_deleted() {
     assert!(f.cache.thumb(&hash).exists(), "a live copy still needs it");
     assert!(f.cache.fullres(&hash).exists(), "a live copy still needs the render");
 
-    // Now the last LIVE copy goes. The missing sibling must not pin the
-    // identity: contents and cache both go, or they leak for the life of the
-    // index (startup_sweep only reclaims cache whose hash left contents).
+    // Now the last LIVE copy goes through an accepted deletion. The missing
+    // sibling must not pin its identity or defer immediate cache cleanup.
     delete_item(
         &f.conn,
         &f.app_root,

@@ -986,6 +986,9 @@ fn run_index_tail_scoped(
 ) -> Result<(), String> {
     let _awake = crate::sleep_prevention::begin_work();
     let cache = crate::preview::CachePaths::new(settings.cache_root.clone());
+    if let Err(error) = crate::preview::drain_scoped_cache_retirements(conn, &cache, &cancelled, scope) {
+        logging::warn("cache retirement remains pending", serde_json::json!({"error": error}));
+    }
     let hash_stats = hash_pending_with_progress(conn, &cache, scope, progress)?;
     summary.full_hashed = hash_stats.full_hashed;
     summary.copies_disagree = hash_stats.copies_disagree;
