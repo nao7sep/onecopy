@@ -1162,15 +1162,19 @@ fn reconcile_orphan_batch(conn: &Connection, after: &str) -> Result<(Vec<String>
         statement.query_map([after], |row| row.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()
     }).map_err(|e| e.to_string())?;
-    let mut removed = 0;
-    for hash in &hashes {
-        tx.execute("DELETE FROM similar_group_members WHERE content_hash = ?1
-                    AND NOT EXISTS (SELECT 1 FROM paths WHERE content_hash = ?1)", [hash])
+    let removed = if let Some(last) = hashes.last() {
+        // The admitted upper bound limits both deletes to this cohort. Keep
+        // membership and content removal in the same writer snapshot; even
+        // an offline path remains sufficient evidence to retain its content.
+        tx.execute("DELETE FROM similar_group_members WHERE content_hash IN (
+                      SELECT hash FROM contents WHERE hash > ?1 AND hash <= ?2
+                      AND NOT EXISTS (SELECT 1 FROM paths WHERE content_hash = contents.hash)
+                    )", rusqlite::params![after, last])
             .map_err(|e| e.to_string())?;
-        removed += tx.execute("DELETE FROM contents WHERE hash = ?1
-                    AND NOT EXISTS (SELECT 1 FROM paths WHERE content_hash = ?1)", [hash])
-            .map_err(|e| e.to_string())? as u64;
-    }
+        tx.execute("DELETE FROM contents WHERE hash > ?1 AND hash <= ?2
+                    AND NOT EXISTS (SELECT 1 FROM paths WHERE content_hash = contents.hash)",
+            rusqlite::params![after, last]).map_err(|e| e.to_string())? as u64
+    } else { 0 };
     tx.commit().map_err(|e| e.to_string())?;
     Ok((hashes, removed))
 }

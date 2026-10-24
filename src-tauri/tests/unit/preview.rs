@@ -348,6 +348,46 @@ fn live_contents_also_advance_the_bounded_orphan_cursor() {
     assert_eq!(conn.query_row("SELECT count(*) FROM contents", [], |row| row.get::<_, i64>(0)).unwrap(), 260);
 }
 
+#[test]
+fn orphan_reconciliation_prepares_one_delete_per_table_and_keeps_offline_members() {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+
+    let dir = tempfile::tempdir().unwrap();
+    let conn = crate::index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    conn.execute("INSERT INTO similar_groups(id, bucket, created_at_utc) VALUES (1, 'test', 'test')", []).unwrap();
+    for index in 0..260 {
+        let hash = format!("h{index:04}");
+        conn.execute("INSERT INTO contents(hash, byte_size, kind) VALUES (?1, 1, 'image')", [&hash]).unwrap();
+        conn.execute("INSERT INTO similar_group_members(group_id, content_hash) VALUES (1, ?1)", [&hash]).unwrap();
+        if index % 2 == 0 {
+            conn.execute("INSERT INTO paths(abs_path, dir_path, file_name, kind, content_hash, missing)
+                          VALUES (?1, '/', ?1, 'image', ?1, 1)", [&hash]).unwrap();
+        }
+    }
+    let deletes = Arc::new(AtomicUsize::new(0));
+    let observed = deletes.clone();
+    conn.authorizer(Some(move |context: AuthContext<'_>| {
+        if matches!(context.action, AuthAction::Delete { table_name: "contents" | "similar_group_members" }) {
+            observed.fetch_add(1, Ordering::Relaxed);
+        }
+        Authorization::Allow
+    })).unwrap();
+    let _identity = lock_cache_identity();
+    let (visited, removed) = reconcile_orphan_batch(&conn, "").unwrap();
+    conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>).unwrap();
+    assert_eq!((visited.len(), removed), (128, 64));
+    assert_eq!(deletes.load(Ordering::Relaxed), 2);
+    let remaining: Vec<String> = conn.prepare("SELECT hash FROM contents ORDER BY hash").unwrap()
+        .query_map([], |row| row.get(0)).unwrap().map(Result::unwrap).collect();
+    let expected: Vec<String> = (0..260).filter(|index| *index >= 128 || index % 2 == 0)
+        .map(|index| format!("h{index:04}")).collect();
+    assert_eq!(remaining, expected);
+    let members: Vec<String> = conn.prepare("SELECT content_hash FROM similar_group_members ORDER BY content_hash").unwrap()
+        .query_map([], |row| row.get(0)).unwrap().map(Result::unwrap).collect();
+    assert_eq!(members, expected);
+}
+
 #[cfg(unix)]
 #[test]
 fn preview_reopens_the_exact_native_path_from_encoded_text() {
