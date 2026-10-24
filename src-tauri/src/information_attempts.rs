@@ -98,7 +98,13 @@ pub fn reset_section(
     kind: crate::queries::SectionKind,
     bounds: Option<(i64, i64)>,
 ) -> Result<u64, String> {
-    let members = section_paths(bounds)?;
+    reset_section_in_scope(conn, kind, bounds, crate::path_scope::Scope::Library)
+}
+
+pub(crate) fn reset_section_in_scope(
+    conn: &Connection, kind: crate::queries::SectionKind, bounds: Option<(i64, i64)>, scope: crate::path_scope::Scope,
+) -> Result<u64, String> {
+    let members = section_paths_in_scope(bounds, scope)?;
     conn.execute(
         &format!(
             "UPDATE paths SET hash_attempt_failed = 0, metadata_attempt_failed = 0
@@ -117,7 +123,7 @@ pub fn reset_section(
 
 /// The live paths of one section, as SQL binding its kind at `?1` and its
 /// bounds at `?2`/`?3`.
-pub(crate) fn section_paths(bounds: Option<(i64, i64)>) -> Result<String, String> {
+pub(crate) fn section_paths_in_scope(bounds: Option<(i64, i64)>, scope: crate::path_scope::Scope) -> Result<String, String> {
     if bounds.is_some_and(|(start, end)| start >= end) {
         return Err("section date range must be increasing".to_string());
     }
@@ -130,11 +136,11 @@ pub(crate) fn section_paths(bounds: Option<(i64, i64)>) -> Result<String, String
         "WITH section_contents AS (
            SELECT content_hash FROM review_contents WHERE kind = ?1 AND {dates}
          )
-         SELECT id FROM paths WHERE missing = 0
+         SELECT id FROM paths WHERE missing = 0 AND {scope}
            AND (content_hash IN (SELECT content_hash FROM section_contents)
                 OR companion_of IN (SELECT id FROM paths WHERE content_hash IN (SELECT content_hash FROM section_contents))
                 OR (content_hash IS NULL AND companion_of IS NULL AND review_visible = 1
                     AND CASE WHEN kind IN ('image', 'video') THEN kind ELSE 'other' END = ?1
-                    AND {dates}))"
+                    AND {dates}))", scope = scope.predicate()
     ))
 }

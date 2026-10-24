@@ -86,6 +86,7 @@ pub mod storage;
 mod store_patch;
 mod fullres_cache;
 mod hash_cohort;
+mod path_scope;
 pub mod subprocess;
 #[cfg(unix)]
 mod subprocess_supervisor;

@@ -1627,6 +1627,12 @@ pub(crate) fn reset_failed_outputs_in_transaction(
     conn: &Connection,
     scope: FailedOutputScope,
 ) -> Result<u64, String> {
+    reset_failed_outputs_in_scope(conn, scope, crate::path_scope::Scope::Library)
+}
+
+pub(crate) fn reset_failed_outputs_in_scope(
+    conn: &Connection, scope: FailedOutputScope, paths: crate::path_scope::Scope,
+) -> Result<u64, String> {
     let (membership, values) = match scope {
         FailedOutputScope::Library => (String::new(), Vec::new()),
         FailedOutputScope::Section { kind, bounds } => {
@@ -1639,10 +1645,12 @@ pub(crate) fn reset_failed_outputs_in_transaction(
                 Some(_) => return Err("section date range must be increasing".to_string()),
                 None => "AND resolved_utc_ms IS NULL",
             };
-            (
-                format!(" IN (SELECT content_hash FROM review_contents WHERE kind = ?1 {dates})"),
-                values,
-            )
+            let admitted = match paths {
+                crate::path_scope::Scope::Library => String::new(),
+                crate::path_scope::Scope::AdmittedDirectories => format!(
+                    " AND content_hash IN (SELECT content_hash FROM paths WHERE missing = 0 AND {})", paths.predicate()),
+            };
+            (format!(" IN (SELECT content_hash FROM review_contents WHERE kind = ?1 {dates}{admitted})"), values)
         }
     };
     let mut count = 0;

@@ -23,7 +23,13 @@ pub fn recheck_section(
     kind: crate::queries::SectionKind,
     bounds: Option<(i64, i64)>,
 ) -> Result<u64, String> {
-    let members = information_attempts::section_paths(bounds)?;
+    recheck_section_in_scope(conn, kind, bounds, crate::path_scope::Scope::Library)
+}
+
+pub(crate) fn recheck_section_in_scope(
+    conn: &Connection, kind: crate::queries::SectionKind, bounds: Option<(i64, i64)>, scope: crate::path_scope::Scope,
+) -> Result<u64, String> {
+    let members = information_attempts::section_paths_in_scope(bounds, scope)?;
     let transaction = crate::sqlite::write_transaction(conn)
         .map_err(|error| error.to_string())?;
     index_store::close_issues(
@@ -46,10 +52,11 @@ pub fn recheck_section(
             derived_state::TRANSCRIPT_ERROR,
         ],
     )?;
-    information_attempts::reset_section(&transaction, kind, bounds)?;
-    let reopened = derived_state::reset_failed_outputs_in_transaction(
+    information_attempts::reset_section_in_scope(&transaction, kind, bounds, scope)?;
+    let reopened = derived_state::reset_failed_outputs_in_scope(
         &transaction,
         derived_state::FailedOutputScope::Section { kind, bounds },
+        scope,
     )?;
     crate::records::commit(transaction).map_err(|error| error.to_string())?;
     Ok(reopened)

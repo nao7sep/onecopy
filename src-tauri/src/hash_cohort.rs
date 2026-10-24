@@ -4,14 +4,12 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 // Require the size seek: SQLite otherwise chooses the content-hash OR
 // branches and sorts every pending path again for each distinct size.
-pub(crate) const FIRST_SIZE: &str =
-    "SELECT size FROM paths INDEXED BY idx_paths_pending_size WHERE missing = 0 AND hash_attempt_failed = 0
-     AND (content_hash IS NULL OR content_hash GLOB 'p*') AND id <= ?1
-     ORDER BY size LIMIT 1";
-pub(crate) const NEXT_SIZE: &str =
-    "SELECT size FROM paths INDEXED BY idx_paths_pending_size WHERE missing = 0 AND hash_attempt_failed = 0
-     AND (content_hash IS NULL OR content_hash GLOB 'p*') AND size > ?1 AND id <= ?2
-     ORDER BY size LIMIT 1";
+pub(crate) fn size_query(after: bool, scope: crate::path_scope::Scope) -> String {
+    let seek = if after { "AND size > ?1 AND id <= ?2" } else { "AND id <= ?1" };
+    format!("SELECT size FROM paths INDEXED BY idx_paths_pending_size WHERE missing = 0 AND hash_attempt_failed = 0
+             AND (content_hash IS NULL OR content_hash GLOB 'p*') {seek} AND {}
+             ORDER BY size LIMIT 1", scope.predicate())
+}
 pub(crate) const KNOWN_SIZE: &str =
     "SELECT EXISTS(SELECT 1 FROM contents WHERE byte_size = ?1 AND NOT hash GLOB 'p*')";
 
@@ -49,15 +47,20 @@ impl<'a> Cohort<'a> {
         Ok(cohort)
     }
 
+    #[cfg(test)]
     pub(crate) fn select_size(&self, size: i64, upper_id: i64) -> Result<(), String> {
+        self.select_size_in_scope(size, upper_id, crate::path_scope::Scope::Library)
+    }
+
+    pub(crate) fn select_size_in_scope(&self, size: i64, upper_id: i64, scope: crate::path_scope::Scope) -> Result<(), String> {
         self.conn.execute("DELETE FROM temp.onecopy_hash_cohort", [])
             .map_err(|error| error.to_string())?;
         self.conn.execute(
-            "INSERT INTO temp.onecopy_hash_cohort (id, prehash)
+            &format!("INSERT INTO temp.onecopy_hash_cohort (id, prehash)
              SELECT id, prehash FROM paths INDEXED BY idx_paths_pending_size
              WHERE missing = 0 AND hash_attempt_failed = 0
                AND (content_hash IS NULL OR content_hash GLOB 'p*')
-               AND size = ?1 AND id <= ?2",
+               AND size = ?1 AND id <= ?2 AND {}", scope.predicate()),
             params![size, upper_id],
         ).map_err(|error| error.to_string())?;
         Ok(())

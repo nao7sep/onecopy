@@ -966,15 +966,13 @@ pub fn run_index_tail(
     let repair_roots = pending_relationship_roots(conn)?;
     let mut receipts = pending_directory_repairs(conn)?;
     receipts.extend(begin_directory_repair(conn, &recovery_dirs)?);
-    run_index_tail_scoped(conn, settings, Some(&recovery_dirs), progress, summary)?;
+    run_index_tail_scoped(conn, settings, &recovery_dirs, crate::path_scope::Scope::Library, progress, summary)?;
     complete_scoped_index_repair(conn, &repair_roots)?;
     complete_directory_repair(conn, &receipts)
 }
 
-/// The same durable tail for a watcher/section repair. Directory scope applies
-/// only to pairing: hashing, extraction, and date resolution continue to drain
-/// every owed row, and their directories are captured before those receipts
-/// disappear so the final relationship projection cannot miss older debt.
+/// A section repair drains only its admitted directories at every stage.
+/// Unrelated pending work stays owed to the ordinary information owner.
 pub fn run_index_tail_for_dirs(
     conn: &Connection,
     settings: &ScanSettings,
@@ -982,34 +980,33 @@ pub fn run_index_tail_for_dirs(
     progress: &dyn Fn(ScanProgress),
     summary: &mut ScanSummary,
 ) -> Result<(), String> {
-    let mut pair_dirs = pending_index_dirs(conn)?;
-    pair_dirs.extend(dirs.iter().cloned());
-    pair_dirs.sort();
-    pair_dirs.dedup();
-    with_scoped_index_repair(conn, &pair_dirs, || {
-        run_index_tail_scoped(conn, settings, Some(&pair_dirs), progress, summary)
+    let _scope = crate::path_scope::Directories::new(conn, dirs)?;
+    with_scoped_index_repair(conn, dirs, || {
+        run_index_tail_scoped(conn, settings, dirs, crate::path_scope::Scope::AdmittedDirectories, progress, summary)
     })
 }
 
 fn run_index_tail_scoped(
     conn: &Connection,
     settings: &ScanSettings,
-    pair_dirs: Option<&[String]>,
+    pair_dirs: &[String],
+    scope: crate::path_scope::Scope,
     progress: &dyn Fn(ScanProgress),
     summary: &mut ScanSummary,
 ) -> Result<(), String> {
     let _awake = crate::sleep_prevention::begin_work();
     let cache = crate::preview::CachePaths::new(settings.cache_root.clone());
-    let hash_stats = hash_pending_with_progress(conn, &cache, progress)?;
+    let hash_stats = hash_pending_with_progress(conn, &cache, scope, progress)?;
     summary.full_hashed = hash_stats.full_hashed;
     summary.copies_disagree = hash_stats.copies_disagree;
     summary.failures += hash_stats.errors;
 
-    summary.failures += extract_pending_with_progress(conn, progress)?.failed;
+    summary.failures += extract_pending_with_progress(conn, scope, progress)?.failed;
 
     let resolve_stats = resolve_from_evidence_with_progress(
         conn,
         &settings.resolution,
+        scope,
         progress,
     )?;
     summary.resolved = resolve_stats.resolved;
@@ -1017,7 +1014,7 @@ fn run_index_tail_scoped(
     summary.failures += resolve_stats.failed;
 
     let pair_stats =
-        pair_companions_with_progress(conn, settings.pairing_enabled, pair_dirs, progress)?;
+        pair_companions_with_progress(conn, settings.pairing_enabled, Some(pair_dirs), progress)?;
     summary.paired = pair_stats.paired;
 
     progress(ScanProgress::completed(
@@ -1848,21 +1845,22 @@ pub fn hash_pending(
     conn: &Connection,
     cache: &crate::preview::CachePaths,
 ) -> Result<HashStats, String> {
-    hash_pending_with_progress(conn, cache, &|_| {})
+    hash_pending_with_progress(conn, cache, crate::path_scope::Scope::Library, &|_| {})
 }
 
 fn hash_pending_with_progress(
     conn: &Connection,
     cache: &crate::preview::CachePaths,
+    scope: crate::path_scope::Scope,
     progress: &dyn Fn(ScanProgress),
 ) -> Result<HashStats, String> {
     let mut stats = HashStats::default();
 
     use crate::hash_cohort::{Cohort, Row};
     let (total, upper_id): (u64, i64) = conn.query_row(
-        "SELECT count(*), coalesce(max(id), 0) FROM paths
+        &format!("SELECT count(*), coalesce(max(id), 0) FROM paths
          WHERE missing = 0 AND hash_attempt_failed = 0
-           AND (content_hash IS NULL OR content_hash GLOB 'p*')",
+           AND (content_hash IS NULL OR content_hash GLOB 'p*') AND {}", scope.predicate()),
         [], |row| Ok((row.get::<_, i64>(0)? as u64, row.get(1)?)),
     ).map_err(|e| e.to_string())?;
     let mut done = 0u64;
@@ -1984,15 +1982,15 @@ fn hash_pending_with_progress(
         check_cancel()?;
         let size: Option<i64> = match after_size {
             None => conn.query_row(
-                crate::hash_cohort::FIRST_SIZE, [upper_id], |row| row.get(0),
+                &crate::hash_cohort::size_query(false, scope), [upper_id], |row| row.get(0),
             ).optional(),
             Some(after) => conn.query_row(
-                crate::hash_cohort::NEXT_SIZE, params![after, upper_id], |row| row.get(0),
+                &crate::hash_cohort::size_query(true, scope), params![after, upper_id], |row| row.get(0),
             ).optional(),
         }.map_err(|e| e.to_string())?;
         let Some(size) = size else { break; };
         after_size = Some(size);
-        cohort.select_size(size, upper_id)?;
+        cohort.select_size_in_scope(size, upper_id, scope)?;
         let known: bool = conn.query_row(
             crate::hash_cohort::KNOWN_SIZE,
             [size], |row| row.get(0),
@@ -2112,7 +2110,7 @@ pub struct ExtractStats {
 /// file; after it, timezone/good-range/pattern changes re-resolve purely from
 /// the DB.
 pub fn extract_pending(conn: &Connection) -> Result<ExtractStats, String> {
-    extract_pending_with_progress(conn, &|_| {})
+    extract_pending_with_progress(conn, crate::path_scope::Scope::Library, &|_| {})
 }
 
 // Bound owned native-path/name strings independently of pending library size.
@@ -2120,14 +2118,15 @@ const EXTRACT_PAGE_SIZE: usize = 256;
 
 fn extract_pending_with_progress(
     conn: &Connection,
+    scope: crate::path_scope::Scope,
     progress: &dyn Fn(ScanProgress),
 ) -> Result<ExtractStats, String> {
     let mut stats = ExtractStats::default();
 
     check_cancel()?;
     let (total, upper_id): (i64, i64) = conn.query_row(
-        "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM paths
-         WHERE missing = 0 AND indexed_at_utc IS NULL AND metadata_attempt_failed = 0",
+        &format!("SELECT COUNT(*), COALESCE(MAX(id), 0) FROM paths
+         WHERE missing = 0 AND indexed_at_utc IS NULL AND metadata_attempt_failed = 0 AND {}", scope.predicate()),
         [], |row| Ok((row.get(0)?, row.get(1)?)),
     ).map_err(|error| error.to_string())?;
     let total = total as u64;
@@ -2146,10 +2145,10 @@ fn extract_pending_with_progress(
         // not receive stale work, and release the reader before file I/O.
         let rows: Vec<(i64, String, String, String)> = {
             let mut statement = conn.prepare_cached(
-                "SELECT id, abs_path, file_name, kind FROM paths
+                &format!("SELECT id, abs_path, file_name, kind FROM paths
                  WHERE id > ?1 AND id <= ?2 AND missing = 0
-                   AND indexed_at_utc IS NULL AND metadata_attempt_failed = 0
-                 ORDER BY id LIMIT ?3",
+                   AND indexed_at_utc IS NULL AND metadata_attempt_failed = 0 AND {}
+                 ORDER BY id LIMIT ?3", scope.predicate()),
             ).map_err(|error| error.to_string())?;
             let page = statement.query_map(params![after_id, upper_id, EXTRACT_PAGE_SIZE as i64], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
@@ -2284,7 +2283,7 @@ pub fn resolve_from_evidence(
     conn: &Connection,
     config: &ResolutionConfig,
 ) -> Result<ResolveStats, String> {
-    resolve_from_evidence_with_progress(conn, config, &|_| {})
+    resolve_from_evidence_with_progress(conn, config, crate::path_scope::Scope::Library, &|_| {})
 }
 
 /// Settings changed the resolution policy. Invalidate the old projection
@@ -2368,6 +2367,7 @@ pub fn re_resolve_all_with_progress(
     let stats = resolve_from_evidence_with_progress(
         conn,
         config,
+        crate::path_scope::Scope::Library,
         progress,
     )?;
     pair_companions_with_progress(conn, pairing_enabled, None, progress)?;
@@ -2383,11 +2383,12 @@ pub fn re_resolve_all_with_progress(
 fn resolve_from_evidence_with_progress(
     conn: &Connection,
     config: &ResolutionConfig,
+    scope: crate::path_scope::Scope,
     progress: &dyn Fn(ScanProgress),
 ) -> Result<ResolveStats, String> {
     let mut stats = ResolveStats::default();
 
-    let predicate = "missing = 0 AND indexed_at_utc IS NOT NULL AND resolved_source IS NULL";
+    let predicate = format!("missing = 0 AND indexed_at_utc IS NOT NULL AND resolved_source IS NULL AND {}", scope.predicate());
     let total = conn
         .query_row(
             &format!("SELECT COUNT(*) FROM paths WHERE {predicate}"),

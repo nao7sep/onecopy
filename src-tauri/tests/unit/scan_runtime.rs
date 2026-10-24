@@ -457,3 +457,79 @@ fn unwinding_a_source_wait_releases_its_parked_reservation() {
     let guard = admit_foreground(None, Some(Instant::now() + Duration::from_secs(1)), &|| false, &mut || {}).unwrap();
     drop(guard);
 }
+
+#[test]
+fn section_recheck_admits_healthy_sources_without_resetting_or_draining_refused_sources() {
+    let _serial = serial_test();
+    for unreadable in [false, true] {
+        crate::scanner::SCAN_CANCEL.store(false, Ordering::SeqCst);
+        let temp = tempfile::tempdir().unwrap();
+        let healthy = temp.path().join("healthy");
+        let refused = temp.path().join("refused");
+        let data = temp.path().join("data");
+        for root in [&healthy, &refused, &data] { std::fs::create_dir(root).unwrap(); }
+        image::RgbImage::new(2, 2).save(healthy.join("photo.jpg")).unwrap();
+        image::RgbImage::new(3, 3).save(refused.join("photo.jpg")).unwrap();
+        let conn = crate::index_store::open(&temp.path().join("index.sqlite3")).unwrap();
+        let settings = crate::scanner::settings_from_config(Some(&serde_json::json!({"sourceDirs": [healthy, refused]})), &data,
+            chrono::Utc::now().timestamp_millis());
+        crate::scanner::run_source_check(&conn, &settings, &|_| {}).unwrap();
+        crate::scanner::run_index_tail(&conn, &settings, &|_| {}, &mut Default::default()).unwrap();
+        conn.execute_batch("UPDATE paths SET hash_attempt_failed = 1, metadata_attempt_failed = 1, indexed_at_utc = NULL,
+                            resolved_utc_ms = NULL, resolved_source = NULL;
+                            UPDATE contents SET derive_outcome = 'failed';").unwrap();
+        image::RgbImage::new(4, 4).save(refused.join("pending.jpg")).unwrap();
+        let healthy_dir = crate::native_path::encode(crate::winpath::for_fs(&std::fs::canonicalize(&healthy).unwrap()).as_ref()).into_owned();
+        let refused_dir = crate::native_path::encode(crate::winpath::for_fs(&std::fs::canonicalize(&refused).unwrap()).as_ref()).into_owned();
+        crate::watcher::restat_dir(&conn, crate::native_path::from_text(&refused_dir).as_ref(), &settings.lists, &settings.source_dirs, settings.data_root()).unwrap();
+        let snapshot = || -> Vec<(String, Option<String>, i64, i64, Option<String>, Option<String>)> {
+            conn.prepare("SELECT file_name, content_hash, hash_attempt_failed, metadata_attempt_failed, indexed_at_utc, resolved_source
+                          FROM paths WHERE dir_path = ?1 ORDER BY id").unwrap().query_map([&refused_dir],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)))
+                .unwrap().collect::<rusqlite::Result<_>>().unwrap()
+        };
+        let before = snapshot();
+        for root in &settings.source_dirs { crate::volume::check_identity(&data, root, "original").unwrap(); }
+        let check = |roots: &[String]| {
+            crate::volume::enforce_no_substitution_with(&data, roots, &|_| {
+                if roots[0] == settings.source_dirs[1] {
+                    if unreadable { None } else { Some("replacement".into()) }
+                } else { Some("original".into()) }
+            })
+        };
+        let error = recheck_section_with_admission(&conn, &settings, &[healthy_dir.clone(), refused_dir.clone()],
+            crate::queries::SectionKind::Image, None, &check, &|| Ok(())).unwrap_err();
+        assert!(error.contains("refused"), "{error}");
+        assert_eq!(snapshot(), before, "refused retries and unrelated pending work stay untouched");
+        assert!(conn.query_row("SELECT indexed_at_utc IS NOT NULL AND metadata_attempt_failed = 0 FROM paths WHERE dir_path = ?1",
+            [&healthy_dir], |row| row.get::<_, bool>(0)).unwrap());
+        assert_eq!(conn.query_row("SELECT derive_outcome FROM contents WHERE hash = (SELECT content_hash FROM paths WHERE dir_path = ?1 AND file_name = 'photo.jpg')",
+            [&refused_dir], |row| row.get::<_, String>(0)).unwrap(), "failed");
+        assert!(conn.query_row("SELECT derive_outcome IS NULL FROM contents WHERE hash = (SELECT content_hash FROM paths WHERE dir_path = ?1)",
+            [&healthy_dir], |row| row.get::<_, bool>(0)).unwrap());
+    }
+}
+
+#[test]
+fn a_healthy_parent_cannot_admit_a_refused_nested_source_through_its_settled_alias() {
+    let temp = tempfile::tempdir().unwrap();
+    let conn = crate::index_store::open(&temp.path().join("index.sqlite3")).unwrap();
+    let encode = |path: std::path::PathBuf| crate::native_path::encode(crate::winpath::for_fs(&path).as_ref()).into_owned();
+    let parent = encode(temp.path().join("configured"));
+    let nested = encode(temp.path().join("configured").join("nested"));
+    let settled = encode(temp.path().join("settled"));
+    let nested_settled = encode(temp.path().join("settled").join("nested"));
+    for (root, configured) in [(&settled, &parent), (&nested_settled, &nested)] {
+        conn.execute("INSERT INTO scan_dirs (root, configured_root) VALUES (?1, ?2)", rusqlite::params![root, configured]).unwrap();
+    }
+    let healthy = encode(temp.path().join("settled").join("sibling"));
+    let refused = encode(temp.path().join("settled").join("nested").join("photos"));
+    let probes = std::cell::RefCell::new(Vec::new());
+    let (admitted, failures) = admitted_section_dirs(&conn, &[parent.clone(), nested.clone()], &[healthy.clone(), refused.clone(), refused], &|roots| {
+        probes.borrow_mut().push(roots[0].clone());
+        if roots[0] == nested { Err("nested source refused".into()) } else { Ok(()) }
+    }).unwrap();
+    assert_eq!(admitted, [healthy]);
+    assert_eq!(failures, ["nested source refused"]);
+    assert_eq!(*probes.borrow(), [parent, nested]);
+}

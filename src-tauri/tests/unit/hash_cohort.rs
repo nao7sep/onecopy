@@ -151,8 +151,9 @@ fn selecting_another_size_reuses_the_table_without_old_group_results() {
 #[test]
 fn size_discovery_seeks_the_pending_and_established_indexes() {
     let fixture = fixture();
+    let pending = size_query(true, crate::path_scope::Scope::Library);
     for (query, parameters, expected) in [
-        (NEXT_SIZE, vec![32i64, 1000], "idx_paths_pending_size (size>?)"),
+        (pending.as_str(), vec![32i64, 1000], "idx_paths_pending_size (size>?)"),
         (KNOWN_SIZE, vec![32i64], "idx_contents_established_size (byte_size=?)"),
     ] {
         let plan = fixture.conn.prepare(&format!("EXPLAIN QUERY PLAN {query}")).unwrap()

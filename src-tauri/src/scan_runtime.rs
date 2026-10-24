@@ -962,22 +962,80 @@ pub(crate) fn recheck_section(
         let conn = crate::index_store::open(&data_root.join(crate::storage::INDEX_DB_FILE_NAME))?;
         let dirs = crate::queries::section_dirs(&conn, kind, month, timezone)?;
         let bounds = crate::queries::month_bounds(month, timezone)?;
-        let reopened = crate::attempt_boundaries::recheck_section(&conn, kind, bounds)?;
-        if reopened > 0 {
-            // The index claim prevents automatic execution until this
-            // admitted recheck releases it, even if later stat fails.
-            crate::derived_work::wake();
-        }
-        recheck_section_dirs(&conn, &settings, &dirs, &|| {
-            if crate::scanner::cancelled() { return Err(crate::scanner::CANCELLED.to_string()); }
-            yield_at_safe_point().map(|_| ())
-        })
+        recheck_section_with_admission(&conn, &settings, &dirs, kind, bounds,
+            &|roots| crate::volume::enforce_no_substitution(&data_root, roots),
+            &|| {
+                if crate::scanner::cancelled() { return Err(crate::scanner::CANCELLED.to_string()); }
+                yield_at_safe_point().map(|_| ())
+            })
     });
     match result {
         Ok(changed) => Ok(RescanSectionOutcome::Completed { changed }),
         Err(error) if error == crate::scanner::CANCELLED => Ok(RescanSectionOutcome::Cancelled),
         Err(error) => Err(error),
     }
+}
+
+/// Attribute stored paths through remembered settled/configured source pairs.
+/// Every overlapping configured owner must pass: an admitted parent cannot
+/// authorize a substituted nested source. Probe each owner only once.
+fn admitted_section_dirs(
+    conn: &rusqlite::Connection,
+    configured: &[String],
+    dirs: &[String],
+    check: &dyn Fn(&[String]) -> Result<(), String>,
+) -> Result<(Vec<String>, Vec<String>), String> {
+    let recorded: Vec<(String, String)> = conn.prepare("SELECT root, configured_root FROM scan_dirs")
+        .and_then(|mut statement| statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect())
+        .map_err(|error| error.to_string())?;
+    let mut verdicts = std::collections::BTreeMap::<String, Result<(), String>>::new();
+    let mut admitted = Vec::new();
+    let mut failures = std::collections::BTreeSet::new();
+    for dir in dirs {
+        let owners: Vec<&String> = configured.iter().filter(|owner| {
+            crate::scanner::directory_belongs_to_root(dir, owner)
+                || recorded.iter().any(|(root, configured)| configured == *owner
+                    && crate::scanner::directory_belongs_to_root(dir, root))
+        }).collect();
+        if owners.is_empty() {
+            failures.insert(format!("Changed directory is outside configured sources: {dir}"));
+            continue;
+        }
+        let mut allowed = true;
+        for owner in owners {
+            let result = verdicts.entry(owner.clone()).or_insert_with(|| check(std::slice::from_ref(owner)));
+            if let Err(error) = result { failures.insert(error.clone()); allowed = false; }
+        }
+        if allowed { admitted.push(dir.clone()); }
+    }
+    Ok((admitted, failures.into_iter().collect()))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn recheck_section_with_admission(
+    conn: &rusqlite::Connection, settings: &crate::scanner::ScanSettings, dirs: &[String],
+    kind: crate::queries::SectionKind, bounds: Option<(i64, i64)>,
+    check: &dyn Fn(&[String]) -> Result<(), String>,
+    between: &dyn Fn() -> Result<(), String>,
+) -> Result<u64, String> {
+    between()?;
+    let (admitted, mut failures) = admitted_section_dirs(conn, &settings.source_dirs, dirs, check)?;
+    let mut changed = 0;
+    if !admitted.is_empty() {
+        {
+            let _scope = crate::path_scope::Directories::new(conn, &admitted)?;
+            let reopened = crate::attempt_boundaries::recheck_section_in_scope(conn, kind, bounds,
+                crate::path_scope::Scope::AdmittedDirectories)?;
+            if reopened > 0 { crate::derived_work::wake(); }
+        }
+        match recheck_section_dirs(conn, settings, &admitted, between) {
+            Ok(count) => changed = count,
+            Err(error) if error == crate::scanner::CANCELLED => return Err(error),
+            Err(error) => failures.push(error),
+        }
+    }
+    if !failures.is_empty() { return Err(failures.join("\n")); }
+    Ok(changed)
 }
 
 fn recheck_section_dirs(

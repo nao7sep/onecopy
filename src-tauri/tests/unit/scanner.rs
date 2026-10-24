@@ -219,7 +219,7 @@ fn extraction_reads_only_a_page_and_leaves_new_arrivals_for_the_next_pass() {
     // beyond the page. It becomes a valid current row after processing starts.
     conn.execute("UPDATE paths SET abs_path = CAST(abs_path AS BLOB) WHERE id = ?1", [next_page]).unwrap();
     let changed = std::cell::Cell::new(false);
-    let stats = super::extract_pending_with_progress(&conn, &|progress| {
+    let stats = super::extract_pending_with_progress(&conn, crate::path_scope::Scope::Library, &|progress| {
         if progress.done == 1 && !changed.replace(true) {
             conn.execute("UPDATE paths SET abs_path = CAST(abs_path AS TEXT), file_name = '20260101.txt' WHERE id = ?1", [next_page]).unwrap();
             conn.execute("DELETE FROM paths WHERE id = ?1", [next_page + 1]).unwrap();
@@ -246,7 +246,7 @@ fn cancelling_extraction_leaves_remaining_pages_eligible_for_resume() {
     for id in 1..=total {
         conn.execute("INSERT INTO paths(id, abs_path, dir_path, file_name, kind) VALUES (?1, ?2, '/fixture', 'item.txt', 'other')", rusqlite::params![id, format!("/fixture/{id}.txt")]).unwrap();
     }
-    let result = super::extract_pending_with_progress(&conn, &|progress| {
+    let result = super::extract_pending_with_progress(&conn, crate::path_scope::Scope::Library, &|progress| {
         if progress.done == 1 { super::SCAN_CANCEL.store(true, std::sync::atomic::Ordering::SeqCst); }
     });
     super::SCAN_CANCEL.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -274,7 +274,7 @@ fn complete_prehash_cannot_identify_a_file_changed_before_cohort_publication() {
     }
     let changed = std::cell::Cell::new(false);
     let cache = crate::preview::CachePaths::new(directory.path().join("cache"));
-    let result = super::hash_pending_with_progress(&conn, &cache, &|progress| {
+    let result = super::hash_pending_with_progress(&conn, &cache, crate::path_scope::Scope::Library, &|progress| {
         if progress.current_path.as_deref() == Some(crate::native_path::encode(&second).as_ref()) && !changed.replace(true) {
             std::fs::write(&first, b"replacement").unwrap();
         }
