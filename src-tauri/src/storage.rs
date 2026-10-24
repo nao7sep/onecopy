@@ -719,7 +719,7 @@ pub fn patch_json_store(target: &Path, version: i64, patch: &JsonValue) -> Resul
     let record = !target
         .file_name()
         .is_some_and(|name| name == STATE_FILE_NAME);
-    write_json_file(target, &current, version, record)?;
+    write_json_admitted(target, &current, version, record, read.existing)?;
     Ok(PatchOutcome {
         merged: current,
         quarantined,
@@ -740,36 +740,47 @@ pub enum JsonFile {
 /// Reads a JSON store of format `supported`. Only a failure to read the
 /// bytes is an error; what the bytes mean is the caller's branch.
 pub fn read_json_file(path: &Path, supported: i64) -> Result<JsonFile, String> {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(JsonFile::Absent),
-        Err(err) => return Err(err.to_string()),
-    };
-    let mut document = match serde_json::from_slice::<JsonValue>(&bytes) {
+    let existing = read_existing_file(path)?;
+    Ok(parse_json_file(path, supported, existing.as_ref()))
+}
+
+fn parse_json_file(path: &Path, supported: i64, existing: Option<&ExistingFile>) -> JsonFile {
+    let Some(existing) = existing else { return JsonFile::Absent };
+    let mut document = match serde_json::from_slice::<JsonValue>(&existing.bytes) {
         Ok(document) => document,
-        Err(parse_error) => return Ok(JsonFile::Unreadable(format!("parse error: {parse_error}"))),
+        Err(parse_error) => return JsonFile::Unreadable(format!("parse error: {parse_error}")),
     };
-    Ok(match formats::take_json_version(&mut document) {
+    match formats::take_json_version(&mut document) {
         Err(reason) => JsonFile::Unreadable(reason),
         Ok(version) => match formats::NewerStore::check(path, version, supported) {
             Some(newer) => JsonFile::Newer(newer),
             None => JsonFile::Document(document),
         },
-    })
+    }
 }
 
 /// Writes a JSON store of format `version` atomically, the marker stamped on
 /// the way out, recording the bytes in the backup store when `record` is
 /// set. A file a newer OneCopy wrote is never written over.
 pub fn write_json_file(target: &Path, document: &JsonValue, version: i64, record: bool) -> Result<(), String> {
-    refuse_newer(target, version)?;
+    let existing = read_existing_file(target)?;
+    if let JsonFile::Newer(newer) = parse_json_file(target, version, existing.as_ref()) {
+        return Err(newer.to_string());
+    }
+    write_json_admitted(target, document, version, record, existing)
+}
+
+/// The serialized patch owner already admitted these bytes. Reuse them for
+/// equality and the held descriptor for replacement metadata; the app-data
+/// instance lock excludes another OneCopy writer throughout publication.
+fn write_json_admitted(
+    target: &Path, document: &JsonValue, version: i64, record: bool, existing: Option<ExistingFile>,
+) -> Result<(), String> {
     let mut document = document.clone();
     formats::stamp_json(&mut document, version)?;
     let mut text = serde_json::to_string_pretty(&document).map_err(|e| e.to_string())?;
     text.push('\n');
-    // Checked once, before writing: the instance lock rules out another
-    // OneCopy writing this file between the check and the rename.
-    write_atomic_inner(target, text.as_bytes(), record, || Ok(()))
+    write_atomic_admitted(target, text.as_bytes(), record, existing, || Ok(()))
 }
 
 /// Refuses to replace or remove a JSON store a newer OneCopy wrote.
@@ -795,6 +806,7 @@ pub fn warn_newer(newer: &formats::NewerStore) {
 
 struct JsonRead {
     value: Option<JsonValue>,
+    existing: Option<ExistingFile>,
     /// Set when this read set the store aside; the caller owns getting the
     /// record to a reporting surface.
     quarantined: Option<QuarantineRecord>,
@@ -834,15 +846,17 @@ fn read_json_optional_with_envelope(
     version: i64,
     require_object_root: bool,
 ) -> Result<JsonRead, String> {
-    let read = |value| JsonRead { value, quarantined: None, newer: None };
-    match read_json_file(path, version)? {
+    let existing = read_existing_file(path)?;
+    let parsed = parse_json_file(path, version, existing.as_ref());
+    let read = |value| JsonRead { value, existing, quarantined: None, newer: None };
+    match parsed {
         JsonFile::Absent => Ok(read(None)),
         JsonFile::Document(value) if !require_object_root || value.is_object() => Ok(read(Some(value))),
         JsonFile::Document(_) => quarantine_invalid_store(path, "config root must be a JSON object"),
         JsonFile::Unreadable(reason) => quarantine_invalid_store(path, &reason),
         JsonFile::Newer(newer) => {
             warn_newer(&newer);
-            Ok(JsonRead { value: None, quarantined: None, newer: Some(newer) })
+            Ok(JsonRead { value: None, existing: None, quarantined: None, newer: Some(newer) })
         }
     }
 }
@@ -868,6 +882,7 @@ fn quarantine_invalid_store(path: &Path, reason: &str) -> Result<JsonRead, Strin
     );
     Ok(JsonRead {
         value: None,
+        existing: None,
         newer: None,
         quarantined: Some(QuarantineRecord {
             file: path
@@ -908,19 +923,38 @@ fn write_atomic_inner(
     // passes a no-op; the unit tests use it to refuse or obstruct publication.
     admit: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
-    use std::io::{Read, Write};
-    let existing = match std::fs::File::open(target) {
+    let existing = read_existing_file(target)?;
+    write_atomic_admitted(target, bytes, record, existing, admit)
+}
+
+/// A single read supplies format admission, exact-byte equality and the
+/// original descriptor used to preserve ordinary replacement permissions.
+struct ExistingFile {
+    file: std::fs::File,
+    bytes: Vec<u8>,
+}
+
+fn read_existing_file(target: &Path) -> Result<Option<ExistingFile>, String> {
+    use std::io::Read;
+    #[cfg(test)]
+    tests::note_store_read();
+    match std::fs::File::open(target) {
         Ok(mut file) => {
-            let mut current = Vec::new();
-            file.read_to_end(&mut current).map_err(|error| error.to_string())?;
-            if current == bytes {
-                return Ok(());
-            }
-            Some(file)
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes).map_err(|error| error.to_string())?;
+            Ok(Some(ExistingFile { file, bytes }))
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error.to_string()),
-    };
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn write_atomic_admitted(
+    target: &Path, bytes: &[u8], record: bool, existing: Option<ExistingFile>,
+    admit: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    use std::io::Write;
+    if existing.as_ref().is_some_and(|existing| existing.bytes == bytes) { return Ok(()); }
     let parent = target
         .parent()
         .ok_or_else(|| "path has no parent directory".to_string())?;
@@ -941,7 +975,7 @@ fn write_atomic_inner(
     let publish = (|| -> Result<(), String> {
         file.write_all(bytes).map_err(|error| error.to_string())?;
         if let Some(source) = &existing {
-            crate::copy_metadata::apply_replacement(source, &file).map_err(|error| error.to_string())?;
+            crate::copy_metadata::apply_replacement(&source.file, &file).map_err(|error| error.to_string())?;
         }
         file.sync_all().map_err(|error| error.to_string())?;
         drop(file);

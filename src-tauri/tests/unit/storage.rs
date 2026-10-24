@@ -248,3 +248,66 @@ fn a_blocked_settings_publication_keeps_readers_on_the_committed_snapshot() {
     assert_eq!(persisted["theme"], "dark");
     assert_eq!(persisted["soundEnabled"], false);
 }
+
+thread_local! {
+    static STORE_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+pub(super) fn note_store_read() { STORE_READS.with(|reads| reads.set(reads.get() + 1)); }
+
+#[test]
+fn a_patch_reads_once_and_reuses_admitted_bytes_for_unchanged_publication() {
+    let dir = temp_dir("single-read-patch");
+    let target = dir.path().join(STATE_FILE_NAME);
+    let past = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_500_000_000);
+    for patch in [serde_json::json!({"a": 1}), serde_json::json!({"b": ["x", "y"]})] {
+        STORE_READS.with(|reads| reads.set(0));
+        patch_json_store(&target, formats::STATE, &patch).unwrap();
+        assert_eq!(STORE_READS.with(|reads| reads.get()), 1);
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            if patch.get("b").is_some() {
+                assert_eq!(std::fs::metadata(&target).unwrap().permissions().mode() & 0o777, 0o640);
+            }
+            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o640)).unwrap();
+        }
+        std::fs::File::options().write(true).open(&target).unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(past)).unwrap();
+        let before = std::fs::metadata(&target).unwrap();
+        STORE_READS.with(|reads| reads.set(0));
+        patch_json_store(&target, formats::STATE, &patch).unwrap();
+        assert_eq!(STORE_READS.with(|reads| reads.get()), 1);
+        let after = std::fs::metadata(&target).unwrap();
+        assert_eq!(after.modified().unwrap(), before.modified().unwrap());
+        #[cfg(unix)] {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(after.ino(), before.ino());
+        }
+    }
+    let expected = serde_json::json!({"a": 1, "b": ["x", "y"]});
+    assert_eq!(read_json_optional(&target, formats::STATE).unwrap().value.unwrap(), expected);
+    STORE_READS.with(|reads| reads.set(0));
+    write_json_file(&target, &expected, formats::STATE, false).unwrap();
+    assert_eq!(STORE_READS.with(|reads| reads.get()), 1);
+    assert_eq!(std::fs::metadata(&target).unwrap().modified().unwrap(), past);
+}
+
+#[test]
+fn admitted_patch_preserves_invalid_bytes_and_refuses_newer_stores() {
+    let dir = temp_dir("patch-admission");
+    let target = dir.path().join(STATE_FILE_NAME);
+    std::fs::write(&target, b"invalid original").unwrap();
+    STORE_READS.with(|reads| reads.set(0));
+    let outcome = patch_json_store(&target, formats::STATE, &serde_json::json!({"fresh": true})).unwrap();
+    assert_eq!(STORE_READS.with(|reads| reads.get()), 1);
+    let quarantined = outcome.quarantined.unwrap().quarantined_to;
+    assert_eq!(std::fs::read(crate::native_path::from_text(&quarantined).as_ref()).unwrap(), b"invalid original");
+    let newer = serde_json::to_vec(&serde_json::json!({"formatVersion": formats::STATE + 1, "future": true})).unwrap();
+    std::fs::write(&target, &newer).unwrap();
+    STORE_READS.with(|reads| reads.set(0));
+    assert!(patch_json_store(&target, formats::STATE, &serde_json::json!({"fresh": false})).is_err());
+    assert_eq!(STORE_READS.with(|reads| reads.get()), 1);
+    assert_eq!(std::fs::read(&target).unwrap(), newer);
+    assert!(write_json_file(&target, &serde_json::json!({}), formats::STATE, false).is_err());
+    assert_eq!(std::fs::read(&target).unwrap(), newer);
+}
