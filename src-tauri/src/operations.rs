@@ -41,8 +41,8 @@ impl DeleteMode {
 #[derive(Clone, Serialize, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DeleteOutcome {
-    /// Index reconciliation stopped after the physical outcomes below. Those
-    /// outcomes remain authoritative even when the index could not commit.
+    /// Reconciliation or a required delivery proof stopped after the physical
+    /// outcomes below. Earlier completed outcomes remain authoritative.
     pub error: Option<String>,
     pub deleted_files: u64,
     /// Files not deleted, including `unknown_files`.
@@ -315,6 +315,7 @@ pub fn delete_item(
         &targets,
         mode,
         &trash::TrashContext::new(trash::TrashKind::Delete, &operation),
+        None,
         &|| false,
         &mut |_, _| {},
     ).0)
@@ -332,6 +333,7 @@ fn delete_targets(
     targets: &[DeleteTarget],
     mode: DeleteMode,
     trash: &trash::TrashContext,
+    destination: Option<&crate::file_identity::VerifiedDestination>,
     cancelled: &dyn Fn() -> bool,
     on_attempt: &mut (impl FnMut(u64, bool) + ?Sized),
 ) -> (DeleteOutcome, Vec<i64>) {
@@ -348,13 +350,13 @@ fn delete_targets(
                     let context = trash.clone().item(target.item.clone()).role(target.role);
                     trash::trash_file_cancellable(
                         file, owning_root, target.content_hash.as_deref(), &context,
-                        target.source_version, cancelled,
+                        target.source_version, destination.cloned(), cancelled,
                     )
                     .map(|_| ())
                 }
                 Err(error) => Err(error.clone().into()),
             },
-            DeleteMode::Permanent => permanently_delete_file(file, target.source_version),
+            DeleteMode::Permanent => permanently_delete_file(file, target.source_version, destination.cloned()),
         };
 
         if cancelled() && result.as_ref().is_err_and(|error| !error.outcome_unknown) { break; }
@@ -464,6 +466,15 @@ fn delete_targets(
                     if orphaned {
                         if let Some(hash) = current_hash { cache_retirement.push(hash); }
                     }
+                }
+                Err(err) if err.destination_changed => {
+                    outcome.failed_files += 1;
+                    on_attempt(target.bytes, true);
+                    crate::index_store::upsert_issue_with_descriptor(
+                        conn, destination.map(|proof| crate::native_path::encode(proof.path())).as_deref(),
+                        COPY_ERROR, None, None, &err.message,
+                    )?;
+                    return Err(err.message);
                 }
                 Err(err) if err.source_changed => {
                     outcome.failed_files += 1;
@@ -709,6 +720,7 @@ pub fn delete_accepted_batch(
                 std::slice::from_ref(target),
                 mode,
                 &trash_context,
+                None,
                 cancelled,
                 &mut |bytes, failed| {
                     files_done = files_done.saturating_add(1);
@@ -768,6 +780,7 @@ pub fn delete_accepted_batch(
 fn permanently_delete_file(
     file: &Path,
     source_version: Option<crate::file_identity::FileVersion>,
+    destination: Option<crate::file_identity::VerifiedDestination>,
 ) -> Result<(), trash::TrashError> {
     // A missing file fails as that one file, exactly as recoverable deletion
     // does: nothing was deleted, so the receipt must not count it.
@@ -781,6 +794,7 @@ fn permanently_delete_file(
         let fs_path = crate::winpath::for_fs(file).into_owned();
         volume_io::call(file, volume_io::Op::Remove, None, move || {
             version.require_path(&path)?;
+            if let Some(destination) = &destination { destination.require_current()?; }
             std::fs::remove_file(fs_path) // volume_io worker
         })
     } else {
@@ -790,6 +804,7 @@ fn permanently_delete_file(
         message: error.to_string(),
         outcome_unknown: volume_io::outcome_unknown(&error),
         source_changed: crate::file_identity::source_version_changed(&error),
+        destination_changed: crate::file_identity::destination_changed(&error),
         cancelled: false,
     })
 }
@@ -2131,13 +2146,16 @@ fn execute_move_steps(
         // Cancellation is checked between physical steps. A settled
         // publication or source removal keeps its outcome even if cancellation
         // or index reconciliation stops the remaining work.
+        let version = crate::file_identity::FileVersion::of(output.private.file_mut()).map_err(|error| error.to_string())?;
+        let staged_proof = crate::file_identity::VerifiedDestination::hold(output.private.file_mut(), &output.target, version)
+            .map_err(|error| error.to_string())?;
         let delivered = match output.private.publish(&output.target) {
             Err(error) if volume_io::wait_failure(&error).is_some() => {
                 return publication_given_up(conn, outcome, &output, &error, on_progress);
             }
             Ok(()) => {
-                let durable = sync_published(conn, &output.target)?;
-                if durable {
+                let durable = finish_delivery(conn, &output.target, staged_proof)?;
+                if durable.is_some() {
                     outcome.exported = outcome.exported.saturating_add(1);
                 } else {
                     outcome
@@ -2178,10 +2196,11 @@ fn execute_move_steps(
                                 return Err(std::io::Error::other("destination changed while hashing"));
                             }
                             file.sync_all(total, None)?;
-                            version.require_path(&output.target)
+                            version.require_path(&output.target)?;
+                            crate::file_identity::VerifiedDestination::hold(&mut file, &output.target, version)
                         });
                         let durable = match synced {
-                            Ok(()) => sync_published(conn, &output.target)?,
+                            Ok(proof) => finish_delivery(conn, &output.target, proof)?,
                             Err(error) => {
                                 crate::index_store::upsert_issue_with_descriptor(
                                     conn,
@@ -2191,10 +2210,10 @@ fn execute_move_steps(
                                     None,
                                     &error.to_string(),
                                 )?;
-                                false
+                                None
                             }
                         };
-                        if durable {
+                        if durable.is_some() {
                             outcome.skipped_identical = outcome.skipped_identical.saturating_add(1);
                         } else {
                             outcome
@@ -2219,7 +2238,7 @@ fn execute_move_steps(
                         outcome
                             .undelivered
                             .push(crate::native_path::encode(&output.target).into_owned());
-                        false
+                        None
                     }
                     Some(_) if conflict_policy == Some(DestinationConflictPolicy::Overwrite) => {
                         match preserve_reviewed_destination_family(
@@ -2249,8 +2268,8 @@ fn execute_move_steps(
                             }
                             Err(error) => return Err(error.to_string()),
                         }
-                        let durable = sync_published(conn, &output.target)?;
-                        if durable {
+                        let durable = finish_delivery(conn, &output.target, staged_proof)?;
+                        if durable.is_some() {
                             outcome.exported = outcome.exported.saturating_add(1);
                         } else {
                             outcome
@@ -2263,7 +2282,7 @@ fn execute_move_steps(
                         outcome
                             .conflicts
                             .push(crate::native_path::encode(&output.target).into_owned());
-                        false
+                        None
                     }
                 }
             }
@@ -2285,15 +2304,15 @@ fn execute_move_steps(
                 outcome
                     .undelivered
                     .push(crate::native_path::encode(&output.target).into_owned());
-                false
+                None
             }
         };
         on_progress(MoveUnitProgress::Attempt {
             bytes: output.bytes,
-            failed: !delivered,
+            failed: delivered.is_none(),
         });
 
-        if delivered && mode != MoveOutMode::CopyKeepAll {
+        if let Some(destination) = delivered.filter(|_| mode != MoveOutMode::CopyKeepAll) {
             // A source this output does not cover stays in place, and so does
             // the whole family of a main copy kept above.
             let item_key = unit.item.key()?;
@@ -2357,6 +2376,7 @@ fn execute_move_steps(
                     std::slice::from_ref(&target),
                     delete_mode,
                     &cleanup_context,
+                    Some(&destination),
                     cancelled,
                     &mut |bytes, failed| on_progress(MoveUnitProgress::Attempt { bytes, failed }),
                 );
@@ -2497,6 +2517,21 @@ fn publication_given_up(
     Err(error.to_string())
 }
 
+/// Delivery carries its held descriptor into every removal, rather than a
+/// historical boolean. Directory durability and current name/version must both
+/// hold before it can authorize cleanup.
+fn finish_delivery(
+    conn: &Connection, target: &Path, proof: crate::file_identity::VerifiedDestination,
+) -> Result<Option<crate::file_identity::VerifiedDestination>, String> {
+    if !sync_published(conn, target)? { return Ok(None); }
+    if let Err(error) = proof.require_current() {
+        crate::index_store::upsert_issue_with_descriptor(conn,
+            Some(crate::native_path::encode(target).as_ref()), COPY_ERROR, None, None, &error.to_string())?;
+        return Ok(None);
+    }
+    Ok(Some(proof))
+}
+
 /// Makes a just-published output durable. An output whose directory could not
 /// be synced is reported as not delivered, so its sources stay in place.
 fn sync_published(conn: &Connection, target: &Path) -> Result<bool, String> {
@@ -2559,6 +2594,7 @@ fn preserve_reviewed_destination_family(
             destination_root,
             Some(&member.hash),
             &context.clone().role(role),
+            None,
             None,
             cancelled,
         )

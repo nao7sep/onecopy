@@ -139,6 +139,8 @@ pub struct TrashError {
     /// Source-read proof no longer names this version. This covers Move
     /// cleanup and the verified private copy required by Windows deletion.
     pub source_changed: bool,
+    /// Move delivery no longer authorizes removing any further originals.
+    pub destination_changed: bool,
     /// Preparation ended before source removal because the caller cancelled.
     pub cancelled: bool,
 }
@@ -149,6 +151,7 @@ impl From<String> for TrashError {
             message,
             outcome_unknown: false,
             source_changed: false,
+            destination_changed: false,
             cancelled: false,
         }
     }
@@ -176,9 +179,10 @@ pub(crate) fn trash_file_cancellable(
     content_hash: Option<&str>,
     context: &TrashContext,
     source_version: Option<crate::file_identity::FileVersion>,
+    destination: Option<crate::file_identity::VerifiedDestination>,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<TrashedRecord, TrashError> {
-    trash_file_checked(file, owning_root, content_hash, context, source_version, |_| {}, cancelled)
+    trash_file_checked(file, owning_root, content_hash, context, source_version, destination, |_| {}, cancelled)
 }
 
 fn trash_file_with_before_move(
@@ -188,7 +192,7 @@ fn trash_file_with_before_move(
     context: &TrashContext,
     before_move: impl FnOnce(&Path),
 ) -> Result<TrashedRecord, TrashError> {
-    trash_file_checked(file, owning_root, content_hash, context, None, before_move, &|| false)
+    trash_file_checked(file, owning_root, content_hash, context, None, None, before_move, &|| false)
 }
 
 fn trash_file_checked(
@@ -197,6 +201,7 @@ fn trash_file_checked(
     content_hash: Option<&str>,
     context: &TrashContext,
     source_version: Option<crate::file_identity::FileVersion>,
+    destination: Option<crate::file_identity::VerifiedDestination>,
     before_move: impl FnOnce(&Path),
     cancelled: &dyn Fn() -> bool,
 ) -> Result<TrashedRecord, TrashError> {
@@ -217,7 +222,7 @@ fn trash_file_checked(
         .into());
     }
     let plan = prepare_trash(file, owning_root, content_hash, context, &metadata)?;
-    commit_trash(file, plan, source_version, before_move, cancelled)
+    commit_trash(file, plan, source_version, destination, before_move, cancelled)
 }
 
 struct TrashPlan {
@@ -347,6 +352,7 @@ fn commit_trash(
     source: &Path,
     plan: TrashPlan,
     source_version: Option<crate::file_identity::FileVersion>,
+    destination: Option<crate::file_identity::VerifiedDestination>,
     before_move: impl FnOnce(&Path),
     cancelled: &dyn Fn() -> bool,
 ) -> Result<TrashedRecord, TrashError> {
@@ -357,19 +363,21 @@ fn commit_trash(
             message,
             outcome_unknown: false,
             source_changed: false,
+            destination_changed: false,
             cancelled: false,
         })
         .and_then(|()| {
             #[cfg(target_os = "macos")]
-            let moved = plan.private.move_source(source, &plan.stored, source_version);
+            let moved = plan.private.move_source(source, &plan.stored, source_version, destination);
             #[cfg(windows)]
-            let moved = copy_before_remove(source, &plan, source_version, || {}, cancelled);
+            let moved = copy_before_remove(source, &plan, source_version, destination, || {}, cancelled);
             #[cfg(not(any(target_os = "macos", windows)))]
             let moved: std::io::Result<()> = Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "private deletion is unsupported on this platform"));
             moved.map_err(|error| TrashError {
                 message: format!("trash move failed for {}: {error}", crate::native_path::label(&source)),
                 outcome_unknown: volume_io::outcome_unknown(&error),
                 source_changed: crate::file_identity::source_version_changed(&error),
+                destination_changed: crate::file_identity::destination_changed(&error),
                 cancelled: error.kind() == std::io::ErrorKind::Interrupted && cancelled(),
             })
         });
@@ -396,6 +404,7 @@ fn copy_before_remove(
     source: &Path,
     plan: &TrashPlan,
     expected: Option<crate::file_identity::FileVersion>,
+    destination: Option<crate::file_identity::VerifiedDestination>,
     before_remove: impl FnOnce(),
     cancelled: &dyn Fn() -> bool,
 ) -> std::io::Result<()> {
@@ -433,6 +442,7 @@ fn copy_before_remove(
         if crate::file_identity::volume_of(&stored)? != crate::file_identity::volume_of(&source_path)? {
             return Err(std::io::Error::other("private recovery moved to a different filesystem"));
         }
+        if let Some(destination) = &destination { destination.require_current()?; }
         #[cfg(windows)]
         { crate::trash_privacy::remove_original(&source_path, version) }
         #[cfg(not(windows))]

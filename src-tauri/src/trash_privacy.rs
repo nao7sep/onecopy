@@ -88,8 +88,9 @@ impl Directory {
         source: &Path,
         target: &Path,
         version: Option<crate::file_identity::FileVersion>,
+        destination: Option<crate::file_identity::VerifiedDestination>,
     ) -> io::Result<()> {
-        crate::fs_publish::rename_into_directory(source, target, self.handle.clone(), version)
+        crate::fs_publish::rename_into_directory(source, target, self.handle.clone(), version, destination)
     }
 
     #[cfg(any(windows, test))]

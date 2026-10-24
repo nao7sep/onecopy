@@ -137,6 +137,58 @@ impl FileVersion {
     }
 }
 
+/// Holds the descriptor whose bytes established delivery. Clones accompany
+/// physical removal jobs, so a timed-out caller cannot retire this proof while
+/// its worker might still remove an original. VolumeFile owns deferred close.
+#[derive(Clone, Debug)]
+pub(crate) struct VerifiedDestination {
+    file: Arc<Mutex<VolumeFile>>,
+    version: FileVersion,
+    path: PathBuf,
+}
+
+impl VerifiedDestination {
+    pub(crate) fn hold(file: &mut VolumeFile, path: &Path, version: FileVersion) -> io::Result<Self> {
+        let held = file.with(Op::Stat, None, None, move |file| {
+            if FileVersion::from_file(file)? != version {
+                return Err(io::Error::other("destination changed after verification"));
+            }
+            file.try_clone()
+        })?;
+        Ok(Self { file: Arc::new(Mutex::new(VolumeFile::new(held, path.to_path_buf()))), version, path: path.to_path_buf() })
+    }
+
+    pub(crate) fn path(&self) -> &Path { &self.path }
+
+    /// Called inside the final source-removal worker, after its queued wait.
+    /// External writers still cannot be excluded between validation and syscall.
+    pub(crate) fn require_current(&self) -> io::Result<()> {
+        let result = (|| {
+            let mut file = self.file.lock().map_err(|_| io::Error::other("destination proof is unavailable"))?;
+            if FileVersion::of(&mut file)? != self.version || !self.version.matches_path(&self.path)? {
+                return Err(io::Error::other("destination no longer names the verified file version"));
+            }
+            Ok(())
+        })();
+        result.map_err(|cause| io::Error::other(DestinationChanged { path: self.path.clone(), cause }))
+    }
+}
+
+#[derive(Debug)]
+struct DestinationChanged { path: PathBuf, cause: io::Error }
+
+impl std::fmt::Display for DestinationChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Move destination cannot authorize source removal ({}): {}", crate::native_path::label(&self.path), self.cause)
+    }
+}
+impl std::error::Error for DestinationChanged {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { Some(&self.cause) }
+}
+pub(crate) fn destination_changed(error: &io::Error) -> bool {
+    error.get_ref().is_some_and(|cause| cause.is::<DestinationChanged>())
+}
+
 #[derive(Debug)]
 struct SourceVersionChanged {
     cause: Option<io::Error>,

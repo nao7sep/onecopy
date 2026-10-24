@@ -74,7 +74,7 @@ fn a_proven_move_without_exclusive_rename_preserves_a_queued_source_replacement(
             std::fs::write(&source, b"new-uncovered-source-bytes").unwrap();
             volume.release();
         });
-        without_exclusive_rename(|| rename_into_directory(&source, &target, std::sync::Arc::new(std::fs::File::open(dir.path()).unwrap()), Some(version)))
+        without_exclusive_rename(|| rename_into_directory(&source, &target, std::sync::Arc::new(std::fs::File::open(dir.path()).unwrap()), Some(version), None))
     });
     assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Unsupported);
     assert_eq!(

@@ -684,7 +684,7 @@ fn private_copy_publishes_complete_recovery_before_removing_source() {
     std::fs::hard_link(&source, &alias).unwrap();
     let original_permissions = std::fs::metadata(&alias).unwrap().permissions();
     let plan = prepare_trash(&source, root.path(), None, &TrashContext::new(TrashKind::Delete, "copy-test"), &std::fs::metadata(&source).unwrap()).unwrap();
-    copy_before_remove(&source, &plan, None, || {
+    copy_before_remove(&source, &plan, None, None, || {
         assert_eq!(std::fs::read(&plan.stored).unwrap(), b"protected recovery bytes");
         assert!(source.exists());
     }, &|| false).unwrap();
@@ -700,12 +700,33 @@ fn private_copy_keeps_both_recovery_and_replaced_original_on_cleanup_failure() {
     let source = root.path().join("original.jpg");
     std::fs::write(&source, b"original bytes").unwrap();
     let plan = prepare_trash(&source, root.path(), None, &TrashContext::new(TrashKind::Delete, "copy-test"), &std::fs::metadata(&source).unwrap()).unwrap();
-    let result = copy_before_remove(&source, &plan, None, || {
+    let result = copy_before_remove(&source, &plan, None, None, || {
         std::fs::rename(&source, root.path().join("old-source")).unwrap();
         std::fs::write(&source, b"new unrepresented bytes").unwrap();
     }, &|| false);
     assert!(result.is_err());
     assert_eq!(std::fs::read(&source).unwrap(), b"new unrepresented bytes");
+    assert_eq!(std::fs::read(&plan.stored).unwrap(), b"original bytes");
+}
+
+#[test]
+fn private_copy_retains_original_and_recovery_when_delivery_changes() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("original.jpg");
+    let destination = root.path().join("delivered.jpg");
+    std::fs::write(&source, b"original bytes").unwrap();
+    std::fs::write(&destination, b"original bytes").unwrap();
+    let (mut file, _) = crate::file_identity::open_regular_nofollow(&destination).unwrap();
+    let version = crate::file_identity::FileVersion::of(&mut file).unwrap();
+    let proof = crate::file_identity::VerifiedDestination::hold(&mut file, &destination, version).unwrap();
+    let plan = prepare_trash(&source, root.path(), None,
+        &TrashContext::new(TrashKind::Delete, "changed-delivery"), &std::fs::metadata(&source).unwrap()).unwrap();
+    let error = copy_before_remove(&source, &plan, None, Some(proof), || {
+        std::fs::rename(&destination, root.path().join("old-delivery")).unwrap();
+        std::fs::write(&destination, b"another file").unwrap();
+    }, &|| false).unwrap_err();
+    assert!(crate::file_identity::destination_changed(&error), "{error}");
+    assert_eq!(std::fs::read(&source).unwrap(), b"original bytes");
     assert_eq!(std::fs::read(&plan.stored).unwrap(), b"original bytes");
 }
 
@@ -716,7 +737,7 @@ fn private_copy_preserves_source_and_winner_when_publication_is_occupied() {
     std::fs::write(&source, b"original bytes").unwrap();
     let plan = prepare_trash(&source, root.path(), None, &TrashContext::new(TrashKind::Delete, "copy-test"), &std::fs::metadata(&source).unwrap()).unwrap();
     std::fs::write(&plan.stored, b"other writer").unwrap();
-    assert!(copy_before_remove(&source, &plan, None, || {}, &|| false).is_err());
+    assert!(copy_before_remove(&source, &plan, None, None, || {}, &|| false).is_err());
     assert_eq!(std::fs::read(&source).unwrap(), b"original bytes");
     assert_eq!(std::fs::read(&plan.stored).unwrap(), b"other writer");
     assert!(!std::fs::read_dir(&plan.day_dir).unwrap().any(|entry| crate::file_identity::is_private_tmp_name(&entry.unwrap().path())));
@@ -729,7 +750,7 @@ fn cancelling_private_copy_keeps_original_and_removes_unpublished_staging() {
     std::fs::write(&source, vec![42u8; 1024 * 1024]).unwrap();
     let plan = prepare_trash(&source, root.path(), None, &TrashContext::new(TrashKind::Delete, "copy-cancel"), &std::fs::metadata(&source).unwrap()).unwrap();
     let polls = std::cell::Cell::new(0);
-    let result = copy_before_remove(&source, &plan, None, || {}, &|| {
+    let result = copy_before_remove(&source, &plan, None, None, || {}, &|| {
         polls.set(polls.get() + 1);
         polls.get() > 2
     });
@@ -750,7 +771,7 @@ fn failed_private_copy_write_leaves_original_and_no_published_recovery() {
     fake.stall(&[Op::Write], Some(&plan.day_dir));
     let failed = std::thread::scope(|scope| {
         scope.spawn(|| { assert!(fake.wait_until_held(1, std::time::Duration::from_secs(10))); fake.fail(); });
-        copy_before_remove(&source, &plan, None, || {}, &|| false)
+        copy_before_remove(&source, &plan, None, None, || {}, &|| false)
     });
     assert!(failed.is_err());
     assert_eq!(std::fs::read(&source).unwrap(), b"original bytes");

@@ -2991,6 +2991,100 @@ fn move_refuses_a_replacement_while_the_final_source_removal_is_held() {
     }
 }
 
+#[test]
+fn move_keeps_originals_when_verified_destination_changes() {
+    for mode in [MoveOutMode::MoveTrashRest, MoveOutMode::MoveDeleteRest] {
+        for identical in [false, true] {
+            for change in ["replace", "edit", "remove"] {
+                let f = fixture("changed-delivery");
+                let source = f.root.join("photo.jpg");
+                std::fs::write(&source, b"original-image").unwrap();
+                scan(&f);
+                let dest = f._dir.path().join("destination");
+                std::fs::create_dir(&dest).unwrap();
+                let target = dest.join("photo.jpg");
+                if identical { std::fs::write(&target, b"original-image").unwrap(); }
+                let mut changed = false;
+                let outcome = move_batch(&f.conn, &f.app_root, &f.cache,
+                    &[item_named(&f, "photo.jpg")], &dest, mode, &|| false, |progress| {
+                        if !changed && matches!(progress, MoveBatchProgress::Delivering { files_done: 1, .. }) {
+                            if change != "edit" {
+                                std::fs::rename(&target, f._dir.path().join("old-delivery")).unwrap();
+                            }
+                            if change != "remove" { std::fs::write(&target, b"different destination bytes").unwrap(); }
+                            changed = true;
+                        }
+                    }).unwrap();
+                assert!(changed);
+                assert!(outcome.error.is_some(), "{mode:?} {identical} {change}: {outcome:?}");
+                assert_eq!(outcome.exported, u64::from(!identical));
+                assert_eq!(outcome.skipped_identical, u64::from(identical));
+                assert_eq!(outcome.post_action.deleted_files, 0);
+                assert_eq!(outcome.post_action.failed_files, 1);
+                assert_eq!(outcome.post_action.unknown_files, 0);
+                assert_eq!(std::fs::read(&source).unwrap(), b"original-image");
+                assert_eq!(row_state(&f, "photo.jpg"), Some(0));
+                assert!(open_issue_kinds(&f, &target).iter().any(|kind| kind == COPY_ERROR));
+            }
+        }
+    }
+}
+
+#[test]
+fn move_rechecks_destination_inside_queued_source_removal() {
+    for mode in [MoveOutMode::MoveTrashRest, MoveOutMode::MoveDeleteRest] {
+        let f = fixture("queued-destination-replacement");
+        let source = f.root.join("photo.jpg");
+        std::fs::write(&source, b"original-image").unwrap();
+        std::fs::write(f.root.join("photo.xmp"), b"original-edit").unwrap();
+        scan(&f);
+        let dest = f._dir.path().join("destination");
+        std::fs::create_dir(&dest).unwrap();
+        let volume = FakeStallingVolume::mount(&f.root, SETTLE);
+        volume.stall(&[if mode == MoveOutMode::MoveTrashRest { Op::Rename } else { Op::Remove }], None);
+        let outcome = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                assert!(volume.wait_until_held(1, SETTLE));
+                std::fs::rename(dest.join("photo.jpg"), f._dir.path().join("old-delivery")).unwrap();
+                std::fs::write(dest.join("photo.jpg"), b"replacement").unwrap();
+                volume.release();
+            });
+            move_batch(&f.conn, &f.app_root, &f.cache, &[item_named(&f, "photo.jpg")],
+                &dest, mode, &|| false, |_| {}).unwrap()
+        });
+        assert!(outcome.error.is_some(), "{outcome:?}");
+        assert_eq!(std::fs::read(&source).unwrap(), b"original-image");
+        assert_eq!(std::fs::read(f.root.join("photo.xmp")).unwrap(), b"original-edit");
+        assert_eq!(outcome.post_action.deleted_files, 0);
+        assert_eq!(outcome.post_action.failed_files, 1);
+        assert_eq!(outcome.post_action.unknown_files, 0);
+        assert!(open_issue_kinds(&f, &dest.join("photo.jpg")).iter().any(|kind| kind == COPY_ERROR));
+    }
+}
+
+#[test]
+fn move_stops_remaining_duplicate_cleanup_when_destination_changes() {
+    for mode in [MoveOutMode::MoveTrashRest, MoveOutMode::MoveDeleteRest] {
+        let (f, hash, dest) = rotten_copy_fixture("delivery-between-removals");
+        let mut changed = false;
+        let outcome = move_batch(&f.conn, &f.app_root, &f.cache,
+            &[ItemIdentity { hash: Some(hash), path_id: None }], &dest, mode, &|| false, |progress| {
+                if !changed && matches!(progress, MoveBatchProgress::Delivering { files_done: 2, .. }) {
+                    std::fs::write(dest.join("r.jpg"), b"edited destination").unwrap();
+                    changed = true;
+                }
+            }).unwrap();
+        assert!(changed);
+        assert!(outcome.error.is_some(), "{outcome:?}");
+        assert_eq!(outcome.post_action.deleted_files, 1);
+        assert_eq!(outcome.post_action.failed_files, 1);
+        let remaining: Vec<_> = [f.root.join("a/r.jpg"), f.root.join("b/r.jpg")]
+            .into_iter().filter(|path| path.exists()).collect();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(std::fs::read(&remaining[0]).unwrap(), b"healthy-bytes");
+    }
+}
+
 fn open_issue_kinds(f: &Fixture, path: &std::path::Path) -> Vec<String> {
     let mut statement = f
         .conn
