@@ -1,3 +1,6 @@
+#[path = "support/catalogue.rs"]
+mod source_catalogue;
+
 // Integration tests for the natively resolved interface language: which tag the
 // computer's languages resolve to, how a saved choice is normalized and taken
 // from the settings, and that the native menu's text exists in every catalogue.
@@ -6,8 +9,6 @@ use std::fs;
 use std::path::Path;
 
 use onecopy_lib::i18n::{catalogue, config_preference, normalize_preference, system_language, LANGUAGES};
-use onecopy_lib::menu::KEYS;
-use onecopy_lib::startup::LAUNCH_FAILURE_KEYS;
 use serde_json::json;
 
 #[test]
@@ -71,36 +72,57 @@ fn embeds_exactly_the_catalogues_in_the_locales_folder() {
     let mut listed: Vec<String> = LANGUAGES.iter().map(|tag| tag.to_string()).collect();
     listed.sort();
     assert_eq!(listed, on_disk);
-    for tag in LANGUAGES {
-        assert!(catalogue(tag).has("nativeMenu.about"), "{tag} is not embedded");
+    for language in LANGUAGES {
+        let source = source_catalogue::entries(language);
+        let native = catalogue(language);
+        for (key, value) in source.as_object().unwrap() {
+            if let Some(template) = value.as_str() {
+                assert_eq!(native.text(key, "OneCopy"), template.replace("{app}", "OneCopy"),
+                    "{language}: embedded text for {key}");
+            }
+        }
+    }
+}
+
+// Read literal references from both platform branches without maintaining a
+// second key inventory or requiring a running native application to build menus.
+fn referenced_keys<'a>(source: &'a str, prefix: &str) -> std::collections::BTreeSet<&'a str> {
+    let keys: std::collections::BTreeSet<_> = source.match_indices(prefix)
+        .filter(|(start, _)| *start > 0 && source.as_bytes()[start - 1] == b'"')
+        .filter_map(|(start, _)| source[start..].split_once('"').map(|(key, _)| key))
+        .filter(|key| key.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-')))
+        .collect();
+    assert!(!keys.is_empty(), "no native references for {prefix}");
+    keys
+}
+
+fn assert_keys_in_catalogues<'a>(keys: impl IntoIterator<Item = &'a str>) {
+    let keys: Vec<_> = keys.into_iter().collect();
+    for language in LANGUAGES {
+        let source = source_catalogue::entries(language);
+        let native = catalogue(language);
+        for key in &keys {
+            let template = source.get(*key).and_then(serde_json::Value::as_str)
+                .unwrap_or_else(|| panic!("{language} lacks {key}"));
+            assert_eq!(native.text(key, "OneCopy"), template.replace("{app}", "OneCopy"),
+                "{language}: embedded text for {key}");
+        }
     }
 }
 
 #[test]
 fn every_menu_key_is_in_every_language() {
-    for language in LANGUAGES {
-        let text = catalogue(language);
-        for key in KEYS {
-            assert!(text.has(key), "{language} lacks {key}");
-        }
-    }
+    assert_keys_in_catalogues(referenced_keys(include_str!("../src/menu.rs"), "nativeMenu."));
 }
 
 #[test]
 fn the_records_window_title_is_in_every_language() {
-    for language in LANGUAGES {
-        assert!(catalogue(language).has(onecopy_lib::records_window::TITLE_KEY), "{language} lacks the Records title");
-    }
+    assert_keys_in_catalogues([onecopy_lib::records_window::TITLE_KEY]);
 }
 
 #[test]
 fn every_launch_failure_key_is_in_every_language() {
-    for language in LANGUAGES {
-        let text = catalogue(language);
-        for key in LAUNCH_FAILURE_KEYS {
-            assert!(text.has(key), "{language} lacks {key}");
-        }
-    }
+    assert_keys_in_catalogues(referenced_keys(include_str!("../src/startup.rs"), "launch."));
 }
 
 #[test]

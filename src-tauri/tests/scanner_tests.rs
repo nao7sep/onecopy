@@ -1,3 +1,6 @@
+#[path = "support/catalogue.rs"]
+mod source_catalogue;
+
 // Tests exercising the crate's public API from outside shipped source
 // (tests-folder conventions, Rust form).
 
@@ -618,7 +621,7 @@ fn diverged_copies_surface_as_a_copies_disagree_issue() {
         )
         .unwrap();
     let catalogue = onecopy_lib::i18n::catalogue("en");
-    assert!(catalogue.has(&message_key), "{message_key} names a catalogue sentence");
+    assert!(source_catalogue::entries("en").get(&message_key).is_some_and(serde_json::Value::is_string), "{message_key} names a catalogue sentence");
     assert!(
         !message.contains(&catalogue.text(&message_key, "OneCopy")),
         "the recorded detail stays quantitative, not OneCopy's own prose"

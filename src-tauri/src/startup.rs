@@ -693,11 +693,6 @@ fn initialize_data(
     if crate::app_lifecycle::shutting_down() { StartupOutcome::blocked() } else { StartupOutcome::ready() }
 }
 
-/// Every catalogue key this dialog reads; the tests check each one exists in
-/// every language.
-pub const LAUNCH_FAILURE_KEYS: [&str; 4] =
-    ["launch.failedTitle", "launch.failedBody", "launch.failedLogDir", "launch.quit"];
-
 /// The last-resort dialog for a failure before any window exists. It speaks the
 /// language the core resolved at launch, which is the computer's language when
 /// nothing is saved yet or the settings could not be read.

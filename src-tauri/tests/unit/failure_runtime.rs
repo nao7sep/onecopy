@@ -1,3 +1,6 @@
+#[path = "../support/catalogue.rs"]
+mod source_catalogue;
+
 use super::{condition_message_key, interface_notice, presentation_for, InterfaceFailure};
 
 #[test]
@@ -38,10 +41,10 @@ fn every_condition_message_key_exists_in_every_embedded_catalogue() {
         "an-unnamed-condition-nothing-maps-to",
     ];
     for language in crate::i18n::LANGUAGES {
-        let text = crate::i18n::catalogue(language);
+        let text = source_catalogue::entries(language);
         for kind in kinds {
             let key = condition_message_key(kind);
-            assert!(text.has(key), "{language} lacks {key} (from kind {kind})");
+            assert!(text.get(key).is_some_and(serde_json::Value::is_string), "{language} lacks {key} (from kind {kind})");
         }
     }
 }

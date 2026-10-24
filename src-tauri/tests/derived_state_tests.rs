@@ -1,3 +1,6 @@
+#[path = "support/catalogue.rs"]
+mod source_catalogue;
+
 // Fixed-class output receipts and explicit attempt boundaries.
 
 use onecopy_lib::preview::CachePaths;
@@ -521,7 +524,7 @@ fn derived_failure_issues_keep_hostile_diagnostics_out_of_onecopys_own_sentence(
     for kind in kinds {
         let row = issues.iter().find(|row| row.kind == kind).unwrap();
         let key = row.message_key.as_deref().unwrap();
-        assert!(english.has(key), "{kind}: {key} is not a catalogue entry");
+        assert!(source_catalogue::entries("en").get(key).is_some_and(serde_json::Value::is_string), "{kind}: {key} is not a catalogue entry");
         assert!(keys.insert(key), "{kind} shares its sentence {key} with another kind");
         let sentence = english.text(key, "OneCopy");
         assert!(!sentence.contains("HOSTILE-SENTINEL"));

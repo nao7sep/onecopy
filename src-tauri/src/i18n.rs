@@ -111,12 +111,6 @@ pub fn catalogue(language: &str) -> Catalogue {
 }
 
 impl Catalogue {
-    /// Whether this language itself (not the English fallback) has a plain
-    /// entry for the key.
-    pub fn has(&self, key: &str) -> bool {
-        self.entries.get(key).is_some_and(JsonValue::is_string)
-    }
-
     /// A plain entry with `{app}` filled in. The catalogue gate guarantees every
     /// key in every language; English, then the key itself, only guard a build
     /// that skipped it.

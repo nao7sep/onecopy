@@ -67,32 +67,6 @@ pub fn set_main_available(app: &AppHandle, enabled: bool) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Every catalogue key the native menu reads; the tests check each one exists
-/// in every language.
-pub const KEYS: [&str; 21] = [
-    "nativeMenu.about",
-    "nativeMenu.settings",
-    "nativeMenu.services",
-    "nativeMenu.hide",
-    "nativeMenu.hideOthers",
-    "nativeMenu.quit",
-    "nativeMenu.exit",
-    "nativeMenu.file",
-    "nativeMenu.closeWindow",
-    "nativeMenu.edit",
-    "nativeMenu.undo",
-    "nativeMenu.redo",
-    "nativeMenu.cut",
-    "nativeMenu.copy",
-    "nativeMenu.paste",
-    "nativeMenu.selectAll",
-    "nativeMenu.window",
-    "nativeMenu.minimize",
-    "nativeMenu.zoom",
-    "nativeMenu.maximize",
-    "nativeMenu.help",
-];
-
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn build(app: &AppHandle, language: &str) -> tauri::Result<Menu<Wry>> {
     let enabled = app.state::<MainSurfaceState>().available();

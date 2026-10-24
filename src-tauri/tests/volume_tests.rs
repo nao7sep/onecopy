@@ -1,3 +1,6 @@
+#[path = "support/catalogue.rs"]
+mod source_catalogue;
+
 // Tests exercising the crate's public API from outside shipped source
 // (tests-folder conventions, Rust form).
 
@@ -247,8 +250,8 @@ fn availability_wording_requires_recorded_volume_evidence() {
     assert_ne!(folder_missing, unrecorded);
     assert_ne!(drive_unavailable, unrecorded);
     assert_ne!(folder_missing, drive_unavailable);
-    let english = onecopy_lib::i18n::catalogue("en");
+    let english = source_catalogue::entries("en");
     for key in [unrecorded, folder_missing, drive_unavailable] {
-        assert!(english.has(key), "{key} is shipped wording");
+        assert!(english.get(key).is_some_and(serde_json::Value::is_string), "{key} is shipped wording");
     }
 }

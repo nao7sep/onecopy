@@ -1,3 +1,6 @@
+#[path = "../support/catalogue.rs"]
+mod source_catalogue;
+
 use super::{
     directory_belongs_to_root, live_images_sql, live_photo_pair_candidates_sql, raw_pair_candidates_sql, scan_issue_message_key,
     COPIES_DISAGREE, METADATA_READ_ERROR, READ_ERROR, STAT_ERROR, WALK_ERROR,
@@ -39,10 +42,10 @@ fn every_scan_issue_message_key_exists_in_every_embedded_catalogue() {
     // language at once, for every scan-time Issue OneCopy raises.
     let kinds = [WALK_ERROR, STAT_ERROR, READ_ERROR, METADATA_READ_ERROR, COPIES_DISAGREE, "unmapped-kind"];
     for language in crate::i18n::LANGUAGES {
-        let text = crate::i18n::catalogue(language);
+        let text = source_catalogue::entries(language);
         for kind in kinds {
             let key = scan_issue_message_key(kind);
-            assert!(text.has(key), "{language} lacks {key} (from kind {kind})");
+            assert!(text.get(key).is_some_and(serde_json::Value::is_string), "{language} lacks {key} (from kind {kind})");
         }
     }
 }
