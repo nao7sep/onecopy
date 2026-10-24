@@ -774,23 +774,63 @@ pub struct DirEntryInfo {
     pub metadata: Option<io::Result<Metadata>>,
 }
 
+fn directory_entries(
+    path: &Path,
+    with_metadata: bool,
+) -> io::Result<impl Iterator<Item = io::Result<DirEntryInfo>>> {
+    Ok(std::fs::read_dir(path)?.map(move |entry| {
+        let entry = entry?;
+        Ok(DirEntryInfo {
+            path: entry.path(),
+            file_name: entry.file_name(),
+            file_type: entry.file_type().ok(),
+            metadata: with_metadata.then(|| entry.metadata()),
+        })
+    }))
+}
+
 /// Lists a directory in one bounded call. `with_metadata` also reads each
 /// entry's metadata inside the same call.
 pub fn read_dir(path: &Path, with_metadata: bool) -> io::Result<Vec<DirEntryInfo>> {
     let target = fs_path(path);
+    call(path, Op::List, None, move || directory_entries(&target, with_metadata)?.collect())
+}
+
+/// Answers whether any child matches and whether the directory is empty.
+/// Enumeration and metadata stay lazy on one volume worker and stop at the
+/// first match. A timed-out caller asks the retained worker to stop before
+/// reading another entry; the volume remains owned until that worker settles.
+pub(crate) fn probe_dir(
+    path: &Path,
+    accepts: impl FnMut(&DirEntryInfo) -> io::Result<bool> + Send + 'static,
+) -> io::Result<(bool, bool)> {
+    struct StopOnReturn(Arc<AtomicBool>);
+    impl Drop for StopOnReturn {
+        fn drop(&mut self) { self.0.store(true, Ordering::Release); }
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    let _stop_on_return = StopOnReturn(stop.clone());
+    let target = fs_path(path);
     call(path, Op::List, None, move || {
-        let mut entries = Vec::new();
-        for entry in std::fs::read_dir(&target)? {
-            let entry = entry?;
-            entries.push(DirEntryInfo {
-                path: entry.path(),
-                file_name: entry.file_name(),
-                file_type: entry.file_type().ok(),
-                metadata: with_metadata.then(|| entry.metadata()),
-            });
-        }
-        Ok(entries)
+        probe_directory_entries(directory_entries(&target, true)?, &stop, accepts)
     })
+}
+
+fn probe_directory_entries(
+    mut entries: impl Iterator<Item = io::Result<DirEntryInfo>>,
+    stop: &AtomicBool,
+    mut accepts: impl FnMut(&DirEntryInfo) -> io::Result<bool>,
+) -> io::Result<(bool, bool)> {
+    let mut is_empty = true;
+    loop {
+        if stop.load(Ordering::Acquire) {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "directory probe stopped"));
+        }
+        let Some(entry) = entries.next() else { return Ok((false, is_empty)); };
+        let entry = entry?;
+        is_empty = false;
+        if accepts(&entry)? { return Ok((true, false)); }
+    }
 }
 
 /// Reads a whole small file in one bounded call.

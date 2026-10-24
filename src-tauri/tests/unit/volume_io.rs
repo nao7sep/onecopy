@@ -164,3 +164,42 @@ fn failed_first_worker_rejects_a_rename_without_enqueuing_or_effects() {
     assert_eq!(std::fs::read(source).unwrap(), b"preserved");
     assert!(!target.exists());
 }
+
+#[test]
+fn a_directory_probe_stops_before_reading_later_entries_and_metadata() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("child")).unwrap();
+    let entries = directory_entries(root.path(), true).unwrap()
+        .chain(std::iter::once_with(|| panic!("an answered probe read another directory entry")));
+    assert_eq!(probe_directory_entries(entries, &AtomicBool::new(false), |entry| {
+        assert!(entry.metadata.as_ref().unwrap().as_ref().unwrap().is_dir());
+        Ok(entry.file_type.unwrap().is_dir())
+    }).unwrap(), (true, false));
+}
+
+#[test]
+fn a_timed_out_directory_probe_stops_after_its_current_entry_settles() {
+    let root = tempfile::tempdir().unwrap();
+    for name in ["first", "second", "third"] {
+        std::fs::write(root.path().join(name), b"entry").unwrap();
+    }
+    let volume = FakeStallingVolume::mount(root.path(), Duration::from_millis(200));
+    let (entered, observed) = mpsc::channel();
+    let (release, held) = mpsc::channel();
+    let visits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = visits.clone();
+    let path = root.path().to_path_buf();
+    let caller = std::thread::spawn(move || probe_dir(&path, move |_| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        entered.send(()).unwrap();
+        held.recv().unwrap();
+        Ok(false)
+    }));
+    observed.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(caller.join().unwrap().is_err());
+    assert!(is_stalled(root.path()));
+    release.send(()).unwrap();
+    assert!(volume.wait_until_settled(Duration::from_secs(5)));
+    assert_eq!(visits.load(Ordering::SeqCst), 1);
+    assert!(!is_stalled(root.path()));
+}

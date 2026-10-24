@@ -106,15 +106,11 @@ fn child_directory_facts(
     policy: &visibility::Policy,
     data_root: &Path,
 ) -> Result<(bool, bool), String> {
-    let children = crate::volume_io::read_dir(path, true).map_err(|error| error.to_string())?;
-    let mut is_empty = true;
-    for child in children {
-        is_empty = false;
-        if is_browsable_destination_child(&child, policy, data_root)? {
-            return Ok((true, false));
-        }
-    }
-    Ok((false, is_empty))
+    let policy = policy.clone();
+    let data_root = data_root.to_path_buf();
+    crate::volume_io::probe_dir(path, move |child| {
+        is_browsable_destination_child(child, &policy, &data_root).map_err(std::io::Error::other)
+    }).map_err(|error| error.to_string())
 }
 
 /// The folder name a user typed, trimmed; refused when empty, when it holds
