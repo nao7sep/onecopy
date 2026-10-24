@@ -74,6 +74,7 @@ function DirNode({
   const emptiness = useDestinationsStore((s) => s.emptiness);
   const toggleExpand = useDestinationsStore((s) => s.toggleExpand);
   const isOpen = expanded.has(entry.path);
+  const readFailed = useDestinationsStore((s) => s.listing[entry.path] === "error");
   const isEmpty = emptiness[entry.path] === true;
   const hasChildren = nodeHasChildren(entry, children);
   const activePath = useDestinationsStore((s) => s.activePath);
@@ -139,6 +140,10 @@ function DirNode({
       </div>
       {isOpen ? (
         <ChildNodes path={entry.path} depth={depth + 1} />
+      ) : readFailed ? (
+        <p className="py-1 text-xs text-danger" style={{ paddingLeft: `${(depth + 1) * 12 + 6}px` }}>
+          {t("destinations.folderReadFailed")}
+        </p>
       ) : null}
     </li>
   );

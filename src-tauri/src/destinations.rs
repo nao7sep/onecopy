@@ -14,6 +14,8 @@ pub struct DirEntry {
     path: String,
     has_children: bool,
     is_empty: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    read_error: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -52,12 +54,18 @@ fn list_subdirs_at(
             continue;
         }
         let name = crate::native_path::encode(&entry.file_name).to_string();
-        let (has_children, is_empty) = child_directory_facts(&entry.path, policy, data_root)?;
+        // Child inspection is local to this row. A failed probe cannot erase
+        // accessible siblings or authorize deletion from unknown emptiness.
+        let (has_children, is_empty, read_error) = match child_directory_facts(&entry.path, policy, data_root) {
+            Ok((has_children, is_empty)) => (has_children, is_empty, None),
+            Err(error) => (true, false, Some(error)),
+        };
         entries.push(DirEntry {
             name,
             path: crate::native_path::encode(&entry.path).to_string(),
             has_children,
             is_empty,
+            read_error,
         });
     }
     entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -91,20 +99,14 @@ fn is_browsable_destination_child(
 }
 
 /// Whether a child folder has browsable children, and whether it is empty. A
-/// child whose drive does not answer is shown as expandable and not empty:
-/// expanding it asks again, and nothing offers to delete it.
+/// failed probe propagates to the row owner, which keeps the child expandable
+/// and nonempty with a visible failure. Expanding it asks again.
 fn child_directory_facts(
     path: &Path,
     policy: &visibility::Policy,
     data_root: &Path,
 ) -> Result<(bool, bool), String> {
-    let children = match crate::volume_io::read_dir(path, true) {
-        Ok(children) => children,
-        Err(error) if crate::volume_io::wait_failure(&error).is_some() => {
-            return Ok((true, false))
-        }
-        Err(error) => return Err(error.to_string()),
-    };
+    let children = crate::volume_io::read_dir(path, true).map_err(|error| error.to_string())?;
     let mut is_empty = true;
     for child in children {
         is_empty = false;

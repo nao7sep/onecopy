@@ -241,3 +241,22 @@ describe("the destination result", () => {
     expect(sentence.className.split(" ")).toEqual(expect.arrayContaining(["max-h-32", "overflow-y-auto", "break-words"]));
   });
 });
+
+it("shows a child inspection failure beside usable siblings and keeps Delete empty unavailable until recovery", async () => {
+  const blocked = { name: "blocked", path: "/dest/blocked", hasChildren: true, isEmpty: false, readError: "permission denied" };
+  const healthy = { name: "healthy", path: "/dest/healthy", hasChildren: false, isEmpty: true };
+  useDestinationsStore.setState({ roots: ["/dest"], expanded: new Set(["/dest"]), activePath: blocked.path });
+  mockCommands({
+    list_subdirs: ({ path }) => path === "/dest" ? { entries: [blocked, healthy], isEmpty: false } : { entries: [], isEmpty: true },
+    record_recent_notification: () => null,
+  });
+  const view = render(<DestinationsTab />);
+  await act(async () => { await vi.waitFor(() => expect(useDestinationsStore.getState().listing[blocked.path]).toBe("error")); });
+  const failedRow = view.getByRole("treeitem", { name: blocked.path });
+  expect(failedRow.textContent).toContain("Couldn’t read this folder.");
+  expect(view.getByRole("treeitem", { name: healthy.path })).toBeTruthy();
+  expect(view.queryByRole("button", { name: "Delete empty" })).toBeNull();
+  await act(async () => useDestinationsStore.getState().toggleExpand(blocked.path));
+  expect(failedRow.textContent).not.toContain("Couldn’t read this folder.");
+  expect(view.getByRole("button", { name: "Delete empty" })).toBeTruthy();
+});

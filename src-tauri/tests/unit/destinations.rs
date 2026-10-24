@@ -177,3 +177,27 @@ fn own_emptiness_tracks_creation_and_deleting_the_last_child() {
         assert_eq!(listing.is_empty, !ordinary_file);
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn unreadable_child_keeps_healthy_siblings_and_never_proves_emptiness() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let blocked = root.path().join("blocked");
+    std::fs::create_dir(&blocked).unwrap();
+    std::fs::create_dir(root.path().join("healthy")).unwrap();
+    std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let policy = visibility::Policy::from_config(&json!({})).unwrap();
+    let result = list_subdirs_at(root.path(), &policy, &root.path().join("data"));
+    std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let listing = result.unwrap();
+    let denied = listing.entries.iter().find(|entry| entry.name == "blocked").unwrap();
+    assert!(denied.has_children);
+    assert!(!denied.is_empty);
+    assert!(denied.read_error.is_some());
+    let healthy = listing.entries.iter().find(|entry| entry.name == "healthy").unwrap();
+    assert!(healthy.is_empty);
+    assert!(healthy.read_error.is_none());
+    let recovered = list_subdirs_at(root.path(), &policy, &root.path().join("data")).unwrap();
+    assert!(recovered.entries.iter().all(|entry| entry.read_error.is_none() && entry.is_empty));
+}

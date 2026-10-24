@@ -20,6 +20,7 @@ export interface DirEntry {
   path: string;
   hasChildren: boolean;
   isEmpty: boolean;
+  readError?: string;
 }
 
 export interface DirListing {
@@ -232,13 +233,39 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
         const emptiness = Object.fromEntries(entries
           .filter((entry) => (listingGenerations.get(entry.path) ?? 0) <= generation)
           .map((entry) => [entry.path, entry.isEmpty]));
-        const listing = { ...get().listing };
+        const current = get();
+        const listing = { ...current.listing };
+        const children = { ...current.children, [path]: entries };
         delete listing[path];
+        const recoveredExpanded: string[] = [];
+        const previousFailures = new Map((current.children[path] ?? [])
+          .filter((child) => child.readError !== undefined).map((child) => [child.path, child.readError]));
+        for (const entry of entries) {
+          if ((listingGenerations.get(entry.path) ?? 0) > generation) continue;
+          if (entry.readError !== undefined) {
+            listing[entry.path] = "error";
+            delete children[entry.path];
+            const previous = previousFailures.get(entry.path);
+            if (previous !== entry.readError) {
+              log.error("destination child inspection failed", { path: entry.path, error: { message: entry.readError } });
+              recordActionFailure("destination-list-failed", message("destinations.listFailed"),
+                new Error(`${entry.path}: ${entry.readError}`));
+            }
+          } else if (listing[entry.path] === "error") {
+            delete listing[entry.path];
+            if (entry.hasChildren && current.expanded.has(entry.path) && children[entry.path] === undefined) {
+              listing[entry.path] = "loading";
+              recoveredExpanded.push(entry.path);
+            }
+          }
+        }
         set({
-          children: { ...get().children, [path]: entries },
+          children,
           emptiness: { ...get().emptiness, ...emptiness, [path]: isEmpty },
           listing,
         });
+        // Do not await another request on our own lane before retiring this one.
+        for (const recovered of recoveredExpanded) void get().refreshNode(recovered);
       });
     } catch (error) {
       if (listingGenerations.get(path) !== generation) {

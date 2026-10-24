@@ -819,3 +819,29 @@ it("restores each reachable visibility branch without waiting for another drive"
   finish({ entries: [], isEmpty: true });
   await refresh;
 });
+
+it("does not replace newer child facts with a delayed parent inspection failure", async () => {
+  let finish!: (listing: DirListing) => void;
+  mockCommands({ list_subdirs: () => new Promise<DirListing>((resolve) => { finish = resolve; }) });
+  const parent = useDestinationsStore.getState().refreshNode("/dest");
+  await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+  mockCommands({ list_subdirs: () => ({ entries: [], isEmpty: true }) });
+  const child = useDestinationsStore.getState().refreshNode("/dest/child");
+  finish({ entries: [{ name: "child", path: "/dest/child", hasChildren: true, isEmpty: false, readError: "old refusal" }], isEmpty: false });
+  await Promise.all([parent, child]);
+  expect(useDestinationsStore.getState().listing["/dest/child"]).toBeUndefined();
+  expect(useDestinationsStore.getState().emptiness["/dest/child"]).toBe(true);
+});
+
+it("reloads a recovered expanded child instead of presenting its unknown contents as empty", async () => {
+  const child = { name: "child", path: "/dest/child", hasChildren: true, isEmpty: false };
+  const nested = { name: "nested", path: "/dest/child/nested", hasChildren: false, isEmpty: true };
+  useDestinationsStore.setState({ expanded: new Set(["/dest", child.path]) });
+  mockCommands({ list_subdirs: () => ({ entries: [{ ...child, readError: "denied" }], isEmpty: false }), record_recent_notification: () => null });
+  await useDestinationsStore.getState().refreshNode("/dest");
+  expect(useDestinationsStore.getState().listing[child.path]).toBe("error");
+  mockCommands({ list_subdirs: ({ path }) => ({ entries: path === "/dest" ? [child] : [nested], isEmpty: false }) });
+  await useDestinationsStore.getState().refreshNode("/dest");
+  await vi.waitFor(() => expect(useDestinationsStore.getState().children[child.path]).toEqual([nested]));
+  expect(useDestinationsStore.getState().listing[child.path]).toBeUndefined();
+});
