@@ -16,8 +16,14 @@ function Invoke-NativeCommand {
     )
 
     $output = & $FilePath @ArgumentList
-    if ($LASTEXITCODE -ne 0) {
-        throw "$FilePath failed with exit code $LASTEXITCODE"
+    $nativeExitCode = $LASTEXITCODE
+    if ($nativeExitCode -ne 0) {
+        # A caller may capture the success stream (the version read does).
+        # Preserve native diagnostics even when that assignment never returns.
+        foreach ($line in $output) {
+            [Console]::Out.WriteLine([string]$line)
+        }
+        throw "$FilePath failed with exit code $nativeExitCode"
     }
 
     return $output

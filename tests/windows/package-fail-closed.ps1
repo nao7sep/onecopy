@@ -47,9 +47,16 @@ function Assert-StaleOutputsRemoved {
 }
 
 function Invoke-PackageExpectFailure {
+    param([int]$ExpectedNativeExitCode, [string]$DiagnosticPrefix)
     $Output = & pwsh -NoProfile -NonInteractive -File (Join-Path $Sandbox "scripts/package.ps1") 2>&1
     if ($LASTEXITCODE -eq 0) {
         throw "Package script unexpectedly succeeded. Output: $Output"
+    }
+    $Text = $Output -join "`n"
+    foreach ($Expected in @("$DiagnosticPrefix-stdout", "$DiagnosticPrefix-stderr", "failed with exit code $ExpectedNativeExitCode")) {
+        if (-not $Text.Contains($Expected)) {
+            throw "Package failure lost diagnostic '$Expected'. Output: $Text"
+        }
     }
 }
 
@@ -64,15 +71,15 @@ try {
     $env:Path = (Join-Path $Sandbox "fake-bin") + [System.IO.Path]::PathSeparator + $OriginalPath
 
     Seed-StaleOutputs
-    Write-Command -Path $FakeNode -Lines @("@echo off", "exit /b 19")
+    Write-Command -Path $FakeNode -Lines @("@echo off", "echo version-stdout", "echo version-stderr 1>&2", "exit /b 19")
     Write-Command -Path $FakeTauri -Lines @("@echo off", "exit /b 0")
-    Invoke-PackageExpectFailure
+    Invoke-PackageExpectFailure -ExpectedNativeExitCode 19 -DiagnosticPrefix "version"
     Assert-StaleOutputsRemoved
 
     Seed-StaleOutputs
     Write-Command -Path $FakeNode -Lines @("@echo off", "echo 0.1.0", "exit /b 0")
-    Write-Command -Path $FakeTauri -Lines @("@echo off", "exit /b 23")
-    Invoke-PackageExpectFailure
+    Write-Command -Path $FakeTauri -Lines @("@echo off", "echo build-stdout", "echo build-stderr 1>&2", "exit /b 23")
+    Invoke-PackageExpectFailure -ExpectedNativeExitCode 23 -DiagnosticPrefix "build"
     Assert-StaleOutputsRemoved
 
     # A build that succeeds yields the installer and a portable zip that
