@@ -411,14 +411,21 @@ function ImageSurface({
   detail,
   enlargeSmall,
   surface,
+  readiness,
 }: {
   hash: string;
   detail: ItemDetail;
   enlargeSmall: boolean;
   surface: PlaybackSurface;
+  readiness: string;
 }) {
   const { t, text } = useI18n();
   const offersFfmpegInstall = useOffersFfmpegInstall(surface);
+  const current = useRef(true);
+  useEffect(() => {
+    current.current = true;
+    return () => { current.current = false; };
+  }, []);
   const [externalError, setExternalError] = useState<Message | null>(null);
   // A missing cache entry is USUALLY just a photo the scan's bulk pass has
   // not reached (it runs walk-order; on a slow machine the tail is hours
@@ -460,7 +467,9 @@ function ImageSurface({
         enlargeSmall={enlargeSmall}
         sourceWidth={detail.width}
         sourceHeight={detail.height}
+        cacheRevision={`${readiness}:${phase.attempt}`}
         onError={() => {
+          if (!current.current) return;
           if (phase.attempt > 0) {
             setPhase({
               kind: "failed",
@@ -470,12 +479,12 @@ function ImageSurface({
           }
           setPhase({ kind: "converting" });
           ensureRequestedPreview(hash)
-            .then((cacheHash) =>
-              setPhase({ kind: "showing", attempt: 1, cacheHash }),
-            )
+            .then((cacheHash) => {
+              if (current.current) setPhase({ kind: "showing", attempt: 1, cacheHash });
+            })
             .catch((error) => {
               log.warn("on-demand preview derive failed", toErrorFields(error));
-              setPhase({
+              if (current.current) setPhase({
                 kind: "failed",
                 reason: message("preview.previewPrepareFailed"),
               });
@@ -632,6 +641,11 @@ export default function PreviewSurface({
   // app-config projection of their own and fall back to this read-only
   // mirror of the same one setting.
   const auxiliaryEnlargeSmall = useWindowPreferencesStore((state) => state.enlargeSmallImages);
+  const decoderRevision = useBinariesStore((state) => {
+    const entry = ffmpegEntry(state.entries);
+    return entry === null || entry.status === "not-installed"
+      ? null : JSON.stringify([entry.path, entry.installedVersion]);
+  });
   const enlargeSmall = configuredEnlargeSmall ?? auxiliaryEnlargeSmall;
   if (detail !== null && isAudioFile(detail.fileName)) {
     const src =
@@ -695,10 +709,11 @@ export default function PreviewSurface({
           keyboardActive={keyboardActive}
         />
       ) : (
-        // Keyed by hash so a click-and-hold inspection ends when the item
-        // changes instead of showing the next item's pixels under the hold.
+        // A new cache publication or decoder ends the old attempt. Other
+        // detail and registry updates cannot turn a failure into a retry loop.
         <ImageSurface
-          key={hash}
+          key={JSON.stringify([hash, detail.previewRevision, decoderRevision])}
+          readiness={JSON.stringify([detail.previewRevision, decoderRevision])}
           hash={hash}
           detail={detail}
           enlargeSmall={enlargeSmall}

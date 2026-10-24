@@ -1719,3 +1719,19 @@ fn equal_dates_choose_the_case_insensitive_path_order_then_exact_path() {
     assert_eq!(items[0].file_name, "Photo.jpg");
     assert_eq!(items[0].dir_paths, vec!["/A", "/a", "/z"]);
 }
+
+#[test]
+fn detail_preview_revision_tracks_cache_publication_without_other_enrichment() {
+    let conn = db();
+    conn.execute_batch("INSERT INTO contents (hash, byte_size, kind) VALUES ('photo', 1, 'image');
+        INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash)
+        VALUES ('/photo.jpg', '/', 'photo.jpg', 'image', 'photo');").unwrap();
+    assert_eq!(queries::item_detail(&conn, Some("photo"), None).unwrap().preview_revision, None);
+    conn.execute("UPDATE contents SET derived_at_utc = 'first', width = 10", []).unwrap();
+    assert_eq!(queries::item_detail(&conn, Some("photo"), None).unwrap().preview_revision.as_deref(), Some("first"));
+    conn.execute("UPDATE contents SET sharpness = 123, strip_frames = 4", []).unwrap();
+    assert_eq!(queries::item_detail(&conn, Some("photo"), None).unwrap().preview_revision.as_deref(), Some("first"));
+    conn.execute("UPDATE contents SET derived_at_utc = 'regenerated'", []).unwrap();
+    let detail = queries::item_detail(&conn, Some("photo"), None).unwrap();
+    assert_eq!(serde_json::to_value(detail).unwrap()["previewRevision"], "regenerated");
+}

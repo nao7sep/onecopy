@@ -61,6 +61,7 @@ export default function InspectableImage({
   enlargeSmall,
   sourceWidth = null,
   sourceHeight = null,
+  cacheRevision,
   onError,
 }: {
   hash: string;
@@ -68,6 +69,7 @@ export default function InspectableImage({
   enlargeSmall: boolean;
   sourceWidth?: number | null;
   sourceHeight?: number | null;
+  cacheRevision?: string;
   onError?: () => void;
 }) {
   const { t, text } = useI18n();
@@ -140,7 +142,7 @@ export default function InspectableImage({
       onClickCapture={hold.onClickCapture}
     >
       <img
-        src={previewUrl(hash)}
+        src={previewUrl(hash, cacheRevision)}
         alt={displayNativePath(fileName)}
         className={`${
           enlargeSmall || (knownWidth !== null && knownHeight !== null)

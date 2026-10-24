@@ -35,7 +35,7 @@ describe("selected detail follows source-copy changes into Main and Preview", ()
     const detail = (): ItemDetail => ({
       fileName: "a.jpg", kind: "image", byteSize: 1000, width: 100, height: 100, durationMs: null,
       dateState: "dated", resolvedUtcMs: 1000, resolvedSource: "metadata", dateOnly: false,
-      copyPaths: [...copyPaths], copyCount: copyPaths.length, companionPaths: [], stripFrames: null,
+      copyPaths: [...copyPaths], copyCount: copyPaths.length, previewRevision: null, companionPaths: [], stripFrames: null,
     });
     mockSectionItems(() => [row()]);
     mockCommands({ get_item_detail: () => detail() });

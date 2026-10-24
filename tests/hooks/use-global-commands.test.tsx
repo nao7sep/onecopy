@@ -546,7 +546,7 @@ it.each(["offscreen-selection", "path-1001"])("rejects stale Preview Delete afte
     fileName: "offscreen.jpg", kind: "image", byteSize: 10, width: 10, height: 10,
     durationMs: null, dateState: "undated" as const, resolvedUtcMs: null,
     resolvedSource: null, dateOnly: false, copyPaths: [], copyCount: 1,
-    companionPaths: [], stripFrames: null,
+    previewRevision: null, companionPaths: [], stripFrames: null,
   };
   await act(async () => useItemsStore.setState({ detail }));
   const current = usePreviewStore.getState().current!;

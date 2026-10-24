@@ -37,7 +37,7 @@ function detailFor(name: string) {
     resolvedSource: "metadata",
     dateOnly: false,
     copyPaths: [], copyCount: 0,
-    companionPaths: [],
+    previewRevision: null, companionPaths: [],
     stripFrames: null,
   };
 }

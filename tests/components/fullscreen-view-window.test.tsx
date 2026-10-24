@@ -17,7 +17,7 @@ const state: FullscreenViewBroadcast = {
     durationMs: null, dirPaths: [], derivedWork: EMPTY_ITEM_WORK },
   detail: { fileName: "photo.jpg", kind: "image", byteSize: 10, width: 10, height: 10,
     durationMs: null, dateState: "undated", resolvedUtcMs: null, resolvedSource: null,
-    dateOnly: false, copyPaths: [], copyCount: 0, companionPaths: [], stripFrames: null },
+    dateOnly: false, copyPaths: [], copyCount: 0, previewRevision: null, companionPaths: [], stripFrames: null },
   index: 1, length: 3, pendingDelete: null, sectionKind: "image", failure: null,
 };
 

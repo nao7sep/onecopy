@@ -170,6 +170,8 @@ export interface ItemDetail {
   copyCount: number;
   companionPaths: string[];
   stripFrames: number | null;
+  /** Successful cache publication; unrelated detail refreshes keep it unchanged. */
+  previewRevision: string | null;
 }
 
 /** Matches the backend's evenly spaced interior scene timestamps exactly. */
@@ -262,8 +264,9 @@ export function thumbUrl(hash: string): string {
   return convertFileSrc(`thumb-${hash}`, "mediacache");
 }
 
-export function previewUrl(hash: string): string {
-  return convertFileSrc(`preview-${hash}`, "mediacache");
+export function previewUrl(hash: string, revision?: string): string {
+  const url = convertFileSrc(`preview-${hash}`, "mediacache");
+  return revision === undefined ? url : `${url}?revision=${encodeURIComponent(revision)}`;
 }
 
 export function stripUrl(hash: string, index: number): string {

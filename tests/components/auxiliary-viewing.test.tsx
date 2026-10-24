@@ -14,7 +14,7 @@ const detail = {
   fileName: "interview.m4a", kind: "other", byteSize: 100, width: null, height: null,
   durationMs: 30_000, dateState: "undated" as const, resolvedUtcMs: null,
   resolvedSource: null, dateOnly: false, copyPaths: [], copyCount: 1,
-  companionPaths: [], stripFrames: null,
+  previewRevision: null, companionPaths: [], stripFrames: null,
 };
 
 beforeEach(() => {

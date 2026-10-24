@@ -71,7 +71,7 @@ function detail(over: Partial<ItemDetail> = {}): ItemDetail {
     resolvedSource: "metadata",
     dateOnly: false,
     copyPaths: ["/photos/photo.jpg"], copyCount: 1,
-    companionPaths: [],
+    previewRevision: null, companionPaths: [],
     stripFrames: null,
     ...over,
   };

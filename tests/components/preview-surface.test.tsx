@@ -42,7 +42,7 @@ const DETAIL = {
   resolvedSource: "metadata",
   dateOnly: false,
   copyPaths: ["/videos/family.mov"], copyCount: 1,
-  companionPaths: [],
+  previewRevision: null, companionPaths: [],
   stripFrames: 4,
 };
 
@@ -873,5 +873,61 @@ describe("native text-preview wire contract", () => {
     await waitFor(() => expect(emitCalls).toContainEqual({
       event: "content-session://set-text-encoding", payload: { key: "invalid-content-hash", encoding: "shift_jis" },
     }));
+  });
+});
+
+describe("image attempt readiness", () => {
+  it("retries a failed same-hash preview on cache publication, not unrelated detail updates", async () => {
+    mockCommands({ ensure_preview: () => Promise.reject(new Error("decode failed")) });
+    const detail = { ...IMAGE_DETAIL, previewRevision: "first-publication" };
+    const view = render(<PreviewSurface surface="preview-split" hash="photo" detail={detail} />);
+    const firstUrl = screen.getByAltText(detail.fileName).getAttribute("src");
+    fireEvent.error(screen.getByAltText(detail.fileName));
+    await screen.findByText(/Built-in image preview failed/);
+    view.rerender(<PreviewSurface surface="preview-split" hash="photo" detail={{ ...detail, copyCount: 2 }} />);
+    expect(screen.queryByAltText(detail.fileName)).toBeNull();
+    expect(invokeCalls.filter((call) => call.command === "ensure_preview")).toHaveLength(1);
+    view.rerender(<PreviewSurface surface="preview-split" hash="photo" detail={{ ...detail, previewRevision: "second-publication" }} />);
+    const regenerated = screen.getByAltText(detail.fileName);
+    expect(regenerated.getAttribute("src")).not.toBe(firstUrl);
+    fireEvent.load(regenerated);
+    expect(screen.queryByText(/Built-in image preview failed/)).toBeNull();
+    expect(invokeCalls.filter((call) => call.command === "ensure_preview")).toHaveLength(1);
+  });
+
+  it("retries after decoder installation without retrying registry knowledge updates", async () => {
+    const ready = managedToolsFixture("macos");
+    const missing = ready.map((entry) => entry.id === "ffmpeg" ? { ...entry, status: "not-installed" as const } : entry);
+    useBinariesStore.setState({ entries: missing });
+    mockCommands({ ensure_preview: () => Promise.reject(new Error("missing decoder")) });
+    const detail = { ...IMAGE_DETAIL, fileName: "photo.heic" };
+    render(<PreviewSurface surface="preview-split" hash="photo" detail={detail} />);
+    fireEvent.error(screen.getByAltText(detail.fileName));
+    await screen.findByText(/Built-in image preview failed/);
+    act(() => useBinariesStore.setState({ entries: missing.map((entry) => ({ ...entry, facts: { ...entry.facts, lastCheckedAtUtc: "later" } })) }));
+    expect(screen.queryByAltText(detail.fileName)).toBeNull();
+    mockCommands({ ensure_preview: () => ({ canonicalHash: "photo", coalesced: false }) });
+    act(() => useBinariesStore.setState({ entries: ready }));
+    fireEvent.error(screen.getByAltText(detail.fileName));
+    await waitFor(() => expect(invokeCalls.filter((call) => call.command === "ensure_preview")).toHaveLength(2));
+    await screen.findByAltText(detail.fileName);
+    expect(screen.queryByText(/Built-in image preview failed/)).toBeNull();
+  });
+
+  it.each(["success", "failure"])("ignores a late old %s after a newer cache publication", async (outcome) => {
+    let resolve!: (value: unknown) => void;
+    let reject!: (error: Error) => void;
+    mockCommands({ ensure_preview: () => new Promise((yes, no) => { resolve = yes; reject = no; }) });
+    const view = render(<PreviewSurface surface="preview-split" hash="photo" detail={IMAGE_DETAIL} />);
+    fireEvent.error(screen.getByAltText(IMAGE_DETAIL.fileName));
+    await waitFor(() => expect(invokeCalls.filter((call) => call.command === "ensure_preview")).toHaveLength(1));
+    view.rerender(<PreviewSurface surface="preview-split" hash="photo" detail={{ ...IMAGE_DETAIL, previewRevision: "new-cache" }} />);
+    const newUrl = screen.getByAltText(IMAGE_DETAIL.fileName).getAttribute("src");
+    await act(async () => {
+      if (outcome === "success") resolve({ canonicalHash: "obsolete-key", coalesced: false });
+      else reject(new Error("obsolete failure"));
+    });
+    expect(screen.getByAltText(IMAGE_DETAIL.fileName).getAttribute("src")).toBe(newUrl);
+    expect(screen.queryByText(/Built-in image preview failed/)).toBeNull();
   });
 });

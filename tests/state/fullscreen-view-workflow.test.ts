@@ -53,7 +53,7 @@ function sequenceSnapshot(token = "fullscreen-view-token", index = sequenceIndex
       width: current.width, height: current.height, durationMs: null,
       dateState: "dated", resolvedUtcMs: current.resolvedUtcMs,
       resolvedSource: "metadata", dateOnly: false, copyPaths: [], copyCount: 0,
-      companionPaths: [], stripFrames: null,
+      previewRevision: null, companionPaths: [], stripFrames: null,
     },
     index,
     length: sequence.length,

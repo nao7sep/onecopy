@@ -1786,6 +1786,8 @@ pub struct ItemDetail {
     pub copy_count: u64,
     pub companion_paths: Vec<String>,
     pub strip_frames: Option<i64>,
+    /// Successful cache publication, independent of unrelated detail changes.
+    pub preview_revision: Option<String>,
 }
 
 pub fn item_detail(
@@ -1858,18 +1860,18 @@ pub fn item_detail(
         },
     };
 
-    let (width, height, duration_ms, byte_size, strip_frames) = match hash {
+    let (width, height, duration_ms, byte_size, strip_frames, preview_revision) = match hash {
         Some(hash) => conn
             .query_row(
-                "SELECT width, height, duration_ms, byte_size, strip_frames \
+                "SELECT width, height, duration_ms, byte_size, strip_frames, derived_at_utc \
                  FROM contents WHERE hash = ?1",
                 [hash],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
             )
             .optional()
             .map_err(|e| e.to_string())?
-            .unwrap_or((None, None, None, first.4, None)),
-        None => (None, None, None, first.4, None),
+            .unwrap_or((None, None, None, first.4, None, None)),
+        None => (None, None, None, first.4, None, None),
     };
 
     let id_list = copies
@@ -1932,6 +1934,7 @@ pub fn item_detail(
         copy_count,
         companion_paths,
         strip_frames,
+        preview_revision,
     })
 }
 
