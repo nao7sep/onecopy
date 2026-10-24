@@ -17,7 +17,7 @@ export function subscribeModalStack(listener: () => void): () => void {
   return () => { listeners.delete(listener); };
 }
 
-const stack: Array<{ token: object; surface?: HTMLElement; opener: HTMLElement | null }> = [];
+const stack: Array<{ token: object; surface?: HTMLElement; opener: HTMLElement | null; recovery: boolean }> = [];
 
 // Inert only siblings of the active surface and its ancestors. Making an
 // ancestor inert would disable the modal itself, including nested dialogs.
@@ -53,17 +53,23 @@ function updateBackground(): void {
   observer.observe(document.body, { childList: true, subtree: true });
 }
 
-export function pushModal(token: object, surface?: HTMLElement, opener: HTMLElement | null = null): void {
+export function pushModal(token: object, surface?: HTMLElement, opener: HTMLElement | null = null, recovery = false): void {
   // Nested layers may mount in one React commit, whose child layout effects
   // run before the parent's. Containment establishes that child's precedence.
   const descendant = surface === undefined ? -1 : stack.findIndex((entry) =>
     entry.surface !== undefined && surface.contains(entry.surface));
-  if (descendant < 0) stack.push({ token, surface, opener });
+  if (descendant < 0) {
+    // An escaped-failure root owns the window until reload. Delayed ordinary
+    // dialogs may mount underneath it, but cannot make recovery inert.
+    const terminal = recovery ? -1 : stack.findIndex((entry) => entry.recovery);
+    if (terminal < 0) stack.push({ token, surface, opener, recovery });
+    else stack.splice(terminal, 0, { token, surface, opener, recovery });
+  }
   else {
     const child = stack[descendant];
     // A simultaneously mounted child acquired focus first. Its original
     // opener belongs to the parent; closing the child returns to the parent.
-    stack.splice(descendant, 0, { token, surface, opener: child.opener });
+    stack.splice(descendant, 0, { token, surface, opener: child.opener, recovery });
     child.opener = surface ?? null;
   }
   updateBackground();

@@ -104,6 +104,9 @@ beforeEach(() => {
     eventSequence: 0,
   };
   mockCommands({
+    prioritize_derived_work: () => null,
+    note_user_activity: () => null,
+    get_active_notifications: () => ({ revision: 0, active: [] }),
     load_app_data: () => ({
       status: "ready",
       data: {

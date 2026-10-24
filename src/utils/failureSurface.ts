@@ -3,9 +3,13 @@ import { documentTranslator } from "../i18n/I18nContext";
 import { message, type Message } from "../i18n/translate";
 import { storedValues } from "../i18n/storedValues";
 
+import { mountModalLayer } from "./modalLayer";
+import { isTopmostModal, subscribeModalStack } from "./modalStack";
+
 const SURFACE_ID = "onecopy-escaped-failure";
 
-/** Last-resort UI for errors outside React's render boundary. */
+/** Independent, blocking recovery root for errors outside React's render boundary.
+ * Continuing is unavailable; its explicit recovery action reloads the window. */
 export function presentEscapedFailure(failure: Message): void {
   presentEscapedDetail(documentTranslator().text(failure));
 }
@@ -19,7 +23,10 @@ export function presentEscapedDetail(detail: string): void {
   if (surface === null) {
     surface = document.createElement("section");
     surface.id = SURFACE_ID;
-    surface.setAttribute("role", "alert");
+    surface.setAttribute("role", "alertdialog");
+    surface.setAttribute("aria-modal", "true");
+    surface.setAttribute("aria-labelledby", `${SURFACE_ID}-title`);
+    surface.setAttribute("aria-describedby", `${SURFACE_ID}-detail`);
     Object.assign(surface.style, {
       position: "fixed",
       inset: "16px",
@@ -37,18 +44,39 @@ export function presentEscapedDetail(detail: string): void {
       textAlign: "center",
     });
     const heading = document.createElement("strong");
+    heading.id = `${SURFACE_ID}-title`;
     heading.textContent = documentTranslator().t("crash.needsReload");
     const paragraph = document.createElement("p");
+    paragraph.id = `${SURFACE_ID}-detail`;
     paragraph.dataset.failureDetail = "true";
     const reload = document.createElement("button");
     reload.type = "button";
+    reload.setAttribute("data-modal-initial-focus", "");
     reload.textContent = documentTranslator().t("crash.reloadWindow");
     reload.addEventListener("click", () => window.location.reload());
     surface.append(heading, paragraph, reload);
     document.body.append(surface);
+    const token = {};
+    const recovery = surface;
+    const unmount = mountModalLayer(recovery, {
+      token, recovery: true, onClose: () => undefined, closeDisabled: () => true,
+    });
+    const unsubscribe = subscribeModalStack(() => {
+      if (isTopmostModal(token) && !recovery.contains(document.activeElement)) reload.focus();
+    });
+    // Reload normally ends this root's lifetime. If its host is removed first,
+    // retire its keyboard listener and scroll lock with the DOM it served.
+    const removal = new MutationObserver(() => {
+      if (recovery.isConnected) return;
+      removal.disconnect();
+      unsubscribe();
+      unmount();
+    });
+    removal.observe(document.body, { childList: true });
   }
   const target = surface.querySelector<HTMLElement>("[data-failure-detail='true']");
   if (target) target.textContent = detail;
+  surface.querySelector<HTMLElement>("[data-modal-initial-focus]")?.focus();
 }
 
 /** Persists one current interface condition per webview when the core remains reachable.

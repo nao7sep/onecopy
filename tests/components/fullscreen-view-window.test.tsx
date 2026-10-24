@@ -7,7 +7,7 @@ import { afterEach, beforeEach, expect, it } from "vitest";
 import FullscreenViewWindow from "../../src/windows/FullscreenViewWindow";
 
 import type { FullscreenViewBroadcast } from "../../src/workflows/fullscreen-view";
-import { emitCalls, fireEvent as deliver, resetTauriMocks } from "../mocks/tauri";
+import { emitCalls, fireEvent as deliver, mockCommands, resetTauriMocks } from "../mocks/tauri";
 
 const state: FullscreenViewBroadcast = {
   token: "session-1",
@@ -21,7 +21,13 @@ const state: FullscreenViewBroadcast = {
   index: 1, length: 3, pendingDelete: null, sectionKind: "image", failure: null,
 };
 
-beforeEach(() => resetTauriMocks({ keepListeners: true }));
+beforeEach(() => {
+  resetTauriMocks({ keepListeners: true });
+  mockCommands({
+    get_active_notifications: () => ({ revision: 0, active: [] }),
+    binaries_state: () => [],
+  });
+});
 afterEach(cleanup);
 
 it("focuses the fullscreen command surface on entry and native-window reactivation", async () => {

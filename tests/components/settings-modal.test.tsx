@@ -40,7 +40,8 @@ const accelerationCapabilities = [
 beforeEach(() => {
   resetTauriMocks();
   mockCommands({
-    rebuild_library_index: () => null,
+    get_active_notifications: () => ({ revision: 0, active: [] }),
+    apply_library_settings: () => ({ status: "applied", resolved: 0 }),
     get_section_counts: () => ({ images: [], videos: [], others: [] }),
     get_issues: () => ({ total: 0, rows: [] }),
     text_preview_options: () => ({ encodings: ["utf-8", "shift_jis"], maxAllowedBytes: 64 * 1024 * 1024 }),
@@ -240,7 +241,7 @@ describe("Settings categories", () => {
     mockCommands({
       patch_state: () => ({}),
       save_config: () => ({}),
-      check_source_dirs: () => [],
+      check_source_dirs: () => ({ missing: [], substituted: [] }),
       record_recent_notification: () => ({}),
       log_event: () => null,
     });

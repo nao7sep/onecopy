@@ -25,9 +25,10 @@ const frame = () => new Promise((resolve) => requestAnimationFrame(() => resolve
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
   mockCommands({
+    get_active_notifications: () => ({ revision: 0, active: [] }),
     get_section_counts: () => ({ images: [], videos: [], others: [] }),
     get_issues: () => ({ rows: [], total: 0 }),
-    binaries_state: () => null,
+    binaries_state: () => [],
     patch_state: () => ({}),
     log_event: () => null,
     logging_debug_enabled: () => false,

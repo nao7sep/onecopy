@@ -10,7 +10,7 @@ import {
   useComparisonStore,
   type GroupMember,
 } from "../../src/state/comparison-store";
-import { createdWindows, fireEvent, invokeCalls, mockCommand } from "../mocks/tauri";
+import { createdWindows, fireEvent, invokeCalls, mockCommand, mockCommands } from "../mocks/tauri";
 
 function member(index: number): GroupMember {
   return {
@@ -53,6 +53,12 @@ function openSession(count = 4): void {
 }
 
 beforeEach(() => {
+  mockCommands({
+    get_section_counts: () => ({ images: [], videos: [], others: [] }),
+    get_issues: () => ({ rows: [], total: 0 }),
+    comparison_live_hashes: ({ hashes }) => hashes,
+    set_window_fullscreen: () => null,
+  });
   openSession();
 });
 
