@@ -438,6 +438,10 @@ BEGIN
   DELETE FROM face_checks WHERE content_hash = OLD.hash;
 END;
 
+CREATE TABLE IF NOT EXISTS cache_retirements (
+  content_hash TEXT PRIMARY KEY COLLATE BINARY
+) WITHOUT ROWID;
+
 CREATE TABLE IF NOT EXISTS cache_promotions (
   old_hash TEXT PRIMARY KEY COLLATE BINARY,
   content_hash TEXT NOT NULL,
@@ -605,6 +609,7 @@ fn current_shape(conn: &Connection) -> Result<bool, String> {
             AND NOT EXISTS (SELECT 1 FROM pragma_table_info('scan_dirs') WHERE name = 'dirty')
             AND EXISTS (SELECT 1 FROM pragma_table_info('relationship_repair_dirs') WHERE name = 'dir_path')
             AND EXISTS (SELECT 1 FROM pragma_table_info('cache_promotions') WHERE name = 'old_hash')
+            AND EXISTS (SELECT 1 FROM pragma_table_info('cache_retirements') WHERE name = 'content_hash')
             AND NOT EXISTS (SELECT 1 FROM sqlite_master
                             WHERE type = 'index' AND name = 'idx_paths_media_repair_by_id')",
         [],
@@ -882,6 +887,7 @@ pub fn clear_reconstructible(
              DELETE FROM scan_dirs;
              DELETE FROM relationship_repair_dirs;
              DELETE FROM cache_promotions;
+              DELETE FROM cache_retirements;
              DELETE FROM rebuild_keeps_results;",
             )
             .map_err(|error| error.to_string())

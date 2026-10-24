@@ -796,3 +796,56 @@ fn cache_promotion_preserves_failed_attempts_and_known_real_results() {
         assert_eq!(facts, (if known { "needs-ffmpeg" } else { "failed" }.into(), 0, if known { 999 } else { 123 }));
     }
 }
+
+#[test]
+fn durable_retirement_cancels_between_bounded_cohorts_and_replays_after_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("index.sqlite3");
+    let conn = crate::index_store::open(&db).unwrap();
+    let cache = CachePaths::new(dir.path().join("cache"));
+    for index in 0..257 {
+        let hash = format!("ab{index:04}");
+        conn.execute("INSERT INTO cache_retirements VALUES (?1)", [&hash]).unwrap();
+        let path = crate::video::strip_path(&cache, &hash, 0);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"frame").unwrap();
+    }
+    let calls = std::cell::Cell::new(0);
+    STRIP_DIRECTORY_VISITS.with(|count| count.set(0));
+    drain_cache_retirements(&conn, &cache, &|| {
+        let count = calls.get();
+        calls.set(count + 1);
+        count > 0
+    }).unwrap();
+    STRIP_DIRECTORY_VISITS.with(|count| assert_eq!(count.get(), 1));
+    assert_eq!(conn.query_row("SELECT count(*) FROM cache_retirements", [], |r| r.get::<_, i64>(0)).unwrap(), 129);
+    assert!(!crate::video::strip_path(&cache, "ab0000", 0).exists());
+    assert!(crate::video::strip_path(&cache, "ab0128", 0).exists());
+    drop(conn);
+    let conn = crate::index_store::open(&db).unwrap();
+    startup_sweep(&conn, &cache, std::time::SystemTime::now(), &|| false).unwrap();
+    assert_eq!(conn.query_row("SELECT count(*) FROM cache_retirements", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    assert!(!crate::video::strip_path(&cache, "ab0256", 0).exists());
+}
+
+#[test]
+fn durable_retirement_retains_failed_cleanup_and_preserves_revived_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = crate::index_store::open(&dir.path().join("index.sqlite3")).unwrap();
+    let cache = CachePaths::new(dir.path().join("cache"));
+    conn.execute_batch("INSERT INTO cache_retirements VALUES ('gone'), ('live');
+        INSERT INTO contents (hash, byte_size, kind) VALUES ('live', 1, 'image');
+        INSERT INTO paths (abs_path, dir_path, file_name, kind, content_hash)
+        VALUES ('/live.jpg', '/', 'live.jpg', 'image', 'live');").unwrap();
+    let blocked = cache.preview("gone");
+    std::fs::create_dir_all(&blocked).unwrap();
+    let live = cache.thumb("live");
+    std::fs::create_dir_all(live.parent().unwrap()).unwrap();
+    std::fs::write(&live, b"still needed").unwrap();
+    assert!(drain_cache_retirements(&conn, &cache, &|| false).is_err());
+    assert_eq!(conn.query_row("SELECT count(*) FROM cache_retirements", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+    std::fs::remove_dir(&blocked).unwrap();
+    drain_cache_retirements(&conn, &cache, &|| false).unwrap();
+    assert_eq!(std::fs::read(live).unwrap(), b"still needed");
+    assert_eq!(conn.query_row("SELECT count(*) FROM cache_retirements", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+}

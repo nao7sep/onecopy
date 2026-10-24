@@ -3177,3 +3177,28 @@ fn the_index_tail_repairs_pending_directories_without_revisiting_settled_sibling
     // No pending directory means no candidates, even on an explicit tail call.
     run_index_tail(&f.conn, &settings, &|_| {}, &mut ScanSummary::default()).unwrap();
 }
+
+#[test]
+fn forgetting_retirement_membership_commits_with_index_removal_and_survives_cleanup_failure() {
+    let f = fixture("forget-durable-cleanup");
+    std::fs::write(f.root.join("movie.mp4"), b"movie bytes").unwrap();
+    walk_root(&f.conn, &f.root, &lists()).unwrap();
+    let cache = test_cache(&f);
+    hash_pending(&f.conn, &cache).unwrap();
+    let hash: String = f.conn.query_row("SELECT content_hash FROM paths", [], |r| r.get(0)).unwrap();
+    let blocked = cache.thumb(&hash);
+    std::fs::create_dir_all(&blocked).unwrap();
+    f.conn.execute_batch("CREATE TEMP TRIGGER reject_retirement BEFORE INSERT ON cache_retirements
+        BEGIN SELECT RAISE(ABORT, 'retirement rejected'); END;").unwrap();
+    assert!(forget_unconfigured_roots(&f.conn, &[], &cache).is_err());
+    assert_eq!(count(&f.conn, "SELECT count(*) FROM paths"), 1);
+    assert_eq!(count(&f.conn, "SELECT count(*) FROM scan_dirs"), 1);
+    f.conn.execute_batch("DROP TRIGGER reject_retirement;").unwrap();
+    assert_eq!(forget_unconfigured_roots(&f.conn, &[], &cache).unwrap(), 1);
+    assert_eq!(count(&f.conn, "SELECT count(*) FROM paths"), 0);
+    assert_eq!(count(&f.conn, "SELECT count(*) FROM cache_retirements"), 1);
+    assert!(f.root.join("movie.mp4").exists());
+    std::fs::remove_dir(&blocked).unwrap();
+    onecopy_lib::preview::startup_sweep(&f.conn, &cache, std::time::SystemTime::now(), &|| false).unwrap();
+    assert_eq!(count(&f.conn, "SELECT count(*) FROM cache_retirements"), 0);
+}

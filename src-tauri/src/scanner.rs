@@ -601,7 +601,6 @@ pub fn forget_unconfigured_roots(
         // through the projection-batch publisher instead of firing the
         // per-row logical-projection trigger for the whole root.
         let mut removed = 0usize;
-        let mut orphaned_hashes: Vec<String> = Vec::new();
         crate::index_store::publish_paths_batch(
             conn,
             |tx| {
@@ -644,24 +643,15 @@ pub fn forget_unconfigured_roots(
                 tx.execute("DELETE FROM scan_dirs WHERE root = ?1", [root])
                     .map_err(|e| e.to_string())?;
 
-                // Orphan collection stays set-based inside SQL end to end: the
-                // IN-clauses below are subqueries over `batch_touched_hashes`,
-                // never a bound parameter per orphaned hash. A root with more
-                // unique items than SQLite's ~32,766 bound-parameter ceiling
-                // could not otherwise be forgotten. `orphaned_hashes`
-                // is read out separately, only so cache files can be removed
-                // by hash; it never feeds a query's parameter list.
+                // Durable retirement membership stays in SQL, in the same
+                // transaction as forgetting. Cleanup reads only bounded cohorts
+                // after commit; interruption cannot lose the remaining tail.
                 const ORPHAN_HASHES: &str = "SELECT content_hash FROM batch_touched_hashes bth \
                      WHERE NOT EXISTS (\
                          SELECT 1 FROM paths lp \
                          WHERE lp.content_hash = bth.content_hash AND lp.missing = 0)";
-                let mut stmt = tx.prepare(ORPHAN_HASHES).map_err(|e| e.to_string())?;
-                orphaned_hashes = stmt
-                    .query_map([], |r| r.get::<_, String>(0))
-                    .map_err(|e| e.to_string())?
-                    .collect::<rusqlite::Result<Vec<_>>>()
-                    .map_err(|e| e.to_string())?;
-                drop(stmt);
+                tx.execute(&format!("INSERT OR IGNORE INTO cache_retirements {ORPHAN_HASHES}"), [])
+                    .map_err(|error| error.to_string())?;
                 // Companions first: their rows hold a foreign key to the
                 // primary path, which is about to leave `paths` too.
                 tx.execute(
@@ -701,9 +691,6 @@ pub fn forget_unconfigured_roots(
             },
         )?;
         forgotten += removed as u64;
-        for cohort in orphaned_hashes.chunks(128) {
-            crate::preview::remove_entries_batch(cache, cohort);
-        }
         if removed > 0 {
             logging::info(
                 "forgot an unconfigured source root",
@@ -715,6 +702,9 @@ pub fn forget_unconfigured_roots(
     // scan_dirs receipt. All recorded removals have settled before retiring
     // these remaining conditions outside current source membership.
     close_unconfigured_source_issues(conn, None, &kept_issue_roots)?;
+    if let Err(error) = crate::preview::drain_cache_retirements(conn, cache, &cancelled) {
+        logging::warn("cache retirement remains pending", serde_json::json!({"error": error}));
+    }
     Ok(forgotten)
 }
 

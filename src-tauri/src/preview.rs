@@ -1129,12 +1129,26 @@ pub fn remove_entries(cache: &CachePaths, hash: &str) {
 
 /// Bounded hash cohorts visit each affected strip shard only once.
 pub(crate) fn remove_entries_batch(cache: &CachePaths, hashes: &[String]) {
+    if let Err(error) = remove_entries_batch_checked(cache, hashes) {
+        crate::logging::warn("cache cleanup failed", serde_json::json!({"error": error}));
+    }
+}
+
+fn remove_entries_batch_checked(cache: &CachePaths, hashes: &[String]) -> Result<(), String> {
+    let mut failure = None;
+    let remove = |path: &Path, failure: &mut Option<String>| {
+        match std::fs::remove_file(path) { // data root
+            Ok(()) => {},
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Err(error) => { failure.get_or_insert_with(|| error.to_string()); },
+        }
+    };
     for cohort in hashes.chunks(CACHE_COHORT_SIZE) {
         let mut shards: std::collections::HashMap<PathBuf, std::collections::HashSet<&str>> =
             std::collections::HashMap::new();
         for hash in cohort {
-            crate::fs_recovery::remove_file(&cache.thumb(hash), "thumbnail cache cleanup");
-            crate::fs_recovery::remove_file(&cache.preview(hash), "preview cache cleanup");
+            remove(&cache.thumb(hash), &mut failure);
+            remove(&cache.preview(hash), &mut failure);
             crate::fullres_cache::retire(&cache.fullres(hash));
             if let Some(shard) = crate::video::strip_path(cache, hash, 0).parent() {
                 shards.entry(shard.to_path_buf()).or_default().insert(hash);
@@ -1143,15 +1157,52 @@ pub(crate) fn remove_entries_batch(cache: &CachePaths, hashes: &[String]) {
         for (shard, hashes) in shards {
             #[cfg(test)]
             STRIP_DIRECTORY_VISITS.with(|count| count.set(count.get() + 1));
-            let Ok(entries) = std::fs::read_dir(&shard) else { continue }; // data root
-            for entry in entries.flatten() {
+            let entries = match std::fs::read_dir(&shard) { // data root
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => { failure.get_or_insert_with(|| error.to_string()); continue; },
+            };
+            for entry in entries {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) => { failure.get_or_insert_with(|| error.to_string()); continue; },
+                };
                 if cache_entry_hash("strips", &entry.file_name().to_string_lossy())
                     .is_some_and(|hash| hashes.contains(hash.as_str()))
                 {
-                    crate::fs_recovery::remove_file(&entry.path(), "strip cache cleanup");
+                    remove(&entry.path(), &mut failure);
                 }
             }
         }
+    }
+    failure.map_or(Ok(()), Err)
+}
+
+/// Receipt membership is durable and bounded at the SQL boundary. A revived
+/// identity or pending promotion keeps its cache; failed cleanup retains the
+/// entire cohort so replay also covers partial filesystem progress.
+pub(crate) fn drain_cache_retirements(
+    conn: &Connection, cache: &CachePaths, cancel: &impl Fn() -> bool,
+) -> Result<(), String> {
+    loop {
+        if cancel() { return Ok(()); }
+        let _identity = lock_cache_identity();
+        let pending: Vec<(String, bool)> = conn.prepare(
+            "SELECT content_hash,
+                NOT EXISTS(SELECT 1 FROM contents c WHERE c.hash = r.content_hash)
+                AND NOT EXISTS(SELECT 1 FROM cache_promotions p WHERE p.old_hash = r.content_hash)
+             FROM cache_retirements r ORDER BY content_hash LIMIT 128",
+        ).and_then(|mut statement| statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect())
+            .map_err(|error| error.to_string())?;
+        if pending.is_empty() { return Ok(()); }
+        let retired: Vec<String> = pending.iter().filter(|(_, remove)| *remove).map(|(hash, _)| hash.clone()).collect();
+        remove_entries_batch_checked(cache, &retired)?;
+        let tx = crate::sqlite::write_transaction(conn).map_err(|error| error.to_string())?;
+        for (hash, _) in pending {
+            tx.execute("DELETE FROM cache_retirements WHERE content_hash = ?1", [hash])
+                .map_err(|error| error.to_string())?;
+        }
+        crate::records::commit(tx).map_err(|error| error.to_string())?;
     }
 }
 
@@ -1402,6 +1453,7 @@ pub fn startup_sweep(
     cancel_when: &impl Fn() -> bool,
 ) -> Result<u64, String> {
     recover_cache_promotions(conn, cache, cancel_when)?;
+    drain_cache_retirements(conn, cache, cancel_when)?;
     reconcile_orphan_contents(conn, cancel_when)?;
     let mut removed = 0;
     let mut cohort = Vec::with_capacity(CACHE_COHORT_SIZE);

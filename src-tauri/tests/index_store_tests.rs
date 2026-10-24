@@ -96,6 +96,7 @@ fn rebuild_clears_reconstructible_library_facts_and_closes_issues() {
         "scan_dirs",
         "relationship_repair_dirs",
         "cache_promotions",
+        "cache_retirements",
     ] {
         let count: i64 = conn
             .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
