@@ -368,6 +368,45 @@ fn replacement_before_commit_preserves_the_source_on_every_platform() {
     assert_eq!(std::fs::read(&source).unwrap(), b"replaced");
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn every_recovery_directory_barrier_precedes_source_removal_and_is_retried() {
+    use crate::volume_io::{FakeStallingVolume, Op};
+    use std::time::Duration;
+    // The held private day, its trash-root parent, then the configured root
+    // must all settle before source removal. Manifest bytes flush in Write.
+    for barrier in 0..3 {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("source");
+        std::fs::create_dir(&root).unwrap();
+        let source = root.join("photo.jpg");
+        std::fs::write(&source, b"keep until recovery is durable").unwrap();
+        let bound = Duration::from_secs(10);
+        let fake = FakeStallingVolume::mount(&root, bound);
+        // Retry against directories left by the failed first preparation; their
+        // existence alone must not skip the unfinished durability boundary.
+        for _ in 0..2 {
+            fake.stall_after(&[Op::Sync], None, barrier);
+            let result = std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    assert!(fake.wait_until_held(1, bound));
+                    assert!(source.exists(), "source remains before barrier {barrier}");
+                    fake.fail();
+                });
+                trash_file(&source, &root, None, &ctx())
+            });
+            let error = result.unwrap_err();
+            assert!(!error.outcome_unknown);
+            assert_eq!(std::fs::read(&source).unwrap(), b"keep until recovery is durable");
+            assert!(list_root(&root, &dir.path().join("data")).unwrap().entries.is_empty());
+        }
+        let record = trash_file(&source, &root, None, &ctx()).unwrap();
+        assert!(!source.exists());
+        assert_eq!(std::fs::read(crate::native_path::from_text(&record.stored_path).as_ref()).unwrap(), b"keep until recovery is durable");
+        assert_eq!(list_root(&root, &dir.path().join("data")).unwrap().entries[0].status, EntryStatus::Restorable);
+    }
+}
+
 #[test]
 fn edited_source_is_kept_and_retry_creates_a_restorable_record() {
     let dir = tempfile::tempdir().unwrap();

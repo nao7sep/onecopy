@@ -338,6 +338,10 @@ fn prepare_trash(
     private.append(&day_dir.join(MANIFEST_FILE_NAME), line).map_err(|e| e.to_string())?;
     private.sync(&day_dir).map_err(|e| e.to_string())?;
     crate::fs_publish::sync_directory(&trash_root).map_err(|e| e.to_string())?;
+    // The configured root publishes the trash-root entry itself. Repeat this
+    // barrier even when it exists: a prior interrupted preparation may have
+    // created it without completing its parent's flush.
+    crate::fs_publish::sync_directory(owning_root).map_err(|e| e.to_string())?;
 
     Ok(TrashPlan {
         record,
