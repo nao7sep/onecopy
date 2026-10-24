@@ -287,18 +287,19 @@ fn a_complete_walk_limits_missing_paths_projection_and_issues_to_the_exact_root(
 }
 
 #[test]
-fn an_incomplete_walk_preserves_known_rows_and_keeps_the_root_dirty() {
+fn an_incomplete_walk_preserves_known_rows_and_the_last_completion() {
     let f = fixture("incomplete-walk");
     let known = f.root.join("known.jpg");
     std::fs::write(&known, b"known").unwrap();
     walk_root(&f.conn, &f.root, &lists()).unwrap();
 
+    f.conn.execute("UPDATE scan_dirs SET last_completed_at_utc = 'previous-completion'", []).unwrap();
     std::fs::remove_dir_all(&f.root).unwrap();
     let stats = walk_root(&f.conn, &f.root, &lists()).unwrap();
     assert!(stats.errors > 0);
     assert_eq!(stats.marked_missing, 0);
     assert_eq!(count(&f.conn, "SELECT missing FROM paths"), 0);
-    assert_eq!(count(&f.conn, "SELECT dirty FROM scan_dirs"), 1);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM scan_dirs WHERE last_completed_at_utc = 'previous-completion'"), 1);
     assert_eq!(
         count(&f.conn, &format!("SELECT COUNT(*) FROM active_issues WHERE kind = '{WALK_ERROR}'")),
         1
@@ -308,7 +309,7 @@ fn an_incomplete_walk_preserves_known_rows_and_keeps_the_root_dirty() {
     let repaired = walk_root(&f.conn, &f.root, &lists()).unwrap();
     assert_eq!(repaired.errors, 0);
     assert_eq!(repaired.marked_missing, 1);
-    assert_eq!(count(&f.conn, "SELECT dirty FROM scan_dirs"), 0);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM scan_dirs WHERE last_completed_at_utc IS NOT NULL AND last_completed_at_utc != 'previous-completion'"), 1);
     assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM active_issues"), 0);
     assert!(count(&f.conn, "SELECT COUNT(*) FROM records.issue_events WHERE event = 'resolved'") > 0);
 }
@@ -838,11 +839,11 @@ fn scoped_repair_debt_is_independent_from_walk_debt() {
     let settled = settled_root(&f.conn, &f.root).unwrap();
     walk_root(&f.conn, &settled, &lists()).unwrap();
     let roots = vec![f.root.to_string_lossy().to_string()];
-    assert!(!walk_owed(&f.conn, &roots).unwrap());
+    assert!(!walk_checkpoint_missing(&f.conn, &roots).unwrap());
 
     let marked = begin_scoped_index_repair(&f.conn, &roots).unwrap();
     assert_eq!(marked.len(), 1);
-    assert!(!walk_owed(&f.conn, &roots).unwrap());
+    assert!(!walk_checkpoint_missing(&f.conn, &roots).unwrap());
     assert_eq!(
         count(&f.conn, "SELECT relationship_dirty FROM scan_dirs"),
         1
@@ -858,7 +859,7 @@ fn scoped_repair_debt_is_independent_from_walk_debt() {
     );
 
     complete_scoped_index_repair(&f.conn, &marked).unwrap();
-    assert!(!walk_owed(&f.conn, &roots).unwrap());
+    assert!(!walk_checkpoint_missing(&f.conn, &roots).unwrap());
     assert_eq!(
         count(&f.conn, "SELECT relationship_dirty FROM scan_dirs"),
         0
@@ -901,12 +902,12 @@ fn source_check_leaves_relationship_work_for_the_independent_tail() {
 
     run_source_check(&f.conn, &settings, &|_| {}).unwrap();
     assert!(pending_index_work_exists(&f.conn).unwrap());
-    assert!(!walk_owed(&f.conn, &settings.source_dirs).unwrap());
+    assert!(!walk_checkpoint_missing(&f.conn, &settings.source_dirs).unwrap());
 
     let mut summary = ScanSummary::default();
     run_index_tail(&f.conn, &settings, &|_| {}, &mut summary).unwrap();
     assert!(!pending_index_work_exists(&f.conn).unwrap());
-    assert!(!walk_owed(&f.conn, &settings.source_dirs).unwrap());
+    assert!(!walk_checkpoint_missing(&f.conn, &settings.source_dirs).unwrap());
 }
 
 #[test]
@@ -1677,82 +1678,42 @@ fn replacing_a_provisionally_identified_file_resets_its_content_facts() {
 }
 
 #[test]
-fn an_interrupted_walk_is_still_owed_after_the_tail_resumes() {
-    let f = fixture("walk-owed");
-    let configured_root = f.root.to_string_lossy().to_string();
-    // Match run_full_scan: the walk and its checkpoint both use the settled
-    // physical-root spelling, while configuration retains the literal bytes.
+fn an_incomplete_first_walk_has_no_completion_even_after_the_tail_resumes() {
+    let f = fixture("walk-checkpoint");
     let settled = settled_root(&f.conn, &f.root).unwrap();
-    let recorded_root = onecopy_lib::winpath::for_fs(&settled)
-        .to_string_lossy()
-        .to_string();
-    let roots = vec![configured_root];
+    let roots = vec![f.root.to_string_lossy().to_string()];
+    assert!(walk_checkpoint_missing(&f.conn, &roots).unwrap());
 
-    // Never walked: owed.
-    assert!(walk_owed(&f.conn, &roots).unwrap(), "an unwalked root is owed");
+    std::fs::remove_dir(&f.root).unwrap();
+    assert!(walk_root(&f.conn, &settled, &lists()).unwrap().errors > 0);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM scan_dirs WHERE last_completed_at_utc IS NULL"), 1);
+    hash_pending(&f.conn, &test_cache(&f)).unwrap();
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM scan_dirs WHERE last_completed_at_utc IS NULL"), 1);
 
+    std::fs::create_dir(&f.root).unwrap();
     for name in ["a.jpg", "b.jpg", "c.jpg"] {
         std::fs::write(f.root.join(name), name.as_bytes()).unwrap();
     }
     walk_root(&f.conn, &settled, &lists()).unwrap();
-    assert!(
-        !walk_owed(&f.conn, &roots).unwrap(),
-        "a completed walk settles the debt"
-    );
-
-    // Exactly the state a cancelled walk leaves behind: walk_root claims the
-    // root with dirty = 1 at its start, and only the completion write clears
-    // it, so an abort between the two leaves this row. (The global cancel flag
-    // is deliberately not used here — it is process-wide, and setting it would
-    // abort every other test running in parallel.)
-    f.conn
-        .execute(
-            "UPDATE scan_dirs SET dirty = 1 WHERE root = ?1",
-            rusqlite::params![recorded_root],
-        )
-        .unwrap();
-    assert!(
-        walk_owed(&f.conn, &roots).unwrap(),
-        "an interrupted walk stays owed — the tail cannot recover unread directories"
-    );
-
-    // Draining the tail must NOT clear the debt: pending_work_exists is
-    // row-level and sees nothing wrong with rows that were never created.
-    hash_pending(&f.conn, &test_cache(&f)).unwrap();
-    assert!(
-        walk_owed(&f.conn, &roots).unwrap(),
-        "the tail draining rows does not mean the root was walked"
-    );
-
-    // Only a completed walk clears it.
-    walk_root(&f.conn, &settled, &lists()).unwrap();
-    assert!(
-        !walk_owed(&f.conn, &roots).unwrap(),
-        "re-walking settles it again"
-    );
+    assert!(!walk_checkpoint_missing(&f.conn, &roots).unwrap());
 }
 
 #[test]
 fn completed_walk_checkpoint_uses_the_settled_case_identity() {
-    let f = fixture("walk-owed-case");
-    let configured = std::fs::canonicalize(&f.root).unwrap();
-    let recorded = onecopy_lib::winpath::for_fs(std::path::Path::new(
-        &configured.to_string_lossy().to_uppercase(),
-    ))
-    .to_string_lossy()
-    .to_string();
-    f.conn
-        .execute(
-            "INSERT INTO scan_dirs (root, last_completed_at_utc, dirty, configured_root) VALUES (?1, 'done', 0, ?1)",
-            rusqlite::params![recorded],
-        )
-        .unwrap();
-
-    let roots = vec![configured.to_string_lossy().to_string()];
-    assert!(
-        !walk_owed(&f.conn, &roots).unwrap(),
-        "the previously settled case spelling owns the completion checkpoint"
-    );
+    let f = fixture("walk-checkpoint-case");
+    let photos = f.root.join("Photos");
+    let alternate = f.root.join("PHOTOS");
+    std::fs::create_dir(&photos).unwrap();
+    let distinct = match std::fs::create_dir(&alternate) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+        Err(error) => panic!("probe fixture case behavior: {error}"),
+    };
+    let recorded = settled_root(&f.conn, &photos).unwrap();
+    walk_root(&f.conn, &recorded, &lists()).unwrap();
+    let roots = vec![alternate.to_string_lossy().to_string()];
+    assert_eq!(walk_checkpoint_missing(&f.conn, &roots).unwrap(), distinct,
+        "only an alias of the completed physical directory shares its checkpoint");
 }
 
 #[cfg(unix)]
@@ -1769,7 +1730,7 @@ fn completed_walk_checkpoint_uses_the_settled_symlink_identity() {
 
     let roots = vec![alias.to_string_lossy().to_string()];
     assert!(
-        !walk_owed(&f.conn, &roots).unwrap(),
+        !walk_checkpoint_missing(&f.conn, &roots).unwrap(),
         "the configured alias resolves to the completed physical-root checkpoint"
     );
 }
@@ -1981,43 +1942,30 @@ fn exif_datetime_and_camera_are_extracted_and_win_resolution() {
 }
 
 #[test]
-fn a_retyped_root_capitalisation_does_not_fork_the_index() {
-    // paths.abs_path is unique, so the same file reached under two spellings
-    // becomes two rows — and the copy-count badge, which doubles as the backup
-    // health check, then reports 2 for a file that exists once. Resolving a
-    // path does NOT fix its casing on macOS (realpath echoes what it is given
-    // on a case-insensitive volume), so the first-seen spelling has to win.
+fn root_capitalisation_follows_the_fixture_filesystem_identity() {
     let f = fixture("root-case");
     let photos = f.root.join("Photos");
-    std::fs::create_dir_all(&photos).unwrap();
+    let shouted = f.root.join("PHOTOS");
+    std::fs::create_dir(&photos).unwrap();
     std::fs::write(photos.join("a.jpg"), b"bytes").unwrap();
-
+    let distinct = match std::fs::create_dir(&shouted) {
+        Ok(()) => {
+            std::fs::write(shouted.join("b.jpg"), b"other bytes").unwrap();
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+        Err(error) => panic!("probe fixture case behavior: {error}"),
+    };
     let first = settled_root(&f.conn, &photos).unwrap();
     walk_root(&f.conn, &first, &lists()).unwrap();
-    let rows_after_first: i64 = f
-        .conn
-        .query_row("SELECT COUNT(*) FROM paths", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(rows_after_first, 1);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths"), 1);
 
-    // The same folder, spelled differently — as a hand-edited settings file or
-    // a re-typed path would give it. The volume opens it happily.
-    let shouted = f.root.join("PHOTOS");
-    let settled = settled_root(&f.conn, &shouted).unwrap();
-    assert_eq!(
-        settled, first,
-        "the spelling already on record must win over a new capitalisation"
-    );
-
-    walk_root(&f.conn, &settled, &lists()).unwrap();
-    let rows_after_second: i64 = f
-        .conn
-        .query_row("SELECT COUNT(*) FROM paths", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(
-        rows_after_second, 1,
-        "one physical file must never become two rows"
-    );
+    let second = settled_root(&f.conn, &shouted).unwrap();
+    assert_eq!(second != first, distinct,
+        "aliases share a spelling; distinct directories retain their own identity");
+    walk_root(&f.conn, &second, &lists()).unwrap();
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths"), if distinct { 2 } else { 1 });
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM scan_dirs"), if distinct { 2 } else { 1 });
 }
 
 #[test]
@@ -2434,7 +2382,7 @@ fn library_wide_settings_change_holds_the_write_lock_only_briefly() {
     let root = stored_path(&f.root);
     f.conn
         .execute(
-            "INSERT INTO scan_dirs (root, last_completed_at_utc, dirty, configured_root) VALUES (?1, 'x', 0, ?1)",
+            "INSERT INTO scan_dirs (root, last_completed_at_utc, configured_root) VALUES (?1, 'x', ?1)",
             [&root],
         )
         .unwrap();
@@ -2512,7 +2460,7 @@ fn source_absence_publication_reserves_the_writer_before_reading_inventory() {
     f.conn.authorizer(Some(move |context: AuthContext<'_>| {
         if matches!(context.action, AuthAction::Read { table_name: "walk_present_paths", .. })
             && !seen.swap(true, Ordering::SeqCst) {
-            let result = other.execute("UPDATE scan_dirs SET dirty = dirty", []);
+            let result = other.execute("UPDATE scan_dirs SET last_completed_at_utc = last_completed_at_utc", []);
             blocked.store(matches!(result, Err(rusqlite::Error::SqliteFailure(error, _))
                 if error.code == rusqlite::ErrorCode::DatabaseBusy), Ordering::SeqCst);
         }
@@ -2526,7 +2474,7 @@ fn source_absence_publication_reserves_the_writer_before_reading_inventory() {
     assert_eq!(count(&f.conn, "SELECT missing FROM paths"), 1);
     // The reservation ends with publication; another writer can now commit.
     let other = index_store::open(&db_path).unwrap();
-    other.execute("UPDATE scan_dirs SET dirty = dirty", []).unwrap();
+    other.execute("UPDATE scan_dirs SET last_completed_at_utc = last_completed_at_utc", []).unwrap();
 }
 
 #[test]
@@ -2670,14 +2618,13 @@ fn an_unavailable_root_known_by_another_spelling_is_kept_and_a_removed_one_is_no
     );
 }
 
-/// Whether any configured root still owes a full walk — never walked to
-/// completion, or interrupted — read from the settled root's checkpoint.
-fn walk_owed(conn: &rusqlite::Connection, roots: &[String]) -> Result<bool, String> {
+/// Whether any configured root has never completed a walk, using its settled identity.
+fn walk_checkpoint_missing(conn: &rusqlite::Connection, roots: &[String]) -> Result<bool, String> {
     for root in roots {
         let settled = settled_root(conn, std::path::Path::new(root))?;
         let fs_root = onecopy_lib::winpath::for_fs(&settled);
         let complete: Option<bool> = rusqlite::OptionalExtension::optional(conn.query_row(
-            "SELECT last_completed_at_utc IS NOT NULL AND dirty = 0 \
+            "SELECT last_completed_at_utc IS NOT NULL \
              FROM scan_dirs WHERE root = ?1",
             rusqlite::params![fs_root.to_string_lossy().as_ref()],
             |r| r.get(0),
@@ -2727,7 +2674,7 @@ fn the_walk_excludes_the_data_root_however_it_is_spelled() {
 
 // A source whose drive stops answering mid-walk: the walk gives up within its
 // bound (so whoever holds the index claim gets it back), publishes no
-// absence, and keeps the root owed for the next check.
+// absence, and preserves the last completed checkpoint.
 #[test]
 fn a_walk_the_drive_stops_answering_ends_incomplete_within_its_bound() {
     use onecopy_lib::volume_io::{FakeStallingVolume, Op};
@@ -2738,6 +2685,7 @@ fn a_walk_the_drive_stops_answering_ends_incomplete_within_its_bound() {
     walk_root(&f.conn, &f.root, &lists()).unwrap();
     assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths WHERE missing = 0"), 2);
 
+    f.conn.execute("UPDATE scan_dirs SET last_completed_at_utc = 'previous-completion'", []).unwrap();
     let volume = FakeStallingVolume::mount(&f.root, std::time::Duration::from_millis(300));
     volume.stall(&[Op::List], Some(&f.root.join("zz")));
     let started = std::time::Instant::now();
@@ -2746,7 +2694,7 @@ fn a_walk_the_drive_stops_answering_ends_incomplete_within_its_bound() {
     assert!(stats.errors > 0);
     assert_eq!(stats.marked_missing, 0);
     assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths WHERE missing = 0"), 2);
-    assert_eq!(count(&f.conn, "SELECT dirty FROM scan_dirs"), 1);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM scan_dirs WHERE last_completed_at_utc = 'previous-completion'"), 1);
 
     // While the drive has not answered, the next walk fails fast.
     let started = std::time::Instant::now();
@@ -2758,7 +2706,7 @@ fn a_walk_the_drive_stops_answering_ends_incomplete_within_its_bound() {
     assert!(volume.wait_until_settled(std::time::Duration::from_secs(5)));
     let repaired = walk_root(&f.conn, &f.root, &lists()).unwrap();
     assert_eq!(repaired.errors, 0);
-    assert_eq!(count(&f.conn, "SELECT dirty FROM scan_dirs"), 0);
+    assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM scan_dirs WHERE last_completed_at_utc IS NOT NULL AND last_completed_at_utc != 'previous-completion'"), 1);
 }
 
 // A source check whose walk found every file as it was leaves companion

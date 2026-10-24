@@ -445,7 +445,6 @@ CREATE TABLE IF NOT EXISTS scan_dirs (
   id                    INTEGER PRIMARY KEY,
   root                  TEXT NOT NULL UNIQUE,
   last_completed_at_utc TEXT,
-  dirty                 INTEGER NOT NULL DEFAULT 0,
   relationship_dirty    INTEGER NOT NULL DEFAULT 0,
   -- The configured spelling whose walk last settled to this root, so an
   -- unavailable root that resolves under another spelling is still known.
@@ -595,6 +594,7 @@ fn current_shape(conn: &Connection) -> Result<bool, String> {
             AND EXISTS (SELECT 1 FROM pragma_table_info('paths') WHERE name = 'file_key')
             AND EXISTS (SELECT 1 FROM pragma_table_info('scan_dirs')
                         WHERE name = 'configured_root' AND \"notnull\" = 1)
+            AND NOT EXISTS (SELECT 1 FROM pragma_table_info('scan_dirs') WHERE name = 'dirty')
             AND NOT EXISTS (SELECT 1 FROM sqlite_master
                             WHERE type = 'index' AND name = 'idx_paths_media_repair_by_id')",
         [],

@@ -198,7 +198,7 @@ fn canonical_accepted_paths_keep_their_configured_alias_volume_gate() {
     std::fs::write(&photo, b"keep").unwrap();
     let conn = crate::index_store::open(&data.join(crate::storage::INDEX_DB_FILE_NAME)).unwrap();
     conn.execute(
-        "INSERT INTO scan_dirs (root, dirty, configured_root) VALUES (?1, 0, ?2)",
+        "INSERT INTO scan_dirs (root, configured_root) VALUES (?1, ?2)",
         rusqlite::params![resolved.to_string_lossy(), alias.to_string_lossy()],
     )
     .unwrap();
@@ -389,7 +389,7 @@ fn remembered_source_owner_uses_the_exact_current_volume_record_key() {
         "/configured/photos".to_string(),
     ];
     conn.execute(
-        "INSERT INTO scan_dirs (root, dirty, configured_root) VALUES (?1, 0, ?2)",
+        "INSERT INTO scan_dirs (root, configured_root) VALUES (?1, ?2)",
         rusqlite::params!["/settled", &sources[0]],
     )
     .unwrap();

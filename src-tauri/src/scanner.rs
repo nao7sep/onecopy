@@ -356,9 +356,8 @@ pub(crate) fn directory_belongs_to_root(directory: &str, root: &str) -> bool {
 }
 
 /// Marks roots whose companion projection needs repair. This receipt is
-/// separate from `dirty`, which means a source walk itself was interrupted;
-/// completing relationships must never claim that unread directories were
-/// walked. Roots already carrying relationship debt are not returned, so a
+/// independent of the last completed source walk. Roots already carrying
+/// relationship debt are not returned, so a
 /// scoped caller cannot clear debt it did not create.
 pub fn begin_scoped_index_repair(
     conn: &Connection,
@@ -1243,17 +1242,11 @@ fn walk_root_with_progress(
         failures_before,
     ));
 
-    // Claim the root as walk-in-flight. `upsert_file` writes in autocommit, so
-    // a cancelled walk leaves its prefix committed and the rest of the root
-    // simply absent from `paths` — and nothing about a row can express "this
-    // directory was never read". Only the completion write below clears this.
-    // Nothing reads the flag back yet: an interrupted root is walked again by
-    // the next source check (at launch when that setting is on, or when the
-    // user checks), and until then its unread part is simply not indexed;
-    // nothing is marked missing because of it.
+    // Retain configured identity even when enumeration fails. Only a complete
+    // walk advances the checkpoint; every source check enumerates roots anew.
     conn.execute(
-        "INSERT INTO scan_dirs (root, dirty, configured_root) VALUES (?1, 1, ?2) \
-         ON CONFLICT(root) DO UPDATE SET dirty = 1, configured_root = excluded.configured_root",
+        "INSERT INTO scan_dirs (root, configured_root) VALUES (?1, ?2) \
+         ON CONFLICT(root) DO UPDATE SET configured_root = excluded.configured_root",
         params![root_str, configured_root],
     )
     .map_err(|e| e.to_string())?;
@@ -1429,7 +1422,7 @@ fn walk_root_with_progress(
     // Only a complete directory enumeration can prove absence. A path whose
     // richer stat failed was still seen and remains live with an exact Issue;
     // only a WalkDir traversal error can hide an unknown subtree, so only that
-    // leaves the root dirty and suppresses the missing-row diff.
+    // suppresses the missing-row diff and completion checkpoint.
     if !walk_incomplete {
         // Anything under this root the walk did not see is missing. The rows
         // stay (their trash/delete history may matter) but leave every view
@@ -1521,8 +1514,8 @@ fn walk_root_with_progress(
         }
 
         conn.execute(
-            "INSERT INTO scan_dirs (root, last_completed_at_utc, dirty, configured_root) VALUES (?1, ?2, 0, ?3) \
-             ON CONFLICT(root) DO UPDATE SET last_completed_at_utc = ?2, dirty = 0",
+            "INSERT INTO scan_dirs (root, last_completed_at_utc, configured_root) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(root) DO UPDATE SET last_completed_at_utc = ?2",
             params![root_str, scanned_at, configured_root],
         )
         .map_err(|e| e.to_string())?;
