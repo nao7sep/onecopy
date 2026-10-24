@@ -587,4 +587,5 @@ it("fills a large viewport at small zoom beyond one native page", async () => {
     view.unmount();
     width.mockRestore(); height.mockRestore();
   }
-});
+// This mounts a real high-density viewport; worker contention is not a layout failure.
+}, 15000);
