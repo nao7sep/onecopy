@@ -419,3 +419,75 @@ fn repeated_substitution_probes_report_only_new_identity_conditions() {
         ("original".to_string(), "other-b".to_string()),
     ]);
 }
+
+#[test]
+fn clean_restat_issue_reads_scale_by_batch_instead_of_file() {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+    let measure = |files: usize| {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("source");
+        std::fs::create_dir(&root).unwrap();
+        for index in 0..files {
+            std::fs::write(root.join(format!("{index}.txt")), b"unchanged").unwrap();
+        }
+        let conn = crate::index_store::open(&temp.path().join("index.sqlite3")).unwrap();
+        let settings = crate::scanner::settings_from_config(
+            Some(&serde_json::json!({"sourceDirs": [root]})), &temp.path().join("data"), 0,
+        );
+        super::restat_dir(&conn, &root, &settings.lists, &settings.source_dirs, settings.data_root()).unwrap();
+        let reads = Arc::new(AtomicUsize::new(0));
+        let observed = reads.clone();
+        conn.authorizer(Some(move |context: AuthContext<'_>| {
+            if matches!(context.action, AuthAction::Read { table_name: "issue_events", column_name: "event" }) {
+                observed.fetch_add(1, Ordering::Relaxed);
+            }
+            Authorization::Allow
+        })).unwrap();
+        assert_eq!(super::restat_dir(&conn, &root, &settings.lists, &settings.source_dirs, settings.data_root()).unwrap(), 0);
+        reads.load(Ordering::Relaxed)
+    };
+    let one = measure(1);
+    let full = measure(super::RESTAT_ISSUE_BATCH_SIZE);
+    let next = measure(super::RESTAT_ISSUE_BATCH_SIZE + 1);
+    assert!(one > 0);
+    assert_eq!(full, one, "a clean batch does not probe each file's absent conditions");
+    assert!(next > full && next < full * 2, "only one additional membership query joins the directory-level check: {one}, {full}, {next}");
+}
+
+#[test]
+fn restat_batches_close_recovered_conditions_but_keep_new_and_unrelated_failures() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("source");
+    std::fs::create_dir(&root).unwrap();
+    for index in 0..=super::RESTAT_ISSUE_BATCH_SIZE {
+        std::fs::write(root.join(format!("{index:04}.txt")), b"file").unwrap();
+    }
+    let conn = crate::index_store::open(&temp.path().join("index.sqlite3")).unwrap();
+    let settings = crate::scanner::settings_from_config(
+        Some(&serde_json::json!({"sourceDirs": [root]})), &temp.path().join("data"), 0,
+    );
+    let first = crate::native_path::encode(crate::winpath::for_fs(&root.join("0000.txt")).as_ref()).into_owned();
+    let last = crate::native_path::encode(crate::winpath::for_fs(&root.join(format!("{:04}.txt", super::RESTAT_ISSUE_BATCH_SIZE))).as_ref()).into_owned();
+    for path in [&first, &last] {
+        for kind in [crate::scanner::STAT_ERROR, crate::scanner::WALK_ERROR, crate::scanner::READ_ERROR] {
+            crate::index_store::upsert_issue(&conn, Some(path), kind, "prior condition").unwrap();
+        }
+    }
+    super::restat_dir_with(&conn, &root, &settings.lists, &settings.source_dirs, settings.data_root(), &|path| {
+        let mut entries = crate::volume_io::read_dir(path, true)?;
+        entries.sort_by(|left, right| left.file_name.cmp(&right.file_name));
+        for entry in &mut entries {
+            if entry.file_name == "0128.txt" {
+                entry.metadata = Some(Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)));
+            }
+        }
+        Ok(entries)
+    }).unwrap();
+    assert_eq!(conn.query_row("SELECT count(*) FROM active_issues WHERE kind = ?1", [crate::scanner::STAT_ERROR], |row| row.get::<_, i64>(0)).unwrap(), 1);
+    assert_eq!(conn.query_row("SELECT count(*) FROM active_issues WHERE kind = ?1", [crate::scanner::WALK_ERROR], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    assert_eq!(conn.query_row("SELECT count(*) FROM active_issues WHERE kind = ?1", [crate::scanner::READ_ERROR], |row| row.get::<_, i64>(0)).unwrap(), 2);
+    assert_eq!(conn.query_row("SELECT count(*) FROM records.issue_events WHERE event = 'resolved'", [], |row| row.get::<_, i64>(0)).unwrap(), 4);
+    super::restat_dir(&conn, &root, &settings.lists, &settings.source_dirs, settings.data_root()).unwrap();
+    assert_eq!(conn.query_row("SELECT count(*) FROM active_issues WHERE kind = ?1", [crate::scanner::STAT_ERROR], |row| row.get::<_, i64>(0)).unwrap(), 0);
+}

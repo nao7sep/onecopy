@@ -153,68 +153,72 @@ fn restat_dir_with(
             } else { RestatFailure::Directory(error.to_string()) });
         }
     };
-    for entry in entries {
-        let path = entry.path;
-        let Some(file_type) = entry.file_type else {
-            let error = "could not read the entry's type".to_string();
-            crate::index_store::upsert_issue_with_descriptor(
-                conn,
-                Some(crate::native_path::encode(&path).as_ref()),
-                scanner::STAT_ERROR,
-                Some(scanner::scan_issue_message_key(scanner::STAT_ERROR)),
-                None,
-                &error,
-            )?;
-            present.insert(crate::native_path::encode(&path).into_owned());
-            continue;
-        };
-        if !file_type.is_file() {
-            continue;
-        }
-        let abs = crate::native_path::encode(&path).to_string();
-        if crate::packages::within_package(&path, false)
-            || crate::trash::is_trash_path(&path)
-            || crate::paths::is_within_data_root(&path, data_root)
-            || crate::scanner::is_apple_double_sidecar(&path)
-            || crate::file_identity::is_private_tmp_name(&path)
-        {
-            continue;
-        }
-        present.insert(abs.clone());
-        let meta = match entry.metadata {
-            Some(Ok(meta)) => meta,
-            Some(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+    // Bound issue membership reads independently of the directory's size.
+    for batch in entries.chunks(RESTAT_ISSUE_BATCH_SIZE) {
+        let issue_paths = restat_issue_paths(conn, batch)?;
+        for entry in batch {
+            let path = &entry.path;
+            let Some(file_type) = entry.file_type else {
+                let error = "could not read the entry's type".to_string();
+                crate::index_store::upsert_issue_with_descriptor(
+                    conn,
+                    Some(crate::native_path::encode(path).as_ref()),
+                    scanner::STAT_ERROR,
+                    Some(scanner::scan_issue_message_key(scanner::STAT_ERROR)),
+                    None,
+                    &error,
+                )?;
+                present.insert(crate::native_path::encode(path).into_owned());
+                continue;
+            };
+            if !file_type.is_file() {
+                continue;
+            }
+            let abs = crate::native_path::encode(path).to_string();
+            if crate::packages::within_package(path, false)
+                || crate::trash::is_trash_path(path)
+                || crate::paths::is_within_data_root(path, data_root)
+                || crate::scanner::is_apple_double_sidecar(path)
+                || crate::file_identity::is_private_tmp_name(path)
+            {
+                continue;
+            }
+            present.insert(abs.clone());
+            let meta = match &entry.metadata {
+                Some(Ok(meta)) => meta,
+                Some(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                    present.remove(&abs);
+                    continue;
+                }
+                failure => {
+                    let error = match failure {
+                        Some(Err(error)) => error.to_string(),
+                        _ => "file metadata was not read".to_string(),
+                    };
+                    crate::index_store::upsert_issue_with_descriptor(
+                        conn, Some(&abs), scanner::STAT_ERROR,
+                        Some(scanner::scan_issue_message_key(scanner::STAT_ERROR)), None, &error,
+                    )?;
+                    continue;
+                }
+            };
+            // An online-only file is not indexed, as in the walk (`cloud_files`);
+            // the folder's count is the next source check's to update.
+            if crate::cloud_files::is_online_only(meta) {
                 present.remove(&abs);
                 continue;
             }
-            failure => {
-                let error = match failure {
-                    Some(Err(error)) => error.to_string(),
-                    _ => "file metadata was not read".to_string(),
-                };
-                crate::index_store::upsert_issue_with_descriptor(
-                    conn, Some(&abs), scanner::STAT_ERROR,
-                    Some(scanner::scan_issue_message_key(scanner::STAT_ERROR)), None, &error,
-                )?;
-                continue;
+            // Database failures still stop the pass; only per-file reads are isolated.
+            match scanner::upsert_file(conn, path, meta, lists, inherited)? {
+                scanner::Upsert::Unchanged => {},
+                _ => changed += 1,
             }
-        };
-        // An online-only file is not indexed, as in the walk (`cloud_files`);
-        // the folder's count is the next source check's to update.
-        if crate::cloud_files::is_online_only(&meta) {
-            present.remove(&abs);
-            continue;
+            if issue_paths.contains(&abs) {
+                crate::index_store::close_issues(conn, "resolved",
+                    "path = ?1 AND kind IN (?2, ?3)",
+                    &[&abs, &scanner::STAT_ERROR, &scanner::WALK_ERROR])?;
+            }
         }
-        // Database failures still stop the pass; only per-file reads are isolated.
-        match scanner::upsert_file(conn, &path, &meta, lists, inherited)? {
-            scanner::Upsert::Unchanged => {},
-            _ => changed += 1,
-        }
-        crate::index_store::clear_issues(
-            conn,
-            &abs,
-            &[scanner::STAT_ERROR, scanner::WALK_ERROR],
-        )?;
     }
     crate::index_store::clear_issues(
         conn,
@@ -243,6 +247,24 @@ fn restat_dir_with(
     }
 
     Ok(changed)
+}
+
+// Each query retains at most one path per entry and stays well below SQLite's
+// bind limit even when a directory contains a large import.
+const RESTAT_ISSUE_BATCH_SIZE: usize = 256;
+
+fn restat_issue_paths(
+    conn: &rusqlite::Connection, entries: &[crate::volume_io::DirEntryInfo],
+) -> Result<HashSet<String>, String> {
+    let paths: Vec<_> = entries.iter().map(|entry| crate::native_path::encode(&entry.path)).collect();
+    let placeholders = (1..=paths.len()).map(|index| format!("?{index}")).collect::<Vec<_>>().join(",");
+    let mut statement = conn.prepare(&format!(
+        "SELECT DISTINCT path FROM active_issues WHERE kind IN ('{}', '{}') AND path IN ({placeholders})",
+        scanner::STAT_ERROR, scanner::WALK_ERROR,
+    )).map_err(|error| error.to_string())?;
+    let rows = statement.query_map(rusqlite::params_from_iter(paths.iter()), |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?;
+    rows.collect::<rusqlite::Result<HashSet<_>>>().map_err(|error| error.to_string())
 }
 
 /// Starts the watcher thread over the configured source roots. Best-effort:
