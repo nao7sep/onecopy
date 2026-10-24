@@ -122,7 +122,6 @@ CREATE TABLE IF NOT EXISTS paths (
   date_only        INTEGER NOT NULL DEFAULT 0,
   visibility_flags INTEGER NOT NULL DEFAULT 0,
   own_visibility_flags INTEGER NOT NULL DEFAULT 0,
-  visibility_checked INTEGER NOT NULL DEFAULT 1,
   review_visible   INTEGER NOT NULL DEFAULT 1,
   -- The physical file a hard-linked path names (`file_identity::hard_link_key`),
   -- so two links to one file count as one copy; NULL for a file with one
@@ -140,8 +139,6 @@ CREATE INDEX IF NOT EXISTS idx_paths_companion ON paths (companion_of);
 -- statistics SQLite took `missing = ?` as a selective lookup and chose a
 -- (missing, id) index over the content-hash one, reading every live path.
 CREATE INDEX IF NOT EXISTS idx_paths_live_by_id ON paths (id) WHERE missing = 0;
-CREATE INDEX IF NOT EXISTS idx_paths_visibility_pending ON paths (id)
-  WHERE missing = 0 AND visibility_checked = 0;
 CREATE INDEX IF NOT EXISTS idx_paths_unhashed_other_section
   ON paths (resolved_utc_ms, id)
   WHERE missing = 0 AND companion_of IS NULL AND content_hash IS NULL
@@ -592,6 +589,7 @@ fn current_shape(conn: &Connection) -> Result<bool, String> {
     conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM pragma_index_list('paths') WHERE name = 'idx_paths_native_identity' AND \"unique\" = 1 AND partial = 0)
             AND EXISTS (SELECT 1 FROM pragma_table_info('paths') WHERE name = 'file_key')
+            AND NOT EXISTS (SELECT 1 FROM pragma_table_info('paths') WHERE name = 'visibility_checked')
             AND EXISTS (SELECT 1 FROM pragma_table_info('scan_dirs')
                         WHERE name = 'configured_root' AND \"notnull\" = 1)
             AND NOT EXISTS (SELECT 1 FROM pragma_table_info('scan_dirs') WHERE name = 'dirty')

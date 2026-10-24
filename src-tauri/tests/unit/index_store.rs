@@ -41,6 +41,7 @@ fn obsolete_marked_index_shapes_rebuild_without_touching_sibling_data() {
         "CREATE TABLE paths(id INTEGER, file_key TEXT); CREATE TABLE scan_dirs(root TEXT, configured_root TEXT);",
         "CREATE TABLE paths(id INTEGER, file_key TEXT); CREATE TABLE scan_dirs(root TEXT);",
         "CREATE TABLE paths(id INTEGER, file_key TEXT); CREATE UNIQUE INDEX idx_paths_native_identity ON paths(id); CREATE TABLE scan_dirs(root TEXT, configured_root TEXT NOT NULL, dirty INTEGER NOT NULL DEFAULT 0);",
+        "CREATE TABLE paths(id INTEGER, file_key TEXT, visibility_checked INTEGER NOT NULL DEFAULT 1); CREATE UNIQUE INDEX idx_paths_native_identity ON paths(id); CREATE TABLE scan_dirs(root TEXT, configured_root TEXT NOT NULL);",
     ];
     for obsolete in obsolete_shapes {
         let dir = tempfile::tempdir().unwrap();

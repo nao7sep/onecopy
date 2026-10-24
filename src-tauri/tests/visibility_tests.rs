@@ -280,17 +280,6 @@ fn directory_visibility_is_inherited_without_pruning_inventory() {
         1
     );
     let path = root.join(".hidden/deep/note.txt");
-    let id: i64 = conn
-        .query_row("SELECT id FROM paths", [], |row| row.get(0))
-        .unwrap();
-    conn.execute(
-        "UPDATE paths SET visibility_checked = 0, visibility_flags = 0 WHERE id = ?1",
-        [id],
-    )
-    .unwrap();
-    let stored_root = onecopy_lib::winpath::for_fs(&root).into_owned();
-    visibility_index::complete_missing_facts(&conn, &[stored_root.to_string_lossy().into_owned()])
-        .unwrap();
     assert_eq!(
         conn.query_row(
             "SELECT visibility_flags FROM paths WHERE abs_path = ?1",

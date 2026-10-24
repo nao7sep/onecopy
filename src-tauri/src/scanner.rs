@@ -915,9 +915,6 @@ pub fn pending_index_work_exists(conn: &Connection) -> Result<bool, String> {
     )? {
         return Ok(true);
     }
-    if probe("SELECT EXISTS(SELECT 1 FROM paths WHERE missing = 0 AND visibility_checked = 0)")? {
-        return Ok(true);
-    }
     if probe("SELECT EXISTS(SELECT 1 FROM scan_dirs WHERE relationship_dirty = 1)")? {
         return Ok(true);
     }
@@ -970,7 +967,6 @@ fn run_index_tail_scoped(
     summary: &mut ScanSummary,
 ) -> Result<(), String> {
     let _awake = crate::sleep_prevention::begin_work();
-    crate::visibility_index::complete_missing_facts(conn, &settings.source_dirs)?;
     let cache = crate::preview::CachePaths::new(settings.cache_root.clone());
     let hash_stats = hash_pending_with_progress(conn, &cache, progress)?;
     summary.full_hashed = hash_stats.full_hashed;
@@ -1128,8 +1124,8 @@ pub(crate) fn upsert_file_with_key(
         Some((old_size, old_mtime)) if old_size == size && old_mtime == mtime_ms => {
             let changed = execute_cached(
                 conn,
-                "UPDATE paths SET missing = 0, own_visibility_flags = ?2, visibility_flags = ?3, visibility_checked = 1, file_key = ?4
-                 WHERE abs_path = ?1 AND (missing = 1 OR own_visibility_flags != ?2 OR visibility_flags != ?3 OR visibility_checked != 1
+                "UPDATE paths SET missing = 0, own_visibility_flags = ?2, visibility_flags = ?3, file_key = ?4
+                 WHERE abs_path = ?1 AND (missing = 1 OR own_visibility_flags != ?2 OR visibility_flags != ?3
                                           OR file_key IS NOT ?4)",
                 params![abs, own_visibility_flags, visibility_flags, file_key],
             )?;
@@ -1168,7 +1164,7 @@ pub(crate) fn upsert_file_with_key(
                  kind = ?6, stem = ?7, prehash = NULL, content_hash = NULL, \
                  hash_attempt_failed = 0, metadata_attempt_failed = 0, \
                  indexed_at_utc = NULL, resolved_utc_ms = NULL, resolved_source = NULL, \
-                 date_only = 0, missing = 0, own_visibility_flags = ?8, visibility_flags = ?9, visibility_checked = 1, \
+                 date_only = 0, missing = 0, own_visibility_flags = ?8, visibility_flags = ?9, \
                  file_key = ?10 WHERE abs_path = ?1",
                 params![abs, size, mtime_ms, birthtime_ms, ext, kind, stem, own_visibility_flags, visibility_flags, file_key],
             )
@@ -1196,8 +1192,8 @@ pub(crate) fn upsert_file_with_key(
             execute_cached(
                 conn,
                 "INSERT INTO paths (abs_path, dir_path, file_name, stem, ext, kind, size, \
-                 mtime_ms, birthtime_ms, missing, own_visibility_flags, visibility_flags, visibility_checked, file_key)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11, 1, ?12)",
+                 mtime_ms, birthtime_ms, missing, own_visibility_flags, visibility_flags, file_key)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11, ?12)",
                 params![abs, dir_path, file_name, stem, ext, kind, size, mtime_ms, birthtime_ms, own_visibility_flags, visibility_flags, file_key],
             )?;
             Ok(Upsert::Added)
