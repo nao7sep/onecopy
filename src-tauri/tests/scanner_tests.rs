@@ -2986,7 +2986,7 @@ fn a_source_folder_inside_a_library_indexes_nothing() {
     assert_eq!(count(&f.conn, "SELECT COUNT(*) FROM paths WHERE missing = 0"), 0);
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn two_hard_links_to_one_file_count_as_one_copy() {
     // A second name for the same file is not a backup of it.

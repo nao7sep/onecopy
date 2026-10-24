@@ -176,3 +176,43 @@ fn malformed_private_names_prove_no_owner_and_survive_sweeping() {
         assert_eq!(std::fs::read(entry.unwrap().path()).unwrap(), b"preserve");
     }
 }
+
+#[test]
+fn physical_copy_keys_keep_volume_and_full_file_identity() {
+    assert_eq!(physical_copy_key(3, 7, 0), None);
+    assert_eq!(physical_copy_key(3, 7, 1), None);
+    assert_eq!(physical_copy_key(3, 7, 2), Some("3:7".to_string()));
+    assert_eq!(physical_copy_key(3, 7, 2), physical_copy_key(3, 7, 9));
+    assert_ne!(physical_copy_key(3, 7, 2), physical_copy_key(4, 7, 2));
+    assert_ne!(physical_copy_key(3, 7, 2), physical_copy_key(3, (1u64 << 32) + 7, 2));
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn native_link_identity_changes_when_a_second_name_is_added_and_removed() {
+    let temp = tempfile::tempdir().unwrap();
+    let first = temp.path().join("first.bin");
+    let second = temp.path().join("second.bin");
+    let separate = temp.path().join("separate.bin");
+    std::fs::write(&first, b"same bytes").unwrap();
+    std::fs::write(&separate, b"same bytes").unwrap();
+    let key = |path: &Path| hard_link_key(path, &std::fs::metadata(path).unwrap()).unwrap();
+    assert_eq!(key(&first), None);
+    std::fs::hard_link(&first, &second).unwrap();
+    let shared = key(&first).expect("two names share one physical file");
+    assert_eq!(key(&second), Some(shared));
+    assert_eq!(key(&separate), None);
+    std::fs::remove_file(&second).unwrap();
+    assert_eq!(key(&first), None);
+}
+
+#[cfg(windows)]
+#[test]
+fn failed_windows_link_identity_is_not_treated_as_an_independent_copy() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("gone.bin");
+    std::fs::write(&path, b"gone").unwrap();
+    let metadata = std::fs::metadata(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(hard_link_key(&path, &metadata).unwrap_err().kind(), std::io::ErrorKind::NotFound);
+}

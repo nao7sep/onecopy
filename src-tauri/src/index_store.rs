@@ -124,7 +124,7 @@ CREATE TABLE IF NOT EXISTS paths (
   own_visibility_flags INTEGER NOT NULL DEFAULT 0,
   visibility_checked INTEGER NOT NULL DEFAULT 1,
   review_visible   INTEGER NOT NULL DEFAULT 1,
-  -- The physical file a hard-linked path names (`scanner::hard_link_key`),
+  -- The physical file a hard-linked path names (`file_identity::hard_link_key`),
   -- so two links to one file count as one copy; NULL for a file with one
   -- link, which counts as itself.
   file_key         TEXT

@@ -1067,6 +1067,16 @@ pub fn upsert_file(
     lists: &ScanLists,
     inherited_visibility_flags: i64,
 ) -> Result<Upsert, String> {
+    let file_key = crate::file_identity::hard_link_key(path, meta).map_err(|error| error.to_string())?;
+    upsert_file_with_key(conn, path, meta, lists, inherited_visibility_flags, file_key)
+}
+
+/// The metadata/identity read has settled before any index write. Watcher
+/// callers classify those physical failures separately from database errors.
+pub(crate) fn upsert_file_with_key(
+    conn: &Connection, path: &Path, meta: &std::fs::Metadata,
+    lists: &ScanLists, inherited_visibility_flags: i64, file_key: Option<String>,
+) -> Result<Upsert, String> {
     let abs = crate::native_path::encode(&path).to_string();
     let file_name = path
         .file_name()
@@ -1099,7 +1109,6 @@ pub fn upsert_file(
         .map(|value| crate::native_path::encode(value).to_lowercase())
         .unwrap_or_else(|| file_name.to_lowercase());
 
-    let file_key = hard_link_key(meta);
     // The per-file statements go through the statement cache
     // (`execute_cached`).
     let existing: Option<(i64, Option<i64>)> = conn
@@ -1202,23 +1211,6 @@ pub fn upsert_file(
 /// under the root that no longer exist as missing.
 pub fn walk_root(conn: &Connection, root: &Path, lists: &ScanLists) -> Result<WalkStats, String> {
     walk_root_with_progress(conn, root, &crate::native_path::encode(&root), lists, &[crate::native_path::encode(crate::winpath::for_fs(root).as_ref()).into_owned()], 0, 1, 0, None, &|_| {})
-}
-
-/// The physical file a path names when the file has more than one hard link,
-/// so the projection counts the links as one copy (`paths.file_key`). Windows
-/// reports link counts only through an open handle, so there every path
-/// counts as its own copy.
-#[allow(unused_variables)]
-pub(crate) fn hard_link_key(meta: &std::fs::Metadata) -> Option<String> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        (meta.nlink() > 1).then(|| format!("{}:{}", meta.dev(), meta.ino()))
-    }
-    #[cfg(not(unix))]
-    {
-        None
-    }
 }
 
 /// Excludes the app's own storage the way `trash::is_trash_path` excludes

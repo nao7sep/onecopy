@@ -213,8 +213,22 @@ fn restat_dir_with(
                 present.remove(&abs);
                 continue;
             }
+            let file_key = match crate::file_identity::hard_link_key(path, meta) {
+                Ok(key) => key,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    present.remove(&abs);
+                    continue;
+                }
+                Err(error) => {
+                    crate::index_store::upsert_issue_with_descriptor(
+                        conn, Some(&abs), scanner::STAT_ERROR,
+                        Some(scanner::scan_issue_message_key(scanner::STAT_ERROR)), None, &error.to_string(),
+                    )?;
+                    continue;
+                }
+            };
             // Database failures still stop the pass; only per-file reads are isolated.
-            match scanner::upsert_file(conn, path, meta, lists, inherited)? {
+            match scanner::upsert_file_with_key(conn, path, meta, lists, inherited, file_key)? {
                 scanner::Upsert::Unchanged => {},
                 _ => changed += 1,
             }

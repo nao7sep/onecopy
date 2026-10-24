@@ -4,7 +4,6 @@
 //! through its bounded primitives, and the functions taking a raw `File` run
 //! only inside `VolumeFile::with`, on the worker that holds the file.
 
-#[cfg(not(windows))]
 use std::fs::Metadata;
 use std::fs::File;
 use std::io;
@@ -203,7 +202,7 @@ pub fn volume_of(path: &Path) -> io::Result<u64> {
 }
 
 #[cfg(windows)]
-fn from_windows_file(file: &File) -> io::Result<FileIdentity> {
+fn windows_file_information(file: &File) -> io::Result<windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION> {
     use std::mem::MaybeUninit;
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
@@ -220,12 +219,57 @@ fn from_windows_file(file: &File) -> io::Result<FileIdentity> {
     }
     // SAFETY: a nonzero result guarantees the structure was initialized.
     let information = unsafe { information.assume_init() };
-    let index =
-        (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow);
-    Ok(FileIdentity {
+    Ok(information)
+}
+
+#[cfg(windows)]
+fn windows_identity(information: &windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION) -> FileIdentity {
+    FileIdentity {
         volume: information.dwVolumeSerialNumber,
-        index,
-    })
+        index: (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow),
+    }
+}
+
+#[cfg(windows)]
+fn from_windows_file(file: &File) -> io::Result<FileIdentity> {
+    windows_file_information(file).map(|information| windows_identity(&information))
+}
+
+fn physical_copy_key(volume: u64, file: u64, links: u64) -> Option<String> {
+    (links > 1).then(|| format!("{volume}:{file}"))
+}
+
+/// Multiple directory entries for one physical file are one copy. Unix's
+/// existing metadata has both facts; Windows reads them together from one
+/// attributes-only handle without reading file contents or following reparse points.
+pub(crate) fn hard_link_key(path: &Path, metadata: &Metadata) -> io::Result<Option<String>> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let _ = path;
+        Ok(physical_copy_key(metadata.dev(), metadata.ino(), metadata.nlink()))
+    }
+    #[cfg(windows)]
+    {
+        let _ = metadata;
+        let fs_path = crate::winpath::for_fs(path).into_owned();
+        volume_io::call(path, Op::Stat, None, move || {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES};
+            let file = std::fs::OpenOptions::new() // volume_io worker
+                .access_mode(FILE_READ_ATTRIBUTES)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(&fs_path)?;
+            let information = windows_file_information(&file)?;
+            let identity = windows_identity(&information);
+            Ok(physical_copy_key(u64::from(identity.volume), identity.index, u64::from(information.nNumberOfLinks)))
+        })
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (path, metadata);
+        Err(io::Error::new(io::ErrorKind::Unsupported, "physical copy identity is unsupported on this platform"))
+    }
 }
 
 /// Opens one existing regular file without following a final symlink/reparse
