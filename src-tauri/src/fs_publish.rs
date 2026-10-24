@@ -30,21 +30,13 @@ pub fn sync_directory(path: &Path) -> io::Result<()> {
 /// outcome (`volume_io::outcome_unknown`). Volumes without an atomic
 /// no-replace rename return `Unsupported` without publishing the file.
 pub fn rename_no_replace(source: &Path, target: &Path) -> io::Result<()> {
-    rename_no_replace_checked(source, target, None)
-}
-
-fn rename_no_replace_checked(
-    source: &Path,
-    target: &Path,
-    source_version: Option<crate::file_identity::FileVersion>,
-) -> io::Result<()> {
     #[cfg(all(test, target_os = "macos"))]
     let exclusive_unsupported = seam::EXCLUSIVE_RENAME_UNSUPPORTED.with(std::cell::Cell::get);
     #[cfg(not(all(test, target_os = "macos")))]
     let exclusive_unsupported = false;
     let (from, to) = (source.to_path_buf(), target.to_path_buf());
     volume_io::call(target, Op::Rename, None, move || {
-        rename_no_replace_raw(&from, &to, exclusive_unsupported, source_version)
+        rename_no_replace_raw(&from, &to, exclusive_unsupported)
     })
 }
 
@@ -82,12 +74,10 @@ fn rename_no_replace_raw(
     source: &Path,
     target: &Path,
     exclusive_unsupported: bool,
-    source_version: Option<crate::file_identity::FileVersion>,
 ) -> io::Result<()> {
     if exclusive_unsupported {
         return Err(exclusive_rename_unsupported());
     }
-    require_source_version(source, source_version)?;
     match rename_exclusive(source, target) {
         // A replacing rename cannot safely emulate this operation: reserving
         // the name first would expose a placeholder and race another writer.
@@ -201,12 +191,10 @@ fn rename_no_replace_raw(
     source: &Path,
     target: &Path,
     _exclusive_unsupported: bool,
-    source_version: Option<crate::file_identity::FileVersion>,
 ) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
 
-    require_source_version(source, source_version)?;
     let source: Vec<u16> = crate::winpath::for_fs(source)
         .as_os_str()
         .encode_wide()
@@ -237,23 +225,10 @@ fn rename_no_replace_raw(
     source: &Path,
     target: &Path,
     _exclusive_unsupported: bool,
-    source_version: Option<crate::file_identity::FileVersion>,
 ) -> io::Result<()> {
     // Non-shipping test/development platforms: hard-link publication has the
     // same atomic no-clobber property. The source remains recovery authority
     // if removing the staging name fails.
-    require_source_version(source, source_version)?;
     std::fs::hard_link(source, target)?; // volume_io worker
-    require_source_version(source, source_version)?;
     std::fs::remove_file(source) // volume_io worker
-}
-
-fn require_source_version(
-    source: &Path,
-    version: Option<crate::file_identity::FileVersion>,
-) -> io::Result<()> {
-    if let Some(version) = version {
-        version.require_path(source)?;
-    }
-    Ok(())
 }
