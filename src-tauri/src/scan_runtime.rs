@@ -572,6 +572,17 @@ pub(crate) fn with_derived_share<T>(rank: ShareRank, work: impl FnOnce() -> T) -
     Some(work())
 }
 
+/// Captured while a short derived share protects source admission. A
+/// foreground turn can replace the index and reuse provisional keys while
+/// requested work computes without that share.
+pub(crate) fn publication_epoch() -> u64 {
+    FOREGROUND_TURNS.load(Ordering::SeqCst)
+}
+
+pub(crate) fn publication_epoch_current(epoch: u64) -> bool {
+    FOREGROUND_TURNS.load(Ordering::SeqCst) == epoch && !foreground_pending()
+}
+
 /// Whether automatic derived work admitted on this thread holds an urgent
 /// share.
 pub(crate) fn urgent_share() -> bool {

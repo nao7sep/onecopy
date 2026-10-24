@@ -592,3 +592,89 @@ fn a_failed_parallel_publication_still_joins_its_physical_workers() {
     assert_eq!(result.recv_timeout(std::time::Duration::from_secs(5)).unwrap().unwrap_err(), "fixture publication failure");
     worker.join().unwrap();
 }
+
+#[test]
+fn requested_preview_publication_requires_the_captured_source_and_index_incarnation() {
+    const CHILD_ROOT: &str = "ONECOPY_REQUESTED_PREVIEW_SOURCE_TEST_ROOT";
+    let Some(root) = std::env::var_os(CHILD_ROOT) else {
+        let root = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "preview::tests::requested_preview_publication_requires_the_captured_source_and_index_incarnation", "--nocapture"])
+            .env(CHILD_ROOT, root.path()).output().unwrap();
+        assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        assert!(root.path().join("verified").is_file());
+        return;
+    };
+    let root = PathBuf::from(root);
+    for hash in ["p1", "known"] {
+        for change in ["unchanged", "replace", "row", "rebuild", "replace-and-fail"] {
+            let home = root.join(format!("{hash}-{change}"));
+            std::fs::create_dir(&home).unwrap();
+            let source = home.join("source.jpg");
+            std::fs::write(&source, b"original").unwrap();
+            let original_time = std::fs::metadata(&source).unwrap().modified().unwrap();
+            let path = crate::native_path::encode(&source).into_owned();
+            let conn = crate::index_store::open(&home.join("index.sqlite3")).unwrap();
+            conn.execute("INSERT INTO contents(hash, byte_size, kind) VALUES (?1, 8, 'image')", [hash]).unwrap();
+            conn.execute("INSERT INTO paths(id, abs_path, dir_path, file_name, kind, content_hash)
+                          VALUES (1, ?1, ?2, 'source.jpg', 'image', ?3)", rusqlite::params![path, crate::native_path::encode(&home), hash]).unwrap();
+            let cache = CachePaths::new(home.join("cache"));
+            std::fs::create_dir_all(cache.preview(hash).parent().unwrap()).unwrap();
+            std::fs::write(cache.preview(hash), b"previous preview").unwrap();
+            let stage_key = std::cell::RefCell::new(String::new());
+            let result = derive_one_with(&conn, &cache, hash, false, |_, key| {
+                *stage_key.borrow_mut() = key.to_string();
+                for target in [cache.preview(key), cache.thumb(key)] {
+                    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+                    std::fs::write(target, b"new preview").unwrap();
+                }
+                match change {
+                    "replace" | "replace-and-fail" => {
+                        let replacement = home.join("replacement.jpg");
+                        std::fs::write(&replacement, b"replaced").unwrap();
+                        std::fs::File::options().write(true).open(&replacement).unwrap().set_modified(original_time).unwrap();
+                        std::fs::rename(replacement, &source).unwrap();
+                    }
+                    "row" => {
+                        conn.execute("UPDATE paths SET indexed_at_utc = 'new observation'", []).unwrap();
+                    }
+                    "rebuild" => {
+                        // Requested computation must not hold index admission.
+                        // Reusing exactly the same row is still a new index turn.
+                        let _foreground = crate::scan_runtime::admit_foreground(None,
+                            Some(std::time::Instant::now() + std::time::Duration::from_secs(5)),
+                            &|| false, &mut || {}).unwrap();
+                        conn.execute_batch("CREATE TEMP TABLE saved_paths AS SELECT * FROM paths;
+                                            DELETE FROM paths;
+                                            INSERT INTO paths SELECT * FROM saved_paths;
+                                            DROP TABLE saved_paths;").unwrap();
+                    }
+                    _ => {}
+                }
+                if change == "replace-and-fail" { return Err("decoder failed on obsolete bytes".into()); }
+                Ok((crate::scanner::is_provisional(hash).then(|| "real-hash".into()),
+                    DerivedFacts { width: 10, height: 10, sharpness: 1.0, phash: 1 }))
+            });
+            let stage_key = stage_key.into_inner();
+            assert!(!stage_key.is_empty());
+            assert!(!cache.preview(&stage_key).exists());
+            assert!(!cache.thumb(&stage_key).exists());
+            if change == "unchanged" {
+                let key = result.unwrap();
+                assert_eq!(key, if hash == "p1" { "real-hash" } else { hash });
+                assert_eq!(std::fs::read(cache.preview(&key)).unwrap(), b"new preview");
+                assert_eq!(std::fs::read(cache.thumb(&key)).unwrap(), b"new preview");
+                assert!(conn.query_row("SELECT derived_at_utc IS NOT NULL FROM contents WHERE hash = ?1", [&key], |row| row.get::<_, bool>(0)).unwrap());
+            } else {
+                assert!(result.unwrap_err().starts_with(crate::scanner::CANCELLED), "{hash}: {change}");
+                assert_eq!(std::fs::read(cache.preview(hash)).unwrap(), b"previous preview");
+                assert!(!cache.thumb(hash).exists());
+                assert!(!cache.preview("real-hash").exists());
+                assert_eq!(conn.query_row("SELECT content_hash FROM paths WHERE id = 1", [], |row| row.get::<_, String>(0)).unwrap(), hash);
+                assert!(conn.query_row("SELECT derived_at_utc IS NULL AND derive_outcome IS NULL FROM contents WHERE hash = ?1", [hash], |row| row.get::<_, bool>(0)).unwrap());
+                assert_eq!(conn.query_row("SELECT count(*) FROM active_issues", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+            }
+        }
+    }
+    std::fs::write(root.join("verified"), b"verified").unwrap();
+}

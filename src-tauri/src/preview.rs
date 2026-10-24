@@ -547,20 +547,115 @@ pub fn derive_one(
     ffmpeg: Option<&Path>,
     hash: &str,
 ) -> Result<String, String> {
-    if cache.thumb(hash).exists() && cache.preview(hash).exists() { // data root
-        return Ok(hash.to_string());
+    derive_one_with(conn, cache, hash, ffmpeg.is_some(), |source, stage_key| {
+        if ffmpeg.is_none() && needs_ffmpeg_decode(source) {
+            return Err(NEEDS_FFMPEG.to_string());
+        }
+        let promoted = if crate::scanner::is_provisional(hash) {
+            Some(crate::hashing::full_hash_with_cancel(source, &crate::derived_runtime::cancelled)
+                .map_err(|error| if error.kind() == std::io::ErrorKind::Interrupted {
+                    crate::scanner::CANCELLED.to_string()
+                } else { error.to_string() })?)
+        } else { None };
+        let facts = generate_for_image(source, stage_key, cache, thumb_edge, preview_long_edge, ffmpeg)?;
+        Ok((promoted, facts))
+    })
+}
+
+struct PreviewStage<'a> {
+    cache: &'a CachePaths,
+    key: String,
+}
+
+impl PreviewStage<'_> {
+    fn publish(&self, key: &str) -> Result<(), String> {
+        for (source, target) in [
+            (self.cache.preview(&self.key), self.cache.preview(key)),
+            (self.cache.thumb(&self.key), self.cache.thumb(key)),
+        ] {
+            std::fs::create_dir_all(target.parent().expect("cache entry has a parent")) // data root
+                .map_err(|error| crate::resource_limits::cache_write_error("preview cache directory", error))?;
+            std::fs::rename(source, target) // data root
+                .map_err(|error| crate::resource_limits::cache_write_error("preview cache publication", error))?;
+        }
+        Ok(())
     }
-    if crate::derived_state::preview_failed(conn, hash)? {
-        return Err("Preview generation failed. Recheck this section to try again.".to_string());
+}
+
+impl Drop for PreviewStage<'_> {
+    fn drop(&mut self) {
+        for path in [self.cache.preview(&self.key), self.cache.thumb(&self.key)] {
+            crate::fs_recovery::remove_file(&path, "requested preview staging cleanup");
+        }
     }
-    let native_path = crate::indexed_file::live_path(conn, Some(hash), None)?;
-    let path = crate::native_path::encode(&native_path).into_owned();
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct PreviewSourceRow {
+    id: i64,
+    size: Option<i64>,
+    mtime_ms: Option<i64>,
+    indexed_at: Option<String>,
+}
+
+fn preview_source_row(conn: &Connection, hash: &str, path: &str) -> Result<Option<PreviewSourceRow>, String> {
+    conn.query_row("SELECT id, size, mtime_ms, indexed_at_utc FROM paths
+                    WHERE abs_path = ?1 AND content_hash = ?2 AND missing = 0 AND companion_of IS NULL",
+        rusqlite::params![path, hash], |row| Ok(PreviewSourceRow {
+            id: row.get(0)?, size: row.get(1)?, mtime_ms: row.get(2)?, indexed_at: row.get(3)?,
+        })).optional().map_err(|error| error.to_string())
+}
+
+fn preview_share<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    crate::scan_runtime::with_derived_share(crate::scan_runtime::ShareRank::Urgent, work)
+        .ok_or_else(|| crate::scanner::CANCELLED.to_string())?
+}
+
+fn derive_one_with(
+    conn: &Connection, cache: &CachePaths, hash: &str, ffmpeg_available: bool,
+    generate: impl FnOnce(&Path, &str) -> DeriveOutcome,
+) -> Result<String, String> {
+    let captured = preview_share(|| {
+        let epoch = crate::scan_runtime::publication_epoch();
+        if cache.thumb(hash).exists() && cache.preview(hash).exists() { // data root
+            return Ok(None);
+        }
+        if crate::derived_state::preview_failed(conn, hash)? {
+            return Err("Preview generation failed. Recheck this section to try again.".to_string());
+        }
+        let native_path = crate::indexed_file::live_path(conn, Some(hash), None)?;
+        let path = crate::native_path::encode(&native_path).into_owned();
+        let row = preview_source_row(conn, hash, &path)?.ok_or_else(|| crate::scanner::CANCELLED.to_string())?;
+        let (source, metadata) = crate::file_identity::SourceSnapshot::open(&native_path).map_err(|error| error.to_string())?;
+        let mtime = metadata.modified().ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis() as i64);
+        if row.size.is_some_and(|size| size != metadata.len() as i64)
+            || row.mtime_ms.is_some_and(|time| Some(time) != mtime)
+            || !crate::scan_runtime::publication_epoch_current(epoch)
+        {
+            return Err(crate::scanner::CANCELLED.to_string());
+        }
+        Ok(Some((epoch, native_path, path, row, source)))
+    })?;
+    let Some((epoch, native_path, path, row, mut source)) = captured else { return Ok(hash.to_string()); };
+    // This key cannot be a real or provisional content identity. Interrupted
+    // attempts remain ordinary orphan cache entries for the startup sweep.
+    let stage = PreviewStage { cache, key: format!("attempt-{}", nanoid::generate()?) };
     let mut trace = crate::activity::WorkTrace::begin(crate::activity::ActivityOwner::BackgroundWork,
         Some(crate::activity::ActivitySubject::Previews), Some(hash));
-    let result: Result<String, String> = (|| {
-        let _awake = crate::sleep_prevention::begin_work();
-        let (promoted, facts) = derive_candidate(hash, &path, cache, thumb_edge, preview_long_edge, ffmpeg)
-            .map_err(|error| record_preview_failure_or_combine(conn, hash, &path, ffmpeg.is_some(), error))?;
+    let _awake = crate::sleep_prevention::begin_work();
+    let generated = generate(&native_path, &stage.key);
+    let result = preview_share(|| {
+        if !crate::scan_runtime::publication_epoch_current(epoch)
+            || preview_source_row(conn, hash, &path)?.as_ref() != Some(&row)
+            || crate::derived_runtime::cancelled()
+        {
+            return Err(crate::scanner::CANCELLED.to_string());
+        }
+        source.require_current(&native_path)
+            .map_err(|error| format!("{}: preview source validation: {error}", crate::scanner::CANCELLED))?;
+        let (promoted, facts) = generated
+            .map_err(|error| record_preview_failure_or_combine(conn, hash, &path, ffmpeg_available, error))?;
         let key = match promoted {
             Some(real) => {
                 crate::scanner::promote_identity(conn, cache, hash, &real)?;
@@ -568,20 +663,14 @@ pub fn derive_one(
             }
             None => hash.to_string(),
         };
-        crate::derived_state::record_preview_success(
-            conn,
-            &key,
-            &path,
-            facts.width,
-            facts.height,
-            facts.sharpness,
-            facts.phash,
-        )?;
+        stage.publish(&key)?;
+        crate::derived_state::record_preview_success(conn, &key, &path,
+            facts.width, facts.height, facts.sharpness, facts.phash)?;
         Ok(key)
-    })();
+    });
     match &result {
         Ok(key) => trace.finish(crate::activity::ActivityState::Succeeded, Some(key)),
-        Err(error) => trace.finish(match preview_failure_kind(error, ffmpeg.is_some()) {
+        Err(error) => trace.finish(match preview_failure_kind(error, ffmpeg_available) {
             PreviewFailureKind::Dependency | PreviewFailureKind::Storage => crate::activity::ActivityState::Waiting,
             PreviewFailureKind::Cancelled => crate::activity::ActivityState::Cancelled,
             PreviewFailureKind::Content => crate::activity::ActivityState::Failed,
