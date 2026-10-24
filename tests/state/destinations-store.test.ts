@@ -147,6 +147,40 @@ beforeEach(() => {
 });
 
 describe("loaded destination projection", () => {
+  it("retires the last root and stops queued refreshes after the held listing settles", async () => {
+    useDestinationsStore.getState().init({ destinationRoots: ["/dest"] });
+    const child = { path: "/dest/child", name: "child", hasChildren: false, isEmpty: true };
+    useDestinationsStore.setState({ activePath: child.path, expanded: new Set(["/dest", child.path]),
+      children: { "/dest": [child], [child.path]: [] }, emptiness: { "/dest": false, [child.path]: true } });
+    let finish!: (listing: DirListing) => void;
+    mockCommands({ list_subdirs: () => new Promise<DirListing>((resolve) => { finish = resolve; }) });
+    const refresh = useDestinationsStore.getState().refreshExpanded();
+    useDestinationsStore.getState().init({ destinationRoots: [] });
+    expect(useDestinationsStore.getState()).toMatchObject({ roots: [], activePath: null,
+      children: {}, emptiness: {}, listing: {}, expanded: new Set() });
+    finish({ entries: [child], isEmpty: false });
+    await refresh;
+    await useDestinationsStore.getState().refreshExpanded();
+    expect(invokeCalls.filter((call) => call.command === "list_subdirs").map((call) => call.args.path)).toEqual(["/dest"]);
+    expect(useDestinationsStore.getState()).toMatchObject({ activePath: null, children: {}, emptiness: {}, listing: {} });
+  });
+
+  it("preserves a remaining nested root and its loaded descendants without retaining sibling branches", () => {
+    const entry = (path: string) => ({ path, name: path.split("/").at(-1)!, hasChildren: true, isEmpty: false });
+    useDestinationsStore.getState().init({ destinationRoots: ["/dest", "/dest/keep"] });
+    const children = { "/dest": [entry("/dest/keep"), entry("/dest/keep-sibling")],
+      "/dest/keep": [entry("/dest/keep/child")], "/dest/keep/child": [], "/dest/keep-sibling": [] };
+    useDestinationsStore.setState({ children, expanded: new Set(Object.keys(children)),
+      emptiness: Object.fromEntries(Object.keys(children).map((path) => [path, false])), activePath: "/dest/keep/child" });
+    useDestinationsStore.getState().init({ destinationRoots: ["/dest/keep"] });
+    expect(Object.keys(useDestinationsStore.getState().children)).toEqual(["/dest/keep", "/dest/keep/child"]);
+    expect([...useDestinationsStore.getState().expanded]).toEqual(["/dest/keep", "/dest/keep/child"]);
+    expect(Object.keys(useDestinationsStore.getState().emptiness)).toEqual(["/dest/keep", "/dest/keep/child"]);
+    expect(useDestinationsStore.getState().activePath).toBe("/dest/keep/child");
+    useDestinationsStore.getState().init({ destinationRoots: ["/dest/keep-sibling"] });
+    expect(useDestinationsStore.getState().activePath).toBeNull();
+  });
+
   it("filters wrong-shape roots before path rendering or IPC use", () => {
     useDestinationsStore.getState().init({
       destinationRoots: [123, null, "/valid", { path: "/wrong" }],
@@ -720,7 +754,7 @@ describe("destination folder mutations", () => {
     useDestinationsStore.getState().init({ destinationRoots: ["/other"] });
     finish("/dest/new");
     await pending;
-    expect(useDestinationsStore.getState().activePath).toBe("/dest");
+    expect(useDestinationsStore.getState().activePath).toBeNull();
     expect(invokeCalls.some((call) => call.command === "list_subdirs")).toBe(false);
   });
 });

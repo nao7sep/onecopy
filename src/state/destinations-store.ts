@@ -132,7 +132,23 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
     if (JSON.stringify(roots) !== JSON.stringify(get().roots)) {
       visibilityGeneration++;
       listingGenerations.clear();
-      set({ roots, listing: {} });
+      const current = get();
+      // Retain only the loaded tree reachable from the new roots. Walking its
+      // native identities also preserves nested roots without path spelling or
+      // separator guesses in the renderer.
+      const reachable = new Set(roots);
+      for (const path of reachable) {
+        for (const child of current.children[path] ?? []) reachable.add(child.path);
+      }
+      const retained = <T,>(values: Record<string, T>) => Object.fromEntries(
+        Object.entries(values).filter(([path]) => reachable.has(path)),
+      );
+      set({
+        roots, listing: {}, children: retained(current.children),
+        emptiness: retained(current.emptiness),
+        expanded: new Set([...current.expanded].filter((path) => reachable.has(path))),
+        activePath: current.activePath !== null && reachable.has(current.activePath) ? current.activePath : null,
+      });
     }
   },
 
@@ -200,7 +216,9 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
   refreshExpanded: async () => {
     // Everything expanded — roots and subdirectories alike — re-lists; a
     // collapsed node re-lists on its next expand anyway.
+    const generation = visibilityGeneration;
     for (const path of get().expanded) {
+      if (generation !== visibilityGeneration) return;
       await get().refreshNode(path);
     }
   },
