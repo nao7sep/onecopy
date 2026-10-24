@@ -29,7 +29,7 @@ export default defineConfig(() => ({
     __APP_VERSION__: JSON.stringify(appVersion),
   },
 
-  // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
+  // Shared Vite options for direct frontend commands and Tauri development/builds
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,

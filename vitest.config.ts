@@ -13,8 +13,8 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(appVersion),
   },
-  // Default environment is `node` since the bulk of the suite is pure logic in
-  // src/services and src/utils; specs that touch the DOM opt into happy-dom
+  // Pure model, utility and state tests use the default `node` environment;
+  // specs that touch the DOM opt into happy-dom
   // with a per-file `// @vitest-environment happy-dom` comment.
   test: {
     environment: "node",

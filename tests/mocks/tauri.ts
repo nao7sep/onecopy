@@ -1,8 +1,8 @@
 // The Tauri IPC double for the frontend suite.
 //
-// The app reaches the Rust core through exactly seven module surfaces (core,
-// event, window, webview, webviewWindow, plugin-dialog, plugin-opener), so
-// faking those is enough to drive any store or component from a test without a
+// The app reaches the Rust core through these module surfaces: core, event,
+// window, webview, webviewWindow and plugin-opener. Faking them is enough to
+// drive any store or component from a test without a
 // running backend. The registrations themselves live in tests/setup.ts, which
 // is the only place `vi.mock` applies to every spec file at once; this module
 // owns the state and the helpers a spec talks to.
