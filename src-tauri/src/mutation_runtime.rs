@@ -320,6 +320,17 @@ fn is_zero(value: &u64) -> bool {
     *value == 0
 }
 
+// Native history and renderer diagnostics share this terminal classification.
+// The event route alone cannot distinguish partial failure or unknown effects.
+fn terminal_state(cancelled: bool, failed: bool, summary: Option<&ResultSummary>) -> crate::activity::ActivityState {
+    use crate::activity::ActivityState;
+    if cancelled { ActivityState::Cancelled }
+    else if summary.is_some_and(|result| result.files_unknown > 0) { ActivityState::OutcomeUnknown }
+    else if failed || summary.is_some_and(|result| result.files_failed > 0 || result.error.is_some()) { ActivityState::Failed }
+    else if summary.is_none() { ActivityState::Idle }
+    else { ActivityState::Succeeded }
+}
+
 struct Publisher {
     trace: Option<crate::activity::WorkTrace>,
     app: AppHandle,
@@ -368,13 +379,9 @@ impl Publisher {
         sections: Option<Vec<SectionLocation>>,
     ) {
         self.progress(progress);
+        let outcome = terminal_state(cancelled, false, summary.as_ref());
         if let Some(trace) = &mut self.trace {
-            use crate::activity::ActivityState;
-            trace.finish(if cancelled { ActivityState::Cancelled }
-                else if summary.as_ref().is_some_and(|result| result.files_unknown > 0) { ActivityState::OutcomeUnknown }
-                else if summary.as_ref().is_some_and(|result| result.files_failed > 0 || result.error.is_some()) { ActivityState::Failed }
-                else if summary.is_none() { ActivityState::Idle }
-                else { ActivityState::Succeeded }, None);
+            trace.finish(outcome, None);
         }
         crate::failure_runtime::emit_or_record(
             &self.app,
@@ -382,6 +389,7 @@ impl Publisher {
             json!({
                 "progress": progress,
                 "cancelled": cancelled,
+                "outcome": outcome,
                 "summary": summary,
                 "sections": sections,
             }),
@@ -407,9 +415,9 @@ impl Publisher {
     }
 
     fn error_with_summary(&mut self, progress: &Progress, error: &str, summary: ResultSummary, sections: Option<Vec<SectionLocation>>) {
+        let outcome = terminal_state(false, true, Some(&summary));
         if let Some(trace) = &mut self.trace {
-            trace.finish(if summary.files_unknown > 0 { crate::activity::ActivityState::OutcomeUnknown }
-                else { crate::activity::ActivityState::Failed }, None);
+            trace.finish(outcome, None);
         }
         crate::failure_runtime::emit_or_record(
             &self.app,
@@ -418,6 +426,7 @@ impl Publisher {
                 "operationId": progress.operation_id,
                 "kind": progress.kind,
                 "error": error,
+                "outcome": outcome,
                 "summary": summary,
                 "sections": sections,
             }),

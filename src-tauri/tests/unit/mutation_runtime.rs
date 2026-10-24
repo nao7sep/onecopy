@@ -1,5 +1,29 @@
 use super::*;
 
+#[test]
+fn terminal_classification_preserves_failure_unknown_cancellation_and_no_receipt() {
+    use crate::activity::ActivityState;
+    let complete = result_summary(2, 2, 2, 2, 2, 0, 0, false, None);
+    let partial = ResultSummary { files_failed: 1, ..complete.clone() };
+    let unknown = ResultSummary { files_unknown: 1, ..complete.clone() };
+    let stopped = ResultSummary { error: Some("index unavailable".into()), ..complete.clone() };
+    for (cancelled, failed, summary, expected, wire) in [
+        (false, false, Some(&complete), ActivityState::Succeeded, "succeeded"),
+        (false, false, Some(&partial), ActivityState::Failed, "failed"),
+        (false, false, Some(&unknown), ActivityState::OutcomeUnknown, "outcomeUnknown"),
+        (false, true, Some(&unknown), ActivityState::OutcomeUnknown, "outcomeUnknown"),
+        (false, false, Some(&stopped), ActivityState::Failed, "failed"),
+        (false, true, Some(&complete), ActivityState::Failed, "failed"),
+        (true, false, Some(&partial), ActivityState::Cancelled, "cancelled"),
+        (true, false, None, ActivityState::Cancelled, "cancelled"),
+        (false, false, None, ActivityState::Idle, "idle"),
+    ] {
+        let outcome = terminal_state(cancelled, failed, summary);
+        assert_eq!(outcome, expected);
+        assert_eq!(serde_json::to_value(outcome).unwrap(), json!(wire));
+    }
+}
+
 fn volume_fixture() -> (
     tempfile::TempDir,
     std::path::PathBuf,

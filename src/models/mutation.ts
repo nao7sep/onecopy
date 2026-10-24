@@ -8,6 +8,8 @@ export type MutationKind =
   | "destination-move"
   | "trash-empty"
   | "restore";
+/** Native terminal classification, shared by ordinary history and debug events. */
+export type MutationOutcome = "succeeded" | "failed" | "cancelled" | "outcomeUnknown" | "idle";
 export type MutationPhase =
   | "waiting"
   | "planning"

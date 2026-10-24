@@ -7,6 +7,7 @@ import {
   type MutationKind,
   type MutationProgress,
   type MutationResultSummary,
+  type MutationOutcome,
 } from "../models/mutation";
 import { documentTranslator } from "../i18n/I18nContext";
 import { message } from "../i18n/translate";
@@ -16,6 +17,18 @@ import { recordRecentNotification } from "../state/notifications-store";
 import { presentEscapedFailure, recordInterfaceFailure } from "../utils/failureSurface";
 import { createEventInstaller } from "../utils/eventInstallation";
 import { recordActivity } from "../repositories/activity";
+
+function recordTerminal(operationId: number, outcome: MutationOutcome): void {
+  const failed = outcome === "failed" || outcome === "outcomeUnknown";
+  recordActivity({
+    kind: outcome === "cancelled" ? "cancelled" : failed ? "failed" : outcome === "idle" ? "closed" : "completed",
+    owner: "mutation",
+    operationId: `mutation:${operationId}`,
+    previous: "running",
+    current: outcome,
+    reason: outcome === "cancelled" ? "user" : failed ? "error" : "completion",
+  });
+}
 
 const install = createEventInstaller(
   async (listeners) => {
@@ -57,6 +70,7 @@ const install = createEventInstaller(
     await listeners.listen<{
       progress: MutationProgress;
       cancelled: boolean;
+      outcome: MutationOutcome;
       summary: MutationResultSummary | null;
     }>("mutation://done", (event) => {
       if (useMutationStore.getState().progress?.operationId === event.payload.progress.operationId) {
@@ -75,20 +89,14 @@ const install = createEventInstaller(
           ...(result === null ? {} : { result }),
         });
         if (result !== null) recordFailedResult(result);
-        recordActivity({
-          kind: event.payload.cancelled ? "cancelled" : "completed",
-          owner: "mutation",
-          operationId: `mutation:${event.payload.progress.operationId}`,
-          previous: "running",
-          current: event.payload.cancelled ? "cancelled" : "succeeded",
-          reason: event.payload.cancelled ? "user" : "completion",
-        });
+        recordTerminal(event.payload.progress.operationId, event.payload.outcome);
       }
     });
     await listeners.listen<{
       operationId: number;
       kind: MutationKind;
       error: string;
+      outcome: MutationOutcome;
       summary: MutationResultSummary;
     }>("mutation://error", (event) => {
       if (useMutationStore.getState().progress?.operationId === event.payload.operationId) {
@@ -104,14 +112,7 @@ const install = createEventInstaller(
           result,
         });
         recordFailedResult(result);
-        recordActivity({
-          kind: "failed",
-          owner: "mutation",
-          operationId: `mutation:${event.payload.operationId}`,
-          previous: "running",
-          current: "failed",
-          reason: "error",
-        });
+        recordTerminal(event.payload.operationId, event.payload.outcome);
       }
     });
     await listeners.listen("app://exit-quiescing", () => {

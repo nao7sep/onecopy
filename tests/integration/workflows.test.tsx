@@ -567,6 +567,7 @@ describe("the failure workflow", () => {
       await fireEvent("mutation://progress", progress);
       await fireEvent("mutation://done", {
         progress: { ...progress, phase: "complete", failures: 1 }, cancelled: false,
+        outcome: "failed",
         summary: {
           itemsCompleted: 0, itemsPartial: 1, itemsUnstarted: 0, filesCompleted: 0,
           filesFailed: 1, filesUnknown: 0, filesUnstarted: 0, trashAvailable: false, error: null,
