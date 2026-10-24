@@ -48,6 +48,50 @@ let nextListingGeneration = 0;
 const listingGenerations = new Map<string, number>();
 let visibilityGeneration = 0;
 
+const pendingLaneLookups = new Map<string, Promise<string>>();
+function listingLane(path: string): Promise<string> {
+  let lookup = pendingLaneLookups.get(path);
+  if (!lookup) {
+    lookup = invoke<string>("destination_listing_lane", { path })
+      .finally(() => pendingLaneLookups.delete(path));
+    pendingLaneLookups.set(path, lookup);
+  }
+  return lookup;
+}
+
+interface ListingTask {
+  run: () => Promise<void>;
+  settled: Promise<void>;
+  resolve: () => void;
+  reject: (error: unknown) => void;
+}
+const listingLanes = new Map<string, Map<string, ListingTask>>();
+
+// One physical listing per native volume lane. Pending work is keyed by folder:
+// repeated focus/visibility changes replace its intent instead of adding jobs.
+function queueListing(lane: string, path: string, run: () => Promise<void>): Promise<void> {
+  let pending = listingLanes.get(lane);
+  const existing = pending?.get(path);
+  if (existing) { existing.run = run; return existing.settled; }
+  let resolve!: () => void;
+  let reject!: (error: unknown) => void;
+  const settled = new Promise<void>((done, fail) => { resolve = done; reject = fail; });
+  const task = { run, settled, resolve, reject };
+  if (pending) { pending.set(path, task); return settled; }
+  pending = new Map([[path, task]]);
+  listingLanes.set(lane, pending);
+  void (async () => {
+    while (pending.size > 0) {
+      const [nextPath, next] = pending.entries().next().value!;
+      pending.delete(nextPath);
+      try { await next.run(); next.resolve(); }
+      catch (error) { next.reject(error); }
+    }
+    listingLanes.delete(lane);
+  })();
+  return settled;
+}
+
 function isInSubtree(candidate: string, path: string): boolean {
   return candidate === path || candidate.startsWith(`${path}/`) || candidate.startsWith(`${path}\\`);
 }
@@ -170,27 +214,31 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
     listingGenerations.set(path, generation);
     set({ listing: { ...get().listing, [path]: "loading" } });
     try {
-      const { entries, isEmpty } = await invoke<DirListing>("list_subdirs", { path });
-      if (listingGenerations.get(path) !== generation) {
-        recordActivity({
-          kind: "stale",
-          owner: "destination",
-          generation,
-          current: "stale",
-          reason: "staleResponse",
+      const lane = await listingLane(path);
+      await queueListing(lane, path, async () => {
+        if (listingGenerations.get(path) !== generation) return;
+        const { entries, isEmpty } = await invoke<DirListing>("list_subdirs", { path });
+        if (listingGenerations.get(path) !== generation) {
+          recordActivity({
+            kind: "stale",
+            owner: "destination",
+            generation,
+            current: "stale",
+            reason: "staleResponse",
+          });
+          return;
+        }
+        // A child refreshed directly after this read began owns its newer fact.
+        const emptiness = Object.fromEntries(entries
+          .filter((entry) => (listingGenerations.get(entry.path) ?? 0) <= generation)
+          .map((entry) => [entry.path, entry.isEmpty]));
+        const listing = { ...get().listing };
+        delete listing[path];
+        set({
+          children: { ...get().children, [path]: entries },
+          emptiness: { ...get().emptiness, ...emptiness, [path]: isEmpty },
+          listing,
         });
-        return;
-      }
-      // A child refreshed directly after this read began owns its newer fact.
-      const emptiness = Object.fromEntries(entries
-        .filter((entry) => (listingGenerations.get(entry.path) ?? 0) <= generation)
-        .map((entry) => [entry.path, entry.isEmpty]));
-      const listing = { ...get().listing };
-      delete listing[path];
-      set({
-        children: { ...get().children, [path]: entries },
-        emptiness: { ...get().emptiness, ...emptiness, [path]: isEmpty },
-        listing,
       });
     } catch (error) {
       if (listingGenerations.get(path) !== generation) {
@@ -216,11 +264,7 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
   refreshExpanded: async () => {
     // Everything expanded — roots and subdirectories alike — re-lists; a
     // collapsed node re-lists on its next expand anyway.
-    const generation = visibilityGeneration;
-    for (const path of get().expanded) {
-      if (generation !== visibilityGeneration) return;
-      await get().refreshNode(path);
-    }
+    await Promise.all([...get().expanded].map((path) => get().refreshNode(path)));
   },
 
   reconcileVisibility: async () => {
@@ -233,17 +277,18 @@ export const useDestinationsStore = create<DestinationsState>((set, get) => ({
       if (generation !== visibilityGeneration) return;
       await get().refreshNode(path);
       if (generation !== visibilityGeneration) return;
-      for (const child of get().children[path] ?? []) {
-        reachable.add(child.path);
-        if (before.expanded.has(child.path) || before.children[child.path]) await visit(child.path);
-      }
+      const children = get().children[path] ?? [];
+      for (const child of children) reachable.add(child.path);
+      // Publish each reachable branch immediately; another drive's wait must
+      // not keep a healthy branch collapsed or hide its active destination.
+      set({
+        expanded: new Set([...get().expanded, ...[...before.expanded].filter((path) => reachable.has(path))]),
+        activePath: get().activePath ?? (before.activePath !== null && reachable.has(before.activePath) ? before.activePath : null),
+      });
+      await Promise.all(children.filter((child) => before.expanded.has(child.path) || before.children[child.path])
+        .map((child) => visit(child.path)));
     };
-    for (const root of before.roots) await visit(root);
-    if (generation !== visibilityGeneration) return;
-    set({
-      expanded: new Set([...get().expanded, ...[...before.expanded].filter((path) => reachable.has(path))]),
-      activePath: get().activePath ?? (before.activePath !== null && reachable.has(before.activePath) ? before.activePath : null),
-    });
+    await Promise.all(before.roots.map(visit));
   },
 
   createFolder: async (parent, name) => {

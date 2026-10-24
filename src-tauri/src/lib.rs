@@ -649,6 +649,13 @@ async fn pick_directories(window: tauri::Window, multiple: bool) -> Result<Vec<S
 }
 
 // Destination-tree support: see `destinations`.
+// The existing volume owner resolves lane identity from memory, without probing
+// a potentially stalled drive. Renderers must not guess native path prefixes.
+#[tauri::command]
+fn destination_listing_lane(path: String) -> String {
+    volume_io::lane_name(&native_path::from_text(&path))
+}
+
 #[tauri::command]
 async fn list_subdirs(path: String) -> Result<destinations::DirListing, String> {
     dispatch(move || destinations::list_subdirs(&paths::data_root()?, &path)).await
@@ -1838,6 +1845,7 @@ pub fn run() {
             move_items_out,
             pick_directories,
             list_subdirs,
+            destination_listing_lane,
             create_subdir,
             delete_empty_dir,
             reveal_native_path,

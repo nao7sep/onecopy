@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { act, cleanup, fireEvent, render, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import DestinationsTab from "../../src/components/DestinationsTab";
 import { useDestinationsStore } from "../../src/state/destinations-store";
 import { useItemsStore } from "../../src/state/items-store";
@@ -13,6 +13,7 @@ import { message } from "../../src/i18n/translate";
 
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
+  mockCommands({ destination_listing_lane: () => "fixture-volume" });
   resetModalStack();
   useComparisonStore.setState({ open: false });
   useFullscreenViewStore.setState({ session: null });
@@ -118,7 +119,7 @@ describe("destination folder states", () => {
     const view = render(<DestinationsTab />);
     expect(view.container.textContent).toContain("Reading folders…");
 
-    await act(async () => reject(new Error("offline")));
+    await act(async () => { await vi.waitFor(() => expect(reject).toBeTypeOf("function")); reject(new Error("offline")); });
     expect(view.container.textContent).toContain("Couldn’t read this folder.");
     expect(view.container.textContent).not.toContain("No subfolders");
 

@@ -93,13 +93,17 @@ export async function saveSettings(): Promise<void> {
     );
   }
   try {
-    if (visibilityChanged) await useDestinationsStore.getState().reconcileVisibility();
     await Promise.all([
-      useSectionsStore.getState().loadCounts(),
-      useItemsStore.getState().refresh(),
-      useWizardStore.getState().recheckPresence(),
+      visibilityChanged ? useDestinationsStore.getState().reconcileVisibility() : Promise.resolve(),
+      (async () => {
+        await Promise.all([
+          useSectionsStore.getState().loadCounts(),
+          useItemsStore.getState().refresh(),
+          useWizardStore.getState().recheckPresence(),
+        ]);
+        if (visibilityChanged) await reconcileComparisonMembership();
+      })(),
     ]);
-    if (visibilityChanged) await reconcileComparisonMembership();
   } catch (error) {
     followUpFailed = true;
     log.error("settings projections refresh failed", toErrorFields(error));

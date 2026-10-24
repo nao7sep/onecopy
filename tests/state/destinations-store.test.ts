@@ -5,7 +5,7 @@
 // be exactly what the confirm changes.
 
 import { EMPTY_ITEM_WORK } from "../helpers/itemWork";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useDestinationsStore, type DirListing } from "../../src/state/destinations-store";
 import { useItemsStore } from "../../src/state/items-store";
 import type { SectionItem } from "../../src/models/items";
@@ -68,10 +68,11 @@ it("invalidates old visibility listings and removes a now-hidden destination", a
   let oldResolve!: (listing: DirListing) => void;
   mockCommands({ list_subdirs: () => new Promise<DirListing>((resolve) => { oldResolve = resolve; }) });
   const stale = useDestinationsStore.getState().refreshNode("/dest");
+  await vi.waitFor(() => expect(oldResolve).toBeTypeOf("function"));
   mockCommands({ list_subdirs: () => ({ entries: [entry("/dest/visible")], isEmpty: false }) });
-  await useDestinationsStore.getState().reconcileVisibility();
+  const reconciled = useDestinationsStore.getState().reconcileVisibility();
   oldResolve({ entries: [entry("/dest/.hidden")], isEmpty: true });
-  await stale;
+  await Promise.all([stale, reconciled]);
   expect(useDestinationsStore.getState().activePath).toBeNull();
   expect([...useDestinationsStore.getState().expanded]).toEqual(["/dest"]);
   expect(useDestinationsStore.getState().children["/dest"]).toEqual([entry("/dest/visible")]);
@@ -121,6 +122,7 @@ function movedHashes(): unknown[] {
 beforeEach(() => {
   resetTauriMocks({ keepListeners: true });
   mockCommands({
+    destination_listing_lane: () => "fixture-volume",
     move_items_out: () => OUTCOME,
     get_section_counts: () => [],
     get_issues: () => ({ total: 0, rows: [] }),
@@ -155,6 +157,7 @@ describe("loaded destination projection", () => {
     let finish!: (listing: DirListing) => void;
     mockCommands({ list_subdirs: () => new Promise<DirListing>((resolve) => { finish = resolve; }) });
     const refresh = useDestinationsStore.getState().refreshExpanded();
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
     useDestinationsStore.getState().init({ destinationRoots: [] });
     expect(useDestinationsStore.getState()).toMatchObject({ roots: [], activePath: null,
       children: {}, emptiness: {}, listing: {}, expanded: new Set() });
@@ -195,11 +198,12 @@ describe("destination listing freshness", () => {
     let finishOlder!: (listing: DirListing) => void;
     mockCommands({ list_subdirs: () => new Promise<DirListing>((resolve) => { finishOlder = resolve; }) });
     const older = useDestinationsStore.getState().refreshNode("/dest");
+    await vi.waitFor(() => expect(finishOlder).toBeTypeOf("function"));
     const entries = [{ name: "new", path: "/dest/new", hasChildren: false, isEmpty: true }];
     mockCommands({ list_subdirs: () => ({ entries, isEmpty: false }) });
-    await useDestinationsStore.getState().refreshNode("/dest");
+    const newer = useDestinationsStore.getState().refreshNode("/dest");
     finishOlder({ entries: [], isEmpty: true });
-    await older;
+    await Promise.all([older, newer]);
 
     expect(useDestinationsStore.getState().children["/dest"]).toEqual(entries);
     expect(useDestinationsStore.getState().emptiness).toMatchObject({ "/dest": false, "/dest/new": true });
@@ -210,6 +214,7 @@ describe("destination listing freshness", () => {
     let finish!: (listing: DirListing) => void;
     mockCommands({ list_subdirs: () => new Promise<DirListing>((resolve) => { finish = resolve; }) });
     const pending = useDestinationsStore.getState().refreshNode("/dest");
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
     useDestinationsStore.getState().init({ destinationRoots: ["/other"] });
     finish({ entries: [], isEmpty: true });
     await pending;
@@ -737,10 +742,12 @@ describe("destination folder mutations", () => {
     let finish!: (listing: DirListing) => void;
     mockCommands({ list_subdirs: () => new Promise<DirListing>((resolve) => { finish = resolve; }) });
     const listing = useDestinationsStore.getState().refreshNode("/dest/child");
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
     mockCommands({ delete_empty_dir: () => null, list_subdirs: () => ({ entries: [], isEmpty: true }) });
-    await useDestinationsStore.getState().deleteFolder("/dest/child", "/dest");
+    const deleted = useDestinationsStore.getState().deleteFolder("/dest/child", "/dest");
+    await vi.waitFor(() => expect(useDestinationsStore.getState().listing["/dest/child"]).toBeUndefined());
     finish({ entries: [], isEmpty: true });
-    await listing;
+    await Promise.all([listing, deleted]);
     expect(useDestinationsStore.getState().children["/dest/child"]).toBeUndefined();
     expect(useDestinationsStore.getState().emptiness["/dest/child"]).toBeUndefined();
   });
@@ -763,9 +770,52 @@ it("does not replace a newly refreshed node fact with an older parent's child fa
   let finish!: (listing: DirListing) => void;
   mockCommands({ list_subdirs: () => new Promise<DirListing>((resolve) => { finish = resolve; }) });
   const parent = useDestinationsStore.getState().refreshNode("/dest");
+  await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
   mockCommands({ list_subdirs: () => ({ entries: [], isEmpty: false }) });
-  await useDestinationsStore.getState().refreshNode("/dest/child");
+  const child = useDestinationsStore.getState().refreshNode("/dest/child");
   finish({ entries: [{ path: "/dest/child", name: "child", hasChildren: false, isEmpty: true }], isEmpty: false });
-  await parent;
+  await Promise.all([parent, child]);
   expect(useDestinationsStore.getState().emptiness["/dest/child"]).toBe(false);
+});
+
+it("publishes healthy destination lanes while coalescing refresh bursts behind a held lane", async () => {
+  const child = { path: "/slow/child", name: "child", hasChildren: false, isEmpty: true };
+  useDestinationsStore.setState({ roots: ["/slow", "/healthy"], expanded: new Set(["/slow", child.path, "/healthy"]) });
+  let finish!: (listing: DirListing) => void;
+  let slowReads = 0;
+  mockCommands({
+    destination_listing_lane: ({ path }) => String(path).startsWith("/slow") ? "slow-volume" : "healthy-volume",
+    list_subdirs: ({ path }) => {
+      if (path === "/slow" && slowReads++ === 0) return new Promise<DirListing>((resolve) => { finish = resolve; });
+      return { entries: path === "/slow" ? [child] : [], isEmpty: path !== "/slow" };
+    },
+  });
+  const first = useDestinationsStore.getState().refreshExpanded();
+  await vi.waitFor(() => expect(useDestinationsStore.getState().emptiness["/healthy"]).toBe(true));
+  const bursts = Array.from({ length: 100 }, () => useDestinationsStore.getState().refreshExpanded());
+  await vi.waitFor(() => expect(invokeCalls.filter(call => call.command === "destination_listing_lane")).toHaveLength(6));
+  expect(invokeCalls.filter(call => call.command === "list_subdirs" && String(call.args.path).startsWith("/slow"))).toHaveLength(1);
+  finish({ entries: [child], isEmpty: false });
+  await Promise.all([first, ...bursts]);
+  expect(invokeCalls.filter(call => call.command === "list_subdirs" && call.args.path === "/slow")).toHaveLength(2);
+  expect(invokeCalls.filter(call => call.command === "list_subdirs" && call.args.path === child.path)).toHaveLength(1);
+  expect(useDestinationsStore.getState().children["/slow"]).toEqual([child]);
+});
+
+it("restores each reachable visibility branch without waiting for another drive", async () => {
+  const child = { path: "/healthy/child", name: "child", hasChildren: false, isEmpty: true };
+  useDestinationsStore.setState({ roots: ["/slow", "/healthy"], expanded: new Set(["/slow", "/healthy", child.path]),
+    children: { "/healthy": [child] }, activePath: child.path });
+  let finish!: (listing: DirListing) => void;
+  mockCommands({
+    destination_listing_lane: ({ path }) => String(path).startsWith("/slow") ? "slow-volume" : "healthy-volume",
+    list_subdirs: ({ path }) => path === "/slow" ? new Promise<DirListing>((resolve) => { finish = resolve; })
+      : { entries: path === "/healthy" ? [child] : [], isEmpty: path === child.path },
+  });
+  const refresh = useDestinationsStore.getState().reconcileVisibility();
+  await vi.waitFor(() => expect(useDestinationsStore.getState().emptiness[child.path]).toBe(true));
+  expect(useDestinationsStore.getState().activePath).toBe(child.path);
+  expect(useDestinationsStore.getState().expanded.has("/healthy")).toBe(true);
+  finish({ entries: [], isEmpty: true });
+  await refresh;
 });

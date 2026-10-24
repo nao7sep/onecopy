@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useDestinationsStore } from "../../src/state/destinations-store";
 import { saveSettings } from "../../src/workflows/settings";
 import { useAppStore } from "../../src/state/app-store";
 import { useItemsStore } from "../../src/state/items-store";
@@ -214,4 +215,20 @@ describe("Settings save boundary", () => {
       aiAcceleration: { transcription: "none", "face-scoring": "none" },
     });
   });
+});
+
+
+it("refreshes the library while destination visibility is waiting on a drive", async () => {
+  let finish!: () => void;
+  const reconcile = vi.spyOn(useDestinationsStore.getState(), "reconcileVisibility")
+    .mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
+  try {
+    useSettingsStore.getState().update({ hideDotNames: false });
+    const saved = saveSettings();
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+    await vi.waitFor(() => expect(invokeCalls.some(call => call.command === "get_section_counts")).toBe(true));
+    expect(invokeCalls.some(call => call.command === "check_source_dirs")).toBe(true);
+    finish();
+    await saved;
+  } finally { reconcile.mockRestore(); }
 });
