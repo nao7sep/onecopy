@@ -33,7 +33,6 @@ vi.unmock("@tauri-apps/api/event");
 vi.unmock("@tauri-apps/api/window");
 vi.unmock("@tauri-apps/api/webview");
 vi.unmock("@tauri-apps/api/webviewWindow");
-vi.unmock("@tauri-apps/plugin-dialog");
 vi.unmock("@tauri-apps/plugin-opener");
 
 const SOURCE_FILES = readdirSync("src", { recursive: true, encoding: "utf8" })
@@ -79,7 +78,6 @@ const MODULES: Record<string, Record<string, unknown>> = {
   "@tauri-apps/api/window": await import("@tauri-apps/api/window"),
   "@tauri-apps/api/webview": await import("@tauri-apps/api/webview"),
   "@tauri-apps/api/webviewWindow": await import("@tauri-apps/api/webviewWindow"),
-  "@tauri-apps/plugin-dialog": await import("@tauri-apps/plugin-dialog"),
   "@tauri-apps/plugin-opener": await import("@tauri-apps/plugin-opener"),
 };
 
