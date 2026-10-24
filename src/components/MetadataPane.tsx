@@ -1,29 +1,24 @@
 import { displayNativePath } from "../utils/nativePath";
 import { useWizardStore } from "../state/wizard-store";
 import { pathUnavailable } from "../models/sourceAvailability";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useDisplayZone } from "../hooks/useDisplayZone";
 import { FolderOpen } from "lucide-react";
-import { invoke } from "@tauri-apps/api/core";
 import { revealInFileManager } from "../workflows/external-open";
 import {
   formatBytes,
   stripTimestampMs,
   stripUrl,
-  thumbUrl,
   timestampLabel,
 } from "../models/items";
-import { useItemsStore } from "../state/items-store";
 import type { ItemDetail, ItemWorkStates, SectionItem } from "../models/items";
-import type { GroupMember } from "../state/comparison-store";
 import { fileManagerWord } from "../utils/shortcuts";
 import { useI18n } from "../i18n/I18nContext";
-import { message, type Message } from "../i18n/translate";
 import { log, toErrorFields } from "../repositories";
-import Button, { IconButton } from "./ui/Button";
+import { IconButton } from "./ui/Button";
 import TranscriptBlock from "./TranscriptBlock";
 import { openPreview } from "../workflows/preview";
-import { requestComparisonFromMain } from "../workflows/comparison";
+import SimilarPhotoStrip from "./SimilarPhotoStrip";
 import { seekMainPlayback } from "../workflows/playback";
 import {
   mergeActiveItemWork,
@@ -86,87 +81,6 @@ function PathRow({ path }: { path: string }) {
         </OperationResult>
       ) : null}
     </dd>
-  );
-}
-
-/** The similar-group strip: every member as a small thumb, the shown item
- * marked, click selecting that member in the grid (same section by
- * construction — groups are bucketed within one section), and Compare doing
- * exactly what Enter does. The group is the one fact about a photo that the
- * pane could not show at all. */
-function SimilarSection({ hash }: { hash: string }) {
-  const { t, text } = useI18n();
-  const [members, setMembers] = useState<GroupMember[]>([]);
-  const [error, setError] = useState<Message | null>(null);
-  useEffect(() => {
-    let stale = false;
-    void invoke<GroupMember[]>("get_similar_group", { hash })
-      .then((rows) => {
-        if (!stale) {
-          setMembers(rows);
-          setError(null);
-        }
-      })
-      .catch((failure) => {
-        log.error("similar group load failed", toErrorFields(failure));
-        if (!stale) setError(message("metadata.similarLoadFailed"));
-      });
-    return () => {
-      stale = true;
-    };
-  }, [hash]);
-  if (members.length < 2) {
-    return error === null ? null : (
-      <OperationResult level="error" className="mt-3">
-        {text(error)}
-      </OperationResult>
-    );
-  }
-  return (
-    <div className="mb-1 mt-3">
-      {/* A narrow pane moves Compare under its label rather than pushing it
-          past the pane's edge. */}
-      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
-        <dt className="min-w-0 break-words text-xs text-ink-muted">
-          {t("metadata.similar", { count: members.length })}
-        </dt>
-        <Button size="toolbar" onClick={() => void requestComparisonFromMain()}>
-          {t("metadata.compare")}
-        </Button>
-      </div>
-      <dd className="mt-1 flex gap-1 overflow-x-auto pb-1">
-        {members.map((member) => (
-          <span key={member.hash} className="group/similar relative shrink-0">
-            <button
-              title={displayNativePath(member.fileName)}
-              // A thumbnail takes the list-row states, as Main's tiles do.
-              className={`h-20 w-20 shrink-0 overflow-hidden rounded-md border transition-colors motion-reduce:transition-none ${
-                member.hash === hash
-                  ? "border-primary-ring bg-primary-surface ring-1 ring-inset ring-primary-ring"
-                  : "border-border bg-background hover:border-border-strong hover:bg-surface-muted active:bg-surface-pressed"
-              }`}
-              onClick={() => {
-                // Select that member in the grid; the preview follows through
-                // the ordinary anchor path.
-                void useItemsStore.getState().selectIdentity(member.hash);
-              }}
-            >
-              <img
-                src={thumbUrl(member.hash)}
-                alt={displayNativePath(member.fileName)}
-                loading="lazy"
-                className="h-full w-full object-contain"
-              />
-            </button>
-          </span>
-        ))}
-      </dd>
-      {error !== null ? (
-        <OperationResult level="error" className="mt-1">
-          {text(error)}
-        </OperationResult>
-      ) : null}
-    </div>
   );
 }
 
@@ -316,7 +230,7 @@ export default function MetadataPane({
             value={t("metadata.seconds", { count: Math.round(detail.durationMs / 1000) })}
           />
         ) : null}
-        {hash !== null && detail.kind === "image" ? <SimilarSection key={hash} hash={hash} /> : null}
+        {hash !== null && detail.kind === "image" ? <SimilarPhotoStrip hash={hash} detail={detail} /> : null}
         <div className="mb-1 mt-3">
           <dt className="text-xs text-ink-muted">
             {t("metadata.copies", { count: detail.copyCount })}
